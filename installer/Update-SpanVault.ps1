@@ -105,15 +105,16 @@ $feEnv       = Join-Path $InstallDir 'frontend\.env.local'
 
 function Write-EnvFile($examplePath, $targetPath) {
     if (-not (Test-Path $examplePath)) { Write-Warn "Template missing: $examplePath"; return }
-    if ($ServerIp) {
-        (Get-Content $examplePath -Raw).Replace('SERVER_IP', $ServerIp) |
-            Set-Content -Path $targetPath -Encoding UTF8 -NoNewline
-        Write-Ok "Wrote $targetPath (SERVER_IP -> $ServerIp)"
-    } elseif (-not (Test-Path $targetPath)) {
-        throw "No -ServerIp given and $targetPath does not exist. Provide -ServerIp on first install."
-    } else {
-        Write-Warn "Keeping existing $targetPath (no -ServerIp supplied)"
+    if (Test-Path $targetPath) {
+        Write-Ok "Preserving existing $targetPath (not regenerated on update)"
+        return
     }
+    if (-not $ServerIp) {
+        throw "No -ServerIp given and $targetPath does not exist. Provide -ServerIp on first install."
+    }
+    (Get-Content $examplePath -Raw).Replace('SERVER_IP', $ServerIp) |
+        Set-Content -Path $targetPath -Encoding UTF8 -NoNewline
+    Write-Ok "Wrote $targetPath (SERVER_IP -> $ServerIp)"
 }
 Write-EnvFile $rootExample $rootEnv
 Write-EnvFile $feExample   $feEnv
