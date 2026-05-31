@@ -231,6 +231,18 @@ label.sv-field .sv-input, label.sv-field .sv-select { font-weight: 400; }
 }
 .sv-tab.active { color: var(--sv-crimson); border-bottom-color: var(--sv-crimson); }
 
+/* ── Dashboard recent-alerts feed ──────────────────────── */
+.sv-feed { display: flex; flex-direction: column; }
+.sv-feed-item {
+  display: flex; align-items: center; gap: 12px;
+  padding: 11px 4px; border-bottom: 1px solid var(--sv-border); font-size: 14px;
+}
+.sv-feed-item:last-child { border-bottom: none; }
+.sv-feed-item:hover { background: var(--sv-bg); }
+.sv-feed-item .dev { font-weight: 600; color: var(--sv-crimson); white-space: nowrap; }
+.sv-feed-item .msg { flex: 1; color: var(--sv-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sv-feed-item .when { white-space: nowrap; font-size: 13px; }
+
 /* ── Global alert banner ───────────────────────────────── */
 .sv-alert-banner {
   display: flex; align-items: center; gap: 10px;
