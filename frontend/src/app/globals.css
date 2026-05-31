@@ -246,6 +246,7 @@ label.sv-field .sv-input, label.sv-field .sv-select { font-weight: 400; }
 .sv-acc-head .chev { transition: transform 0.15s; color: var(--sv-muted); flex: none; }
 .sv-acc-head .chev.open { transform: rotate(90deg); }
 .sv-acc-head .site-nm { flex: 1; }
+.sv-acc-head .sv-acc-link:hover { color: var(--sv-crimson); text-decoration: underline; }
 .sv-acc-summary { display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 600; }
 .sv-pill { display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border-radius: 20px; }
 .sv-pill::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }

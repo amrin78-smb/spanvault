@@ -13,7 +13,7 @@ type Device = {
   latest_cpu_pct: number | null; latest_mem_pct: number | null;
 };
 type Site = { id: number; name: string };
-type SiteGroup = { key: string; name: string; devices: Device[] };
+type SiteGroup = { key: string; name: string; siteId: number | null; devices: Device[] };
 
 const UNASSIGNED = 'Unassigned';
 
@@ -22,7 +22,7 @@ function groupBySite(devices: Device[]): SiteGroup[] {
   for (const d of devices) {
     const name = d.site_name || UNASSIGNED;
     let g = map.get(name);
-    if (!g) { g = { key: name, name, devices: [] }; map.set(name, g); }
+    if (!g) { g = { key: name, name, siteId: d.site_id, devices: [] }; map.set(name, g); }
     g.devices.push(d);
   }
   return Array.from(map.values()).sort((a, b) => {
@@ -172,12 +172,23 @@ function SiteAccordion({
 
   return (
     <div className="sv-acc">
-      <button className={`sv-acc-head ${headStatus}`} onClick={() => setOpen((o) => !o)}>
+      <div className={`sv-acc-head ${headStatus}`} onClick={() => setOpen((o) => !o)}>
         <svg className={`chev ${open ? 'open' : ''}`} width="14" height="14" viewBox="0 0 24 24"
           fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
           <polyline points="9 18 15 12 9 6" />
         </svg>
-        <span className="site-nm">{group.name}</span>
+        {group.siteId != null ? (
+          <Link
+            href={`/sites/${group.siteId}`}
+            className="site-nm sv-acc-link"
+            onClick={(e) => e.stopPropagation()}
+            title="View site detail"
+          >
+            {group.name}
+          </Link>
+        ) : (
+          <span className="site-nm">{group.name}</span>
+        )}
         <span className="sv-muted" style={{ fontWeight: 400, fontSize: 13 }}>
           {group.devices.length} {group.devices.length === 1 ? 'device' : 'devices'}
         </span>
@@ -187,7 +198,7 @@ function SiteAccordion({
           {counts.warning > 0 && <span className="sv-pill warning">{counts.warning} warning</span>}
           {counts.unknown > 0 && <span className="sv-pill unknown">{counts.unknown} unknown</span>}
         </span>
-      </button>
+      </div>
       {open && group.devices.map((d) => (
         <DeviceRow key={d.id} device={d} onEdit={onEdit} onDelete={onDelete} />
       ))}
