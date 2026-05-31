@@ -4,6 +4,7 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { useApi, apiSend } from '@/lib/api';
 import { Loading, ErrorBox, Empty, fmtRel } from '@/components/ui';
+import { StatusDot } from '@/components/StatusDot';
 
 type Device = {
   id: number; name: string; ip_address: string; device_type: string | null;
@@ -214,10 +215,9 @@ function DeviceRow({
   onEdit: (d: Device) => void;
   onDelete: (d: Device) => void;
 }) {
-  const status = (device.current_status || 'unknown').toLowerCase();
   return (
     <div className="sv-dev-row">
-      <span className={`sv-dot ${status}`} title={status} />
+      <StatusDot status={device.current_status} />
       <div className="sv-dev-id">
         <div className="nm">
           <Link href={`/devices/${device.id}`} style={{ color: 'var(--sv-crimson)' }}>

@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { useApi } from '@/lib/api';
+import { StatusDot } from '@/components/StatusDot';
 import { StatusBadge, Loading, ErrorBox, Empty, fmtTime, fmtRel } from '@/components/ui';
 
 type Site = { id: number; name: string; code: string | null; city: string | null };
@@ -130,10 +131,9 @@ export default function SiteDetailPage() {
 
 // ── Device row (top-level component, mirrors the devices page style) ──
 function SiteDeviceRow({ device }: { device: Device }) {
-  const status = (device.current_status || 'unknown').toLowerCase();
   return (
     <div className="sv-dev-row">
-      <span className={`sv-dot ${status}`} title={status} />
+      <StatusDot status={device.current_status} />
       <div className="sv-dev-id">
         <div className="nm">
           <Link href={`/devices/${device.id}`} style={{ color: 'var(--sv-crimson)' }}>

@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { useApi } from '@/lib/api';
+import { StatusDot } from '@/components/StatusDot';
 import { Loading, ErrorBox, Empty } from '@/components/ui';
 
 type Node = { id: number; name: string; ip_address: string; device_type: string | null; status: string };
@@ -35,7 +36,10 @@ export default function MapPage() {
               <div className="sv-map-grid">
                 {site.devices.map((d) => (
                   <Link key={d.id} href={`/devices/${d.id}`} className={`sv-node ${d.status}`}>
-                    <div className="nm">{d.name}</div>
+                    <div className="nm" style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                      <StatusDot status={d.status} size={9} />
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{d.name}</span>
+                    </div>
                     <div className="ip">{d.ip_address}</div>
                     <div className="ty">{d.device_type || 'device'}</div>
                   </Link>

@@ -6,6 +6,7 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
 } from 'recharts';
 import { useApi, apiSend } from '@/lib/api';
+import { StatusDot } from '@/components/StatusDot';
 import { StatusBadge, Loading, ErrorBox, Empty, fmtTime, fmtRel, fmtBps } from '@/components/ui';
 
 type Device = {
@@ -48,6 +49,7 @@ export default function DeviceDetailPage() {
   return (
     <div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 4, flexWrap: 'wrap' }}>
+        <StatusDot status={d.current_status} size={14} />
         <h1 className="sv-page-title" style={{ margin: 0 }}>{d.name}</h1>
         <StatusBadge status={d.current_status} />
         <div style={{ flex: 1 }} />
