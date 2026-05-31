@@ -1,6 +1,7 @@
 import Sidebar from '@/components/Sidebar';
 import TopBar from '@/components/TopBar';
 import AlertBanner from '@/components/AlertBanner';
+import GlobalSearch from '@/components/GlobalSearch';
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -13,6 +14,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           <main className="sv-content">{children}</main>
         </div>
       </div>
+      <GlobalSearch />
     </>
   );
 }
