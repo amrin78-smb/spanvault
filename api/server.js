@@ -134,18 +134,29 @@ app.get('/api/dashboard/summary', wrap(async (_req, res) => {
 // ══════════════════════════════════════════════════════════════
 app.get('/api/devices', wrap(async (req, res) => {
   const { status, site_id, q } = req.query;
-  const where = ['active = TRUE'];
+  const where = ['d.active = TRUE'];
   const params = [];
-  if (status)  { params.push(status);  where.push(`current_status = $${params.length}`); }
-  if (site_id) { params.push(parseInt(site_id, 10)); where.push(`site_id = $${params.length}`); }
-  if (q)       { params.push(`%${q}%`); where.push(`(name ILIKE $${params.length} OR ip_address ILIKE $${params.length})`); }
+  if (status)  { params.push(status);  where.push(`d.current_status = $${params.length}`); }
+  if (site_id) { params.push(parseInt(site_id, 10)); where.push(`d.site_id = $${params.length}`); }
+  if (q)       { params.push(`%${q}%`); where.push(`(d.name ILIKE $${params.length} OR d.ip_address ILIKE $${params.length})`); }
   const rows = await sv.query(`
-    SELECT id, name, ip_address, device_type, site_id, site_name,
-           current_status, last_response_ms, last_seen_at, last_checked_at,
-           snmp_enabled, poll_interval_seconds, netvault_device_id
-    FROM monitored_devices
+    SELECT d.id, d.name, d.ip_address, d.device_type, d.site_id, d.site_name,
+           d.current_status, d.last_response_ms, d.last_seen_at, d.last_checked_at,
+           d.snmp_enabled, d.poll_interval_seconds, d.netvault_device_id,
+           cpu.value AS latest_cpu_pct, mem.value AS latest_mem_pct
+    FROM monitored_devices d
+    LEFT JOIN LATERAL (
+      SELECT value FROM snmp_results
+      WHERE device_id = d.id AND metric_name = 'cpu_pct'
+      ORDER BY ts DESC LIMIT 1
+    ) cpu ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT value FROM snmp_results
+      WHERE device_id = d.id AND metric_name = 'mem_pct'
+      ORDER BY ts DESC LIMIT 1
+    ) mem ON TRUE
     WHERE ${where.join(' AND ')}
-    ORDER BY site_name NULLS LAST, name
+    ORDER BY d.site_name NULLS LAST, d.name
   `, params);
   res.json(rows.rows);
 }));

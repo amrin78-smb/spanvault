@@ -3,15 +3,62 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { useApi, apiSend } from '@/lib/api';
-import { StatusBadge, Loading, ErrorBox, Empty, fmtRel } from '@/components/ui';
+import { Loading, ErrorBox, Empty, fmtRel } from '@/components/ui';
 
 type Device = {
   id: number; name: string; ip_address: string; device_type: string | null;
   site_id: number | null; site_name: string | null; current_status: string;
   last_response_ms: number | null; last_seen_at: string | null;
   snmp_enabled: boolean; poll_interval_seconds: number; netvault_device_id: number | null;
+  latest_cpu_pct: number | null; latest_mem_pct: number | null;
 };
 type Site = { id: number; name: string };
+type SiteGroup = { key: string; name: string; devices: Device[] };
+
+const UNASSIGNED = 'Unassigned';
+
+function groupBySite(devices: Device[]): SiteGroup[] {
+  const map = new Map<string, SiteGroup>();
+  for (const d of devices) {
+    const name = d.site_name || UNASSIGNED;
+    let g = map.get(name);
+    if (!g) { g = { key: name, name, devices: [] }; map.set(name, g); }
+    g.devices.push(d);
+  }
+  return Array.from(map.values()).sort((a, b) => {
+    if (a.name === UNASSIGNED) return 1;
+    if (b.name === UNASSIGNED) return -1;
+    return a.name.localeCompare(b.name);
+  });
+}
+
+function countByStatus(devices: Device[]) {
+  const c = { up: 0, down: 0, warning: 0, unknown: 0 };
+  for (const d of devices) {
+    const s = (d.current_status || 'unknown').toLowerCase();
+    if (s === 'up') c.up++;
+    else if (s === 'down') c.down++;
+    else if (s === 'warning') c.warning++;
+    else c.unknown++;
+  }
+  return c;
+}
+
+function worstStatus(devices: Device[]): string {
+  const c = countByStatus(devices);
+  if (c.down) return 'down';
+  if (c.warning) return 'warning';
+  if (c.up) return 'up';
+  return 'unknown';
+}
+
+function fmtMs(ms: number | null): string {
+  return ms != null ? `${Number(ms).toFixed(0)} ms` : '—';
+}
+
+function fmtPct(p: number | null): string {
+  return p != null ? `${Number(p).toFixed(0)}%` : '—';
+}
 
 const EMPTY_FORM: any = {
   name: '', ip_address: '', device_type: '', site_id: '',
@@ -44,10 +91,12 @@ export default function DevicesPage() {
     devices.reload();
   }
 
+  const groups = devices.data ? groupBySite(devices.data) : [];
+
   return (
     <div>
       <h1 className="sv-page-title">Devices</h1>
-      <p className="sv-page-sub">Devices currently monitored by SpanVault.</p>
+      <p className="sv-page-sub">Devices currently monitored by SpanVault, grouped by site.</p>
 
       <div className="sv-toolbar">
         <input
@@ -73,44 +122,23 @@ export default function DevicesPage() {
       </div>
 
       {devices.error && <ErrorBox message={devices.error} />}
-      <div className="sv-panel" style={{ padding: 0 }}>
-        {devices.loading && !devices.data ? (
-          <Loading />
-        ) : devices.data && devices.data.length ? (
-          <table className="sv-table">
-            <thead>
-              <tr>
-                <th>Status</th><th>Name</th><th>IP Address</th><th>Type</th>
-                <th>Site</th><th>Latency</th><th>SNMP</th><th>Last Seen</th><th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {devices.data.map((d) => (
-                <tr key={d.id}>
-                  <td><StatusBadge status={d.current_status} /></td>
-                  <td>
-                    <Link href={`/devices/${d.id}`} style={{ color: 'var(--sv-crimson)', fontWeight: 600 }}>
-                      {d.name}
-                    </Link>
-                  </td>
-                  <td>{d.ip_address}</td>
-                  <td className="sv-muted">{d.device_type || '—'}</td>
-                  <td className="sv-muted">{d.site_name || '—'}</td>
-                  <td>{d.last_response_ms != null ? `${Number(d.last_response_ms).toFixed(0)} ms` : '—'}</td>
-                  <td className="sv-muted">{d.snmp_enabled ? 'Yes' : 'No'}</td>
-                  <td className="sv-muted">{fmtRel(d.last_seen_at)}</td>
-                  <td style={{ whiteSpace: 'nowrap' }}>
-                    <button className="sv-btn ghost sm" onClick={() => openEdit(d)}>Edit</button>{' '}
-                    <button className="sv-btn ghost sm" onClick={() => handleDelete(d)}>Delete</button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        ) : (
+
+      {devices.loading && !devices.data ? (
+        <div className="sv-panel"><Loading /></div>
+      ) : groups.length ? (
+        groups.map((g) => (
+          <SiteAccordion
+            key={g.key}
+            group={g}
+            onEdit={openEdit}
+            onDelete={handleDelete}
+          />
+        ))
+      ) : (
+        <div className="sv-panel" style={{ padding: 0 }}>
           <Empty message="No monitored devices. Add one or import from NetVault." />
-        )}
-      </div>
+        </div>
+      )}
 
       {showForm && (
         <DeviceForm
@@ -126,6 +154,101 @@ export default function DevicesPage() {
           onImported={() => { setShowImport(false); devices.reload(); }}
         />
       )}
+    </div>
+  );
+}
+
+// ── Site accordion group (top-level component) ─────────────────
+function SiteAccordion({
+  group, onEdit, onDelete,
+}: {
+  group: SiteGroup;
+  onEdit: (d: Device) => void;
+  onDelete: (d: Device) => void;
+}) {
+  const [open, setOpen] = useState(true);
+  const counts = countByStatus(group.devices);
+  const headStatus = worstStatus(group.devices);
+
+  return (
+    <div className="sv-acc">
+      <button className={`sv-acc-head ${headStatus}`} onClick={() => setOpen((o) => !o)}>
+        <svg className={`chev ${open ? 'open' : ''}`} width="14" height="14" viewBox="0 0 24 24"
+          fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="9 18 15 12 9 6" />
+        </svg>
+        <span className="site-nm">{group.name}</span>
+        <span className="sv-muted" style={{ fontWeight: 400, fontSize: 13 }}>
+          {group.devices.length} {group.devices.length === 1 ? 'device' : 'devices'}
+        </span>
+        <span className="sv-acc-summary">
+          {counts.up > 0 && <span className="sv-pill up">{counts.up} up</span>}
+          {counts.down > 0 && <span className="sv-pill down">{counts.down} down</span>}
+          {counts.warning > 0 && <span className="sv-pill warning">{counts.warning} warning</span>}
+          {counts.unknown > 0 && <span className="sv-pill unknown">{counts.unknown} unknown</span>}
+        </span>
+      </button>
+      {open && group.devices.map((d) => (
+        <DeviceRow key={d.id} device={d} onEdit={onEdit} onDelete={onDelete} />
+      ))}
+    </div>
+  );
+}
+
+// ── Single device row (top-level component) ────────────────────
+function DeviceRow({
+  device, onEdit, onDelete,
+}: {
+  device: Device;
+  onEdit: (d: Device) => void;
+  onDelete: (d: Device) => void;
+}) {
+  const status = (device.current_status || 'unknown').toLowerCase();
+  return (
+    <div className="sv-dev-row">
+      <span className={`sv-dot ${status}`} title={status} />
+      <div className="sv-dev-id">
+        <div className="nm">
+          <Link href={`/devices/${device.id}`} style={{ color: 'var(--sv-crimson)' }}>
+            {device.name}
+          </Link>
+        </div>
+        <div className="ip">{device.ip_address}{device.device_type ? ` · ${device.device_type}` : ''}</div>
+      </div>
+      <div className="sv-dev-lat">
+        {fmtMs(device.last_response_ms)}
+        <div className="sv-muted">{fmtRel(device.last_seen_at)}</div>
+      </div>
+      <MonitorBadges device={device} />
+      <div className="sv-dev-actions">
+        <button className="sv-btn ghost sm" onClick={() => onEdit(device)}>Edit</button>{' '}
+        <button className="sv-btn ghost sm" onClick={() => onDelete(device)}>Delete</button>
+      </div>
+    </div>
+  );
+}
+
+// ── Inline monitoring badges (top-level component) ─────────────
+function MonitorBadges({ device }: { device: Device }) {
+  const status = (device.current_status || 'unknown').toLowerCase();
+  const pingBad = status === 'down' || status === 'warning';
+  return (
+    <div className="sv-mon-badges">
+      <span className={`sv-mon ping ${pingBad ? 'bad' : ''}`} title="ICMP ping latency">
+        <span className="k">Ping</span>
+        <span className="m">{fmtMs(device.last_response_ms)}</span>
+      </span>
+      {device.snmp_enabled && (
+        <span className="sv-mon snmp" title="SNMP CPU / memory utilization">
+          <span className="k">SNMP</span>
+          <span className="m">CPU {fmtPct(device.latest_cpu_pct)}</span>
+          <span className="m">Mem {fmtPct(device.latest_mem_pct)}</span>
+        </span>
+      )}
+      <span className="sv-mon soon" title="NetFlow monitoring — coming soon">
+        <span className="k">NetFlow</span>
+        <span>coming soon</span>
+      </span>
     </div>
   );
 }
