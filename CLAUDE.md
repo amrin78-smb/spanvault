@@ -180,14 +180,26 @@ export const config = {
 - Nav items: Dashboard, Devices, Alerts, Reports, Network Map, Settings
 - Stat cards: colored border-left (green=up, red=down, yellow=warning, grey=unknown)
 
-## Remaining work (phases not yet done)
-Phase 3: collector/collector.js — ICMP ping every device, SNMP polling, alert evaluation,
-          NetVault device sync on startup + every 30 min, write to ping_results/snmp_results/alerts
-Phase 4: frontend/src/lib/auth.ts, frontend/src/middleware.ts, frontend/src/app/sso/page.tsx,
-          frontend/src/app/api/auth/[...nextauth]/route.ts, frontend/src/app/providers.tsx,
-          frontend/src/app/layout.tsx (top bar + sidebar shell)
-Phase 5: frontend pages — dashboard, devices list, device detail (with graphs), alerts,
-          reports, network map, settings
-Phase 6: installer/Update-SpanVault.ps1 — mirrors Update-DDIVault.ps1 pattern,
-          3 services: SpanVault-API, SpanVault-App, SpanVault-Collector,
-          -ServerIp parameter writes .env.local from .env.local.example template
+## Build status — all phases complete ✅
+Phase 1: scaffold, schema (scripts/schema.sql), config — done
+Phase 2: api/server.js — Express API (devices, alerts, rules, reports, settings, NetVault sync) — done
+Phase 3: collector/collector.js — ICMP ping, SNMP polling, alert evaluation,
+          NetVault device sync on startup + every 30 min, writes ping_results/snmp_results/alerts — done
+Phase 4: auth/SSO layer — frontend/src/lib/auth.ts, middleware.ts, app/sso/page.tsx,
+          api/auth/[...nextauth]/route.ts, providers.tsx, layout.tsx (top bar + sidebar shell) — done
+Phase 5: frontend pages — dashboard, devices list, device detail (graphs), alerts,
+          reports, network map, settings — done
+Phase 6: installer/Update-SpanVault.ps1 — 3 NSSM services (SpanVault-API, SpanVault-App,
+          SpanVault-Collector), -ServerIp writes .env.local from template — done
+
+Next step: deploy on the Windows Server and test end-to-end (SSO login via hub,
+NetVault device sync, ICMP/SNMP polling, alerts, dashboard graphs).
+
+## Deployment notes (server testing)
+- Run installer/Update-SpanVault.ps1 -ServerIp <ip> on the server; it writes .env.local
+  from .env.local.example (existing .env.local is preserved — see commit f12b787).
+- Both root .env.local and frontend/.env.local must exist before `npm run build` because
+  NEXT_PUBLIC_* vars bake in at build time. The installer handles this.
+- Three services must be running: SpanVault-API (3009), SpanVault-App (3008), SpanVault-Collector.
+- Verify DB access: spanvault (read/write) + netvault (read-only) reachable from the server.
+- SSO: ensure NEXTAUTH_SECRET matches the hub's so sso-verify / JWT verification succeeds.
