@@ -5,7 +5,7 @@ import { useParams } from 'next/navigation';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
 } from 'recharts';
-import { useApi } from '@/lib/api';
+import { useApi, apiSend } from '@/lib/api';
 import { StatusBadge, Loading, ErrorBox, Empty, fmtTime, fmtRel, fmtBps } from '@/components/ui';
 
 type Device = {
@@ -47,9 +47,11 @@ export default function DeviceDetailPage() {
 
   return (
     <div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 4 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 4, flexWrap: 'wrap' }}>
         <h1 className="sv-page-title" style={{ margin: 0 }}>{d.name}</h1>
         <StatusBadge status={d.current_status} />
+        <div style={{ flex: 1 }} />
+        <PingNow deviceId={d.id} />
       </div>
       <p className="sv-page-sub">{d.ip_address} · {d.device_type || 'Unknown type'} · {d.site_name || 'Unassigned'}</p>
 
@@ -144,6 +146,51 @@ export default function DeviceDetailPage() {
           <Empty message="No alerts recorded for this device." />
         )}
       </div>
+    </div>
+  );
+}
+
+// ── On-demand ping (top-level component) ───────────────────────
+function PingNow({ deviceId }: { deviceId: number }) {
+  const [pinging, setPinging] = useState(false);
+  const [result, setResult] = useState<{ ms: number | null; status: string } | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function run() {
+    setPinging(true);
+    setErr(null);
+    setResult(null);
+    try {
+      const r = await apiSend<{ ms: number | null; status: string }>(
+        `/api/devices/${deviceId}/ping-now`, 'POST', {}
+      );
+      setResult(r);
+    } catch (e: any) {
+      setErr(e?.message || 'Ping failed');
+    } finally {
+      setPinging(false);
+    }
+  }
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+      {err && <span style={{ color: 'var(--sv-down)', fontSize: 13 }}>{err}</span>}
+      {!err && result && (
+        result.status === 'down' || result.ms == null ? (
+          <span className="sv-badge down">Timeout</span>
+        ) : (
+          <span className={`sv-badge ${result.status}`}>{Number(result.ms).toFixed(0)} ms</span>
+        )
+      )}
+      <button className="sv-btn ghost sm" onClick={run} disabled={pinging}>
+        {pinging ? (
+          <>
+            <span className="sv-spinner-sm" /> Pinging…
+          </>
+        ) : (
+          'Ping Now'
+        )}
+      </button>
     </div>
   );
 }

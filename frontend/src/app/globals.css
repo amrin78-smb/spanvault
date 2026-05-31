@@ -207,6 +207,12 @@ label.sv-field .sv-input, label.sv-field .sv-select { font-weight: 400; }
 }
 @keyframes sv-spin { to { transform: rotate(360deg); } }
 
+.sv-spinner-sm {
+  display: inline-block; width: 13px; height: 13px; border-radius: 50%;
+  border: 2px solid rgba(26,39,68,0.25); border-top-color: var(--sv-crimson);
+  animation: sv-spin 0.7s linear infinite; vertical-align: middle;
+}
+
 .sv-loading { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 50px; color: var(--sv-muted); }
 
 /* ── Network map ───────────────────────────────────────── */

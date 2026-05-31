@@ -11,7 +11,10 @@ require('dotenv').config({ path: require('path').join(__dirname, '..', '.env.loc
 
 const express  = require('express');
 const cors     = require('cors');
+const ping     = require('ping');
 const { Pool } = require('pg');
+
+const IS_WIN = process.platform === 'win32';
 
 // ── Crash resilience ──────────────────────────────────────────
 process.on('uncaughtException', (err) => {
@@ -262,6 +265,36 @@ app.get('/api/devices/:id/alerts', wrap(async (req, res) => {
     FROM alerts WHERE device_id = $1 ORDER BY triggered_at DESC LIMIT 200
   `, [id]);
   res.json(r.rows);
+}));
+
+// On-demand single ping (does not write history — just an instant probe)
+app.post('/api/devices/:id/ping-now', wrap(async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const r = await sv.query(`SELECT id, ip_address, ping_threshold_ms FROM monitored_devices WHERE id = $1`, [id]);
+  const dev = r.rows[0];
+  if (!dev) return res.status(404).json({ error: 'Device not found' });
+
+  const countFlag = IS_WIN ? '-n' : '-c';
+  let alive = false;
+  let ms = null;
+  try {
+    const result = await ping.promise.probe(dev.ip_address, { timeout: 2, extra: [countFlag, '1'] });
+    alive = !!result.alive;
+    if (result.time !== undefined && result.time !== 'unknown' && result.time !== null) {
+      const t = parseFloat(result.time);
+      if (!isNaN(t)) ms = t;
+    }
+  } catch (err) {
+    alive = false;
+  }
+
+  const threshold = dev.ping_threshold_ms || 500;
+  let status;
+  if (!alive) status = 'down';
+  else if (ms !== null && ms > threshold) status = 'warning';
+  else status = 'up';
+
+  res.json({ ms, status });
 }));
 
 // ══════════════════════════════════════════════════════════════
