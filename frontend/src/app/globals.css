@@ -231,6 +231,23 @@ label.sv-field .sv-input, label.sv-field .sv-select { font-weight: 400; }
 }
 .sv-tab.active { color: var(--sv-crimson); border-bottom-color: var(--sv-crimson); }
 
+/* ── Global alert banner ───────────────────────────────── */
+.sv-alert-banner {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 22px; font-size: 14px; color: #fff;
+  position: sticky; top: 0; z-index: 40;
+}
+.sv-alert-banner.down { background: var(--sv-down); }
+.sv-alert-banner.warning { background: var(--sv-warning); color: #3a2c00; }
+.sv-alert-banner .dot { width: 9px; height: 9px; border-radius: 50%; background: currentColor; animation: sv-pulse 1.4s ease-in-out infinite; }
+.sv-alert-banner .msg { font-weight: 500; opacity: 0.92; }
+.sv-alert-banner:hover .msg { text-decoration: underline; }
+
+@keyframes sv-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.45; transform: scale(0.78); }
+}
+
 /* ── Devices: PRTG-style hierarchical layout ───────────── */
 .sv-acc { border: 1px solid var(--sv-border); border-radius: 10px; overflow: hidden; margin-bottom: 14px; background: #fff; }
 .sv-acc-head {
