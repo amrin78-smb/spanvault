@@ -1,9 +1,11 @@
 'use client';
 
+import { useState } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { useApi } from '@/lib/api';
 import { StatusDot } from '@/components/StatusDot';
+import { DeviceForm, ImportModal } from '@/components/DeviceModals';
 import { StatusBadge, Loading, ErrorBox, Empty, fmtTime, fmtRel } from '@/components/ui';
 
 type Site = { id: number; name: string; code: string | null; city: string | null };
@@ -35,6 +37,9 @@ function fmtMs(ms: number | null): string {
 
 export default function SiteDetailPage() {
   const { id } = useParams<{ id: string }>();
+  const siteIdNum = parseInt(id, 10);
+  const [showForm, setShowForm] = useState(false);
+  const [showImport, setShowImport] = useState(false);
 
   const sites = useApi<Site[]>('/api/netvault/sites');
   const devices = useApi<Device[]>(`/api/devices?site_id=${id}`, 20000);
@@ -52,8 +57,11 @@ export default function SiteDetailPage() {
 
   return (
     <div>
-      <div style={{ marginBottom: 4 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4, flexWrap: 'wrap' }}>
         <Link href="/devices" className="sv-btn ghost sm">← Back to Devices</Link>
+        <div style={{ flex: 1 }} />
+        <button className="sv-btn ghost" onClick={() => setShowImport(true)}>Import from NetVault</button>
+        <button className="sv-btn" onClick={() => setShowForm(true)}>+ Add Device</button>
       </div>
       <h1 className="sv-page-title" style={{ marginTop: 12 }}>{siteName}</h1>
       <p className="sv-page-sub">
@@ -125,6 +133,23 @@ export default function SiteDetailPage() {
           <Empty message="No active alerts for this site." />
         )}
       </div>
+
+      {showForm && (
+        <DeviceForm
+          device={null}
+          sites={sites.data || []}
+          initialSiteId={siteIdNum}
+          onClose={() => setShowForm(false)}
+          onSaved={() => { setShowForm(false); devices.reload(); }}
+        />
+      )}
+      {showImport && (
+        <ImportModal
+          siteId={siteIdNum}
+          onClose={() => setShowImport(false)}
+          onImported={() => { setShowImport(false); devices.reload(); }}
+        />
+      )}
     </div>
   );
 }
