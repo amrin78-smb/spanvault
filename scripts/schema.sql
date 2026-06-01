@@ -103,6 +103,22 @@ CREATE TABLE IF NOT EXISTS alert_rules (
 );
 CREATE INDEX IF NOT EXISTS idx_alert_rules_device ON alert_rules(device_id);
 
+-- ── Multi-level alert rules (global / site / device inheritance) ──────────────
+-- scope decides where a rule applies; site_id mirrors the denormalised site
+-- grouping on monitored_devices (which is NOT unique, so no FK is possible).
+ALTER TABLE alert_rules ADD COLUMN IF NOT EXISTS scope           TEXT NOT NULL DEFAULT 'global';
+ALTER TABLE alert_rules ADD COLUMN IF NOT EXISTS site_id         INTEGER;
+ALTER TABLE alert_rules ADD COLUMN IF NOT EXISTS site_name       TEXT;
+ALTER TABLE alert_rules ADD COLUMN IF NOT EXISTS notify_recovery BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE alert_rules ADD COLUMN IF NOT EXISTS description     TEXT;
+-- Some condition types (device_down, interface_down) carry no threshold.
+ALTER TABLE alert_rules ALTER COLUMN threshold DROP NOT NULL;
+-- Backfill scope for rules created before the scope column existed.
+UPDATE alert_rules SET scope = 'device' WHERE device_id IS NOT NULL AND scope = 'global';
+CREATE INDEX IF NOT EXISTS idx_alert_rules_scope ON alert_rules(scope, site_id);
+-- Supported metrics: device_down, response_time, packet_loss, cpu_pct, mem_pct,
+-- interface_down, snmp_no_data, bandwidth_pct.
+
 CREATE TABLE IF NOT EXISTS availability_summary (
   id              SERIAL PRIMARY KEY,
   device_id       INTEGER NOT NULL REFERENCES monitored_devices(id) ON DELETE CASCADE,

@@ -199,6 +199,13 @@ async function pingDevice(device) {
     await resolveAlert(device.id, 'high_latency');
   }
 
+  // User-defined ping-context rules (device_down / response_time / packet_loss).
+  await evaluateEffectiveRules(device, {
+    device_down: newStatus === 'down' ? 1 : 0,
+    response_time: alive ? timeMs : null,
+    packet_loss: lossPct,
+  });
+
   return { status: newStatus, timeMs };
 }
 
@@ -363,28 +370,29 @@ async function evaluateSnmpAlerts(device, samples) {
     }
   }
 
-  // User-defined alert_rules — global (device_id NULL) + device-specific.
-  let rules = [];
-  try {
-    const r = await sv.query(
-      `SELECT * FROM alert_rules WHERE enabled = TRUE AND (device_id IS NULL OR device_id = $1)`,
-      [device.id]
-    );
-    rules = r.rows;
-  } catch (err) {
-    console.error('[alerts] rule fetch failed:', err.message);
-  }
-  for (const rule of rules) {
-    const val = latest[rule.metric];
-    if (val === undefined) continue;
-    const alertType = `rule_${rule.id}`;
-    if (compare(val, rule.operator, Number(rule.threshold))) {
-      await raiseAlert(device, alertType, rule.severity || 'warning',
-        `${device.name} ${rule.metric} ${val.toFixed(1)} ${rule.operator} ${rule.threshold}`, val);
-    } else {
-      await resolveAlert(device.id, alertType);
+  // SNMP-context user rules (cpu_pct / mem_pct / interface_down / snmp_no_data).
+  let interfaceDown = 0;
+  for (const s of samples) {
+    if ((s.metric_name === 'if_oper_status' || /_oper$/.test(s.metric_name)) && Number(s.value) === 0) {
+      interfaceDown = 1;
+      break;
     }
   }
+  // Minutes since the most recent SNMP sample (drives snmp_no_data).
+  let snmpNoDataMin = null;
+  try {
+    const r = await sv.query(`SELECT MAX(ts) AS last_ts FROM snmp_results WHERE device_id = $1`, [device.id]);
+    const lastTs = r.rows[0] && r.rows[0].last_ts;
+    snmpNoDataMin = lastTs ? (Date.now() - new Date(lastTs).getTime()) / 60000 : null;
+  } catch (_e) { /* ignore */ }
+
+  await evaluateEffectiveRules(device, {
+    cpu_pct: latest.cpu_pct !== undefined ? latest.cpu_pct : null,
+    mem_pct: latest.mem_pct !== undefined ? latest.mem_pct : null,
+    interface_down: interfaceDown,
+    snmp_no_data: snmpNoDataMin,
+    bandwidth_pct: null, // interface capacity not tracked yet — reserved
+  });
 }
 
 // ── Maintenance suppression ───────────────────────────────────
@@ -427,9 +435,101 @@ async function resolveAlert(deviceId, alertType) {
        WHERE device_id = $1 AND alert_type = $2 AND status <> 'resolved'
        RETURNING id
     `, [deviceId, alertType]);
-    if (r.rows[0]) log(`[alert] RESOLVED ${alertType} on device ${deviceId}`);
+    if (r.rows[0]) { log(`[alert] RESOLVED ${alertType} on device ${deviceId}`); return true; }
+    return false;
   } catch (err) {
     console.error('[alerts] resolve failed:', err.message);
+    return false;
+  }
+}
+
+// ══════════════════════════════════════════════════════════════
+// Multi-level rule evaluation (global → site → device inheritance)
+// ══════════════════════════════════════════════════════════════
+const METRIC_LABELS = {
+  device_down: 'Device down', response_time: 'Response time', packet_loss: 'Packet loss',
+  cpu_pct: 'CPU', mem_pct: 'Memory', interface_down: 'Interface down',
+  snmp_no_data: 'SNMP no data', bandwidth_pct: 'Bandwidth',
+};
+const METRIC_UNITS = {
+  response_time: 'ms', packet_loss: '%', cpu_pct: '%', mem_pct: '%',
+  snmp_no_data: 'm', bandwidth_pct: '%',
+};
+
+// Effective rules for a device: global + matching-site + device, merged by
+// metric with device > site > global precedence.
+async function getEffectiveRules(device) {
+  const r = await sv.query(
+    `SELECT * FROM alert_rules WHERE enabled = TRUE AND (
+        scope = 'global'
+        OR (scope = 'site'   AND site_id IS NOT DISTINCT FROM $2)
+        OR (scope = 'device' AND device_id = $1)
+     )`,
+    [device.id, device.site_id == null ? null : device.site_id]
+  );
+  const prec = { global: 0, site: 1, device: 2 };
+  const byMetric = new Map();
+  for (const rule of r.rows) {
+    const cur = byMetric.get(rule.metric);
+    if (!cur || (prec[rule.scope] || 0) >= (prec[cur.scope] || 0)) byMetric.set(rule.metric, rule);
+  }
+  return Array.from(byMetric.values());
+}
+
+function ruleMessage(device, rule, val) {
+  const label = METRIC_LABELS[rule.metric] || rule.metric;
+  if (rule.metric === 'device_down') return `${device.name} is down`;
+  if (rule.metric === 'interface_down') return `${device.name} has an interface down`;
+  if (rule.metric === 'snmp_no_data') {
+    return `${device.name} has no SNMP data for ${Math.round(Number(val))}m (threshold ${rule.threshold}m)`;
+  }
+  const unit = METRIC_UNITS[rule.metric] || '';
+  const num = typeof val === 'number' ? val.toFixed(1) : val;
+  return `${device.name} ${label} ${num}${unit} ${rule.operator || '>'} ${rule.threshold}${unit}`;
+}
+
+// Log a one-shot recovery record (resolved immediately) for the event timeline.
+async function recoveryEvent(device, rule) {
+  try {
+    await sv.query(
+      `INSERT INTO alerts (device_id, alert_type, severity, message, status, resolved_at)
+       VALUES ($1,$2,'info',$3,'resolved',NOW())`,
+      [device.id, `recovery_${rule.id}`,
+       `${device.name} recovered: ${METRIC_LABELS[rule.metric] || rule.metric} back to normal`]
+    );
+    log(`[alert] RECOVERY ${rule.metric} on ${device.name}`);
+  } catch (err) {
+    console.error('[alerts] recovery event failed:', err.message);
+  }
+}
+
+// Evaluate a device's effective rules against the metric values available in
+// this context. Metrics absent from `metrics` are left untouched (a different
+// poll path owns them); null/undefined values are skipped (no data yet).
+async function evaluateEffectiveRules(device, metrics) {
+  if (await inMaintenance(device.id)) return;
+  let rules;
+  try { rules = await getEffectiveRules(device); }
+  catch (err) { console.error('[alerts] effective rule fetch failed:', err.message); return; }
+
+  for (const rule of rules) {
+    const m = rule.metric;
+    if (!(m in metrics)) continue;
+    const val = metrics[m];
+    if (val === undefined || val === null) continue;
+    const alertType = `rule_${rule.id}`;
+
+    const triggered = (m === 'device_down' || m === 'interface_down')
+      ? Number(val) === 1
+      : compare(Number(val), rule.operator || '>', Number(rule.threshold));
+
+    if (triggered) {
+      await raiseAlert(device, alertType, rule.severity || 'warning',
+        ruleMessage(device, rule, val), typeof val === 'number' ? val : null);
+    } else {
+      const wasActive = await resolveAlert(device.id, alertType);
+      if (wasActive && rule.notify_recovery) await recoveryEvent(device, rule);
+    }
   }
 }
 

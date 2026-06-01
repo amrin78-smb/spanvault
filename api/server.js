@@ -610,33 +610,78 @@ app.post('/api/alerts/:id/resolve', wrap(async (req, res) => {
 // ══════════════════════════════════════════════════════════════
 // Alert rules
 // ══════════════════════════════════════════════════════════════
+// Conditions that carry no operator/threshold.
+const NO_THRESHOLD_METRICS = ['device_down', 'interface_down'];
+
+// Merge global → site → device rules by metric (later scope wins).
+function mergeEffectiveRules(rows) {
+  const prec = { global: 0, site: 1, device: 2 };
+  const byMetric = new Map();
+  for (const rule of rows) {
+    const cur = byMetric.get(rule.metric);
+    if (!cur || (prec[rule.scope] ?? 0) >= (prec[cur.scope] ?? 0)) byMetric.set(rule.metric, rule);
+  }
+  return Array.from(byMetric.values());
+}
+
 app.get('/api/alert-rules', wrap(async (req, res) => {
   const params = [];
-  let where = '';
-  if (req.query.device_id) { params.push(parseInt(req.query.device_id, 10)); where = `WHERE r.device_id = $1`; }
+  const where = [];
+  if (req.query.scope)     { params.push(String(req.query.scope));        where.push(`r.scope = $${params.length}`); }
+  if (req.query.site_id)   { params.push(parseInt(req.query.site_id, 10)); where.push(`r.site_id = $${params.length}`); }
+  if (req.query.device_id) { params.push(parseInt(req.query.device_id, 10)); where.push(`r.device_id = $${params.length}`); }
   const r = await sv.query(`
     SELECT r.*, d.name AS device_name
     FROM alert_rules r LEFT JOIN monitored_devices d ON d.id = r.device_id
-    ${where} ORDER BY r.device_id NULLS FIRST, r.metric
+    ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+    ORDER BY r.scope, r.site_name NULLS FIRST, r.device_id NULLS FIRST, r.metric
   `, params);
   res.json(r.rows);
 }));
 
+// Effective ruleset for a device after global → site → device inheritance.
+app.get('/api/alert-rules/effective/:device_id', wrap(async (req, res) => {
+  const id = parseInt(req.params.device_id, 10);
+  const dq = await sv.query(`SELECT id, name, site_id, site_name FROM monitored_devices WHERE id = $1`, [id]);
+  const device = dq.rows[0];
+  if (!device) return res.status(404).json({ error: 'Device not found' });
+  const r = await sv.query(`
+    SELECT r.*, d.name AS device_name
+    FROM alert_rules r LEFT JOIN monitored_devices d ON d.id = r.device_id
+    WHERE r.enabled = TRUE AND (
+      r.scope = 'global'
+      OR (r.scope = 'site'   AND r.site_id IS NOT DISTINCT FROM $2)
+      OR (r.scope = 'device' AND r.device_id = $1)
+    )
+    ORDER BY r.metric
+  `, [id, device.site_id == null ? null : device.site_id]);
+  res.json({ device, rules: mergeEffectiveRules(r.rows) });
+}));
+
 app.post('/api/alert-rules', wrap(async (req, res) => {
   const b = req.body || {};
-  if (!b.metric || b.threshold === undefined) return res.status(400).json({ error: 'metric and threshold required' });
+  const noThreshold = NO_THRESHOLD_METRICS.includes(b.metric);
+  if (!b.metric || (!noThreshold && (b.threshold === undefined || b.threshold === null || b.threshold === ''))) {
+    return res.status(400).json({ error: 'metric and threshold required' });
+  }
+  const scope = b.scope || (b.device_id ? 'device' : b.site_id ? 'site' : 'global');
   const r = await sv.query(`
-    INSERT INTO alert_rules (device_id, metric, operator, threshold, severity, enabled)
-    VALUES ($1,$2,$3,$4,$5,$6) RETURNING *
-  `, [b.device_id || null, b.metric, b.operator || '>', b.threshold, b.severity || 'warning',
-      b.enabled === undefined ? true : !!b.enabled]);
+    INSERT INTO alert_rules
+      (device_id, site_id, site_name, scope, metric, operator, threshold, severity, enabled, notify_recovery, description)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *
+  `, [
+    b.device_id || null, b.site_id || null, b.site_name || null, scope, b.metric,
+    b.operator || '>', noThreshold ? null : b.threshold, b.severity || 'warning',
+    b.enabled === undefined ? true : !!b.enabled, !!b.notify_recovery, b.description || null,
+  ]);
   res.status(201).json(r.rows[0]);
 }));
 
 app.put('/api/alert-rules/:id', wrap(async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const b = req.body || {};
-  const allowed = ['metric', 'operator', 'threshold', 'severity', 'enabled', 'device_id'];
+  const allowed = ['metric', 'operator', 'threshold', 'severity', 'enabled', 'device_id',
+                   'scope', 'site_id', 'site_name', 'notify_recovery', 'description'];
   const sets = [];
   const params = [];
   for (const k of allowed) if (b[k] !== undefined) { params.push(b[k]); sets.push(`${k} = $${params.length}`); }
