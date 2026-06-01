@@ -75,6 +75,7 @@ function rangeToInterval(range) {
   switch (range) {
     case '7d':  return '7 days';
     case '30d': return '30 days';
+    case '90d': return '90 days';
     case '24h':
     default:    return '24 hours';
   }
@@ -83,6 +84,7 @@ function rangeToBucket(range) {
   switch (range) {
     case '7d':  return '1 hour';
     case '30d': return '6 hours';
+    case '90d': return '1 day';
     case '24h':
     default:    return '5 minutes';
   }
@@ -106,6 +108,15 @@ function sendCsv(res, filename, rows) {
 }
 // async route wrapper
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+
+// Device-scope filter for report queries (monitored_devices aliased as d).
+// Pushes any site_id/device_id values onto `params` and returns clause strings.
+function reportFilters(q, params) {
+  const f = ['d.active = TRUE'];
+  if (q.site_id)   { params.push(parseInt(q.site_id, 10));   f.push(`d.site_id = $${params.length}`); }
+  if (q.device_id) { params.push(parseInt(q.device_id, 10)); f.push(`d.id = $${params.length}`); }
+  return f;
+}
 
 // ══════════════════════════════════════════════════════════════
 // Health
@@ -743,37 +754,206 @@ app.get('/api/reports/availability', wrap(async (req, res) => {
 
 app.get('/api/reports/response-time', wrap(async (req, res) => {
   const interval = rangeToInterval(req.query.range);
+  const bucket = rangeToBucket(req.query.range);
+
+  const p1 = [interval];
+  const f1 = reportFilters(req.query, p1);
   const r = await sv.query(`
     SELECT d.id AS device_id, d.name AS device_name, d.ip_address, d.site_name,
            ROUND(AVG(p.response_ms)::numeric, 1) AS avg_ms,
            ROUND(MIN(p.response_ms)::numeric, 1) AS min_ms,
-           ROUND(MAX(p.response_ms)::numeric, 1) AS max_ms
+           ROUND(MAX(p.response_ms)::numeric, 1) AS max_ms,
+           ROUND(percentile_cont(0.95) WITHIN GROUP (ORDER BY p.response_ms)::numeric, 1) AS p95_ms
     FROM monitored_devices d
     LEFT JOIN ping_results p ON p.device_id = d.id AND p.ts >= NOW() - $1::interval AND p.status = 'up'
-    WHERE d.active = TRUE
+    WHERE ${f1.join(' AND ')}
     GROUP BY d.id, d.name, d.ip_address, d.site_name
     ORDER BY avg_ms DESC NULLS LAST
-  `, [interval]);
+  `, p1);
+
+  // Per-device sparkline series (bucketed average) for the trend column.
+  const p2 = [bucket, interval];
+  const f2 = reportFilters(req.query, p2);
+  const sp = await sv.query(`
+    SELECT p.device_id,
+           date_bin($1::interval, p.ts, TIMESTAMPTZ '2000-01-01') AS bucket,
+           ROUND(AVG(p.response_ms)::numeric, 1) AS avg_ms
+    FROM ping_results p JOIN monitored_devices d ON d.id = p.device_id
+    WHERE p.ts >= NOW() - $2::interval AND p.status = 'up' AND ${f2.join(' AND ')}
+    GROUP BY p.device_id, bucket ORDER BY p.device_id, bucket
+  `, p2);
+  const sparkByDev = new Map();
+  for (const row of sp.rows) {
+    if (!sparkByDev.has(row.device_id)) sparkByDev.set(row.device_id, []);
+    sparkByDev.get(row.device_id).push(Number(row.avg_ms));
+  }
+
+  const rows = r.rows.map((row) => ({ ...row, spark: sparkByDev.get(row.device_id) || [] }));
   if (req.query.format === 'csv') return sendCsv(res, 'response-time.csv', r.rows);
-  res.json(r.rows);
+  res.json(rows);
 }));
 
 app.get('/api/reports/alerts', wrap(async (req, res) => {
   const interval = rangeToInterval(req.query.range);
+  const params = [interval];
+  const f = reportFilters(req.query, params);
   const r = await sv.query(`
     SELECT d.id AS device_id, d.name AS device_name, d.ip_address, d.site_name,
            COUNT(a.*)::int AS total_alerts,
+           COUNT(*) FILTER (WHERE a.severity = 'critical')::int AS critical_count,
+           COUNT(*) FILTER (WHERE a.severity = 'warning')::int  AS warning_count,
            ROUND(AVG(EXTRACT(EPOCH FROM (a.resolved_at - a.triggered_at)) / 60.0)
-                 FILTER (WHERE a.resolved_at IS NOT NULL)::numeric, 1) AS mttr_minutes
+                 FILTER (WHERE a.resolved_at IS NOT NULL)::numeric, 1) AS mttr_minutes,
+           MODE() WITHIN GROUP (ORDER BY a.alert_type) AS most_common_type
     FROM monitored_devices d
     LEFT JOIN alerts a ON a.device_id = d.id AND a.triggered_at >= NOW() - $1::interval
-    WHERE d.active = TRUE
+    WHERE ${f.join(' AND ')}
     GROUP BY d.id, d.name, d.ip_address, d.site_name
     HAVING COUNT(a.*) > 0
     ORDER BY total_alerts DESC
-  `, [interval]);
+  `, params);
   if (req.query.format === 'csv') return sendCsv(res, 'alert-summary.csv', r.rows);
   res.json(r.rows);
+}));
+
+// ── SLA / bandwidth report helpers ────────────────────────────
+// Returns the leading window params + a clause builder for a timestamp column.
+function windowParams(q) {
+  if (q.range === 'custom' && q.from && q.to) return { custom: true, params: [q.from, q.to] };
+  const map = { '24h': '24 hours', '7d': '7 days', '30d': '30 days', '90d': '90 days' };
+  return { custom: false, params: [map[q.range] || '30 days'] };
+}
+function windowClause(col, w, start) {
+  return w.custom
+    ? `${col} >= $${start} AND ${col} <= $${start + 1}`
+    : `${col} >= NOW() - $${start}::interval`;
+}
+
+// Per-device SLA rows for the requested window/scope. Shared by both SLA routes.
+async function slaRows(q) {
+  const w = windowParams(q);
+  const params = [...w.params];
+  const pingTs = windowClause('ts', w, 1);
+  const alertTs = windowClause('triggered_at', w, 1);
+  const filters = ['d.active = TRUE'];
+  if (q.site_id)   { params.push(parseInt(q.site_id, 10));   filters.push(`d.site_id = $${params.length}`); }
+  if (q.device_id) { params.push(parseInt(q.device_id, 10)); filters.push(`d.id = $${params.length}`); }
+  const t = parseFloat(q.sla_target);
+  const slaTarget = isNaN(t) ? 99.5 : t;
+
+  const r = await sv.query(`
+    WITH pings AS (
+      SELECT device_id, COUNT(*)::int AS total_checks,
+             SUM(CASE WHEN status <> 'up' THEN 1 ELSE 0 END)::int AS failed_checks,
+             AVG(response_ms) FILTER (WHERE status = 'up') AS avg_ms,
+             MAX(response_ms) AS max_ms,
+             MIN(response_ms) FILTER (WHERE status = 'up') AS min_ms
+      FROM ping_results WHERE ${pingTs} GROUP BY device_id
+    ),
+    als AS (
+      SELECT device_id, COUNT(*)::int AS total_alerts,
+             AVG(EXTRACT(EPOCH FROM (resolved_at - triggered_at)) / 60.0)
+               FILTER (WHERE resolved_at IS NOT NULL) AS mttr
+      FROM alerts WHERE ${alertTs} GROUP BY device_id
+    )
+    SELECT d.id AS device_id, d.name AS device_name, d.ip_address, d.site_name,
+           COALESCE(pg.total_checks, 0)  AS total_checks,
+           COALESCE(pg.failed_checks, 0) AS failed_checks,
+           CASE WHEN pg.total_checks > 0
+                THEN ROUND((1 - pg.failed_checks::numeric / pg.total_checks) * 100, 3)
+                ELSE NULL END AS uptime_pct,
+           ROUND(pg.avg_ms::numeric, 1) AS avg_response_ms,
+           ROUND(pg.max_ms::numeric, 1) AS max_response_ms,
+           ROUND(pg.min_ms::numeric, 1) AS min_response_ms,
+           COALESCE(al.total_alerts, 0) AS total_alerts,
+           ROUND(al.mttr::numeric, 1)   AS mttr_minutes,
+           ROUND(COALESCE(pg.failed_checks, 0) * d.poll_interval_seconds / 60.0, 1) AS downtime_minutes
+    FROM monitored_devices d
+    LEFT JOIN pings pg ON pg.device_id = d.id
+    LEFT JOIN als   al ON al.device_id = d.id
+    WHERE ${filters.join(' AND ')}
+    ORDER BY uptime_pct ASC NULLS LAST, d.name
+  `, params);
+
+  const rows = r.rows.map((row) => ({
+    ...row,
+    sla_met: row.uptime_pct != null && Number(row.uptime_pct) >= slaTarget,
+  }));
+  return { rows, slaTarget };
+}
+
+app.get('/api/reports/sla', wrap(async (req, res) => {
+  const { rows, slaTarget } = await slaRows(req.query);
+  res.json({ sla_target: slaTarget, generated_at: new Date().toISOString(), devices: rows });
+}));
+
+app.get('/api/reports/sla/summary', wrap(async (req, res) => {
+  const { rows, slaTarget } = await slaRows(req.query);
+  const withData = rows.filter((r) => r.total_checks > 0);
+  const totalChecks = withData.reduce((a, r) => a + r.total_checks, 0);
+  const totalFailed = withData.reduce((a, r) => a + r.failed_checks, 0);
+  const overall = totalChecks ? Math.round((1 - totalFailed / totalChecks) * 100 * 1000) / 1000 : null;
+  const totalDowntime = Math.round(rows.reduce((a, r) => a + (Number(r.downtime_minutes) || 0), 0) * 10) / 10;
+  let worst = null, best = null;
+  for (const r of withData) {
+    const u = Number(r.uptime_pct);
+    if (worst === null || u < worst.uptime_pct) worst = { name: r.device_name, uptime_pct: u };
+    if (best === null || u > best.uptime_pct)  best  = { name: r.device_name, uptime_pct: u };
+  }
+  res.json({
+    sla_target: slaTarget,
+    total_devices: rows.length,
+    devices_meeting_sla: rows.filter((r) => r.sla_met).length,
+    overall_availability_pct: overall,
+    total_downtime_minutes: totalDowntime,
+    worst_device: worst,
+    best_device: best,
+  });
+}));
+
+app.get('/api/reports/bandwidth', wrap(async (req, res) => {
+  const q = req.query;
+  const w = windowParams(q);
+  const params = [...w.params];
+  const filters = [
+    `s.metric_name ~ '^if_[0-9]+_(in|out)_bps$'`,
+    windowClause('s.ts', w, 1),
+  ];
+  if (q.site_id)   { params.push(parseInt(q.site_id, 10));   filters.push(`d.site_id = $${params.length}`); }
+  if (q.device_id) { params.push(parseInt(q.device_id, 10)); filters.push(`d.id = $${params.length}`); }
+  const r = await sv.query(`
+    SELECT s.device_id, d.name AS device_name, d.site_name, s.if_name, s.metric_name,
+           ROUND(AVG(s.value)::numeric, 0) AS avg_bps,
+           ROUND(MAX(s.value)::numeric, 0) AS max_bps,
+           ROUND(percentile_cont(0.95) WITHIN GROUP (ORDER BY s.value)::numeric, 0) AS p95_bps
+    FROM snmp_results s JOIN monitored_devices d ON d.id = s.device_id
+    WHERE ${filters.join(' AND ')}
+    GROUP BY s.device_id, d.name, d.site_name, s.if_name, s.metric_name
+  `, params);
+
+  // Pair in/out per interface index into one row.
+  const map = new Map();
+  for (const row of r.rows) {
+    const m = /^if_(\d+)_(in|out)_bps$/.exec(row.metric_name);
+    if (!m) continue;
+    const idx = m[1], dir = m[2];
+    const key = `${row.device_id}|${idx}`;
+    let e = map.get(key);
+    if (!e) {
+      e = { device_id: row.device_id, device_name: row.device_name, site_name: row.site_name,
+            sensor_name: row.if_name || `Interface ${idx}`,
+            avg_in_bps: null, avg_out_bps: null, max_in_bps: null, max_out_bps: null,
+            p95_in_bps: null, p95_out_bps: null };
+      map.set(key, e);
+    }
+    if (row.if_name) e.sensor_name = row.if_name;
+    if (dir === 'in')  { e.avg_in_bps = row.avg_bps;  e.max_in_bps = row.max_bps;  e.p95_in_bps = row.p95_bps; }
+    else               { e.avg_out_bps = row.avg_bps; e.max_out_bps = row.max_bps; e.p95_out_bps = row.p95_bps; }
+  }
+  const out = Array.from(map.values()).sort((a, b) =>
+    (a.device_name || '').localeCompare(b.device_name || '') ||
+    (a.sensor_name || '').localeCompare(b.sensor_name || ''));
+  res.json(out);
 }));
 
 // ══════════════════════════════════════════════════════════════
