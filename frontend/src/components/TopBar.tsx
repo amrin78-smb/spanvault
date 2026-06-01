@@ -61,6 +61,7 @@ export default function TopBar() {
           <div className="sv-dropdown">
             <div className="who">
               <strong>{displayName}</strong>
+              {user?.email && <span>{user.email}</span>}
               {role && <span>{role}</span>}
             </div>
             <a className="sv-dropdown-item" href={`${HUB}/launcher`}>

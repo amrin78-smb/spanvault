@@ -155,6 +155,7 @@ a { color: inherit; text-decoration: none; }
 }
 .sv-dropdown .who { padding: 8px 10px 10px; font-size: 13px; color: var(--sv-muted); border-bottom: 1px solid var(--sv-border); margin-bottom: 6px; }
 .sv-dropdown .who strong { display: block; color: var(--sv-text); font-size: 14px; }
+.sv-dropdown .who span { display: block; font-size: 12px; margin-top: 2px; }
 .sv-dropdown-item {
   display: flex; align-items: center; gap: 9px;
   width: 100%; text-align: left; padding: 9px 10px; border: none;

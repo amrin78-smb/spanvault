@@ -52,18 +52,26 @@ export const authOptions: NextAuthOptions = {
               process.env.NEXTAUTH_SECRET as string
             ) as any;
 
-            // Resolve the email from whichever source has it: the verified JWT
-            // payload, or the sso-verify profile the /sso page forwarded.
-            const email = payload.email || credentials.email || '';
+            // Resolve email + id from whichever source has them: the verified
+            // JWT payload, or the sso-verify profile the /sso page forwarded.
+            const tokenEmail = payload.email || credentials.email || '';
+            const userId = String(
+              payload.userId || payload.sub || credentials.userId || ''
+            );
 
-            // The hub's SSO JWT often omits `name`/`role`, so look them up in the
-            // NetVault users table by email as a fallback.
-            let dbUser: { name?: string; role?: string } = {};
-            if (email) {
+            // The hub's SSO JWT often omits `name`/`role` (and sometimes the
+            // email), so look the user up in the NetVault users table. Match by
+            // email case-insensitively, or by id when no email is in the token —
+            // so we can recover the real name even from an id-only token.
+            let dbUser: { id?: number; name?: string; email?: string; role?: string } = {};
+            if (tokenEmail || userId) {
               try {
                 const r = await netvaultPool.query(
-                  'SELECT name, role FROM users WHERE email = $1',
-                  [email]
+                  `SELECT id, name, email, role FROM users
+                    WHERE ($1 <> '' AND LOWER(email) = LOWER($1))
+                       OR ($2 <> '' AND id::text = $2)
+                    LIMIT 1`,
+                  [tokenEmail, userId]
                 );
                 dbUser = r.rows[0] || {};
               } catch {
@@ -71,15 +79,16 @@ export const authOptions: NextAuthOptions = {
               }
             }
 
+            const email = tokenEmail || dbUser.email || '';
             const userName =
               payload.name ||
               credentials.name ||
               dbUser.name ||
               (email ? email.split('@')[0] : '');
             const userRole = payload.role || credentials.role || dbUser.role || 'viewer';
-            const userId = String(payload.userId || credentials.userId || '');
+            const id = userId || (dbUser.id != null ? String(dbUser.id) : '');
 
-            return { id: userId, email, name: userName, role: userRole };
+            return { id, email, name: userName, role: userRole };
           } catch {
             return null;
           }
