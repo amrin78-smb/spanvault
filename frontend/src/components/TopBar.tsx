@@ -26,8 +26,9 @@ export default function TopBar() {
   const userName = session?.user?.name;
   const userEmail = session?.user?.email;
   const role = (session?.user as any)?.role || '';
-  // Full label shown next to the avatar: name, else email, else "User".
-  const displayName = userName || userEmail || 'User';
+  // Label shown next to the avatar: name, else the email local-part.
+  // Never fall back to the generic "User" placeholder.
+  const displayName = userName || (userEmail ? userEmail.split('@')[0] : '');
   // Avatar initial priority: name → email local-part (before @) → "U".
   const initialSource = userName || (userEmail ? userEmail.split('@')[0] : '');
   const avatarInitial = initialSource ? initialSource.trim().charAt(0).toUpperCase() : 'U';
