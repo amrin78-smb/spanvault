@@ -195,7 +195,7 @@ export function DeviceForm({
                 </>
               )}
             </div>
-            <SnmpTest device={device} form={form} />
+            <SnmpTest form={form} />
           </>
         )}
 
@@ -215,7 +215,7 @@ type SnmpTestResult = {
   success: boolean; vendor?: string; sysDescr?: string; sysName?: string; message: string;
 };
 
-function SnmpTest({ device, form }: { device: EditableDevice | null; form: any }) {
+function SnmpTest({ form }: { form: any }) {
   const [testing, setTesting] = useState(false);
   const [result, setResult] = useState<SnmpTestResult | null>(null);
 
@@ -223,18 +223,17 @@ function SnmpTest({ device, form }: { device: EditableDevice | null; form: any }
     setTesting(true);
     setResult(null);
     try {
-      // Saved devices test their stored credentials; new devices test ad-hoc.
-      const r = device
-        ? await apiSend<SnmpTestResult>(`/api/devices/${device.id}/snmp-test`, 'POST', {})
-        : await apiSend<SnmpTestResult>('/api/snmp-test-adhoc', 'POST', {
-            ip_address: form.ip_address,
-            snmp_version: form.snmp_version,
-            snmp_community: form.snmp_community,
-            snmp_port: form.snmp_port,
-            snmp_v3_user: form.snmp_v3_user,
-            snmp_v3_auth_pass: form.snmp_v3_auth_pass,
-            snmp_v3_priv_pass: form.snmp_v3_priv_pass,
-          });
+      // Always test the current in-form values — not the last-saved credentials —
+      // so the result reflects exactly what the user has typed.
+      const r = await apiSend<SnmpTestResult>('/api/snmp-test-adhoc', 'POST', {
+        ip_address: form.ip_address,
+        snmp_version: form.snmp_version,
+        snmp_community: form.snmp_community,
+        snmp_port: form.snmp_port,
+        snmp_v3_user: form.snmp_v3_user,
+        snmp_v3_auth_pass: form.snmp_v3_auth_pass,
+        snmp_v3_priv_pass: form.snmp_v3_priv_pass,
+      });
       setResult(r);
     } catch (e: any) {
       setResult({ success: false, message: e?.message || 'SNMP test failed' });
