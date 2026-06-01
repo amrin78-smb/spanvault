@@ -77,19 +77,24 @@ if (-not (Test-Path $InstallDir)) {
 
 # ── 1. Stop services ───────────────────────────────────────────
 Write-Step 'Stopping services'
+# nssm status writes "Can't open service!" to stderr for a non-existent service,
+# which PowerShell turns into a terminating NativeCommandError even with
+# 2>&1 | Out-Null under $ErrorActionPreference='Stop'. Use sc.exe query for the
+# existence probe (it does not trip NativeCommandError) and relax error handling
+# for the whole loop so any remaining native noise cannot terminate the script.
+$prevEAP = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
 foreach ($svc in $Services) {
-    # Probe with nssm status. On first install the service does not exist and
-    # nssm writes "Can't open service!" to stderr with a non-zero exit code.
-    # Pipe 2>&1 to Out-Null so PowerShell does not raise NativeCommandError
-    # under $ErrorActionPreference='Stop'; rely on $LASTEXITCODE instead.
-    & $nssm status $svc.Name 2>&1 | Out-Null
+    $scQuery = sc.exe query $svc.Name 2>&1
     if ($LASTEXITCODE -eq 0) {
-        & $nssm stop $svc.Name 2>&1 | Out-Null
+        sc.exe stop $svc.Name | Out-Null
+        Start-Sleep -Seconds 2
         Write-Ok "Stopped $($svc.Name)"
     } else {
         Write-Warn "$($svc.Name) not yet installed"
     }
 }
+$ErrorActionPreference = $prevEAP
 
 # ── 2. Pull latest code ────────────────────────────────────────
 Write-Step 'Pulling latest code'
@@ -158,10 +163,10 @@ Pop-Location
 Write-Step 'Registering services'
 $nodeExe = (Get-Command node).Source
 foreach ($svc in $Services) {
-    # Same guard as the stop section: a non-existent service makes nssm status
-    # emit to stderr + return non-zero. Pipe 2>&1 to Out-Null to avoid
-    # NativeCommandError; a non-zero $LASTEXITCODE means "install it".
-    & $nssm status $svc.Name 2>&1 | Out-Null
+    # Same guard as the stop section: probe existence with sc.exe query rather
+    # than nssm status, which would raise NativeCommandError for a service that
+    # does not exist yet on first install. Non-zero $LASTEXITCODE means "install it".
+    sc.exe query $svc.Name 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) {
         & $nssm install $svc.Name $nodeExe | Out-Null
         Write-Ok "Installed $($svc.Name)"
