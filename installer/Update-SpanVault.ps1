@@ -78,9 +78,13 @@ if (-not (Test-Path $InstallDir)) {
 # ── 1. Stop services ───────────────────────────────────────────
 Write-Step 'Stopping services'
 foreach ($svc in $Services) {
-    $exists = & $nssm status $svc.Name 2>$null
+    # Probe with nssm status. On first install the service does not exist and
+    # nssm writes "Can't open service!" to stderr with a non-zero exit code.
+    # Pipe 2>&1 to Out-Null so PowerShell does not raise NativeCommandError
+    # under $ErrorActionPreference='Stop'; rely on $LASTEXITCODE instead.
+    & $nssm status $svc.Name 2>&1 | Out-Null
     if ($LASTEXITCODE -eq 0) {
-        & $nssm stop $svc.Name 2>$null | Out-Null
+        & $nssm stop $svc.Name 2>&1 | Out-Null
         Write-Ok "Stopped $($svc.Name)"
     } else {
         Write-Warn "$($svc.Name) not yet installed"
@@ -154,7 +158,10 @@ Pop-Location
 Write-Step 'Registering services'
 $nodeExe = (Get-Command node).Source
 foreach ($svc in $Services) {
-    $status = & $nssm status $svc.Name 2>$null
+    # Same guard as the stop section: a non-existent service makes nssm status
+    # emit to stderr + return non-zero. Pipe 2>&1 to Out-Null to avoid
+    # NativeCommandError; a non-zero $LASTEXITCODE means "install it".
+    & $nssm status $svc.Name 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) {
         & $nssm install $svc.Name $nodeExe | Out-Null
         Write-Ok "Installed $($svc.Name)"
