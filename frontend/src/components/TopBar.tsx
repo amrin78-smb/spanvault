@@ -24,16 +24,15 @@ export default function TopBar() {
   }, []);
 
   const user = session?.user as any;
-  const userEmail = user?.email as string | undefined;
   const role = user?.role || '';
-  // Label shown next to the avatar: name, else the email local-part.
-  // Never fall back to the generic "User" placeholder.
-  const displayName = user?.name || (userEmail ? userEmail.split('@')[0] : '');
+  // Label shown next to the avatar: name, else the email local-part, else "U".
+  // Never the generic "User" placeholder.
+  const displayName = user?.name || user?.email?.split('@')[0] || 'U';
   // Avatar initials: up to two from the name's words, else the email's first
   // letter, else "U".
   const avatarInitial = user?.name
     ? user.name.split(' ').map((n: string) => n[0]).join('').toUpperCase().slice(0, 2)
-    : (userEmail?.[0]?.toUpperCase() || 'U');
+    : (user?.email?.[0]?.toUpperCase() || 'U');
 
   function handleSignOut() {
     signOut({ redirect: false }).then(() => {

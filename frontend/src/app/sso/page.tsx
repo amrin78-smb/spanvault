@@ -27,8 +27,17 @@ function SsoInner() {
         });
         if (!res.ok) throw new Error('Token verification failed');
 
+        // The hub's verify response is the authoritative profile
+        // ({ email, role, name, userId }) — pass it into signIn so the session
+        // has a real name/email even when the raw SSO JWT omits those claims.
+        const profile = await res.json().catch(() => ({} as any));
+
         const result = await signIn('credentials', {
           ssoToken: token,
+          email: profile?.email ?? '',
+          name: profile?.name ?? '',
+          role: profile?.role ?? '',
+          userId: String(profile?.userId ?? ''),
           redirect: false,
         });
         if (result?.error) throw new Error('Sign-in failed');

@@ -36,42 +36,50 @@ export const authOptions: NextAuthOptions = {
         email: { label: 'Email', type: 'email' },
         password: { label: 'Password', type: 'password' },
         ssoToken: { label: 'SSO Token', type: 'text' },
+        // Profile fields the /sso page forwards from the hub's sso-verify
+        // response — authoritative even when the raw JWT omits them.
+        name: { label: 'Name', type: 'text' },
+        role: { label: 'Role', type: 'text' },
+        userId: { label: 'User ID', type: 'text' },
       },
       async authorize(credentials) {
         if (!credentials) return null;
         if (credentials.ssoToken) {
           try {
+            // Verify the JWT (signed with the shared NEXTAUTH_SECRET) for trust.
             const payload = verify(
               credentials.ssoToken,
               process.env.NEXTAUTH_SECRET as string
             ) as any;
-            // The hub's SSO payload often omits `name` (and sometimes `role`),
-            // so look both up from the NetVault users table by email. Fall back
-            // to the email local-part for the name and 'viewer' for the role, so
-            // the top bar always has a real name to show.
+
+            // Resolve the email from whichever source has it: the verified JWT
+            // payload, or the sso-verify profile the /sso page forwarded.
+            const email = payload.email || credentials.email || '';
+
+            // The hub's SSO JWT often omits `name`/`role`, so look them up in the
+            // NetVault users table by email as a fallback.
             let dbUser: { name?: string; role?: string } = {};
-            if (payload.email) {
+            if (email) {
               try {
                 const r = await netvaultPool.query(
                   'SELECT name, role FROM users WHERE email = $1',
-                  [payload.email]
+                  [email]
                 );
                 dbUser = r.rows[0] || {};
               } catch {
                 // Best-effort — fall through to the fallbacks below.
               }
             }
+
             const userName =
               payload.name ||
+              credentials.name ||
               dbUser.name ||
-              (payload.email ? String(payload.email).split('@')[0] : '');
-            const userRole = payload.role || dbUser.role || 'viewer';
-            return {
-              id: String(payload.userId),
-              email: payload.email,
-              name: userName,
-              role: userRole,
-            };
+              (email ? email.split('@')[0] : '');
+            const userRole = payload.role || credentials.role || dbUser.role || 'viewer';
+            const userId = String(payload.userId || credentials.userId || '');
+
+            return { id: userId, email, name: userName, role: userRole };
           } catch {
             return null;
           }
