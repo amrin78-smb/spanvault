@@ -81,7 +81,22 @@ a { color: inherit; text-decoration: none; }
   top: 0;
   z-index: 20;
 }
-.sv-topbar .sv-logo { width: 120px; height: auto; display: block; }
+.sv-brand { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
+.sv-brand .sv-logo { width: 240px; height: auto; display: block; }
+.sv-brand-subtitle {
+  font-size: 10px; font-weight: 600; letter-spacing: 2px;
+  color: var(--sv-muted); text-transform: uppercase; padding-left: 2px;
+}
+
+.sv-topbar-right { display: flex; align-items: center; gap: 16px; }
+.sv-collector-pill {
+  display: inline-flex; align-items: center;
+  padding: 5px 12px; border-radius: 999px;
+  font-size: 12px; font-weight: 700; letter-spacing: 0.5px;
+  color: #fff; white-space: nowrap;
+}
+.sv-collector-pill.running { background: var(--sv-up); }
+.sv-collector-pill.stopped { background: var(--sv-down); }
 
 .sv-user { position: relative; }
 .sv-user-btn {

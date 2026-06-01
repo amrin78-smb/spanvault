@@ -114,6 +114,13 @@ app.get('/api/health', wrap(async (_req, res) => {
   res.json({ status: 'ok', service: 'spanvault-api', time: new Date().toISOString() });
 }));
 
+// Collector liveness: 'running' if any ping has been written in the last 10 min.
+app.get('/api/collector/status', wrap(async (_req, res) => {
+  const r = await sv.query(`SELECT MAX(ts) AS last_ts FROM ping_results WHERE ts >= NOW() - INTERVAL '10 minutes'`);
+  const lastTs = r.rows[0] && r.rows[0].last_ts;
+  res.json({ status: lastTs ? 'running' : 'stopped', last_ts: lastTs || null });
+}));
+
 // ══════════════════════════════════════════════════════════════
 // Dashboard
 // ══════════════════════════════════════════════════════════════

@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { useSession, signOut } from 'next-auth/react';
+import { useApi } from '@/lib/api';
 import { IconHome, IconLogout } from './icons';
 
 const HUB = process.env.NEXT_PUBLIC_NOCVAULT_HUB_URL || 'http://localhost:3000';
@@ -10,6 +11,8 @@ export default function TopBar() {
   const { data: session } = useSession();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const collector = useApi<{ status: string }>('/api/collector/status', 30000);
+  const collectorRunning = collector.data?.status === 'running';
 
   useEffect(() => {
     function onClick(e: MouseEvent) {
@@ -36,8 +39,15 @@ export default function TopBar() {
 
   return (
     <header className="sv-topbar">
-      <img className="sv-logo" src="/spanvault-logo-white.png" alt="SpanVault" />
-      <div className="sv-user" ref={ref}>
+      <div className="sv-brand">
+        <img className="sv-logo" src="/spanvault-logo-white.png" alt="SpanVault" />
+        <span className="sv-brand-subtitle">NETWORK MONITORING</span>
+      </div>
+      <div className="sv-topbar-right">
+        <span className={`sv-collector-pill ${collectorRunning ? 'running' : 'stopped'}`}>
+          ● COLLECTOR
+        </span>
+        <div className="sv-user" ref={ref}>
         <button className="sv-user-btn" onClick={() => setOpen((o) => !o)} title={name}>
           <div className="sv-avatar">{initials || 'U'}</div>
           <div className="sv-user-meta">
@@ -61,6 +71,7 @@ export default function TopBar() {
             </button>
           </div>
         )}
+        </div>
       </div>
     </header>
   );
