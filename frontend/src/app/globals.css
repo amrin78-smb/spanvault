@@ -306,6 +306,33 @@ label.sv-field .sv-input, label.sv-field .sv-select { font-weight: 400; }
   text-transform: uppercase; letter-spacing: 0.5px; margin: 22px 0 10px;
 }
 
+/* ── Compact responsive sensor graph grid ──────────────── */
+.sv-sensor-grid {
+  display: grid;
+  grid-template-columns: 1fr;   /* mobile: 1 column */
+  gap: 16px;
+  margin-bottom: 20px;
+}
+.sv-sensor-cell {
+  background: #fff; border: 1px solid var(--sv-border);
+  border-radius: 10px; padding: 14px 16px; margin: 0;
+  min-width: 0;   /* let recharts ResponsiveContainer shrink inside the grid track */
+}
+.sv-sensor-cell h2 {
+  font-size: 14px; margin: 0 0 8px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+@media (min-width: 640px) {
+  .sv-sensor-grid { grid-template-columns: repeat(2, 1fr); }
+  .sv-sensor-cell.wide { grid-column: span 2; }   /* combined In/Out spans 2 cols */
+}
+@media (min-width: 1024px) {
+  .sv-sensor-grid { grid-template-columns: repeat(3, 1fr); }
+}
+@media (min-width: 1400px) {
+  .sv-sensor-grid { grid-template-columns: repeat(4, 1fr); }
+}
+
 .sv-spinner {
   width: 36px; height: 36px; border-radius: 50%;
   border: 4px solid #e3e6eb; border-top-color: var(--sv-crimson);

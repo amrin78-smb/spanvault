@@ -49,10 +49,6 @@ const RANGES = [
   { key: '30d', label: '30 Days' },
 ];
 
-const CAT_ORDER = ['system', 'interface', 'vendor'];
-const CAT_LABEL: Record<string, string> = {
-  system: 'System', interface: 'Interfaces', vendor: 'Vendor',
-};
 const CAT_COLOR: Record<string, string> = {
   system: '#1a2744', interface: '#C8102E', vendor: '#2e9e5b',
 };
@@ -329,31 +325,27 @@ function buildGraphItems(sensors: Sensor[]): GraphItem[] {
   return items;
 }
 
-// ── Per-sensor graphs grouped by category (top-level component) ─
+// ── Sensor graphs in a compact responsive grid (top-level component) ─
 function SensorGraphs({
   deviceId, sensors, range,
 }: {
   deviceId: number; sensors: Sensor[]; range: string;
 }) {
+  const items = buildGraphItems(sensors);
   return (
-    <>
-      {CAT_ORDER.filter((c) => sensors.some((s) => s.category === c)).map((cat) => (
-        <div key={cat}>
-          <h2 className="sv-section-title">{CAT_LABEL[cat]}</h2>
-          {buildGraphItems(sensors.filter((s) => s.category === cat)).map((it) =>
-            it.kind === 'pair' ? (
-              <InterfaceTrafficChart
-                key={`pair-${it.ifIndex}`}
-                deviceId={deviceId} ifLabel={it.ifLabel}
-                inSensor={it.inSensor} outSensor={it.outSensor} range={range}
-              />
-            ) : (
-              <SensorChart key={it.sensor.id} deviceId={deviceId} sensor={it.sensor} range={range} />
-            )
-          )}
-        </div>
-      ))}
-    </>
+    <div className="sv-sensor-grid">
+      {items.map((it) =>
+        it.kind === 'pair' ? (
+          <InterfaceTrafficChart
+            key={`pair-${it.ifIndex}`}
+            deviceId={deviceId} ifLabel={it.ifLabel}
+            inSensor={it.inSensor} outSensor={it.outSensor} range={range}
+          />
+        ) : (
+          <SensorChart key={it.sensor.id} deviceId={deviceId} sensor={it.sensor} range={range} />
+        )
+      )}
+    </div>
   );
 }
 
@@ -397,23 +389,23 @@ function InterfaceTrafficChart({
   const loading = (inHist.loading && !inHist.data) || (outHist.loading && !outHist.data);
 
   return (
-    <div className="sv-panel">
-      <h2>{ifLabel}</h2>
+    <div className="sv-sensor-cell wide">
+      <h2 title={ifLabel}>{ifLabel}</h2>
       {loading ? (
         <Loading />
       ) : !data.length ? (
         <Empty message="No data yet for this interface." />
       ) : (
-        <ResponsiveContainer width="100%" height={240}>
-          <LineChart data={data} margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
+        <ResponsiveContainer width="100%" height={160}>
+          <LineChart data={data} margin={{ top: 5, right: 16, bottom: 5, left: 0 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#eef0f3" />
-            <XAxis dataKey="bucket" tickFormatter={tickLabel} fontSize={11} minTickGap={40} />
-            <YAxis fontSize={11} width={80} tickFormatter={(v) => fmtBps(Number(v))} />
+            <XAxis dataKey="bucket" tickFormatter={tickLabel} fontSize={10} minTickGap={40} />
+            <YAxis fontSize={10} width={64} tickFormatter={(v) => fmtBps(Number(v))} />
             <Tooltip
               labelFormatter={tickLabel}
               formatter={(v: any, name: any) => [v == null ? '—' : fmtBps(Number(v)), name]}
             />
-            <Legend wrapperStyle={{ fontSize: 12 }} />
+            <Legend wrapperStyle={{ fontSize: 11 }} />
             <Line type="monotone" name="In" dataKey="in" stroke={TRAFFIC_IN_COLOR} strokeWidth={2} dot={false} connectNulls />
             <Line type="monotone" name="Out" dataKey="out" stroke={TRAFFIC_OUT_COLOR} strokeWidth={2} dot={false} connectNulls />
           </LineChart>
@@ -443,20 +435,20 @@ function SensorChart({ deviceId, sensor, range }: { deviceId: number; sensor: Se
   };
 
   return (
-    <div className="sv-panel">
-      <h2>{sensor.sensor_name}{suffix}</h2>
+    <div className="sv-sensor-cell">
+      <h2 title={`${sensor.sensor_name}${suffix}`}>{sensor.sensor_name}{suffix}</h2>
       {hist.loading && !hist.data ? (
         <Loading />
       ) : !data.length ? (
         <Empty message="No data yet for this sensor." />
       ) : (
-        <ResponsiveContainer width="100%" height={220}>
-          <LineChart data={data} margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
+        <ResponsiveContainer width="100%" height={160}>
+          <LineChart data={data} margin={{ top: 5, right: 16, bottom: 5, left: 0 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#eef0f3" />
-            <XAxis dataKey="bucket" tickFormatter={tickLabel} fontSize={11} minTickGap={40} />
+            <XAxis dataKey="bucket" tickFormatter={tickLabel} fontSize={10} minTickGap={40} />
             <YAxis
-              fontSize={11}
-              width={unit === 'bps' ? 80 : 60}
+              fontSize={10}
+              width={unit === 'bps' ? 64 : 44}
               domain={unit === 'state' ? [0, 1] : undefined}
               tickFormatter={unit === 'bps' ? (v) => fmtBps(Number(v)) : undefined}
             />
