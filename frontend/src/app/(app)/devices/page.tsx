@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useApi, apiSend } from '@/lib/api';
 import { Loading, ErrorBox, Empty, fmtRel } from '@/components/ui';
@@ -69,6 +69,13 @@ export default function DevicesPage() {
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<Device | null>(null);
   const [showImport, setShowImport] = useState(false);
+
+  // Pre-select the status filter from the URL (?status=up|down|warning|unknown)
+  // so dashboard stat-card links land on a filtered device list.
+  useEffect(() => {
+    const st = new URLSearchParams(window.location.search).get('status');
+    if (st && ['up', 'down', 'warning', 'unknown'].includes(st)) setStatus(st);
+  }, []);
 
   const params = new URLSearchParams();
   if (q) params.set('q', q);
