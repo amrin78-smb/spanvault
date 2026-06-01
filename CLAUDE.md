@@ -170,6 +170,19 @@ export const config = {
 };
 ```
 
+## API proxy pattern (critical — do not use next.config.js rewrites for this)
+SpanVault proxies /api/* to Express (port 3009) using middleware.ts, NOT
+next.config.js rewrites. Rewrites intercept /api/auth/* before NextAuth
+can handle it, breaking useSession() which internally calls /api/auth/session.
+
+The correct pattern is in middleware.ts:
+- Matcher explicitly excludes /api/auth/*
+- Non-auth /api/* calls are rewritten to Express via NextResponse.rewrite()
+- Page routes get the auth guard via getToken()
+- /api/auth/* routes are never touched — NextAuth handles them directly
+
+Never change this to a next.config.js rewrite approach.
+
 ## UI design (match NetVault exactly)
 - Sidebar: #1a2744 (dark navy), white text/icons, 220px wide
 - Accent: #C8102E (crimson red) for primary buttons, active nav, stat card highlights
