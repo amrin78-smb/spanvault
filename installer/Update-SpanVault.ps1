@@ -56,9 +56,6 @@ $Services = @(
     @{ Name = 'SpanVault-Collector'; App = 'node'; Args = 'collector\collector.js';   Dir = $AppRoot },
     @{ Name = 'SpanVault-App';       App = 'node'; Args = 'node_modules\next\dist\bin\next start -p 3008'; Dir = $Frontend }
 )
-$PsqlUser = 'postgres'   # adjust if your schema apply uses a different superuser
-$DbName   = 'spanvault'
-
 function Write-Step($msg)  { Write-Host "`n=== $msg ===" -ForegroundColor Cyan }
 function Write-Ok($msg)    { Write-Host "  [OK] $msg"   -ForegroundColor Green }
 function Write-Warn($msg)  { Write-Host "  [!]  $msg"   -ForegroundColor Yellow }
@@ -69,14 +66,29 @@ function Resolve-Tool($name, $hint) {
     return $cmd.Source
 }
 
+# psql is often not on PATH on Windows. Resolve it like the other tools, but fall
+# back to the standard PostgreSQL install locations (newest version first).
+# Returns $null if not found — the schema step treats psql as optional.
+function Resolve-Psql {
+    $cmd = Get-Command psql -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+    $roots = @('C:\Program Files\PostgreSQL', 'C:\Program Files (x86)\PostgreSQL')
+    $found = Get-ChildItem -Path $roots -Filter 'psql.exe' -Recurse -ErrorAction SilentlyContinue |
+        Sort-Object FullName -Descending | Select-Object -First 1
+    if ($found) { return $found.FullName }
+    return $null
+}
+
 # ── Pre-flight ─────────────────────────────────────────────────
 Write-Step 'Pre-flight checks'
 $nssm = Resolve-Tool 'nssm' 'Install NSSM and add it to PATH.'
 $git  = Resolve-Tool 'git'  'Install Git for Windows.'
 $npm  = Resolve-Tool 'npm'  'Install Node.js (which provides npm).'
+$psql = Resolve-Psql
 Write-Ok "nssm: $nssm"
 Write-Ok "git:  $git"
 Write-Ok "npm:  $npm"
+if ($psql) { Write-Ok "psql: $psql" } else { Write-Warn 'psql not found — schema apply will be skipped.' }
 
 if (-not (Test-Path $AppRoot)) {
     throw "App directory '$AppRoot' does not exist. Clone the repo into '$AppRoot' first, then re-run."
@@ -150,11 +162,19 @@ Pop-Location
 
 # ── 5. Apply database schema (idempotent) ──────────────────────
 Write-Step 'Applying database schema'
-$psql = Get-Command psql -ErrorAction SilentlyContinue
 $schema = Join-Path $AppRoot 'scripts\schema.sql'
 if ($psql -and (Test-Path $schema)) {
-    & $psql.Source -U $PsqlUser -d $DbName -f $schema
-    Write-Ok 'Schema applied'
+    # Connect as spanvault_user (the DB owner) using the password from .env.local
+    # so the apply runs unattended. Connecting as 'postgres' would prompt for a
+    # password interactively and break the update.
+    $envContent = Get-Content $rootEnv -Raw
+    $dbPass = [regex]::Match($envContent, 'SV_DB_PASS=(.+)').Groups[1].Value.Trim()
+    $dbUser = [regex]::Match($envContent, 'SV_DB_USER=(.+)').Groups[1].Value.Trim()
+    $dbName = [regex]::Match($envContent, 'SV_DB_NAME=(.+)').Groups[1].Value.Trim()
+    $env:PGPASSWORD = $dbPass
+    & $psql -U $dbUser -d $dbName -f $schema
+    $env:PGPASSWORD = ''
+    Write-Ok "Schema applied (as $dbUser)"
 } else {
     Write-Warn 'psql not found or schema.sql missing — apply scripts\schema.sql manually.'
 }
