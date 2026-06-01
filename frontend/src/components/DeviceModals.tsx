@@ -1,7 +1,7 @@
 'use client';
 
-import { useState } from 'react';
-import { useApi, apiSend } from '@/lib/api';
+import { useEffect, useState } from 'react';
+import { useApi, apiGet, apiSend } from '@/lib/api';
 import { Loading, ErrorBox, Empty } from '@/components/ui';
 
 export type Site = { id: number; name: string };
@@ -46,22 +46,59 @@ export function DeviceForm({
   onClose: () => void;
   onSaved: () => void;
 }) {
+  // Seed with the minimal known fields; the full record (incl. SNMP credentials)
+  // is fetched below when editing so saved values pre-fill and round-trip.
   const [form, setForm] = useState<any>(
     device
       ? {
+          ...EMPTY_FORM,
           name: device.name, ip_address: device.ip_address, device_type: device.device_type || '',
           site_id: device.site_id ?? '', snmp_enabled: device.snmp_enabled,
-          snmp_version: '2c', snmp_community: 'public', snmp_port: 161,
-          snmp_v3_user: '', snmp_v3_auth_pass: '', snmp_v3_priv_pass: '',
           poll_interval_seconds: device.poll_interval_seconds || 300,
-          ping_threshold_ms: 500, ping_failures_before_down: 3,
         }
       : { ...EMPTY_FORM, ...(initialSiteId != null ? { site_id: initialSiteId } : {}) }
   );
   const [saving, setSaving] = useState(false);
+  const [loadingDevice, setLoadingDevice] = useState(!!device);
   const [err, setErr] = useState<string | null>(null);
 
   function set(k: string, v: any) { setForm((f: any) => ({ ...f, [k]: v })); }
+
+  // Load the device's full record (SELECT *) so SNMP fields — community,
+  // version, port, and v3 credentials — pre-fill from what's stored rather
+  // than from defaults, and are preserved when the edit is saved.
+  useEffect(() => {
+    if (!device) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const full = await apiGet<any>(`/api/devices/${device.id}`);
+        if (cancelled) return;
+        setForm((f: any) => ({
+          ...f,
+          name: full.name ?? f.name,
+          ip_address: full.ip_address ?? f.ip_address,
+          device_type: full.device_type || '',
+          site_id: full.site_id ?? '',
+          snmp_enabled: !!full.snmp_enabled,
+          snmp_version: full.snmp_version || '2c',
+          snmp_community: full.snmp_community ?? 'public',
+          snmp_port: full.snmp_port || 161,
+          snmp_v3_user: full.snmp_v3_user || '',
+          snmp_v3_auth_pass: full.snmp_v3_auth_pass || '',
+          snmp_v3_priv_pass: full.snmp_v3_priv_pass || '',
+          poll_interval_seconds: full.poll_interval_seconds || 300,
+          ping_threshold_ms: full.ping_threshold_ms || 500,
+          ping_failures_before_down: full.ping_failures_before_down || 3,
+        }));
+      } catch (e: any) {
+        if (!cancelled) setErr(e?.message || 'Failed to load device settings');
+      } finally {
+        if (!cancelled) setLoadingDevice(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [device]);
 
   async function save() {
     setSaving(true);
@@ -88,6 +125,7 @@ export function DeviceForm({
       <div className="sv-modal" onMouseDown={(e) => e.stopPropagation()}>
         <h2>{device ? 'Edit Device' : 'Add Device'}</h2>
         {err && <ErrorBox message={err} />}
+        {loadingDevice && <p className="sv-muted" style={{ fontSize: 13, marginTop: 0 }}>Loading device settings…</p>}
         <div className="sv-form-grid">
           <label className="sv-field">Name
             <input className="sv-input" value={form.name} onChange={(e) => set('name', e.target.value)} />
@@ -163,7 +201,7 @@ export function DeviceForm({
 
         <div className="sv-modal-actions">
           <button className="sv-btn ghost" onClick={onClose} disabled={saving}>Cancel</button>
-          <button className="sv-btn" onClick={save} disabled={saving || !form.name || !form.ip_address}>
+          <button className="sv-btn" onClick={save} disabled={saving || loadingDevice || !form.name || !form.ip_address}>
             {saving ? 'Saving…' : 'Save'}
           </button>
         </div>
