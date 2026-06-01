@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from 'recharts';
 import { useApi, apiSend } from '@/lib/api';
 import { StatusDot } from '@/components/StatusDot';
@@ -56,6 +56,10 @@ const CAT_LABEL: Record<string, string> = {
 const CAT_COLOR: Record<string, string> = {
   system: '#1a2744', interface: '#C8102E', vendor: '#2e9e5b',
 };
+
+// Combined interface-traffic line colours (In = blue, Out = orange).
+const TRAFFIC_IN_COLOR = '#3b82f6';
+const TRAFFIC_OUT_COLOR = '#f97316';
 
 export default function DeviceDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -272,6 +276,59 @@ function PingNow({ deviceId }: { deviceId: number }) {
   );
 }
 
+// ── Sensor graph layout: pair interface In/Out bps into one chart ──────
+type GraphItem =
+  | { kind: 'single'; sensor: Sensor }
+  | { kind: 'pair'; ifIndex: number; ifLabel: string; inSensor: Sensor; outSensor: Sensor };
+
+// Parse an interface-traffic metric_name like "if_3_in_bps" → { idx: 3, dir }.
+function parseIfBps(metric: string): { idx: number; dir: 'in' | 'out' } | null {
+  const m = /^if_(\d+)_(in|out)_bps$/.exec(metric);
+  if (!m) return null;
+  return { idx: Number(m[1]), dir: m[2] as 'in' | 'out' };
+}
+
+// Interface display name from a sensor name like "Fa0/0 — In [alias] · 1 Gbps".
+function ifLabelFor(idx: number, ...sensors: Sensor[]): string {
+  for (const s of sensors) {
+    const base = (s.sensor_name || '').split(' — ')[0].trim();
+    if (base) return `${base} Traffic`;
+  }
+  return `Interface ${idx} Traffic`;
+}
+
+// Group sensors: matching if_<idx>_in_bps + if_<idx>_out_bps become one combined
+// chart; everything else stays a single-line chart. Original order is preserved.
+function buildGraphItems(sensors: Sensor[]): GraphItem[] {
+  const inByIdx = new Map<number, Sensor>();
+  const outByIdx = new Map<number, Sensor>();
+  for (const s of sensors) {
+    const p = parseIfBps(s.metric_name);
+    if (p?.dir === 'in') inByIdx.set(p.idx, s);
+    else if (p?.dir === 'out') outByIdx.set(p.idx, s);
+  }
+  const consumed = new Set<number>();
+  const items: GraphItem[] = [];
+  for (const s of sensors) {
+    if (consumed.has(s.id)) continue;
+    const p = parseIfBps(s.metric_name);
+    if (p) {
+      const inS = inByIdx.get(p.idx);
+      const outS = outByIdx.get(p.idx);
+      if (inS && outS) {
+        items.push({
+          kind: 'pair', ifIndex: p.idx, ifLabel: ifLabelFor(p.idx, inS, outS),
+          inSensor: inS, outSensor: outS,
+        });
+        consumed.add(inS.id); consumed.add(outS.id);
+        continue;
+      }
+    }
+    items.push({ kind: 'single', sensor: s });
+  }
+  return items;
+}
+
 // ── Per-sensor graphs grouped by category (top-level component) ─
 function SensorGraphs({
   deviceId, sensors, range,
@@ -283,9 +340,17 @@ function SensorGraphs({
       {CAT_ORDER.filter((c) => sensors.some((s) => s.category === c)).map((cat) => (
         <div key={cat}>
           <h2 className="sv-section-title">{CAT_LABEL[cat]}</h2>
-          {sensors.filter((s) => s.category === cat).map((s) => (
-            <SensorChart key={s.id} deviceId={deviceId} sensor={s} range={range} />
-          ))}
+          {buildGraphItems(sensors.filter((s) => s.category === cat)).map((it) =>
+            it.kind === 'pair' ? (
+              <InterfaceTrafficChart
+                key={`pair-${it.ifIndex}`}
+                deviceId={deviceId} ifLabel={it.ifLabel}
+                inSensor={it.inSensor} outSensor={it.outSensor} range={range}
+              />
+            ) : (
+              <SensorChart key={it.sensor.id} deviceId={deviceId} sensor={it.sensor} range={range} />
+            )
+          )}
         </div>
       ))}
     </>
@@ -301,6 +366,61 @@ function metricUnit(metric: string): Unit {
   if (metric.endsWith('_w')) return 'W';
   if (metric.includes('temperature')) return '°C';
   return 'count';
+}
+
+// Combined In/Out traffic chart for one interface (two lines: blue In, orange Out).
+function InterfaceTrafficChart({
+  deviceId, ifLabel, inSensor, outSensor, range,
+}: {
+  deviceId: number; ifLabel: string; inSensor: Sensor; outSensor: Sensor; range: string;
+}) {
+  const inHist = useApi<SnmpPoint[]>(
+    `/api/devices/${deviceId}/snmp-history?metric=${encodeURIComponent(inSensor.metric_name)}&range=${range}`, 0
+  );
+  const outHist = useApi<SnmpPoint[]>(
+    `/api/devices/${deviceId}/snmp-history?metric=${encodeURIComponent(outSensor.metric_name)}&range=${range}`, 0
+  );
+
+  // Merge both series on the shared (date_bin-aligned) bucket timestamp.
+  const byBucket = new Map<string, { bucket: string; in: number | null; out: number | null }>();
+  for (const p of inHist.data || []) {
+    const e = byBucket.get(p.bucket) || { bucket: p.bucket, in: null, out: null };
+    e.in = p.avg_value != null ? Number(p.avg_value) : null;
+    byBucket.set(p.bucket, e);
+  }
+  for (const p of outHist.data || []) {
+    const e = byBucket.get(p.bucket) || { bucket: p.bucket, in: null, out: null };
+    e.out = p.avg_value != null ? Number(p.avg_value) : null;
+    byBucket.set(p.bucket, e);
+  }
+  const data = Array.from(byBucket.values()).sort((a, b) => (a.bucket < b.bucket ? -1 : a.bucket > b.bucket ? 1 : 0));
+  const loading = (inHist.loading && !inHist.data) || (outHist.loading && !outHist.data);
+
+  return (
+    <div className="sv-panel">
+      <h2>{ifLabel}</h2>
+      {loading ? (
+        <Loading />
+      ) : !data.length ? (
+        <Empty message="No data yet for this interface." />
+      ) : (
+        <ResponsiveContainer width="100%" height={240}>
+          <LineChart data={data} margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#eef0f3" />
+            <XAxis dataKey="bucket" tickFormatter={tickLabel} fontSize={11} minTickGap={40} />
+            <YAxis fontSize={11} width={80} tickFormatter={(v) => fmtBps(Number(v))} />
+            <Tooltip
+              labelFormatter={tickLabel}
+              formatter={(v: any, name: any) => [v == null ? '—' : fmtBps(Number(v)), name]}
+            />
+            <Legend wrapperStyle={{ fontSize: 12 }} />
+            <Line type="monotone" name="In" dataKey="in" stroke={TRAFFIC_IN_COLOR} strokeWidth={2} dot={false} connectNulls />
+            <Line type="monotone" name="Out" dataKey="out" stroke={TRAFFIC_OUT_COLOR} strokeWidth={2} dot={false} connectNulls />
+          </LineChart>
+        </ResponsiveContainer>
+      )}
+    </div>
+  );
 }
 
 function SensorChart({ deviceId, sensor, range }: { deviceId: number; sensor: Sensor; range: string }) {
