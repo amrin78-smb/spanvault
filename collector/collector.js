@@ -20,6 +20,7 @@ const { Pool }   = require('pg');
 const ping       = require('ping');
 const snmp       = require('net-snmp');
 const nodemailer = require('nodemailer');
+const { SYSDESCR_OID, detectVendor, getParser } = require('./parsers');
 
 // ── Crash resilience ──────────────────────────────────────────
 process.on('uncaughtException', (err) => {
@@ -252,6 +253,52 @@ function walk(session, baseOid) {
   });
 }
 
+// Promisified scalar GET → returns array of { oid, value } (errors → []).
+function get(session, oids) {
+  return new Promise((resolve) => {
+    try {
+      session.get(oids, (err, varbinds) => {
+        if (err) return resolve([]);
+        const out = [];
+        for (const vb of varbinds || []) {
+          if (!snmp.isVarbindError(vb)) out.push({ oid: vb.oid, value: vb.value });
+        }
+        resolve(out);
+      });
+    } catch (_e) {
+      resolve([]);
+    }
+  });
+}
+
+// Fetch each parser metric: WALK for tables, GET for scalars. Returns a map
+// keyed by metric def `name` → array of { oid, value } varbinds.
+async function fetchVendorMetrics(session, parser) {
+  const raw = {};
+  for (const m of parser.metrics) {
+    if (m.kind === 'table') raw[m.name] = await walk(session, m.oid);
+    else raw[m.name] = await get(session, [m.oid]);
+  }
+  return raw;
+}
+
+// Merge core + vendor samples. A vendor scalar metric (no if_index) overrides
+// the core's standard-MIB sample of the same metric_name — vendor MIBs are more
+// authoritative for cpu_pct/mem_pct on enterprise gear. Interface/table samples
+// from both sides are kept.
+function mergeSamples(core, vendor) {
+  const vendorScalars = new Set(
+    vendor.filter((s) => !s.if_index).map((s) => s.metric_name)
+  );
+  const out = [];
+  for (const s of core) {
+    if (!s.if_index && vendorScalars.has(s.metric_name)) continue; // overridden by vendor
+    out.push(s);
+  }
+  for (const s of vendor) out.push(s);
+  return out;
+}
+
 // Last index segment of an OID (the table row index).
 function lastIndex(oid) {
   const parts = oid.split('.');
@@ -260,8 +307,15 @@ function lastIndex(oid) {
 
 async function snmpPollDevice(device) {
   const session = createSnmpSession(device);
-  const samples = []; // { metric_name, value, oid, if_index, if_name }
+  const samples = [];       // core standard-MIB samples
+  let vendorSamples = [];    // vendor-specific samples (parser output)
   try {
+    // ── Vendor detection — fetch sysDescr, pick a parser ──────────
+    const sysDescrRows = await get(session, [SYSDESCR_OID]);
+    const sysDescr = sysDescrRows.length ? String(sysDescrRows[0].value) : '';
+    const vendor = detectVendor(sysDescr);
+    await persistVendor(device, vendor);
+
     // CPU — average hrProcessorLoad across processors.
     const cpus = await walk(session, OID.hrProcessorLoad);
     if (cpus.length) {
@@ -334,14 +388,28 @@ async function snmpPollDevice(device) {
         prevDev.set(idx, { inOctets: curIn, outOctets: curOut, ts: now });
       }
     }
+
+    // ── Vendor-specific OIDs — in addition to the standard set above ──
+    const parser = getParser(device.device_vendor || 'generic');
+    if (parser.metrics.length) {
+      try {
+        const raw = await fetchVendorMetrics(session, parser);
+        vendorSamples = parser.parse(raw) || [];
+      } catch (err) {
+        console.error(`[snmp] ${device.name} vendor parse (${parser.name}) failed:`, err.message);
+      }
+    }
   } catch (err) {
     console.error(`[snmp] ${device.name} (${device.ip_address}) poll error:`, err.message);
   } finally {
     try { session.close(); } catch (_e) { /* ignore */ }
   }
 
+  // Vendor scalar metrics override core standard-MIB metrics of the same name.
+  const merged = mergeSamples(samples, vendorSamples);
+
   // Persist samples.
-  for (const s of samples) {
+  for (const s of merged) {
     await sv.query(
       `INSERT INTO snmp_results (device_id, oid, metric_name, value, if_index, if_name)
        VALUES ($1,$2,$3,$4,$5,$6)`,
@@ -350,8 +418,25 @@ async function snmpPollDevice(device) {
     );
   }
 
-  await evaluateSnmpAlerts(device, samples);
-  return samples.length;
+  await evaluateSnmpAlerts(device, merged);
+  return merged.length;
+}
+
+// Store the detected vendor on the device when it changes (avoids an UPDATE
+// every poll). device.device_vendor is updated in-memory so the parser lookup
+// below this poll uses the freshly detected value.
+async function persistVendor(device, vendor) {
+  if (!vendor || vendor === device.device_vendor) return;
+  try {
+    await sv.query(
+      `UPDATE monitored_devices SET device_vendor = $2, updated_at = NOW() WHERE id = $1`,
+      [device.id, vendor]
+    );
+    device.device_vendor = vendor;
+    log(`[snmp] ${device.name} detected vendor: ${vendor}`);
+  } catch (err) {
+    console.error('[snmp] vendor persist failed:', err.message);
+  }
 }
 
 // ══════════════════════════════════════════════════════════════
