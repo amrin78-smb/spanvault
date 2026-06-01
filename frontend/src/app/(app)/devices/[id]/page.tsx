@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
@@ -165,6 +166,8 @@ export default function DeviceDetailPage() {
           <button className="sv-btn" onClick={() => setSensorsOpen(true)}>Manage Sensors</button>
         </div>
       )}
+
+      <DeviceDependencies deviceId={d.id} deviceName={d.name} />
 
       <div className="sv-panel">
         <h2>Alert History</h2>
@@ -507,5 +510,180 @@ function SingleChart({
         <Line type="monotone" dataKey="value" stroke={color} strokeWidth={2} dot={false} connectNulls />
       </LineChart>
     </ResponsiveContainer>
+  );
+}
+
+// ── Device dependencies (top-level components) ─────────────────
+type DepDevice = {
+  id: number; name: string; ip_address: string; site_id: number | null;
+  site_name: string | null; current_status: string; alert_suppressed?: boolean;
+};
+type DepInfo = { parent: DepDevice | null; children: DepDevice[] };
+type TreeNode = {
+  id: number; name: string; ip_address: string; site_name: string | null;
+  current_status: string; parent_device_id: number | null; depth: number;
+};
+
+// All transitive descendants of rootId (so the parent picker can exclude them).
+function descendantsOf(tree: TreeNode[], rootId: number): Set<number> {
+  const childrenByParent = new Map<number, number[]>();
+  for (const n of tree) {
+    if (n.parent_device_id != null) {
+      const arr = childrenByParent.get(n.parent_device_id) || [];
+      arr.push(n.id);
+      childrenByParent.set(n.parent_device_id, arr);
+    }
+  }
+  const out = new Set<number>();
+  const stack = [rootId];
+  while (stack.length) {
+    const cur = stack.pop() as number;
+    for (const c of childrenByParent.get(cur) || []) {
+      if (!out.has(c)) { out.add(c); stack.push(c); }
+    }
+  }
+  return out;
+}
+
+function DeviceDependencies({ deviceId, deviceName }: { deviceId: number; deviceName: string }) {
+  const dep = useApi<DepInfo>(`/api/devices/${deviceId}/dependencies`, 0);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function setParent(parentId: number | null) {
+    setBusy(true);
+    setErr(null);
+    try {
+      await apiSend(`/api/devices/${deviceId}/dependencies`, 'POST', { parent_device_id: parentId });
+      dep.reload();
+      setModalOpen(false);
+    } catch (e: any) {
+      setErr(e?.message || 'Failed to update dependency');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const parent = dep.data?.parent || null;
+  const children = dep.data?.children || [];
+
+  return (
+    <div style={{ marginBottom: 20 }}>
+      {err && <ErrorBox message={err} />}
+      <div className="sv-dep-grid">
+        <div className="sv-panel" style={{ margin: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <h2 style={{ margin: 0 }}>Parent Device</h2>
+            <div style={{ flex: 1 }} />
+            <button className="sv-btn ghost sm" onClick={() => setModalOpen(true)}>
+              {parent ? 'Change Parent' : 'Set Parent'}
+            </button>
+            {parent && (
+              <button className="sv-btn ghost sm" onClick={() => setParent(null)} disabled={busy}>Remove</button>
+            )}
+          </div>
+          {dep.loading && !dep.data ? (
+            <Loading />
+          ) : parent ? (
+            <div className="sv-dep-row" style={{ marginTop: 10 }}>
+              <StatusDot status={parent.current_status} size={11} />
+              <Link href={`/devices/${parent.id}`} className="nm">{parent.name}</Link>
+              <span className="meta">{parent.ip_address}{parent.site_name ? ` · ${parent.site_name}` : ''}</span>
+            </div>
+          ) : (
+            <p className="sv-muted" style={{ marginTop: 12 }}>
+              No parent device set — this device alerts independently.
+            </p>
+          )}
+        </div>
+
+        {children.length > 0 && (
+          <div className="sv-panel" style={{ margin: 0 }}>
+            <h2 style={{ margin: '0 0 4px' }}>Child Devices</h2>
+            <p className="sv-muted" style={{ fontSize: 12.5, marginTop: 0 }}>
+              If {deviceName} goes <strong>DOWN</strong>, alerts for {children.length} child device{children.length === 1 ? '' : 's'} will be suppressed.
+            </p>
+            {children.map((c) => (
+              <div key={c.id} className="sv-dep-row">
+                <StatusDot status={c.current_status} size={11} />
+                <Link href={`/devices/${c.id}`} className="nm">{c.name}</Link>
+                <span className="meta">{c.ip_address}{c.site_name ? ` · ${c.site_name}` : ''}</span>
+                <span className="spacer" />
+                {c.alert_suppressed && <span className="sv-badge suppressed">suppressed</span>}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {modalOpen && (
+        <SetParentModal
+          deviceId={deviceId}
+          currentParentId={parent?.id ?? null}
+          busy={busy}
+          onClose={() => setModalOpen(false)}
+          onSelect={(id) => setParent(id)}
+        />
+      )}
+    </div>
+  );
+}
+
+function SetParentModal({
+  deviceId, currentParentId, busy, onClose, onSelect,
+}: {
+  deviceId: number; currentParentId: number | null; busy: boolean;
+  onClose: () => void; onSelect: (id: number) => void;
+}) {
+  const devices = useApi<DepDevice[]>('/api/devices', 0);
+  const tree = useApi<TreeNode[]>('/api/dependencies/tree', 0);
+  const [q, setQ] = useState('');
+
+  const excluded = descendantsOf(tree.data || [], deviceId);
+  excluded.add(deviceId); // never depend on self
+  const candidates = (devices.data || []).filter((d) => {
+    if (excluded.has(d.id)) return false;
+    if (!q) return true;
+    const s = q.toLowerCase();
+    return d.name.toLowerCase().includes(s) || (d.ip_address || '').includes(q);
+  });
+
+  return (
+    <div className="sv-modal-backdrop" onClick={onClose}>
+      <div className="sv-modal" onClick={(e) => e.stopPropagation()}>
+        <h2>Set Parent Device</h2>
+        <p className="sv-muted" style={{ marginTop: -10 }}>
+          Pick the device this one depends on. Its own descendants are excluded to prevent loops.
+        </p>
+        <input
+          className="sv-input"
+          placeholder="Search by name or IP…"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          style={{ width: '100%', marginBottom: 12 }}
+          autoFocus
+        />
+        {devices.loading && !devices.data ? (
+          <Loading />
+        ) : candidates.length ? (
+          <div className="sv-dep-pick">
+            {candidates.slice(0, 100).map((d) => (
+              <button key={d.id} onClick={() => onSelect(d.id)} disabled={busy}>
+                <StatusDot status={d.current_status} size={10} />
+                <span className="nm">{d.name}</span>
+                <span className="meta">{d.ip_address}{d.site_name ? ` · ${d.site_name}` : ''}</span>
+                {d.id === currentParentId && <span className="meta" style={{ marginLeft: 'auto' }}>current</span>}
+              </button>
+            ))}
+          </div>
+        ) : (
+          <Empty message="No eligible devices." />
+        )}
+        <div className="sv-modal-actions">
+          <button className="sv-btn ghost" onClick={onClose}>Cancel</button>
+        </div>
+      </div>
+    </div>
   );
 }

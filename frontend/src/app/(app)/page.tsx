@@ -16,7 +16,7 @@ type Summary = {
 type Problem = {
   id: number; name: string; ip_address: string; site_id: number | null; site_name: string | null;
   current_status: string; last_response_ms: number | null; last_checked_at: string | null;
-  last_seen_at: string | null; consecutive_failures: number;
+  last_seen_at: string | null; consecutive_failures: number; suppressed_children: number;
 };
 type Worst = {
   id: number; name: string; site_id: number | null; site_name: string | null;
@@ -241,6 +241,11 @@ function ActiveProblems({ api }: { api: Api<Problem[]> }) {
                   <span className="site">{p.site_name || 'Unassigned'}</span>
                 )}
                 <StatusBadge status={p.current_status} />
+                {p.suppressed_children > 0 && (
+                  <span className="sv-badge suppressed" title="Child devices with suppressed alerts">
+                    {p.suppressed_children} child{p.suppressed_children === 1 ? '' : 'ren'} suppressed
+                  </span>
+                )}
                 <span className="spacer" />
                 {down ? (
                   <span className="dur">{durSince(p.last_seen_at) ? `down for ${durSince(p.last_seen_at)}` : 'down'}</span>

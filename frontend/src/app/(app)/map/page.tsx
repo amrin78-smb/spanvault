@@ -5,7 +5,11 @@ import { useApi } from '@/lib/api';
 import { StatusDot } from '@/components/StatusDot';
 import { Loading, ErrorBox, Empty } from '@/components/ui';
 
-type Node = { id: number; name: string; ip_address: string; device_type: string | null; status: string };
+type Node = {
+  id: number; name: string; ip_address: string; device_type: string | null; status: string;
+  alert_suppressed?: boolean; suppressed_by_device_id?: number | null;
+  parent_device_id?: number | null; parent_name?: string | null;
+};
 type Site = { site_id: number; site_name: string; devices: Node[] };
 
 export default function MapPage() {
@@ -34,16 +38,29 @@ export default function MapPage() {
                 </span>
               </h3>
               <div className="sv-map-grid">
-                {site.devices.map((d) => (
-                  <Link key={d.id} href={`/devices/${d.id}`} className={`sv-node ${d.status}`}>
-                    <div className="nm" style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-                      <StatusDot status={d.status} size={9} />
-                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{d.name}</span>
-                    </div>
-                    <div className="ip">{d.ip_address}</div>
-                    <div className="ty">{d.device_type || 'device'}</div>
-                  </Link>
-                ))}
+                {site.devices.map((d) => {
+                  const suppressed = !!d.alert_suppressed;
+                  return (
+                    <Link
+                      key={d.id}
+                      href={`/devices/${d.id}`}
+                      className={`sv-node ${d.status}${suppressed ? ' suppressed' : ''}`}
+                      title={suppressed ? `Alerts suppressed — ${d.parent_name || 'parent'} is down` : undefined}
+                    >
+                      <div className="nm" style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                        {suppressed
+                          ? <span className="sv-node-sup">suppressed</span>
+                          : <StatusDot status={d.status} size={9} />}
+                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{d.name}</span>
+                      </div>
+                      <div className="ip">{d.ip_address}</div>
+                      <div className="ty">{d.device_type || 'device'}</div>
+                      {d.parent_name && (
+                        <div className="sv-node-parent" title={`Depends on ${d.parent_name}`}>↳ {d.parent_name}</div>
+                      )}
+                    </Link>
+                  );
+                })}
               </div>
             </div>
           );

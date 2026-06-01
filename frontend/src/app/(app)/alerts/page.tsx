@@ -11,6 +11,7 @@ type Alert = {
   alert_type: string; severity: string; message: string; metric_value: number | null;
   triggered_at: string; acknowledged_at: string | null; acknowledged_by: string | null;
   resolved_at: string | null; status: string;
+  suppressed_by: number | null; suppression_reason: string | null; suppressed_by_name: string | null;
 };
 
 export default function AlertsPage() {
@@ -45,6 +46,7 @@ export default function AlertsPage() {
           <option value="active">Active</option>
           <option value="acknowledged">Acknowledged</option>
           <option value="resolved">Resolved</option>
+          <option value="suppressed">Suppressed</option>
         </select>
         <select className="sv-select" value={severity} onChange={(e) => setSeverity(e.target.value)}>
           <option value="">All severities</option>
@@ -66,28 +68,38 @@ export default function AlertsPage() {
               </tr>
             </thead>
             <tbody>
-              {alerts.data.map((a) => (
-                <tr key={a.id}>
-                  <td><StatusBadge status={a.severity} /></td>
-                  <td>
-                    <Link href={`/devices/${a.device_id}`} style={{ color: 'var(--sv-crimson)', fontWeight: 600 }}>
-                      {a.device_name || a.ip_address || `#${a.device_id}`}
-                    </Link>
-                  </td>
-                  <td className="sv-muted">{a.alert_type}</td>
-                  <td>{a.message}</td>
-                  <td className="sv-muted">{fmtTime(a.triggered_at)}</td>
-                  <td><StatusBadge status={a.status} /></td>
-                  <td style={{ whiteSpace: 'nowrap' }}>
-                    {a.status === 'active' && (
-                      <button className="sv-btn ghost sm" onClick={() => ack(a)}>Acknowledge</button>
-                    )}{' '}
-                    {a.status !== 'resolved' && (
-                      <button className="sv-btn ghost sm" onClick={() => resolve(a)}>Resolve</button>
-                    )}
-                  </td>
-                </tr>
-              ))}
+              {alerts.data.map((a) => {
+                const suppressed = a.status === 'suppressed';
+                return (
+                  <tr key={a.id} style={suppressed ? { opacity: 0.6 } : undefined}>
+                    <td><StatusBadge status={a.severity} /></td>
+                    <td>
+                      <Link href={`/devices/${a.device_id}`} style={{ color: 'var(--sv-crimson)', fontWeight: 600 }}>
+                        {a.device_name || a.ip_address || `#${a.device_id}`}
+                      </Link>
+                    </td>
+                    <td className="sv-muted">{a.alert_type}</td>
+                    <td>
+                      {a.message}
+                      {suppressed && (
+                        <div className="sv-muted" style={{ fontSize: 12, marginTop: 2 }}>
+                          Suppressed{a.suppressed_by_name ? ` — ${a.suppressed_by_name} is down` : (a.suppression_reason ? ` — ${a.suppression_reason}` : '')}
+                        </div>
+                      )}
+                    </td>
+                    <td className="sv-muted">{fmtTime(a.triggered_at)}</td>
+                    <td><StatusBadge status={a.status} /></td>
+                    <td style={{ whiteSpace: 'nowrap' }}>
+                      {a.status === 'active' && (
+                        <button className="sv-btn ghost sm" onClick={() => ack(a)}>Acknowledge</button>
+                      )}{' '}
+                      {a.status !== 'resolved' && a.status !== 'suppressed' && (
+                        <button className="sv-btn ghost sm" onClick={() => resolve(a)}>Resolve</button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         ) : (

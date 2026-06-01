@@ -614,3 +614,37 @@ label.sv-field .sv-input, label.sv-field .sv-select { font-weight: 400; }
 .sv-event .body .dev:hover { text-decoration: underline; }
 .sv-event .body .site { color: var(--sv-muted); font-size: 12px; }
 .sv-event .when { color: var(--sv-muted); font-size: 12px; white-space: nowrap; }
+
+/* ══ Device dependencies / alert suppression ════════════ */
+.sv-badge.suppressed { color: var(--sv-unknown); background: #eef0f3; }
+
+/* Map: suppressed devices greyed out, with a badge + parent link */
+.sv-node.suppressed { opacity: 0.6; filter: grayscale(0.5); }
+.sv-node-sup {
+  display: inline-block; font-size: 10px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .4px; color: var(--sv-unknown); background: #eef0f3;
+  border-radius: 10px; padding: 1px 7px;
+}
+.sv-node .sv-node-parent { font-size: 11px; color: var(--sv-muted); margin-top: 4px; }
+
+/* Device detail dependency cards */
+.sv-dep-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+@media (max-width: 900px) { .sv-dep-grid { grid-template-columns: 1fr; } }
+.sv-dep-row { display: flex; align-items: center; gap: 10px; padding: 9px 2px; border-bottom: 1px solid var(--sv-border); }
+.sv-dep-row:last-child { border-bottom: none; }
+.sv-dep-row .nm { font-weight: 600; color: var(--sv-crimson); }
+.sv-dep-row .nm:hover { text-decoration: underline; }
+.sv-dep-row .meta { color: var(--sv-muted); font-size: 12.5px; }
+.sv-dep-row .spacer { flex: 1; }
+
+/* Set-parent modal candidate list */
+.sv-dep-pick { max-height: 320px; overflow-y: auto; border: 1px solid var(--sv-border); border-radius: 8px; }
+.sv-dep-pick button {
+  display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+  padding: 9px 12px; border: none; border-bottom: 1px solid var(--sv-border);
+  background: none; cursor: pointer; font-size: 14px;
+}
+.sv-dep-pick button:last-child { border-bottom: none; }
+.sv-dep-pick button:hover { background: var(--sv-bg); }
+.sv-dep-pick .nm { font-weight: 600; }
+.sv-dep-pick .meta { color: var(--sv-muted); font-size: 12px; }
