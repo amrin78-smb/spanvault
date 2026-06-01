@@ -253,6 +253,57 @@ label.sv-field .sv-input, label.sv-field .sv-select { font-weight: 400; }
 .sv-modal h2 { margin: 0 0 18px; font-size: 18px; }
 .sv-modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 22px; }
 
+/* ── Full-screen sensor manager ────────────────────────── */
+.sv-modal.full {
+  max-width: 1100px; width: 100%; height: 85vh; display: flex; flex-direction: column;
+}
+.sv-sensor-head { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+.sv-sensor-head h2 { margin: 0; }
+.sv-sensor-cols { display: grid; grid-template-columns: 1.4fr 1fr; gap: 16px; flex: 1; min-height: 0; }
+.sv-sensor-panel {
+  border: 1px solid var(--sv-border); border-radius: 10px; padding: 14px 16px;
+  overflow-y: auto; background: #fff;
+}
+.sv-sensor-panel h3 { margin: 0 0 12px; font-size: 14px; color: var(--sv-muted); text-transform: uppercase; letter-spacing: 0.4px; }
+.sv-sensor-group { margin-bottom: 14px; }
+.sv-sensor-group-title {
+  font-size: 12px; font-weight: 700; color: var(--sv-navy);
+  text-transform: uppercase; letter-spacing: 0.5px; margin: 0 0 6px;
+  border-bottom: 1px solid var(--sv-border); padding-bottom: 4px;
+}
+.sv-sensor-item {
+  display: flex; align-items: center; gap: 10px; padding: 7px 6px; font-size: 13.5px;
+  border-radius: 7px; cursor: pointer;
+}
+.sv-sensor-item:hover { background: var(--sv-bg); }
+.sv-sensor-item .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sv-sensor-item .val { font-weight: 600; color: var(--sv-navy); white-space: nowrap; }
+.sv-sensor-item .oid { color: var(--sv-muted); font-size: 11px; font-family: ui-monospace, monospace; white-space: nowrap; }
+.sv-sensor-item.enabled { cursor: default; }
+
+/* ── SNMP test (inline, in device form) ────────────────── */
+.sv-snmp-test { display: flex; align-items: center; gap: 12px; margin-top: 14px; flex-wrap: wrap; }
+.sv-snmp-test-result { font-size: 13px; font-weight: 600; }
+.sv-snmp-test-result.ok { color: var(--sv-up); }
+.sv-snmp-test-result.err { color: var(--sv-down); }
+
+/* ── SNMP test toast (device detail) ───────────────────── */
+.sv-toast {
+  position: fixed; top: 70px; left: 50%; transform: translateX(-50%);
+  max-width: 80vw; padding: 11px 18px; border-radius: 10px; z-index: 300;
+  font-size: 14px; font-weight: 600; color: #fff; cursor: pointer;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.25);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sv-toast.ok { background: var(--sv-up); }
+.sv-toast.err { background: var(--sv-down); }
+
+/* ── Section heading (sensor graph groups) ─────────────── */
+.sv-section-title {
+  font-size: 13px; font-weight: 700; color: var(--sv-muted);
+  text-transform: uppercase; letter-spacing: 0.5px; margin: 22px 0 10px;
+}
+
 .sv-spinner {
   width: 36px; height: 36px; border-radius: 50%;
   border: 4px solid #e3e6eb; border-top-color: var(--sv-crimson);

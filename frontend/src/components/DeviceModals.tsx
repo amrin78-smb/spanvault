@@ -126,36 +126,39 @@ export function DeviceForm({
         </div>
 
         {form.snmp_enabled && (
-          <div className="sv-form-grid" style={{ marginTop: 14 }}>
-            <label className="sv-field">SNMP Version
-              <select className="sv-select" value={form.snmp_version} onChange={(e) => set('snmp_version', e.target.value)}>
-                <option value="1">v1</option>
-                <option value="2c">v2c</option>
-                <option value="3">v3</option>
-              </select>
-            </label>
-            <label className="sv-field">SNMP Port
-              <input className="sv-input" type="number" value={form.snmp_port}
-                onChange={(e) => set('snmp_port', parseInt(e.target.value, 10) || 161)} />
-            </label>
-            {form.snmp_version !== '3' ? (
-              <label className="sv-field">Community
-                <input className="sv-input" value={form.snmp_community} onChange={(e) => set('snmp_community', e.target.value)} />
+          <>
+            <div className="sv-form-grid" style={{ marginTop: 14 }}>
+              <label className="sv-field">SNMP Version
+                <select className="sv-select" value={form.snmp_version} onChange={(e) => set('snmp_version', e.target.value)}>
+                  <option value="1">v1</option>
+                  <option value="2c">v2c</option>
+                  <option value="3">v3</option>
+                </select>
               </label>
-            ) : (
-              <>
-                <label className="sv-field">v3 User
-                  <input className="sv-input" value={form.snmp_v3_user} onChange={(e) => set('snmp_v3_user', e.target.value)} />
+              <label className="sv-field">SNMP Port
+                <input className="sv-input" type="number" value={form.snmp_port}
+                  onChange={(e) => set('snmp_port', parseInt(e.target.value, 10) || 161)} />
+              </label>
+              {form.snmp_version !== '3' ? (
+                <label className="sv-field">Community
+                  <input className="sv-input" value={form.snmp_community} onChange={(e) => set('snmp_community', e.target.value)} />
                 </label>
-                <label className="sv-field">v3 Auth Pass
-                  <input className="sv-input" type="password" value={form.snmp_v3_auth_pass} onChange={(e) => set('snmp_v3_auth_pass', e.target.value)} />
-                </label>
-                <label className="sv-field">v3 Priv Pass
-                  <input className="sv-input" type="password" value={form.snmp_v3_priv_pass} onChange={(e) => set('snmp_v3_priv_pass', e.target.value)} />
-                </label>
-              </>
-            )}
-          </div>
+              ) : (
+                <>
+                  <label className="sv-field">v3 User
+                    <input className="sv-input" value={form.snmp_v3_user} onChange={(e) => set('snmp_v3_user', e.target.value)} />
+                  </label>
+                  <label className="sv-field">v3 Auth Pass
+                    <input className="sv-input" type="password" value={form.snmp_v3_auth_pass} onChange={(e) => set('snmp_v3_auth_pass', e.target.value)} />
+                  </label>
+                  <label className="sv-field">v3 Priv Pass
+                    <input className="sv-input" type="password" value={form.snmp_v3_priv_pass} onChange={(e) => set('snmp_v3_priv_pass', e.target.value)} />
+                  </label>
+                </>
+              )}
+            </div>
+            <SnmpTest device={device} form={form} />
+          </>
         )}
 
         <div className="sv-modal-actions">
@@ -165,6 +168,55 @@ export function DeviceForm({
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ── Inline SNMP connectivity test (top-level component) ────────
+type SnmpTestResult = {
+  success: boolean; vendor?: string; sysDescr?: string; sysName?: string; message: string;
+};
+
+function SnmpTest({ device, form }: { device: EditableDevice | null; form: any }) {
+  const [testing, setTesting] = useState(false);
+  const [result, setResult] = useState<SnmpTestResult | null>(null);
+
+  async function run() {
+    setTesting(true);
+    setResult(null);
+    try {
+      // Saved devices test their stored credentials; new devices test ad-hoc.
+      const r = device
+        ? await apiSend<SnmpTestResult>(`/api/devices/${device.id}/snmp-test`, 'POST', {})
+        : await apiSend<SnmpTestResult>('/api/snmp-test-adhoc', 'POST', {
+            ip_address: form.ip_address,
+            snmp_version: form.snmp_version,
+            snmp_community: form.snmp_community,
+            snmp_port: form.snmp_port,
+            snmp_v3_user: form.snmp_v3_user,
+            snmp_v3_auth_pass: form.snmp_v3_auth_pass,
+            snmp_v3_priv_pass: form.snmp_v3_priv_pass,
+          });
+      setResult(r);
+    } catch (e: any) {
+      setResult({ success: false, message: e?.message || 'SNMP test failed' });
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  return (
+    <div className="sv-snmp-test">
+      <button className="sv-btn ghost sm" type="button" onClick={run} disabled={testing || !form.ip_address}>
+        {testing ? <><span className="sv-spinner-sm" /> Testing…</> : 'Test SNMP'}
+      </button>
+      {result && (
+        <span className={`sv-snmp-test-result ${result.success ? 'ok' : 'err'}`}>
+          {result.success
+            ? `✓ SNMP OK — ${result.sysDescr || result.sysName || 'connected'}`
+            : `✗ ${result.message}`}
+        </span>
+      )}
     </div>
   );
 }

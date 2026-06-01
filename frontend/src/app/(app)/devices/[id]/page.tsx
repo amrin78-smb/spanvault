@@ -1,12 +1,13 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts';
 import { useApi, apiSend } from '@/lib/api';
 import { StatusDot } from '@/components/StatusDot';
+import SensorManager from '@/components/SensorManager';
 import { StatusBadge, Loading, ErrorBox, Empty, fmtTime, fmtRel, fmtBps } from '@/components/ui';
 
 type Device = {
@@ -14,6 +15,19 @@ type Device = {
   site_name: string | null; current_status: string; last_response_ms: number | null;
   last_seen_at: string | null; last_checked_at: string | null; snmp_enabled: boolean;
   poll_interval_seconds: number; ping_threshold_ms: number; device_vendor: string | null;
+};
+type PingPoint = { bucket: string; avg_ms: number | null; max_loss: number | null; down_samples: number };
+type SnmpPoint = { bucket: string; if_name: string | null; avg_value: number | null };
+type Alert = {
+  id: number; alert_type: string; severity: string; message: string;
+  triggered_at: string; resolved_at: string | null; status: string;
+};
+type Sensor = {
+  id: number; sensor_key: string; sensor_name: string; category: string;
+  metric_name: string; oid: string | null; enabled: boolean;
+};
+type TestResult = {
+  success: boolean; vendor?: string; sysDescr?: string; sysName?: string; message: string;
 };
 
 // Map a detected vendor key (from the collector's SNMP parser) to a label.
@@ -28,12 +42,6 @@ function vendorLabel(v: string | null): string | null {
   if (!v) return null;
   return VENDOR_LABELS[v] || v;
 }
-type PingPoint = { bucket: string; avg_ms: number | null; max_loss: number | null; down_samples: number };
-type SnmpPoint = { bucket: string; if_name: string | null; avg_value: number | null };
-type Alert = {
-  id: number; alert_type: string; severity: string; message: string;
-  triggered_at: string; resolved_at: string | null; status: string;
-};
 
 const RANGES = [
   { key: '24h', label: '24 Hours' },
@@ -41,16 +49,31 @@ const RANGES = [
   { key: '30d', label: '30 Days' },
 ];
 
+const CAT_ORDER = ['system', 'interface', 'vendor'];
+const CAT_LABEL: Record<string, string> = {
+  system: 'System', interface: 'Interfaces', vendor: 'Vendor',
+};
+const CAT_COLOR: Record<string, string> = {
+  system: '#1a2744', interface: '#C8102E', vendor: '#2e9e5b',
+};
+
 export default function DeviceDetailPage() {
   const { id } = useParams<{ id: string }>();
   const [range, setRange] = useState('24h');
+  const [sensorsOpen, setSensorsOpen] = useState(false);
+  const [toast, setToast] = useState<TestResult | null>(null);
 
   const device = useApi<Device>(`/api/devices/${id}`, 20000);
   const ping = useApi<PingPoint[]>(`/api/devices/${id}/ping-history?range=${range}`, 20000);
-  const cpu = useApi<SnmpPoint[]>(`/api/devices/${id}/snmp-history?metric=cpu_pct&range=${range}`);
-  const mem = useApi<SnmpPoint[]>(`/api/devices/${id}/snmp-history?metric=mem_pct&range=${range}`);
-  const ifIn = useApi<SnmpPoint[]>(`/api/devices/${id}/snmp-history?metric=if_in_bps&range=${range}`);
+  const sensors = useApi<Sensor[]>(`/api/devices/${id}/sensors`, 0);
   const alerts = useApi<Alert[]>(`/api/devices/${id}/alerts`, 20000);
+
+  // Auto-dismiss the SNMP-test toast.
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 7000);
+    return () => clearTimeout(t);
+  }, [toast]);
 
   if (device.loading && !device.data) return <Loading />;
   if (device.error) return <ErrorBox message={device.error} />;
@@ -58,14 +81,28 @@ export default function DeviceDetailPage() {
 
   const d = device.data;
   const snmpOn = d.snmp_enabled;
+  const enabledSensors = (sensors.data || []).filter((s) => s.enabled);
+  const sensorsLoading = sensors.loading && !sensors.data;
 
   return (
     <div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 4, flexWrap: 'wrap' }}>
+      {toast && (
+        <div className={`sv-toast ${toast.success ? 'ok' : 'err'}`} onClick={() => setToast(null)}>
+          {toast.success
+            ? `✓ SNMP OK — ${toast.sysDescr || toast.sysName || 'connected'}`
+            : `✗ ${toast.message}`}
+        </div>
+      )}
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4, flexWrap: 'wrap' }}>
         <StatusDot status={d.current_status} size={14} />
         <h1 className="sv-page-title" style={{ margin: 0 }}>{d.name}</h1>
         <StatusBadge status={d.current_status} />
         <div style={{ flex: 1 }} />
+        {snmpOn && (
+          <button className="sv-btn ghost sm" onClick={() => setSensorsOpen(true)}>Manage Sensors</button>
+        )}
+        {snmpOn && <TestSnmpButton deviceId={d.id} onResult={setToast} />}
         <PingNow deviceId={d.id} />
       </div>
       <p className="sv-page-sub">
@@ -116,26 +153,18 @@ export default function DeviceDetailPage() {
       </div>
 
       {snmpOn && (
-        <>
-          <div className="sv-panel">
-            <h2>CPU Utilization (%)</h2>
-            <SingleChart
-              data={(cpu.data || []).map((p) => ({ bucket: p.bucket, value: p.avg_value }))}
-              loading={cpu.loading} color="#1a2744" unit="%"
-            />
+        sensorsLoading ? (
+          <div className="sv-panel"><Loading /></div>
+        ) : enabledSensors.length ? (
+          <SensorGraphs deviceId={d.id} sensors={enabledSensors} range={range} />
+        ) : (
+          <div className="sv-panel" style={{ textAlign: 'center', padding: '32px 20px' }}>
+            <p className="sv-muted" style={{ marginTop: 0 }}>
+              No sensors configured. Run Discovery to choose what to monitor on this device.
+            </p>
+            <button className="sv-btn" onClick={() => setSensorsOpen(true)}>Manage Sensors</button>
           </div>
-          <div className="sv-panel">
-            <h2>Memory Utilization (%)</h2>
-            <SingleChart
-              data={(mem.data || []).map((p) => ({ bucket: p.bucket, value: p.avg_value }))}
-              loading={mem.loading} color="#2e9e5b" unit="%"
-            />
-          </div>
-          <div className="sv-panel">
-            <h2>Interface Traffic — Inbound</h2>
-            <InterfaceChart data={ifIn.data || []} loading={ifIn.loading} />
-          </div>
-        </>
+        )
       )}
 
       <div className="sv-panel">
@@ -164,7 +193,37 @@ export default function DeviceDetailPage() {
           <Empty message="No alerts recorded for this device." />
         )}
       </div>
+
+      {sensorsOpen && (
+        <SensorManager
+          deviceId={d.id}
+          deviceName={d.name}
+          onClose={() => setSensorsOpen(false)}
+          onSaved={() => { setSensorsOpen(false); sensors.reload(); }}
+        />
+      )}
     </div>
+  );
+}
+
+// ── SNMP test button (top-level component) ─────────────────────
+function TestSnmpButton({ deviceId, onResult }: { deviceId: number; onResult: (r: TestResult) => void }) {
+  const [testing, setTesting] = useState(false);
+  async function run() {
+    setTesting(true);
+    try {
+      const r = await apiSend<TestResult>(`/api/devices/${deviceId}/snmp-test`, 'POST', {});
+      onResult(r);
+    } catch (e: any) {
+      onResult({ success: false, message: e?.message || 'SNMP test failed' });
+    } finally {
+      setTesting(false);
+    }
+  }
+  return (
+    <button className="sv-btn ghost sm" onClick={run} disabled={testing}>
+      {testing ? <><span className="sv-spinner-sm" /> Testing…</> : 'Test SNMP'}
+    </button>
   );
 }
 
@@ -213,6 +272,83 @@ function PingNow({ deviceId }: { deviceId: number }) {
   );
 }
 
+// ── Per-sensor graphs grouped by category (top-level component) ─
+function SensorGraphs({
+  deviceId, sensors, range,
+}: {
+  deviceId: number; sensors: Sensor[]; range: string;
+}) {
+  return (
+    <>
+      {CAT_ORDER.filter((c) => sensors.some((s) => s.category === c)).map((cat) => (
+        <div key={cat}>
+          <h2 className="sv-section-title">{CAT_LABEL[cat]}</h2>
+          {sensors.filter((s) => s.category === cat).map((s) => (
+            <SensorChart key={s.id} deviceId={deviceId} sensor={s} range={range} />
+          ))}
+        </div>
+      ))}
+    </>
+  );
+}
+
+type Unit = '%' | 'bps' | 'state' | 'bytes' | 'W' | '°C' | 'count';
+function metricUnit(metric: string): Unit {
+  if (metric.endsWith('_oper')) return 'state';
+  if (metric.endsWith('pct')) return '%';
+  if (metric.endsWith('_bps')) return 'bps';
+  if (metric.includes('bytes')) return 'bytes';
+  if (metric.endsWith('_w')) return 'W';
+  if (metric.includes('temperature')) return '°C';
+  return 'count';
+}
+
+function SensorChart({ deviceId, sensor, range }: { deviceId: number; sensor: Sensor; range: string }) {
+  const hist = useApi<SnmpPoint[]>(
+    `/api/devices/${deviceId}/snmp-history?metric=${encodeURIComponent(sensor.metric_name)}&range=${range}`,
+    0
+  );
+  const unit = metricUnit(sensor.metric_name);
+  const color = CAT_COLOR[sensor.category] || '#1a2744';
+  const data = (hist.data || []).map((p) => ({ bucket: p.bucket, value: p.avg_value != null ? Number(p.avg_value) : null }));
+  const suffix = unit === 'count' || unit === 'state' ? '' : ` (${unit})`;
+
+  const fmtVal = (v: number) => {
+    if (unit === 'bps') return fmtBps(v);
+    if (unit === '%') return `${v}%`;
+    if (unit === 'state') return v >= 0.5 ? 'Up' : 'Down';
+    if (unit === '°C') return `${v} °C`;
+    if (unit === 'W') return `${v} W`;
+    return `${v}`;
+  };
+
+  return (
+    <div className="sv-panel">
+      <h2>{sensor.sensor_name}{suffix}</h2>
+      {hist.loading && !hist.data ? (
+        <Loading />
+      ) : !data.length ? (
+        <Empty message="No data yet for this sensor." />
+      ) : (
+        <ResponsiveContainer width="100%" height={220}>
+          <LineChart data={data} margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#eef0f3" />
+            <XAxis dataKey="bucket" tickFormatter={tickLabel} fontSize={11} minTickGap={40} />
+            <YAxis
+              fontSize={11}
+              width={unit === 'bps' ? 80 : 60}
+              domain={unit === 'state' ? [0, 1] : undefined}
+              tickFormatter={unit === 'bps' ? (v) => fmtBps(Number(v)) : undefined}
+            />
+            <Tooltip labelFormatter={tickLabel} formatter={(v: any) => [fmtVal(Number(v)), sensor.sensor_name]} />
+            <Line type="monotone" dataKey="value" stroke={color} strokeWidth={2} dot={false} connectNulls />
+          </LineChart>
+        </ResponsiveContainer>
+      )}
+    </div>
+  );
+}
+
 // ── Chart helpers (top-level components) ───────────────────────
 function tickLabel(ts: string): string {
   const d = new Date(ts);
@@ -256,41 +392,6 @@ function SingleChart({
         <YAxis fontSize={11} />
         <Tooltip labelFormatter={tickLabel} formatter={(v: any) => [`${v}${unit}`, '']} />
         <Line type="monotone" dataKey="value" stroke={color} strokeWidth={2} dot={false} connectNulls />
-      </LineChart>
-    </ResponsiveContainer>
-  );
-}
-
-const IF_COLORS = ['#C8102E', '#1a2744', '#2e9e5b', '#e6a700', '#7b4fc0', '#0a8ea0', '#d4663b'];
-
-function InterfaceChart({ data, loading }: { data: SnmpPoint[]; loading: boolean }) {
-  if (loading && !data.length) return <Loading />;
-  if (!data.length) return <Empty message="No interface data for this range." />;
-
-  // Pivot rows {bucket, if_name, avg_value} into {bucket, [ifName]: value}.
-  const ifNames = Array.from(new Set(data.map((p) => p.if_name || 'unknown'))).slice(0, IF_COLORS.length);
-  const byBucket: Record<string, any> = {};
-  for (const p of data) {
-    const key = p.bucket;
-    if (!byBucket[key]) byBucket[key] = { bucket: key };
-    byBucket[key][p.if_name || 'unknown'] = p.avg_value != null ? Number(p.avg_value) : null;
-  }
-  const chartData = Object.values(byBucket).sort(
-    (a: any, b: any) => new Date(a.bucket).getTime() - new Date(b.bucket).getTime()
-  );
-
-  return (
-    <ResponsiveContainer width="100%" height={280}>
-      <LineChart data={chartData} margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke="#eef0f3" />
-        <XAxis dataKey="bucket" tickFormatter={tickLabel} fontSize={11} minTickGap={40} />
-        <YAxis fontSize={11} tickFormatter={(v) => fmtBps(v)} width={80} />
-        <Tooltip labelFormatter={tickLabel} formatter={(v: any, n: any) => [fmtBps(v), n]} />
-        <Legend />
-        {ifNames.map((nm, i) => (
-          <Line key={nm} type="monotone" dataKey={nm} stroke={IF_COLORS[i % IF_COLORS.length]}
-            strokeWidth={2} dot={false} connectNulls />
-        ))}
       </LineChart>
     </ResponsiveContainer>
   );
