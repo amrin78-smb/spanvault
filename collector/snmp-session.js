@@ -22,8 +22,11 @@ const OID = {
   ifName:          '1.3.6.1.2.1.31.1.1.1.1',   // ifXTable
   ifHCInOctets:    '1.3.6.1.2.1.31.1.1.1.6',
   ifHCOutOctets:   '1.3.6.1.2.1.31.1.1.1.10',
+  ifHighSpeed:     '1.3.6.1.2.1.31.1.1.1.15',   // ifXTable: speed in Mbps
+  ifAlias:         '1.3.6.1.2.1.31.1.1.1.18',   // ifXTable: admin-configured description
   ifOperStatus:    '1.3.6.1.2.1.2.2.1.8',      // ifTable: 1=up
   ifDescr:         '1.3.6.1.2.1.2.2.1.2',      // fallback name
+  ifPhysAddress:   '1.3.6.1.2.1.2.2.1.6',      // ifTable: MAC address
 };
 const HR_STORAGE_RAM = '1.3.6.1.2.1.25.2.1.2'; // hrStorageRam type
 

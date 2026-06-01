@@ -50,6 +50,26 @@ function avg(rows) {
   return ns.reduce((a, b) => a + b, 0) / ns.length;
 }
 
+// Format ifHighSpeed (Mbps) as a human-friendly link speed.
+function fmtSpeed(mbps) {
+  if (!mbps || mbps <= 0) return '';
+  if (mbps >= 1000) {
+    const g = mbps / 1000;
+    return `${Number.isInteger(g) ? g : g.toFixed(1)} Gbps`;
+  }
+  return `${mbps} Mbps`;
+}
+
+// Format ifPhysAddress (OCTET STRING / Buffer) as colon-separated hex MAC.
+function fmtMac(v) {
+  if (v === null || v === undefined) return '';
+  if (Buffer.isBuffer(v)) {
+    if (v.length === 0) return '';
+    return Array.from(v).map((b) => b.toString(16).padStart(2, '0')).join(':');
+  }
+  return String(v).trim();
+}
+
 // ── labels / units / formatting ───────────────────────────────
 const VENDOR_LABELS = {
   cpu_pct: 'CPU Utilization', mem_pct: 'Memory Usage',
@@ -150,15 +170,21 @@ async function collectCandidates(session, vendor, prev, now, want) {
 
   // Interfaces — oper status + in/out bps (bps needs a prior counter sample).
   if (want.iface) {
-    const [names, descrs, opers, inOct, outOct] = await Promise.all([
+    const [names, descrs, aliases, speeds, macs, opers, inOct, outOct] = await Promise.all([
       walk(session, OID.ifName),
       walk(session, OID.ifDescr),
+      walk(session, OID.ifAlias),
+      walk(session, OID.ifHighSpeed),
+      walk(session, OID.ifPhysAddress),
       walk(session, OID.ifOperStatus),
       walk(session, OID.ifHCInOctets),
       walk(session, OID.ifHCOutOctets),
     ]);
     const nameByIdx = new Map(names.map((n) => [lastIndex(n.oid), str(n.value)]));
     const descrByIdx = new Map(descrs.map((d) => [lastIndex(d.oid), str(d.value)]));
+    const aliasByIdx = new Map(aliases.map((a) => [lastIndex(a.oid), str(a.value)]));
+    const speedByIdx = new Map(speeds.map((s) => [lastIndex(s.oid), num(s.value)]));
+    const macByIdx = new Map(macs.map((m) => [lastIndex(m.oid), fmtMac(m.value)]));
     const inByIdx = new Map(inOct.map((o) => [lastIndex(o.oid), num(o.value)]));
     const outByIdx = new Map(outOct.map((o) => [lastIndex(o.oid), num(o.value)]));
 
@@ -166,11 +192,33 @@ async function collectCandidates(session, vendor, prev, now, want) {
       const idx = lastIndex(o.oid);
       const ifName = nameByIdx.get(idx) || descrByIdx.get(idx) || `if${idx}`;
       const operUp = num(o.value) === 1 ? 1 : 0;
-      candidates.push({
-        key: `if_${idx}_status`, name: `${ifName} — Status`, category: 'interface',
-        std_metric: 'if_oper_status', metric: `if_${idx}_oper`,
-        oid: `${OID.ifOperStatus}.${idx}`, value: operUp, if_index: idx, if_name: ifName, unit: 'state',
+
+      // Enrichment from ifXTable: admin description, link speed, MAC.
+      const alias = (aliasByIdx.get(idx) || '').trim();
+      const descr = (descrByIdx.get(idx) || '').trim();
+      const speed = fmtSpeed(speedByIdx.get(idx));
+      const mac = macByIdx.get(idx) || '';
+      // Show the alias only when it adds info beyond the interface name/descr.
+      const showAlias = alias && alias !== ifName && alias !== descr;
+
+      // Full sensor name suffix: " [alias] · speed" (either part optional).
+      let suffix = '';
+      if (showAlias) suffix += ` [${alias}]`;
+      if (speed) suffix += ` · ${speed}`;
+      // Modal second-line meta: "alias · speed · mac" (no brackets; each optional).
+      const meta = [showAlias ? alias : '', speed, mac].filter(Boolean).join(' · ');
+
+      const mk = (dir, keySfx, stdMetric, metricSfx, oidBase, value, unit) => ({
+        key: `if_${idx}_${keySfx}`,
+        name: `${ifName} — ${dir}${suffix}`,
+        base_name: `${ifName} — ${dir}`,
+        meta,
+        category: 'interface',
+        std_metric: stdMetric, metric: `if_${idx}_${metricSfx}`,
+        oid: `${oidBase}.${idx}`, value, if_index: idx, if_name: ifName, unit,
       });
+
+      candidates.push(mk('Status', 'status', 'if_oper_status', 'oper', OID.ifOperStatus, operUp, 'state'));
 
       const curIn = inByIdx.get(idx);
       const curOut = outByIdx.get(idx);
@@ -188,16 +236,8 @@ async function collectCandidates(session, vendor, prev, now, want) {
       if (prev && curIn !== null && curOut !== null) {
         prev.set(idx, { inOctets: curIn, outOctets: curOut, ts: now });
       }
-      candidates.push({
-        key: `if_${idx}_in`, name: `${ifName} — In`, category: 'interface',
-        std_metric: 'if_in_bps', metric: `if_${idx}_in_bps`,
-        oid: `${OID.ifHCInOctets}.${idx}`, value: inBps, if_index: idx, if_name: ifName, unit: 'bps',
-      });
-      candidates.push({
-        key: `if_${idx}_out`, name: `${ifName} — Out`, category: 'interface',
-        std_metric: 'if_out_bps', metric: `if_${idx}_out_bps`,
-        oid: `${OID.ifHCOutOctets}.${idx}`, value: outBps, if_index: idx, if_name: ifName, unit: 'bps',
-      });
+      candidates.push(mk('In', 'in', 'if_in_bps', 'in_bps', OID.ifHCInOctets, inBps, 'bps'));
+      candidates.push(mk('Out', 'out', 'if_out_bps', 'out_bps', OID.ifHCOutOctets, outBps, 'bps'));
     }
   }
 
@@ -281,6 +321,7 @@ async function discoverDevice(device, overallMs) {
       key: c.key, name: c.name, category: c.category,
       metric_name: c.metric, oid: c.oid,
       current_value: fmtValue(c.value, c.unit), unit: c.unit,
+      base_name: c.base_name || c.name, meta: c.meta || '',
     }));
     return { vendor, sysDescr, sysName, sensors };
   })();

@@ -7,6 +7,7 @@ import { Loading, ErrorBox } from '@/components/ui';
 type DiscoverSensor = {
   key: string; name: string; category: string;
   metric_name: string; oid: string | null; current_value: string; unit: string;
+  base_name?: string; meta?: string;
 };
 type SavedSensor = {
   id: number; sensor_key: string; sensor_name: string; category: string;
@@ -16,6 +17,8 @@ type SavedSensor = {
 type Avail = {
   key: string; name: string; category: string;
   metric_name: string; oid: string | null; current_value?: string;
+  // Interface enrichment from discovery: base_name (line 1) + meta (muted line 2).
+  base_name?: string; meta?: string;
 };
 
 const CAT_ORDER = ['system', 'interface', 'vendor'];
@@ -91,6 +94,7 @@ export default function SensorManager({
           m.set(s.key, {
             key: s.key, name: s.name, category: s.category,
             metric_name: s.metric_name, oid: s.oid, current_value: s.current_value,
+            base_name: s.base_name, meta: s.meta,
           });
         }
         return m;
@@ -169,7 +173,10 @@ export default function SensorManager({
                     {leftGroups[cat].map((it) => (
                       <label key={it.key} className="sv-sensor-item">
                         <input type="checkbox" checked={selected.has(it.key)} onChange={() => toggle(it.key)} />
-                        <span className="nm">{it.name}</span>
+                        <span className="sv-sensor-info">
+                          <span className="nm">{it.base_name || it.name}</span>
+                          {it.meta && <span className="meta">{it.meta}</span>}
+                        </span>
                         {it.current_value !== undefined && <span className="val">{it.current_value}</span>}
                         <span className="oid">{it.oid || ''}</span>
                       </label>
@@ -189,7 +196,10 @@ export default function SensorManager({
                     <div className="sv-sensor-group-title">{CAT_LABEL[cat]}</div>
                     {rightGroups[cat].map((it) => (
                       <div key={it.key} className="sv-sensor-item enabled">
-                        <span className="nm">{it.name}</span>
+                        <span className="sv-sensor-info">
+                          <span className="nm">{it.base_name || it.name}</span>
+                          {it.meta && <span className="meta">{it.meta}</span>}
+                        </span>
                         {it.current_value !== undefined && <span className="val">{it.current_value}</span>}
                         <button className="sv-btn ghost sm" onClick={() => toggle(it.key)}>Remove</button>
                       </div>
