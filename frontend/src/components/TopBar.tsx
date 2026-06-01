@@ -4,6 +4,7 @@ import { useState, useRef, useEffect } from 'react';
 import { useSession, signOut } from 'next-auth/react';
 import { useApi } from '@/lib/api';
 import { IconHome, IconLogout } from './icons';
+import TopBarSearch from './TopBarSearch';
 
 const HUB = process.env.NEXT_PUBLIC_NOCVAULT_HUB_URL || 'http://localhost:3000';
 
@@ -39,7 +40,9 @@ export default function TopBar() {
 
   return (
     <header className="sv-topbar">
-      <div className="sv-topbar-left" />
+      <div className="sv-topbar-left">
+        <TopBarSearch />
+      </div>
       <div className="sv-topbar-right">
         <span className={`sv-collector-pill ${collectorRunning ? 'running' : 'stopped'}`}>
           ● COLLECTOR

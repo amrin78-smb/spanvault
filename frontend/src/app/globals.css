@@ -89,6 +89,48 @@ a { color: inherit; text-decoration: none; }
 .sv-collector-pill.running { background: var(--sv-up); }
 .sv-collector-pill.stopped { background: var(--sv-down); }
 
+/* ── Top-bar device search ─────────────────────────────── */
+.sv-topbar-left { display: flex; align-items: center; min-width: 0; flex: 1; }
+.sv-tbsearch { position: relative; }
+.sv-tbsearch-toggle {
+  display: none; align-items: center; justify-content: center;
+  width: 38px; height: 38px; border-radius: 9px;
+  background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.16);
+  color: #fff; cursor: pointer;
+}
+.sv-tbsearch-toggle:hover { background: rgba(255,255,255,0.16); }
+.sv-tbsearch-field {
+  display: flex; align-items: center; gap: 8px;
+  width: 320px; max-width: 38vw; height: 38px; padding: 0 12px;
+  background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.18);
+  border-radius: 9px; color: #fff;
+}
+.sv-tbsearch-field:focus-within { background: rgba(255,255,255,0.16); border-color: rgba(255,255,255,0.35); }
+.sv-tbsearch-glass { color: rgba(255,255,255,0.7); flex: none; }
+.sv-tbsearch-input {
+  flex: 1; min-width: 0; background: none; border: none; outline: none;
+  color: #fff; font-size: 14px;
+}
+.sv-tbsearch-input::placeholder { color: rgba(255,255,255,0.6); }
+.sv-tbsearch-menu {
+  position: absolute; top: calc(100% + 8px); left: 0;
+  width: 380px; max-width: 80vw; max-height: 60vh; overflow-y: auto;
+  background: #fff; border: 1px solid var(--sv-border); border-radius: 10px;
+  box-shadow: 0 14px 40px rgba(0,0,0,0.22); padding: 6px; z-index: 60;
+}
+
+/* Collapse to an icon on narrow screens; expand to an overlay field on tap. */
+@media (max-width: 720px) {
+  .sv-tbsearch-toggle { display: inline-flex; }
+  .sv-tbsearch-field { display: none; }
+  .sv-tbsearch.open .sv-tbsearch-field {
+    display: flex; position: absolute; top: calc(100% + 8px); left: 0;
+    width: 80vw; max-width: 80vw; background: var(--sv-navy);
+    border-color: rgba(255,255,255,0.35); z-index: 60;
+  }
+  .sv-tbsearch.open .sv-tbsearch-menu { top: calc(100% + 52px); }
+}
+
 .sv-user { position: relative; }
 .sv-user-btn {
   display: flex; align-items: center; gap: 10px;
