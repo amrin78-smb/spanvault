@@ -300,9 +300,17 @@ label.sv-field .sv-input, label.sv-field .sv-select { font-weight: 400; }
 }
 .sv-feed-item:last-child { border-bottom: none; }
 .sv-feed-item:hover { background: var(--sv-bg); }
+.sv-feed-main {
+  display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0;
+  color: inherit; text-decoration: none;
+}
 .sv-feed-item .dev { font-weight: 600; color: var(--sv-crimson); white-space: nowrap; }
 .sv-feed-item .msg { flex: 1; color: var(--sv-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sv-feed-item .when { white-space: nowrap; font-size: 13px; }
+.sv-ack-done {
+  display: inline-flex; align-items: center; gap: 5px; white-space: nowrap;
+  font-size: 12.5px; font-weight: 600; color: var(--sv-up);
+}
 
 /* ── Global alert banner ───────────────────────────────── */
 .sv-alert-banner {

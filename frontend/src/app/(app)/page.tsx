@@ -2,8 +2,10 @@
 
 import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
-import { useApi } from '@/lib/api';
+import { useSession } from 'next-auth/react';
+import { useApi, apiSend } from '@/lib/api';
 import { StatCard, StatusBadge, Loading, ErrorBox, Empty, fmtRel } from '@/components/ui';
+import { IconCheck } from '@/components/icons';
 
 type Summary = {
   total: number; up: number; down: number; warning: number; unknown: number; active_alerts: number;
@@ -18,12 +20,25 @@ type MapSite = { site_id: number; site_name: string; devices: MapNode[] };
 const REFRESH_MS = 30000;
 
 export default function DashboardPage() {
+  const { data: session } = useSession();
+  const ackBy = session?.user?.name || session?.user?.email || 'unknown';
+
   const summary = useApi<Summary>('/api/dashboard/summary', REFRESH_MS);
   const recent = useApi<Alert[]>('/api/alerts?limit=5', REFRESH_MS);
   const map = useApi<MapSite[]>('/api/map', REFRESH_MS);
 
   const updatedAt = useUpdatedAt(summary.data);
   const ago = useSecondsAgo(updatedAt);
+
+  // Track alerts acknowledged this session so the row updates immediately,
+  // before the next poll refreshes the feed.
+  const [acked, setAcked] = useState<Set<number>>(new Set());
+  async function ackAlert(id: number) {
+    await apiSend(`/api/alerts/${id}/acknowledge`, 'POST', { acknowledged_by: ackBy });
+    setAcked((prev) => new Set(prev).add(id));
+    summary.reload();
+    recent.reload();
+  }
 
   return (
     <div>
@@ -61,12 +76,12 @@ export default function DashboardPage() {
         ) : recent.data && recent.data.length ? (
           <div className="sv-feed">
             {recent.data.map((a) => (
-              <Link key={a.id} href={`/devices/${a.device_id}`} className="sv-feed-item">
-                <StatusBadge status={a.severity} />
-                <span className="dev">{a.device_name || a.ip_address || `#${a.device_id}`}</span>
-                <span className="msg">{a.message}</span>
-                <span className="when sv-muted">{fmtRel(a.triggered_at)}</span>
-              </Link>
+              <RecentAlertRow
+                key={a.id}
+                alert={a}
+                acked={acked.has(a.id)}
+                onAck={ackAlert}
+              />
             ))}
           </div>
         ) : (
@@ -114,6 +129,50 @@ export default function DashboardPage() {
           <Empty message="No monitored devices yet." />
         )}
       </div>
+    </div>
+  );
+}
+
+// ── Recent-alerts feed row (top-level component) ───────────────
+function RecentAlertRow({
+  alert, acked, onAck,
+}: {
+  alert: Alert;
+  acked: boolean;
+  onAck: (id: number) => Promise<void>;
+}) {
+  const [acking, setAcking] = useState(false);
+  // Treat both server-side and just-acked-this-session as acknowledged.
+  const isAcked = acked || alert.status === 'acknowledged';
+  const canAck = alert.status === 'active' && !isAcked;
+
+  async function handleAck(e: React.MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (acking) return;
+    setAcking(true);
+    try {
+      await onAck(alert.id);
+    } finally {
+      setAcking(false);
+    }
+  }
+
+  return (
+    <div className="sv-feed-item">
+      <Link href={`/devices/${alert.device_id}`} className="sv-feed-main">
+        <StatusBadge status={alert.severity} />
+        <span className="dev">{alert.device_name || alert.ip_address || `#${alert.device_id}`}</span>
+        <span className="msg">{alert.message}</span>
+        <span className="when sv-muted">{fmtRel(alert.triggered_at)}</span>
+      </Link>
+      {canAck ? (
+        <button className="sv-btn ghost sm" onClick={handleAck} disabled={acking} title="Acknowledge alert">
+          {acking ? 'Acking…' : 'Ack'}
+        </button>
+      ) : isAcked ? (
+        <span className="sv-ack-done" title="Acknowledged"><IconCheck width={14} height={14} /> Acked</span>
+      ) : null}
     </div>
   );
 }
