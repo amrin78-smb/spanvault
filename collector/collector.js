@@ -18,9 +18,10 @@ require('dotenv').config({ path: require('path').join(__dirname, '..', '.env.loc
 
 const { Pool }   = require('pg');
 const ping       = require('ping');
-const snmp       = require('net-snmp');
 const nodemailer = require('nodemailer');
-const { SYSDESCR_OID, detectVendor, getParser } = require('./parsers');
+const { detectVendor } = require('./parsers');
+const { createSession, get, OID } = require('./snmp-session');
+const { collectCandidates } = require('./discovery');
 
 // ── Crash resilience ──────────────────────────────────────────
 process.on('uncaughtException', (err) => {
@@ -81,20 +82,7 @@ async function loadSettings() {
   }
 }
 
-// ── Standard SNMP OIDs ────────────────────────────────────────
-const OID = {
-  sysUpTime:       '1.3.6.1.2.1.1.3.0',
-  hrProcessorLoad: '1.3.6.1.2.1.25.3.3.1.2',   // table: per-processor load %
-  hrStorageType:   '1.3.6.1.2.1.25.2.3.1.2',   // table: storage type OID
-  hrStorageSize:   '1.3.6.1.2.1.25.2.3.1.5',   // table: total units
-  hrStorageUsed:   '1.3.6.1.2.1.25.2.3.1.6',   // table: used units
-  ifName:          '1.3.6.1.2.1.31.1.1.1.1',   // ifXTable
-  ifHCInOctets:    '1.3.6.1.2.1.31.1.1.1.6',
-  ifHCOutOctets:   '1.3.6.1.2.1.31.1.1.1.10',
-  ifOperStatus:    '1.3.6.1.2.1.2.2.1.8',      // ifTable: 1=up
-  ifDescr:         '1.3.6.1.2.1.2.2.1.2',      // fallback name
-};
-const HR_STORAGE_RAM = '1.3.6.1.2.1.25.2.1.2'; // hrStorageRam type
+// Standard OID constants + walk/get live in ./snmp-session (shared with the API).
 
 // Track previous interface octet counters for bps computation.
 // Map<deviceId, Map<ifIndex, { inOctets, outOctets, ts }>>
@@ -217,209 +205,99 @@ async function pingDevice(device) {
 // ══════════════════════════════════════════════════════════════
 // SNMP polling
 // ══════════════════════════════════════════════════════════════
-function createSnmpSession(device) {
-  const port = device.snmp_port || 161;
-  const opts = { port, timeout: 3000, retries: 1 };
-  if (device.snmp_version === '3') {
-    opts.version = snmp.Version3;
-    const user = {
-      name: device.snmp_v3_user || '',
-      level: device.snmp_v3_priv_pass
-        ? snmp.SecurityLevel.authPriv
-        : (device.snmp_v3_auth_pass ? snmp.SecurityLevel.authNoPriv : snmp.SecurityLevel.noAuthNoPriv),
-      authProtocol: snmp.AuthProtocols.sha,
-      authKey: device.snmp_v3_auth_pass || undefined,
-      privProtocol: snmp.PrivProtocols.aes,
-      privKey: device.snmp_v3_priv_pass || undefined,
-    };
-    return snmp.createV3Session(device.ip_address, user, opts);
+// Load the device's enabled sensor selection (empty array = poll standard set).
+async function loadEnabledSensors(deviceId) {
+  try {
+    const r = await sv.query(
+      `SELECT sensor_key, sensor_name, category, metric_name, oid
+         FROM device_sensors WHERE device_id = $1 AND enabled = TRUE`,
+      [deviceId]
+    );
+    return r.rows;
+  } catch (err) {
+    console.error('[snmp] sensor load failed:', err.message);
+    return [];
   }
-  opts.version = device.snmp_version === '1' ? snmp.Version1 : snmp.Version2c;
-  return snmp.createSession(device.ip_address, device.snmp_community || 'public', opts);
-}
-
-// Promisified subtree walk → returns array of { oid, value }
-function walk(session, baseOid) {
-  return new Promise((resolve) => {
-    const out = [];
-    session.subtree(baseOid, 20, (varbinds) => {
-      for (const vb of varbinds) {
-        if (!snmp.isVarbindError(vb)) out.push({ oid: vb.oid, value: vb.value });
-      }
-    }, (err) => {
-      if (err) return resolve(out); // best-effort: return what we have
-      resolve(out);
-    });
-  });
-}
-
-// Promisified scalar GET → returns array of { oid, value } (errors → []).
-function get(session, oids) {
-  return new Promise((resolve) => {
-    try {
-      session.get(oids, (err, varbinds) => {
-        if (err) return resolve([]);
-        const out = [];
-        for (const vb of varbinds || []) {
-          if (!snmp.isVarbindError(vb)) out.push({ oid: vb.oid, value: vb.value });
-        }
-        resolve(out);
-      });
-    } catch (_e) {
-      resolve([]);
-    }
-  });
-}
-
-// Fetch each parser metric: WALK for tables, GET for scalars. Returns a map
-// keyed by metric def `name` → array of { oid, value } varbinds.
-async function fetchVendorMetrics(session, parser) {
-  const raw = {};
-  for (const m of parser.metrics) {
-    if (m.kind === 'table') raw[m.name] = await walk(session, m.oid);
-    else raw[m.name] = await get(session, [m.oid]);
-  }
-  return raw;
-}
-
-// Merge core + vendor samples. A vendor scalar metric (no if_index) overrides
-// the core's standard-MIB sample of the same metric_name — vendor MIBs are more
-// authoritative for cpu_pct/mem_pct on enterprise gear. Interface/table samples
-// from both sides are kept.
-function mergeSamples(core, vendor) {
-  const vendorScalars = new Set(
-    vendor.filter((s) => !s.if_index).map((s) => s.metric_name)
-  );
-  const out = [];
-  for (const s of core) {
-    if (!s.if_index && vendorScalars.has(s.metric_name)) continue; // overridden by vendor
-    out.push(s);
-  }
-  for (const s of vendor) out.push(s);
-  return out;
-}
-
-// Last index segment of an OID (the table row index).
-function lastIndex(oid) {
-  const parts = oid.split('.');
-  return parseInt(parts[parts.length - 1], 10);
 }
 
 async function snmpPollDevice(device) {
-  const session = createSnmpSession(device);
-  const samples = [];       // core standard-MIB samples
-  let vendorSamples = [];    // vendor-specific samples (parser output)
+  const session = createSession(device);
+  let candidates = [];
+  let vendor = device.device_vendor || 'generic';
+
+  // Per-device interface octet history for bps deltas.
+  let prev = ifPrev.get(device.id);
+  if (!prev) { prev = new Map(); ifPrev.set(device.id, prev); }
+  const now = Date.now();
+
+  // If the user has selected sensors, poll only those; otherwise the standard set.
+  const sensors = await loadEnabledSensors(device.id);
+
   try {
     // ── Vendor detection — fetch sysDescr, pick a parser ──────────
-    const sysDescrRows = await get(session, [SYSDESCR_OID]);
+    const sysDescrRows = await get(session, [OID.sysDescr]);
     const sysDescr = sysDescrRows.length ? String(sysDescrRows[0].value) : '';
-    const vendor = detectVendor(sysDescr);
+    vendor = detectVendor(sysDescr);
     await persistVendor(device, vendor);
 
-    // CPU — average hrProcessorLoad across processors.
-    const cpus = await walk(session, OID.hrProcessorLoad);
-    if (cpus.length) {
-      const vals = cpus.map((c) => Number(c.value)).filter((n) => !isNaN(n));
-      if (vals.length) {
-        const avg = vals.reduce((a, b) => a + b, 0) / vals.length;
-        samples.push({ metric_name: 'cpu_pct', value: avg, oid: OID.hrProcessorLoad });
-      }
+    // When sensors are selected, skip OID categories that aren't needed.
+    let want;
+    if (sensors.length) {
+      const keys = new Set(sensors.map((s) => s.sensor_key));
+      const cats = new Set(sensors.map((s) => s.category));
+      want = {
+        cpu: keys.has('cpu'),
+        mem: keys.has('mem'),
+        iface: cats.has('interface'),
+        // Vendor walk also feeds vendor-supplied cpu/mem on enterprise gear.
+        vendor: cats.has('vendor') || ((keys.has('cpu') || keys.has('mem')) && vendor !== 'generic'),
+      };
     }
 
-    // Memory — hrStorage rows of type hrStorageRam.
-    const [types, sizes, useds] = await Promise.all([
-      walk(session, OID.hrStorageType),
-      walk(session, OID.hrStorageSize),
-      walk(session, OID.hrStorageUsed),
-    ]);
-    const sizeByIdx = new Map(sizes.map((s) => [lastIndex(s.oid), Number(s.value)]));
-    const usedByIdx = new Map(useds.map((u) => [lastIndex(u.oid), Number(u.value)]));
-    for (const t of types) {
-      // hrStorageType is an OBJECT IDENTIFIER; net-snmp returns it as a dotted string.
-      const typeStr = String(t.value);
-      if (typeStr.indexOf(HR_STORAGE_RAM) !== -1) {
-        const idx = lastIndex(t.oid);
-        const size = sizeByIdx.get(idx);
-        const used = usedByIdx.get(idx);
-        if (size > 0 && used >= 0) {
-          samples.push({ metric_name: 'mem_pct', value: (used / size) * 100, oid: OID.hrStorageUsed });
-          break;
-        }
-      }
-    }
-
-    // Interfaces — names, oper status, and bps rates from HC octet counters.
-    const [names, descrs, opers, inOct, outOct] = await Promise.all([
-      walk(session, OID.ifName),
-      walk(session, OID.ifDescr),
-      walk(session, OID.ifOperStatus),
-      walk(session, OID.ifHCInOctets),
-      walk(session, OID.ifHCOutOctets),
-    ]);
-    const nameByIdx = new Map(names.map((n) => [lastIndex(n.oid), String(n.value)]));
-    const descrByIdx = new Map(descrs.map((d) => [lastIndex(d.oid), String(d.value)]));
-    const inByIdx = new Map(inOct.map((o) => [lastIndex(o.oid), Number(o.value)]));
-    const outByIdx = new Map(outOct.map((o) => [lastIndex(o.oid), Number(o.value)]));
-
-    const now = Date.now();
-    let prevDev = ifPrev.get(device.id);
-    if (!prevDev) { prevDev = new Map(); ifPrev.set(device.id, prevDev); }
-
-    for (const o of opers) {
-      const idx = lastIndex(o.oid);
-      const ifName = nameByIdx.get(idx) || descrByIdx.get(idx) || `if${idx}`;
-      const operUp = Number(o.value) === 1 ? 1 : 0;
-      samples.push({ metric_name: 'if_oper_status', value: operUp, oid: o.oid, if_index: idx, if_name: ifName });
-
-      const curIn = inByIdx.get(idx);
-      const curOut = outByIdx.get(idx);
-      const prev = prevDev.get(idx);
-      if (prev && curIn !== undefined && curOut !== undefined) {
-        const dtSec = (now - prev.ts) / 1000;
-        if (dtSec > 0) {
-          // Guard against counter wrap/reset → negative delta.
-          const dIn = curIn - prev.inOctets;
-          const dOut = curOut - prev.outOctets;
-          if (dIn >= 0) samples.push({ metric_name: 'if_in_bps', value: (dIn * 8) / dtSec, oid: OID.ifHCInOctets, if_index: idx, if_name: ifName });
-          if (dOut >= 0) samples.push({ metric_name: 'if_out_bps', value: (dOut * 8) / dtSec, oid: OID.ifHCOutOctets, if_index: idx, if_name: ifName });
-        }
-      }
-      if (curIn !== undefined && curOut !== undefined) {
-        prevDev.set(idx, { inOctets: curIn, outOctets: curOut, ts: now });
-      }
-    }
-
-    // ── Vendor-specific OIDs — in addition to the standard set above ──
-    const parser = getParser(device.device_vendor || 'generic');
-    if (parser.metrics.length) {
-      try {
-        const raw = await fetchVendorMetrics(session, parser);
-        vendorSamples = parser.parse(raw) || [];
-      } catch (err) {
-        console.error(`[snmp] ${device.name} vendor parse (${parser.name}) failed:`, err.message);
-      }
-    }
+    candidates = await collectCandidates(session, vendor, prev, now, want);
   } catch (err) {
     console.error(`[snmp] ${device.name} (${device.ip_address}) poll error:`, err.message);
   } finally {
     try { session.close(); } catch (_e) { /* ignore */ }
   }
 
-  // Vendor scalar metrics override core standard-MIB metrics of the same name.
-  const merged = mergeSamples(samples, vendorSamples);
+  // Map candidates → rows to persist.
+  let samples;
+  if (sensors.length) {
+    // Selective: keep only enabled sensors, write with the sensor's metric_name.
+    const byKey = new Map(sensors.map((s) => [s.sensor_key, s]));
+    samples = [];
+    for (const c of candidates) {
+      const sensor = byKey.get(c.key);
+      if (!sensor) continue;
+      samples.push({
+        metric_name: sensor.metric_name, value: c.value, oid: c.oid,
+        if_index: c.if_index, if_name: c.if_name,
+      });
+    }
+  } else {
+    // Backward-compatible: write the standard shared metric_names.
+    samples = candidates.map((c) => ({
+      metric_name: c.std_metric, value: c.value, oid: c.oid,
+      if_index: c.if_index, if_name: c.if_name,
+    }));
+  }
 
-  // Persist samples.
-  for (const s of merged) {
+  // Persist samples (skip ones with no value — e.g. bps on the first poll).
+  let written = 0;
+  for (const s of samples) {
+    if (s.value === null || s.value === undefined) continue;
     await sv.query(
       `INSERT INTO snmp_results (device_id, oid, metric_name, value, if_index, if_name)
        VALUES ($1,$2,$3,$4,$5,$6)`,
       [device.id, s.oid || null, s.metric_name, isFinite(s.value) ? s.value : null,
        s.if_index || null, s.if_name || null]
     );
+    written += 1;
   }
 
-  await evaluateSnmpAlerts(device, merged);
-  return merged.length;
+  await evaluateSnmpAlerts(device, samples);
+  return written;
 }
 
 // Store the detected vendor on the device when it changes (avoids an UPDATE
