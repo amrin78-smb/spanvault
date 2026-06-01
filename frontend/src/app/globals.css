@@ -40,13 +40,19 @@ a { color: inherit; text-decoration: none; }
   height: 100vh;
 }
 .sv-sidebar .brand {
-  padding: 20px 18px;
-  font-size: 20px;
-  font-weight: 700;
-  letter-spacing: 0.5px;
+  padding: 18px 16px;
   border-bottom: 1px solid rgba(255,255,255,0.1);
 }
-.sv-sidebar .brand .accent { color: var(--sv-crimson); }
+.sv-sidebar .brand .sv-logo { width: 100%; max-width: 200px; height: auto; display: block; }
+.sv-sidebar .brand .brand-subtitle {
+  display: block;
+  margin-top: 6px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: rgba(255,255,255,0.55);
+}
 .sv-nav { display: flex; flex-direction: column; padding: 10px 0; flex: 1; }
 .sv-nav a {
   display: flex;
@@ -81,13 +87,6 @@ a { color: inherit; text-decoration: none; }
   top: 0;
   z-index: 20;
 }
-.sv-brand { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
-.sv-brand .sv-logo { width: 240px; height: auto; display: block; }
-.sv-brand-subtitle {
-  font-size: 10px; font-weight: 600; letter-spacing: 2px;
-  color: var(--sv-muted); text-transform: uppercase; padding-left: 2px;
-}
-
 .sv-topbar-right { display: flex; align-items: center; gap: 16px; }
 .sv-collector-pill {
   display: inline-flex; align-items: center;

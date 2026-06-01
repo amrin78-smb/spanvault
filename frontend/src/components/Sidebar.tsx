@@ -20,7 +20,8 @@ export default function Sidebar() {
   return (
     <aside className="sv-sidebar">
       <div className="brand">
-        Span<span className="accent">Vault</span>
+        <img className="sv-logo" src="/spanvault-logo-white.png" alt="SpanVault" />
+        <span className="brand-subtitle">NETWORK MONITORING</span>
       </div>
       <nav className="sv-nav">
         {NAV.map(({ href, label, Icon, exact }) => {

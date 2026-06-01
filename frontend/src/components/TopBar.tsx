@@ -39,10 +39,7 @@ export default function TopBar() {
 
   return (
     <header className="sv-topbar">
-      <div className="sv-brand">
-        <img className="sv-logo" src="/spanvault-logo-white.png" alt="SpanVault" />
-        <span className="sv-brand-subtitle">NETWORK MONITORING</span>
-      </div>
+      <div className="sv-topbar-left" />
       <div className="sv-topbar-right">
         <span className={`sv-collector-pill ${collectorRunning ? 'running' : 'stopped'}`}>
           ● COLLECTOR
