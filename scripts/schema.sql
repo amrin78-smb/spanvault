@@ -27,6 +27,9 @@ CREATE TABLE IF NOT EXISTS monitored_devices (
   created_at                TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at                TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+-- Detected SNMP vendor (populated by the collector's vendor parser system).
+ALTER TABLE monitored_devices ADD COLUMN IF NOT EXISTS device_vendor TEXT;
+
 CREATE UNIQUE INDEX IF NOT EXISTS idx_mdev_ip     ON monitored_devices(ip_address);
 CREATE INDEX        IF NOT EXISTS idx_mdev_nvid   ON monitored_devices(netvault_device_id);
 CREATE INDEX        IF NOT EXISTS idx_mdev_site   ON monitored_devices(site_id);
