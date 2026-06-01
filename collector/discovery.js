@@ -31,7 +31,16 @@ const { detectVendor, getParser } = require('./parsers');
 // ── value coercion ────────────────────────────────────────────
 function num(v) {
   if (v === null || v === undefined) return null;
-  if (Buffer.isBuffer(v)) v = v.toString();
+  // Counter64 values (ifHCInOctets / ifHCOutOctets) arrive from net-snmp as an
+  // 8-byte big-endian Buffer. Interpreting that as a UTF-8 string yields NaN,
+  // which silently dropped every interface bps sample — decode it as a BE
+  // unsigned integer instead. (Shorter counter buffers decode the same way.)
+  if (Buffer.isBuffer(v)) {
+    if (v.length === 0 || v.length > 8) return null;
+    let n = 0;
+    for (const b of v) n = n * 256 + b;
+    return isFinite(n) ? n : null;
+  }
   const n = Number(v);
   return isNaN(n) || !isFinite(n) ? null : n;
 }
