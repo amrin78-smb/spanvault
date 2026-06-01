@@ -153,13 +153,19 @@ app.get('/api/dashboard/summary', wrap(async (_req, res) => {
 
 // Active problems — every device currently down or warning, worst first.
 app.get('/api/dashboard/problems', wrap(async (_req, res) => {
+  // Suppressed devices are hidden — they're covered by their parent's entry.
+  // Each remaining device reports how many of its children are suppressed.
   const r = await sv.query(`
-    SELECT id, name, ip_address, site_id, site_name, current_status,
-           last_response_ms, last_checked_at, last_seen_at, consecutive_failures
-    FROM monitored_devices
-    WHERE active = TRUE AND current_status IN ('down', 'warning')
-    ORDER BY CASE current_status WHEN 'down' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END,
-             name
+    SELECT d.id, d.name, d.ip_address, d.site_id, d.site_name, d.current_status,
+           d.last_response_ms, d.last_checked_at, d.last_seen_at, d.consecutive_failures,
+           (SELECT COUNT(*)::int FROM device_dependencies dd
+              JOIN monitored_devices c ON c.id = dd.child_device_id
+             WHERE dd.parent_device_id = d.id AND c.alert_suppressed = TRUE) AS suppressed_children
+    FROM monitored_devices d
+    WHERE d.active = TRUE AND d.current_status IN ('down', 'warning')
+      AND d.alert_suppressed = FALSE
+    ORDER BY CASE d.current_status WHEN 'down' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END,
+             d.name
   `);
   res.json(r.rows);
 }));
@@ -395,6 +401,86 @@ app.get('/api/devices/:id/alerts', wrap(async (req, res) => {
   res.json(r.rows);
 }));
 
+// ══════════════════════════════════════════════════════════════
+// Device dependencies (parent-child) for alert suppression
+// ══════════════════════════════════════════════════════════════
+async function depInfo(deviceId) {
+  const parent = await sv.query(`
+    SELECT d.id, d.name, d.ip_address, d.site_id, d.site_name, d.current_status
+    FROM device_dependencies dd JOIN monitored_devices d ON d.id = dd.parent_device_id
+    WHERE dd.child_device_id = $1 LIMIT 1
+  `, [deviceId]);
+  const children = await sv.query(`
+    SELECT d.id, d.name, d.ip_address, d.site_id, d.site_name, d.current_status, d.alert_suppressed
+    FROM device_dependencies dd JOIN monitored_devices d ON d.id = dd.child_device_id
+    WHERE dd.parent_device_id = $1 ORDER BY d.name
+  `, [deviceId]);
+  return { parent: parent.rows[0] || null, children: children.rows };
+}
+
+app.get('/api/devices/:id/dependencies', wrap(async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  res.json(await depInfo(id));
+}));
+
+// Set or clear this device's parent. parent_device_id null removes the parent.
+app.post('/api/devices/:id/dependencies', wrap(async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const raw = req.body ? req.body.parent_device_id : null;
+  const parentId = raw === null || raw === undefined || raw === '' ? null : parseInt(raw, 10);
+
+  if (parentId === null) {
+    await sv.query(`DELETE FROM device_dependencies WHERE child_device_id = $1`, [id]);
+    return res.json(await depInfo(id));
+  }
+  if (parentId === id) return res.status(400).json({ error: 'A device cannot depend on itself' });
+  const exists = await sv.query(`SELECT 1 FROM monitored_devices WHERE id = $1`, [parentId]);
+  if (!exists.rows[0]) return res.status(404).json({ error: 'Parent device not found' });
+
+  // Circular-dependency guard: the chosen parent must not be a descendant of
+  // this device (otherwise a cycle would form).
+  const cycle = await sv.query(`
+    WITH RECURSIVE descendants AS (
+      SELECT child_device_id FROM device_dependencies WHERE parent_device_id = $1
+      UNION
+      SELECT dd.child_device_id
+      FROM device_dependencies dd JOIN descendants ds ON ds.child_device_id = dd.parent_device_id
+    )
+    SELECT 1 FROM descendants WHERE child_device_id = $2 LIMIT 1
+  `, [id, parentId]);
+  if (cycle.rows[0]) {
+    return res.status(400).json({ error: 'Circular dependency: that device already depends on this one' });
+  }
+
+  // Single parent per device — replace any existing parent link.
+  await sv.query(`DELETE FROM device_dependencies WHERE child_device_id = $1`, [id]);
+  await sv.query(`
+    INSERT INTO device_dependencies (child_device_id, parent_device_id) VALUES ($1, $2)
+    ON CONFLICT (child_device_id, parent_device_id) DO NOTHING
+  `, [id, parentId]);
+  res.json(await depInfo(id));
+}));
+
+// Full dependency tree (flat array with depth + parent_device_id).
+app.get('/api/dependencies/tree', wrap(async (_req, res) => {
+  const r = await sv.query(`
+    WITH RECURSIVE dep_tree AS (
+      SELECT id, name, ip_address, site_name, current_status, alert_suppressed,
+             NULL::integer AS parent_device_id, 0 AS depth
+      FROM monitored_devices
+      WHERE id NOT IN (SELECT child_device_id FROM device_dependencies) AND active = TRUE
+      UNION ALL
+      SELECT d.id, d.name, d.ip_address, d.site_name, d.current_status, d.alert_suppressed,
+             dd.parent_device_id, dt.depth + 1
+      FROM monitored_devices d
+      JOIN device_dependencies dd ON dd.child_device_id = d.id
+      JOIN dep_tree dt ON dt.id = dd.parent_device_id
+    )
+    SELECT * FROM dep_tree ORDER BY depth, parent_device_id, name
+  `);
+  res.json(r.rows);
+}));
+
 // On-demand single ping (does not write history — just an instant probe)
 app.post('/api/devices/:id/ping-now', wrap(async (req, res) => {
   const id = parseInt(req.params.id, 10);
@@ -587,9 +673,11 @@ app.get('/api/alerts', wrap(async (req, res) => {
   const rows = await sv.query(`
     SELECT a.id, a.device_id, d.name AS device_name, d.ip_address,
            a.alert_type, a.severity, a.message, a.metric_value,
-           a.triggered_at, a.acknowledged_at, a.acknowledged_by, a.resolved_at, a.status
+           a.triggered_at, a.acknowledged_at, a.acknowledged_by, a.resolved_at, a.status,
+           a.suppressed_by, a.suppression_reason, sb.name AS suppressed_by_name
     FROM alerts a
-    LEFT JOIN monitored_devices d ON d.id = a.device_id
+    LEFT JOIN monitored_devices d  ON d.id = a.device_id
+    LEFT JOIN monitored_devices sb ON sb.id = a.suppressed_by
     ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
     ORDER BY a.triggered_at DESC
     LIMIT ${limit}
@@ -713,11 +801,16 @@ app.delete('/api/alert-rules/:id', wrap(async (req, res) => {
 // ══════════════════════════════════════════════════════════════
 app.get('/api/map', wrap(async (_req, res) => {
   const r = await sv.query(`
-    SELECT COALESCE(site_id, 0) AS site_id,
-           COALESCE(site_name, 'Unassigned') AS site_name,
-           id, name, ip_address, device_type, current_status
-    FROM monitored_devices WHERE active = TRUE
-    ORDER BY site_name NULLS LAST, name
+    SELECT COALESCE(d.site_id, 0) AS site_id,
+           COALESCE(d.site_name, 'Unassigned') AS site_name,
+           d.id, d.name, d.ip_address, d.device_type, d.current_status,
+           d.alert_suppressed, d.suppressed_by_device_id,
+           dd.parent_device_id, p.name AS parent_name
+    FROM monitored_devices d
+    LEFT JOIN device_dependencies dd ON dd.child_device_id = d.id
+    LEFT JOIN monitored_devices p ON p.id = dd.parent_device_id
+    WHERE d.active = TRUE
+    ORDER BY d.site_name NULLS LAST, d.name
   `);
   const sites = {};
   for (const row of r.rows) {
@@ -726,6 +819,9 @@ app.get('/api/map', wrap(async (_req, res) => {
     sites[key].devices.push({
       id: row.id, name: row.name, ip_address: row.ip_address,
       device_type: row.device_type, status: row.current_status,
+      alert_suppressed: row.alert_suppressed,
+      suppressed_by_device_id: row.suppressed_by_device_id,
+      parent_device_id: row.parent_device_id, parent_name: row.parent_name,
     });
   }
   res.json(Object.values(sites));
