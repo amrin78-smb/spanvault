@@ -139,32 +139,31 @@ export default function DeviceDetailPage() {
         </div>
       </div>
 
-      <div className="sv-panel">
-        <h2>Ping Latency (ms)</h2>
-        <LatencyChart data={ping.data || []} loading={ping.loading} />
-      </div>
-
-      <div className="sv-panel">
-        <h2>Packet Loss (%)</h2>
-        <SingleChart
-          data={(ping.data || []).map((p) => ({ bucket: p.bucket, value: p.max_loss }))}
-          loading={ping.loading} color="#C8102E" unit="%"
-        />
-      </div>
-
-      {snmpOn && (
-        sensorsLoading ? (
-          <div className="sv-panel"><Loading /></div>
-        ) : enabledSensors.length ? (
+      <div className="sv-sensor-grid">
+        <div className="sv-sensor-cell wide">
+          <h2>Ping Latency (ms)</h2>
+          <LatencyChart data={ping.data || []} loading={ping.loading} />
+        </div>
+        <div className="sv-sensor-cell wide">
+          <h2>Packet Loss (%)</h2>
+          <SingleChart
+            data={(ping.data || []).map((p) => ({ bucket: p.bucket, value: p.max_loss }))}
+            loading={ping.loading} color="#C8102E" unit="%"
+          />
+        </div>
+        {snmpOn && !sensorsLoading && enabledSensors.length > 0 && (
           <SensorGraphs deviceId={d.id} sensors={enabledSensors} range={range} />
-        ) : (
-          <div className="sv-panel" style={{ textAlign: 'center', padding: '32px 20px' }}>
-            <p className="sv-muted" style={{ marginTop: 0 }}>
-              No sensors configured. Run Discovery to choose what to monitor on this device.
-            </p>
-            <button className="sv-btn" onClick={() => setSensorsOpen(true)}>Manage Sensors</button>
-          </div>
-        )
+        )}
+      </div>
+
+      {snmpOn && sensorsLoading && <div className="sv-panel"><Loading /></div>}
+      {snmpOn && !sensorsLoading && enabledSensors.length === 0 && (
+        <div className="sv-panel" style={{ textAlign: 'center', padding: '32px 20px' }}>
+          <p className="sv-muted" style={{ marginTop: 0 }}>
+            No sensors configured. Run Discovery to choose what to monitor on this device.
+          </p>
+          <button className="sv-btn" onClick={() => setSensorsOpen(true)}>Manage Sensors</button>
+        </div>
       )}
 
       <div className="sv-panel">
@@ -332,8 +331,10 @@ function SensorGraphs({
   deviceId: number; sensors: Sensor[]; range: string;
 }) {
   const items = buildGraphItems(sensors);
+  // Returns cells only (no grid wrapper) so they join the page-level
+  // sv-sensor-grid alongside the Ping Latency / Packet Loss cells.
   return (
-    <div className="sv-sensor-grid">
+    <>
       {items.map((it) =>
         it.kind === 'pair' ? (
           <InterfaceTrafficChart
@@ -345,7 +346,7 @@ function SensorGraphs({
           <SensorChart key={it.sensor.id} deviceId={deviceId} sensor={it.sensor} range={range} />
         )
       )}
-    </div>
+    </>
   );
 }
 
@@ -476,11 +477,11 @@ function LatencyChart({ data, loading }: { data: PingPoint[]; loading: boolean }
     ms: p.avg_ms != null ? Number(p.avg_ms) : null,
   }));
   return (
-    <ResponsiveContainer width="100%" height={260}>
-      <LineChart data={chartData} margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
+    <ResponsiveContainer width="100%" height={160}>
+      <LineChart data={chartData} margin={{ top: 5, right: 16, bottom: 5, left: 0 }}>
         <CartesianGrid strokeDasharray="3 3" stroke="#eef0f3" />
-        <XAxis dataKey="bucket" tickFormatter={tickLabel} fontSize={11} minTickGap={40} />
-        <YAxis fontSize={11} />
+        <XAxis dataKey="bucket" tickFormatter={tickLabel} fontSize={10} minTickGap={40} />
+        <YAxis fontSize={10} width={44} />
         <Tooltip labelFormatter={tickLabel} formatter={(v: any) => [`${v} ms`, 'Latency']} />
         <Line type="monotone" dataKey="ms" stroke="#C8102E" strokeWidth={2} dot={false} connectNulls />
       </LineChart>
@@ -497,11 +498,11 @@ function SingleChart({
   if (!data.length) return <Empty message="No data for this range." />;
   const chartData = data.map((p) => ({ bucket: p.bucket, value: p.value != null ? Number(p.value) : null }));
   return (
-    <ResponsiveContainer width="100%" height={240}>
-      <LineChart data={chartData} margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
+    <ResponsiveContainer width="100%" height={160}>
+      <LineChart data={chartData} margin={{ top: 5, right: 16, bottom: 5, left: 0 }}>
         <CartesianGrid strokeDasharray="3 3" stroke="#eef0f3" />
-        <XAxis dataKey="bucket" tickFormatter={tickLabel} fontSize={11} minTickGap={40} />
-        <YAxis fontSize={11} />
+        <XAxis dataKey="bucket" tickFormatter={tickLabel} fontSize={10} minTickGap={40} />
+        <YAxis fontSize={10} width={44} />
         <Tooltip labelFormatter={tickLabel} formatter={(v: any) => [`${v}${unit}`, '']} />
         <Line type="monotone" dataKey="value" stroke={color} strokeWidth={2} dot={false} connectNulls />
       </LineChart>
