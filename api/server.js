@@ -153,7 +153,8 @@ app.get('/api/devices', wrap(async (req, res) => {
     SELECT d.id, d.name, d.ip_address, d.device_type, d.site_id, d.site_name,
            d.current_status, d.last_response_ms, d.last_seen_at, d.last_checked_at,
            d.snmp_enabled, d.poll_interval_seconds, d.netvault_device_id,
-           cpu.value AS latest_cpu_pct, mem.value AS latest_mem_pct
+           cpu.value AS latest_cpu_pct, mem.value AS latest_mem_pct,
+           avail.uptime_24h_pct
     FROM monitored_devices d
     LEFT JOIN LATERAL (
       SELECT value FROM snmp_results
@@ -165,6 +166,12 @@ app.get('/api/devices', wrap(async (req, res) => {
       WHERE device_id = d.id AND metric_name = 'mem_pct'
       ORDER BY ts DESC LIMIT 1
     ) mem ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT ROUND((1 - (SUM(CASE WHEN status <> 'up' THEN 1 ELSE 0 END)::numeric
+                    / NULLIF(COUNT(*), 0))) * 100, 1) AS uptime_24h_pct
+      FROM ping_results
+      WHERE device_id = d.id AND ts >= NOW() - INTERVAL '24 hours'
+    ) avail ON TRUE
     WHERE ${where.join(' AND ')}
     ORDER BY d.site_name NULLS LAST, d.name
   `, params);

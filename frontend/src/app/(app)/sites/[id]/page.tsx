@@ -13,6 +13,7 @@ type Device = {
   id: number; name: string; ip_address: string; device_type: string | null;
   site_id: number | null; site_name: string | null; current_status: string;
   last_response_ms: number | null; last_seen_at: string | null;
+  last_checked_at: string | null; uptime_24h_pct: number | null;
 };
 type Alert = {
   id: number; device_id: number; device_name: string; ip_address: string;
@@ -33,6 +34,30 @@ function countByStatus(devices: Device[]) {
 
 function fmtMs(ms: number | null): string {
   return ms != null ? `${Number(ms).toFixed(0)} ms` : '—';
+}
+
+function fmtAvail(pct: number | null): string {
+  return pct != null ? `${Number(pct).toFixed(1)}%` : '—';
+}
+
+// Colour a 24h availability figure: green ≥99%, warning ≥95%, red below.
+function availColor(pct: number | null): string {
+  if (pct == null) return 'var(--sv-muted)';
+  if (pct >= 99) return 'var(--sv-up)';
+  if (pct >= 95) return 'var(--sv-warning)';
+  return 'var(--sv-down)';
+}
+
+// "8 up (80%) · 2 down (20%) · …" — only non-zero categories, percent of total.
+function statusSummary(counts: { up: number; down: number; warning: number; unknown: number }, total: number): string {
+  if (!total) return 'No devices';
+  const pct = (n: number) => `${Math.round((n / total) * 100)}%`;
+  const parts: string[] = [];
+  if (counts.up) parts.push(`${counts.up} up (${pct(counts.up)})`);
+  if (counts.down) parts.push(`${counts.down} down (${pct(counts.down)})`);
+  if (counts.warning) parts.push(`${counts.warning} warning (${pct(counts.warning)})`);
+  if (counts.unknown) parts.push(`${counts.unknown} unknown (${pct(counts.unknown)})`);
+  return parts.join(' · ');
 }
 
 export default function SiteDetailPage() {
@@ -68,6 +93,9 @@ export default function SiteDetailPage() {
         {siteCity ? `${siteCity} · ` : ''}{site?.code ? `${site.code} · ` : ''}
         {deviceList.length} {deviceList.length === 1 ? 'device' : 'devices'}
       </p>
+      {deviceList.length > 0 && (
+        <p className="sv-status-summary">{statusSummary(counts, deviceList.length)}</p>
+      )}
 
       {(sites.error || devices.error) && <ErrorBox message={sites.error || devices.error || ''} />}
 
@@ -99,7 +127,16 @@ export default function SiteDetailPage() {
         {devices.loading && !devices.data ? (
           <Loading />
         ) : deviceList.length ? (
-          deviceList.map((d) => <SiteDeviceRow key={d.id} device={d} />)
+          <>
+            <div className="sv-dev-row sv-dev-head">
+              <span style={{ width: 11, flex: 'none' }} />
+              <span className="sv-dev-id">Device</span>
+              <span className="sv-dev-lat">Latency</span>
+              <span className="sv-dev-col">Last Poll</span>
+              <span className="sv-dev-col">24h Avail.</span>
+            </div>
+            {deviceList.map((d) => <SiteDeviceRow key={d.id} device={d} />)}
+          </>
         ) : (
           <Empty message="No devices monitored at this site." />
         )}
@@ -170,6 +207,12 @@ function SiteDeviceRow({ device }: { device: Device }) {
       <div className="sv-dev-lat">
         {fmtMs(device.last_response_ms)}
         <div className="sv-muted">{fmtRel(device.last_seen_at)}</div>
+      </div>
+      <div className="sv-dev-col" title={device.last_checked_at ? fmtTime(device.last_checked_at) : 'Never polled'}>
+        {fmtRel(device.last_checked_at)}
+      </div>
+      <div className="sv-dev-col" style={{ color: availColor(device.uptime_24h_pct), fontWeight: 600 }}>
+        {fmtAvail(device.uptime_24h_pct)}
       </div>
     </div>
   );
