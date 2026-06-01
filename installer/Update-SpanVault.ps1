@@ -25,7 +25,7 @@
     .env.local templates. Required on first install.
 
 .PARAMETER InstallDir
-    Where SpanVault lives. Default: C:\NocVault\SpanVault
+    Where SpanVault lives. Default: C:\Apps\SpanVault
 
 .PARAMETER Branch
     Git branch to deploy. Default: main
@@ -37,7 +37,7 @@
 [CmdletBinding()]
 param(
     [string]$ServerIp,
-    [string]$InstallDir = 'C:\NocVault\SpanVault',
+    [string]$InstallDir = 'C:\Apps\SpanVault',
     [string]$Branch     = 'main'
 )
 
