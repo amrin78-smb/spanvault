@@ -43,11 +43,18 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# The repo is cloned one level deeper than the install dir: the install dir
+# ($InstallDir) holds top-level artifacts (logs, nssm), while the application
+# code lives in the 'app' subfolder. All git/npm/build/file operations and the
+# NSSM working directories target $AppRoot / $Frontend, not $InstallDir.
+$AppRoot  = Join-Path $InstallDir 'app'
+$Frontend = Join-Path $AppRoot 'frontend'
+
 # ── Configuration ──────────────────────────────────────────────
 $Services = @(
-    @{ Name = 'SpanVault-API';       App = 'node'; Args = 'api\server.js';            Dir = $InstallDir },
-    @{ Name = 'SpanVault-Collector'; App = 'node'; Args = 'collector\collector.js';   Dir = $InstallDir },
-    @{ Name = 'SpanVault-App';       App = 'node'; Args = 'node_modules\next\dist\bin\next start -p 3008'; Dir = (Join-Path $InstallDir 'frontend') }
+    @{ Name = 'SpanVault-API';       App = 'node'; Args = 'api\server.js';            Dir = $AppRoot },
+    @{ Name = 'SpanVault-Collector'; App = 'node'; Args = 'collector\collector.js';   Dir = $AppRoot },
+    @{ Name = 'SpanVault-App';       App = 'node'; Args = 'node_modules\next\dist\bin\next start -p 3008'; Dir = $Frontend }
 )
 $PsqlUser = 'postgres'   # adjust if your schema apply uses a different superuser
 $DbName   = 'spanvault'
@@ -71,8 +78,8 @@ Write-Ok "nssm: $nssm"
 Write-Ok "git:  $git"
 Write-Ok "npm:  $npm"
 
-if (-not (Test-Path $InstallDir)) {
-    throw "Install directory '$InstallDir' does not exist. Clone the repo there first, then re-run."
+if (-not (Test-Path $AppRoot)) {
+    throw "App directory '$AppRoot' does not exist. Clone the repo into '$AppRoot' first, then re-run."
 }
 
 # ── 1. Stop services ───────────────────────────────────────────
@@ -98,7 +105,7 @@ $ErrorActionPreference = $prevEAP
 
 # ── 2. Pull latest code ────────────────────────────────────────
 Write-Step 'Pulling latest code'
-Push-Location $InstallDir
+Push-Location $AppRoot
 & $git fetch --all --prune
 & $git checkout $Branch
 & $git pull origin $Branch
@@ -107,10 +114,10 @@ Pop-Location
 
 # ── 3. Write .env.local from template (SERVER_IP substitution) ──
 Write-Step 'Writing environment files'
-$rootExample = Join-Path $InstallDir '.env.local.example'
-$rootEnv     = Join-Path $InstallDir '.env.local'
-$feExample   = Join-Path $InstallDir 'frontend\.env.local.example'
-$feEnv       = Join-Path $InstallDir 'frontend\.env.local'
+$rootExample = Join-Path $AppRoot '.env.local.example'
+$rootEnv     = Join-Path $AppRoot '.env.local'
+$feExample   = Join-Path $Frontend '.env.local.example'
+$feEnv       = Join-Path $Frontend '.env.local'
 
 function Write-EnvFile($examplePath, $targetPath) {
     if (-not (Test-Path $examplePath)) { Write-Warn "Template missing: $examplePath"; return }
@@ -130,13 +137,13 @@ Write-EnvFile $feExample   $feEnv
 
 # ── 4. Install dependencies ────────────────────────────────────
 Write-Step 'Installing dependencies (root)'
-Push-Location $InstallDir
+Push-Location $AppRoot
 & $npm install --omit=dev
 Write-Ok 'Root dependencies installed'
 Pop-Location
 
 Write-Step 'Installing dependencies (frontend)'
-Push-Location (Join-Path $InstallDir 'frontend')
+Push-Location $Frontend
 & $npm install
 Write-Ok 'Frontend dependencies installed'
 Pop-Location
@@ -144,7 +151,7 @@ Pop-Location
 # ── 5. Apply database schema (idempotent) ──────────────────────
 Write-Step 'Applying database schema'
 $psql = Get-Command psql -ErrorAction SilentlyContinue
-$schema = Join-Path $InstallDir 'scripts\schema.sql'
+$schema = Join-Path $AppRoot 'scripts\schema.sql'
 if ($psql -and (Test-Path $schema)) {
     & $psql.Source -U $PsqlUser -d $DbName -f $schema
     Write-Ok 'Schema applied'
@@ -154,7 +161,7 @@ if ($psql -and (Test-Path $schema)) {
 
 # ── 6. Build frontend (NOT standalone) ─────────────────────────
 Write-Step 'Building frontend'
-Push-Location (Join-Path $InstallDir 'frontend')
+Push-Location $Frontend
 & $npm run build
 Write-Ok 'Frontend built'
 Pop-Location
