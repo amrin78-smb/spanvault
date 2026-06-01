@@ -22,14 +22,14 @@ export default function TopBar() {
     return () => document.removeEventListener('mousedown', onClick);
   }, []);
 
-  const name = session?.user?.name || session?.user?.email || 'User';
+  const userName = session?.user?.name;
+  const userEmail = session?.user?.email;
   const role = (session?.user as any)?.role || '';
-  const initials = name
-    .split(' ')
-    .map((p) => p[0])
-    .slice(0, 2)
-    .join('')
-    .toUpperCase();
+  // Full label shown next to the avatar: name, else email, else "User".
+  const displayName = userName || userEmail || 'User';
+  // Avatar initial priority: name → email local-part (before @) → "U".
+  const initialSource = userName || (userEmail ? userEmail.split('@')[0] : '');
+  const avatarInitial = initialSource ? initialSource.trim().charAt(0).toUpperCase() : 'U';
 
   function handleSignOut() {
     signOut({ redirect: false }).then(() => {
@@ -45,17 +45,17 @@ export default function TopBar() {
           ● COLLECTOR
         </span>
         <div className="sv-user" ref={ref}>
-        <button className="sv-user-btn" onClick={() => setOpen((o) => !o)} title={name}>
-          <div className="sv-avatar">{initials || 'U'}</div>
+        <button className="sv-user-btn" onClick={() => setOpen((o) => !o)} title={displayName}>
+          <div className="sv-avatar">{avatarInitial}</div>
           <div className="sv-user-meta">
-            <span className="sv-user-name">{name}</span>
+            <span className="sv-user-name">{displayName}</span>
             {role && <span className="sv-user-role">{role}</span>}
           </div>
         </button>
         {open && (
           <div className="sv-dropdown">
             <div className="who">
-              <strong>{name}</strong>
+              <strong>{displayName}</strong>
               {role && <span>{role}</span>}
             </div>
             <a className="sv-dropdown-item" href={`${HUB}/launcher`}>
