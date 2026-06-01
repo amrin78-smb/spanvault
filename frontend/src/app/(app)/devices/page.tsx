@@ -13,6 +13,8 @@ type Device = {
   last_response_ms: number | null; last_seen_at: string | null;
   snmp_enabled: boolean; poll_interval_seconds: number; netvault_device_id: number | null;
   latest_cpu_pct: number | null; latest_mem_pct: number | null;
+  suppressed_by_device_id: number | null;
+  parent_device_id: number | null; parent_name: string | null;
 };
 type Site = { id: number; name: string };
 type SiteGroup = { key: string; name: string; siteId: number | null; devices: Device[] };
@@ -226,6 +228,11 @@ function DeviceRow({
           </Link>
         </div>
         <div className="ip">{device.ip_address}{device.device_type ? ` · ${device.device_type}` : ''}</div>
+        {device.parent_name && (
+          <div className="sv-muted" style={{ fontSize: 11 }} title={`Depends on ${device.parent_name}`}>
+            ↑ {device.parent_name}
+          </div>
+        )}
       </div>
       <div className="sv-dev-lat">
         {fmtMs(device.last_response_ms)}
