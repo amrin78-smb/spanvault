@@ -13,8 +13,21 @@ type Device = {
   id: number; name: string; ip_address: string; device_type: string | null;
   site_name: string | null; current_status: string; last_response_ms: number | null;
   last_seen_at: string | null; last_checked_at: string | null; snmp_enabled: boolean;
-  poll_interval_seconds: number; ping_threshold_ms: number;
+  poll_interval_seconds: number; ping_threshold_ms: number; device_vendor: string | null;
 };
+
+// Map a detected vendor key (from the collector's SNMP parser) to a label.
+const VENDOR_LABELS: Record<string, string> = {
+  fortinet: 'Fortinet', cisco: 'Cisco', aruba: 'Aruba', paloalto: 'Palo Alto',
+  sangfor: 'Sangfor', 'hpe-procurve': 'HPE ProCurve', 'hpe-comware': 'HPE Comware',
+  juniper: 'Juniper', huawei: 'Huawei', mikrotik: 'MikroTik', ubiquiti: 'Ubiquiti',
+  dell: 'Dell', extreme: 'Extreme', brocade: 'Brocade', meraki: 'Cisco Meraki',
+  netgear: 'Netgear', tplink: 'TP-Link', generic: 'Generic (standard MIBs)',
+};
+function vendorLabel(v: string | null): string | null {
+  if (!v) return null;
+  return VENDOR_LABELS[v] || v;
+}
 type PingPoint = { bucket: string; avg_ms: number | null; max_loss: number | null; down_samples: number };
 type SnmpPoint = { bucket: string; if_name: string | null; avg_value: number | null };
 type Alert = {
@@ -55,7 +68,10 @@ export default function DeviceDetailPage() {
         <div style={{ flex: 1 }} />
         <PingNow deviceId={d.id} />
       </div>
-      <p className="sv-page-sub">{d.ip_address} · {d.device_type || 'Unknown type'} · {d.site_name || 'Unassigned'}</p>
+      <p className="sv-page-sub">
+        {d.ip_address} · {d.device_type || 'Unknown type'} · {d.site_name || 'Unassigned'}
+        {vendorLabel(d.device_vendor) && <> · {vendorLabel(d.device_vendor)}</>}
+      </p>
 
       <div className="sv-cards">
         <div className="sv-card total">
