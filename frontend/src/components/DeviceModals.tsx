@@ -22,6 +22,13 @@ export type NvDevice = {
   device_type: string | null; site_id: number | null; site_name: string | null;
 };
 
+const DEVICE_TYPES = [
+  'Access Point', 'Core Switch', 'Firewall', 'IP Camera', 'IP Phone',
+  'Load Balancer', 'NAS / Storage', 'PDU', 'Printer', 'Router',
+  'SD-WAN Appliance', 'Server', 'Switch', 'UPS', 'VPN Gateway',
+  'WAN Optimizer', 'Wireless Controller', 'Other',
+];
+
 const EMPTY_FORM: any = {
   name: '', ip_address: '', device_type: '', site_id: '',
   snmp_enabled: false, snmp_version: '2c', snmp_community: 'public', snmp_port: 161,
@@ -89,7 +96,10 @@ export function DeviceForm({
             <input className="sv-input" value={form.ip_address} onChange={(e) => set('ip_address', e.target.value)} />
           </label>
           <label className="sv-field">Device Type
-            <input className="sv-input" value={form.device_type} onChange={(e) => set('device_type', e.target.value)} />
+            <select className="sv-select" value={form.device_type} onChange={(e) => set('device_type', e.target.value)}>
+              <option value="" disabled>-- Select device type --</option>
+              {DEVICE_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+            </select>
           </label>
           <label className="sv-field">Site
             <select className="sv-select" value={form.site_id} onChange={(e) => set('site_id', e.target.value)}>
