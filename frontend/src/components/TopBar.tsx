@@ -25,20 +25,18 @@ export default function TopBar() {
 
   const user = session?.user as any;
   const role = user?.role || '';
-  // Label shown next to the avatar: name, else the email local-part, else "U".
-  // Never the generic "User" placeholder.
-  const displayName = user?.name || user?.email?.split('@')[0] || 'U';
   // Avatar initials: up to two from the name's words, else the email's first
   // letter, else "U".
-  const avatarInitial = user?.name
+  const initials = user?.name
     ? user.name.split(' ').map((n: string) => n[0]).join('').toUpperCase().slice(0, 2)
-    : (user?.email?.[0]?.toUpperCase() || 'U');
+    : (user?.email?.[0] || 'U').toUpperCase();
+  // Label shown next to the avatar: name, else the email local-part.
+  const displayName = user?.name || user?.email?.split('@')[0] || '';
 
-  function handleSignOut() {
-    signOut({ redirect: false }).then(() => {
-      window.location.href = `${HUB}/launcher`;
-    });
-  }
+  const handleSignOut = async () => {
+    await signOut({ redirect: false });
+    window.location.href = `${HUB}/launcher`;
+  };
 
   return (
     <header className="sv-topbar">
@@ -51,7 +49,7 @@ export default function TopBar() {
         </span>
         <div className="sv-user" ref={ref}>
         <button className="sv-user-btn" onClick={() => setOpen((o) => !o)} title={displayName}>
-          <div className="sv-avatar">{avatarInitial}</div>
+          <div className="sv-avatar">{initials}</div>
           <div className="sv-user-meta">
             <span className="sv-user-name">{displayName}</span>
             {role && <span className="sv-user-role">{role}</span>}
