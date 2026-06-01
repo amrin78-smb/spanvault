@@ -142,6 +142,35 @@ CREATE TABLE IF NOT EXISTS maintenance_windows (
 );
 CREATE INDEX IF NOT EXISTS idx_maint_time ON maintenance_windows(starts_at, ends_at);
 
+-- ── Device dependencies (parent-child) for alert suppression ──────────────────
+-- When a parent device is down, alerts for its children are suppressed (the
+-- child outage is assumed to be a consequence of the parent's outage).
+CREATE TABLE IF NOT EXISTS device_dependencies (
+  id               SERIAL PRIMARY KEY,
+  child_device_id  INTEGER NOT NULL REFERENCES monitored_devices(id) ON DELETE CASCADE,
+  parent_device_id INTEGER NOT NULL REFERENCES monitored_devices(id) ON DELETE CASCADE,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT no_self_dependency CHECK (child_device_id <> parent_device_id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_dep_child_parent
+  ON device_dependencies(child_device_id, parent_device_id);
+CREATE INDEX IF NOT EXISTS idx_dep_parent
+  ON device_dependencies(parent_device_id);
+
+-- Alerts can be marked suppressed (resolved because a parent is down).
+ALTER TABLE alerts ADD COLUMN IF NOT EXISTS suppressed_by INTEGER
+  REFERENCES monitored_devices(id) ON DELETE SET NULL;
+ALTER TABLE alerts ADD COLUMN IF NOT EXISTS suppression_reason TEXT;
+
+-- Devices track their current suppression state for fast UI/collector lookups.
+ALTER TABLE monitored_devices ADD COLUMN IF NOT EXISTS
+  alert_suppressed BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE monitored_devices ADD COLUMN IF NOT EXISTS
+  suppressed_by_device_id INTEGER REFERENCES monitored_devices(id) ON DELETE SET NULL;
+
+GRANT ALL PRIVILEGES ON TABLE device_dependencies TO spanvault_user;
+GRANT ALL PRIVILEGES ON SEQUENCE device_dependencies_id_seq TO spanvault_user;
+
 CREATE TABLE IF NOT EXISTS app_settings (
   key   TEXT PRIMARY KEY,
   value TEXT
