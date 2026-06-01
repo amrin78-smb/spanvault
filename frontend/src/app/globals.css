@@ -74,41 +74,46 @@ a { color: inherit; text-decoration: none; }
   border-bottom: 1px solid var(--sv-border);
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: space-between;
   gap: 14px;
   padding: 0 22px;
   position: sticky;
   top: 0;
   z-index: 20;
 }
-.sv-topbar .home-btn {
-  display: flex; align-items: center; justify-content: center;
-  width: 36px; height: 36px; border-radius: 8px;
-  color: var(--sv-navy); background: var(--sv-bg);
-}
-.sv-topbar .home-btn:hover { background: #e9ebf0; }
+.sv-topbar .sv-logo { width: 120px; height: auto; display: block; }
 
 .sv-user { position: relative; }
+.sv-user-btn {
+  display: flex; align-items: center; gap: 10px;
+  border: none; background: none; cursor: pointer; padding: 4px 6px;
+  border-radius: 8px;
+}
+.sv-user-btn:hover { background: var(--sv-bg); }
 .sv-avatar {
   width: 34px; height: 34px; border-radius: 50%;
   background: var(--sv-crimson); color: #fff;
   display: flex; align-items: center; justify-content: center;
-  font-weight: 600; font-size: 14px; cursor: pointer;
+  font-weight: 600; font-size: 14px; flex-shrink: 0;
 }
+.sv-user-meta { display: flex; flex-direction: column; align-items: flex-start; line-height: 1.2; }
+.sv-user-name { font-size: 13px; font-weight: 600; color: var(--sv-text); }
+.sv-user-role { font-size: 11px; color: var(--sv-muted); }
 .sv-dropdown {
-  position: absolute; right: 0; top: 44px;
+  position: absolute; right: 0; top: 48px;
   background: #fff; border: 1px solid var(--sv-border);
   border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,0.12);
   min-width: 200px; padding: 8px; z-index: 30;
 }
-.sv-dropdown .who { padding: 8px 10px; font-size: 13px; color: var(--sv-muted); }
+.sv-dropdown .who { padding: 8px 10px 10px; font-size: 13px; color: var(--sv-muted); border-bottom: 1px solid var(--sv-border); margin-bottom: 6px; }
 .sv-dropdown .who strong { display: block; color: var(--sv-text); font-size: 14px; }
-.sv-dropdown button {
+.sv-dropdown-item {
+  display: flex; align-items: center; gap: 9px;
   width: 100%; text-align: left; padding: 9px 10px; border: none;
   background: none; cursor: pointer; font-size: 14px; border-radius: 6px;
-  color: var(--sv-text);
+  color: var(--sv-text); text-decoration: none;
 }
-.sv-dropdown button:hover { background: var(--sv-bg); }
+.sv-dropdown-item:hover { background: var(--sv-bg); }
 
 .sv-content { padding: 24px 28px; background: #fff; flex: 1; }
 

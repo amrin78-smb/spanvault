@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { useSession, signOut } from 'next-auth/react';
-import { IconHome } from './icons';
+import { IconHome, IconLogout } from './icons';
 
 const HUB = process.env.NEXT_PUBLIC_NOCVAULT_HUB_URL || 'http://localhost:3000';
 
@@ -20,6 +20,7 @@ export default function TopBar() {
   }, []);
 
   const name = session?.user?.name || session?.user?.email || 'User';
+  const role = (session?.user as any)?.role || '';
   const initials = name
     .split(' ')
     .map((p) => p[0])
@@ -35,21 +36,29 @@ export default function TopBar() {
 
   return (
     <header className="sv-topbar">
-      <a className="home-btn" href={`${HUB}/launcher`} title="NocVault launcher">
-        <IconHome />
-      </a>
+      <img className="sv-logo" src="/spanvault-logo-white.png" alt="SpanVault" />
       <div className="sv-user" ref={ref}>
-        <div className="sv-avatar" onClick={() => setOpen((o) => !o)} title={name}>
-          {initials || 'U'}
-        </div>
+        <button className="sv-user-btn" onClick={() => setOpen((o) => !o)} title={name}>
+          <div className="sv-avatar">{initials || 'U'}</div>
+          <div className="sv-user-meta">
+            <span className="sv-user-name">{name}</span>
+            {role && <span className="sv-user-role">{role}</span>}
+          </div>
+        </button>
         {open && (
           <div className="sv-dropdown">
             <div className="who">
               <strong>{name}</strong>
-              {session?.user?.email}
-              {(session?.user as any)?.role ? ` · ${(session?.user as any).role}` : ''}
+              {role && <span>{role}</span>}
             </div>
-            <button onClick={handleSignOut}>Sign out</button>
+            <a className="sv-dropdown-item" href={`${HUB}/launcher`}>
+              <IconHome width={16} height={16} />
+              NocVault Hub
+            </a>
+            <button className="sv-dropdown-item" onClick={handleSignOut}>
+              <IconLogout width={16} height={16} />
+              Sign out
+            </button>
           </div>
         )}
       </div>
