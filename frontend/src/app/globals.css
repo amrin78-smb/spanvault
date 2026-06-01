@@ -510,3 +510,107 @@ label.sv-field .sv-input, label.sv-field .sv-select { font-weight: 400; }
 .sv-mon.snmp { border-color: #c9d3e6; background: #f3f6fc; color: var(--sv-navy); }
 .sv-mon.soon { color: var(--sv-unknown); background: #f7f8fa; border-style: dashed; }
 .sv-mon .m { color: var(--sv-text); }
+
+/* ══ Dashboard overhaul ══════════════════════════════════ */
+/* Row 1 — clickable stat cards with trend arrow */
+.sv-dash-stats { display: grid; grid-template-columns: repeat(6, 1fr); gap: 14px; margin-bottom: 18px; }
+@media (max-width: 1200px) { .sv-dash-stats { grid-template-columns: repeat(3, 1fr); } }
+@media (max-width: 640px)  { .sv-dash-stats { grid-template-columns: repeat(2, 1fr); } }
+.sv-stat {
+  display: block; background: #fff; border: 1px solid var(--sv-border);
+  border-left: 4px solid var(--sv-unknown); border-radius: 10px;
+  padding: 14px 16px; box-shadow: 0 1px 2px rgba(16,24,40,0.04);
+  transition: box-shadow .15s, transform .15s;
+}
+.sv-stat:hover { box-shadow: 0 6px 18px rgba(16,24,40,0.10); transform: translateY(-1px); }
+.sv-stat.up { border-left-color: var(--sv-up); }
+.sv-stat.down { border-left-color: var(--sv-down); }
+.sv-stat.warning { border-left-color: var(--sv-warning); }
+.sv-stat.unknown { border-left-color: var(--sv-unknown); }
+.sv-stat.total { border-left-color: var(--sv-navy); }
+.sv-stat.alerts { border-left-color: var(--sv-down); }
+.sv-stat-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.sv-stat .num { font-size: 30px; font-weight: 700; line-height: 1; color: var(--sv-text); }
+.sv-stat .label { color: var(--sv-muted); font-size: 12px; margin-top: 8px; text-transform: uppercase; letter-spacing: .4px; }
+.sv-stat .trend { font-size: 14px; font-weight: 700; }
+.sv-stat .trend.good { color: var(--sv-up); }
+.sv-stat .trend.bad { color: var(--sv-down); }
+.sv-stat.pulse { animation: sv-card-pulse 1.6s ease-in-out infinite; }
+@keyframes sv-card-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(200,16,46,0.0); }
+  50%      { box-shadow: 0 0 0 4px rgba(200,16,46,0.14); }
+}
+.sv-stat.pulse.warning { animation-name: sv-card-pulse-warn; }
+@keyframes sv-card-pulse-warn {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(230,167,0,0.0); }
+  50%      { box-shadow: 0 0 0 4px rgba(230,167,0,0.22); }
+}
+
+/* Rows 2-4 — responsive column grids */
+.sv-dash-row { display: grid; gap: 18px; margin-bottom: 18px; }
+.sv-dash-row.r6040 { grid-template-columns: 3fr 2fr; }
+.sv-dash-row.r5050 { grid-template-columns: 1fr 1fr; }
+@media (max-width: 900px) {
+  .sv-dash-row.r6040, .sv-dash-row.r5050 { grid-template-columns: 1fr; }
+}
+
+.sv-dash-card {
+  background: #fff; border: 1px solid var(--sv-border); border-radius: 10px;
+  padding: 16px 18px; box-shadow: 0 1px 2px rgba(16,24,40,0.04); min-width: 0;
+}
+.sv-dash-card.problems-ok  { border-left: 4px solid var(--sv-up); }
+.sv-dash-card.problems-bad { border-left: 4px solid var(--sv-down); }
+.sv-dash-head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+.sv-dash-head h2 {
+  font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px;
+  color: var(--sv-navy); margin: 0;
+}
+.sv-dash-head .spacer { flex: 1; }
+.sv-dash-link { font-size: 12.5px; font-weight: 600; color: var(--sv-crimson); white-space: nowrap; }
+.sv-dash-link:hover { text-decoration: underline; }
+
+/* All-clear panel */
+.sv-allclear { text-align: center; padding: 24px 10px; }
+.sv-allclear .big { font-size: 42px; line-height: 1; color: var(--sv-up); }
+.sv-allclear .txt { margin-top: 10px; font-weight: 600; color: var(--sv-text); }
+
+/* Problem rows */
+.sv-prob { display: flex; align-items: center; gap: 10px; padding: 9px 2px; border-bottom: 1px solid var(--sv-border); }
+.sv-prob:last-child { border-bottom: none; }
+.sv-prob .name { font-weight: 600; color: var(--sv-crimson); white-space: nowrap; }
+.sv-prob .name:hover { text-decoration: underline; }
+.sv-prob .site { color: var(--sv-muted); font-size: 12.5px; white-space: nowrap; }
+.sv-prob .site:hover { text-decoration: underline; }
+.sv-prob .spacer { flex: 1; }
+.sv-prob .dur { font-size: 12.5px; color: var(--sv-muted); white-space: nowrap; }
+.sv-prob .ms { font-size: 12.5px; font-weight: 700; white-space: nowrap; }
+
+/* Slowest-devices mini table */
+.sv-mini { width: 100%; border-collapse: collapse; font-size: 13px; }
+.sv-mini th { text-align: left; padding: 6px 8px; color: var(--sv-muted); font-size: 11px; text-transform: uppercase; letter-spacing: .4px; border-bottom: 1px solid var(--sv-border); }
+.sv-mini td { padding: 7px 8px; border-bottom: 1px solid var(--sv-border); white-space: nowrap; }
+.sv-mini tr:last-child td { border-bottom: none; }
+.sv-mini .rank { color: var(--sv-muted); width: 20px; }
+.sv-mini .nm { font-weight: 600; color: var(--sv-crimson); }
+.sv-mini .nm:hover { text-decoration: underline; }
+.sv-mini .num { text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; }
+
+/* Site-health rows */
+.sv-health { display: flex; align-items: center; gap: 12px; padding: 9px 2px; border-bottom: 1px solid var(--sv-border); }
+.sv-health:last-child { border-bottom: none; }
+.sv-health .site { font-weight: 600; width: 150px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sv-health .site a:hover { color: var(--sv-crimson); text-decoration: underline; }
+.sv-health .bar { flex: 1; height: 9px; border-radius: 5px; background: #eef0f3; overflow: hidden; }
+.sv-health .bar > span { display: block; height: 100%; border-radius: 5px; }
+.sv-health .pct { width: 54px; text-align: right; font-weight: 700; font-size: 13px; font-variant-numeric: tabular-nums; }
+.sv-health .pills { width: 132px; text-align: right; font-size: 12px; color: var(--sv-muted); white-space: nowrap; }
+
+/* Events timeline */
+.sv-event { display: flex; align-items: flex-start; gap: 10px; padding: 9px 2px; border-bottom: 1px solid var(--sv-border); }
+.sv-event:last-child { border-bottom: none; }
+.sv-event .ico { font-size: 13px; line-height: 1.5; flex: none; }
+.sv-event .body { flex: 1; min-width: 0; font-size: 13.5px; }
+.sv-event .body .dev { font-weight: 600; color: var(--sv-crimson); }
+.sv-event .body .dev:hover { text-decoration: underline; }
+.sv-event .body .site { color: var(--sv-muted); font-size: 12px; }
+.sv-event .when { color: var(--sv-muted); font-size: 12px; white-space: nowrap; }

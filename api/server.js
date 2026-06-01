@@ -140,6 +140,108 @@ app.get('/api/dashboard/summary', wrap(async (_req, res) => {
   res.json({ total, ...counts, active_alerts: active.rows[0].c });
 }));
 
+// Active problems — every device currently down or warning, worst first.
+app.get('/api/dashboard/problems', wrap(async (_req, res) => {
+  const r = await sv.query(`
+    SELECT id, name, ip_address, site_id, site_name, current_status,
+           last_response_ms, last_checked_at, last_seen_at, consecutive_failures
+    FROM monitored_devices
+    WHERE active = TRUE AND current_status IN ('down', 'warning')
+    ORDER BY CASE current_status WHEN 'down' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END,
+             name
+  `);
+  res.json(r.rows);
+}));
+
+// Top 10 worst devices by average response time over the last hour.
+app.get('/api/dashboard/top-worst', wrap(async (_req, res) => {
+  const r = await sv.query(`
+    SELECT d.id, d.name, d.site_id, d.site_name, d.current_status,
+           ROUND(AVG(p.response_ms)::numeric, 1)      AS avg_ms,
+           ROUND(MAX(p.response_ms)::numeric, 1)      AS max_ms,
+           ROUND(AVG(p.packet_loss_pct)::numeric, 1)  AS packet_loss_pct
+    FROM ping_results p
+    JOIN monitored_devices d ON d.id = p.device_id
+    WHERE p.ts >= NOW() - INTERVAL '1 hour' AND d.active = TRUE
+    GROUP BY d.id, d.name, d.site_id, d.site_name, d.current_status
+    HAVING AVG(p.response_ms) IS NOT NULL
+    ORDER BY AVG(p.response_ms) DESC
+    LIMIT 10
+  `);
+  res.json(r.rows);
+}));
+
+// 24h network availability trend in 30-minute buckets (sparkline/area chart).
+app.get('/api/dashboard/network-trend', wrap(async (_req, res) => {
+  const r = await sv.query(`
+    SELECT date_bin('30 minutes', ts, TIMESTAMPTZ '2000-01-01') AS bucket,
+           COUNT(*)::int AS total_checks,
+           SUM(CASE WHEN status = 'up' THEN 1 ELSE 0 END)::int AS up_checks
+    FROM ping_results
+    WHERE ts >= NOW() - INTERVAL '24 hours'
+    GROUP BY bucket
+    ORDER BY bucket
+  `);
+  const rows = r.rows.map((row) => ({
+    bucket: row.bucket,
+    total_checks: row.total_checks,
+    up_checks: row.up_checks,
+    pct_up: row.total_checks
+      ? Math.round((row.up_checks / row.total_checks) * 1000) / 10
+      : null,
+  }));
+  res.json(rows);
+}));
+
+// Per-site health: device counts + 24h uptime (reachable = not down).
+app.get('/api/dashboard/site-health', wrap(async (_req, res) => {
+  const r = await sv.query(`
+    WITH dev AS (
+      SELECT COALESCE(site_id, 0)            AS site_id,
+             COALESCE(site_name, 'Unassigned') AS site_name,
+             COUNT(*)::int                                                  AS total_devices,
+             SUM(CASE WHEN current_status = 'up'      THEN 1 ELSE 0 END)::int AS up_count,
+             SUM(CASE WHEN current_status = 'down'    THEN 1 ELSE 0 END)::int AS down_count,
+             SUM(CASE WHEN current_status = 'warning' THEN 1 ELSE 0 END)::int AS warning_count,
+             SUM(CASE WHEN current_status = 'unknown' THEN 1 ELSE 0 END)::int AS unknown_count
+      FROM monitored_devices WHERE active = TRUE
+      GROUP BY 1, 2
+    ),
+    upt AS (
+      SELECT COALESCE(d.site_id, 0) AS site_id,
+             ROUND(100.0 * SUM(CASE WHEN p.status <> 'down' THEN 1 ELSE 0 END)
+                         / NULLIF(COUNT(*), 0), 1) AS avg_uptime_pct
+      FROM ping_results p
+      JOIN monitored_devices d ON d.id = p.device_id
+      WHERE p.ts >= NOW() - INTERVAL '24 hours' AND d.active = TRUE
+      GROUP BY 1
+    )
+    SELECT dev.site_id, dev.site_name, dev.total_devices, dev.up_count,
+           dev.down_count, dev.warning_count, dev.unknown_count,
+           upt.avg_uptime_pct
+    FROM dev LEFT JOIN upt ON upt.site_id = dev.site_id
+    ORDER BY dev.down_count DESC, dev.warning_count DESC, dev.site_name
+  `);
+  res.json(r.rows);
+}));
+
+// Last 20 notable events — alerts triggered or resolved in the last 24h.
+app.get('/api/dashboard/events', wrap(async (_req, res) => {
+  const r = await sv.query(`
+    SELECT a.id, a.device_id, d.name AS device_name, d.site_id, d.site_name,
+           a.alert_type, a.severity, a.status, a.message,
+           a.triggered_at, a.resolved_at,
+           GREATEST(a.triggered_at, COALESCE(a.resolved_at, a.triggered_at)) AS event_at
+    FROM alerts a
+    LEFT JOIN monitored_devices d ON d.id = a.device_id
+    WHERE a.triggered_at >= NOW() - INTERVAL '24 hours'
+       OR a.resolved_at  >= NOW() - INTERVAL '24 hours'
+    ORDER BY event_at DESC
+    LIMIT 20
+  `);
+  res.json(r.rows);
+}));
+
 // ══════════════════════════════════════════════════════════════
 // Monitored devices
 // ══════════════════════════════════════════════════════════════
