@@ -123,3 +123,9 @@ INSERT INTO app_settings (key, value) VALUES
   ('smtp_host',''), ('smtp_port','587'), ('smtp_user',''),
   ('smtp_pass',''), ('smtp_from',''), ('alert_email_to','')
 ON CONFLICT (key) DO NOTHING;
+
+-- Grant permissions to app user
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO spanvault_user;
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO spanvault_user;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO spanvault_user;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO spanvault_user;
