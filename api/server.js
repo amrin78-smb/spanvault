@@ -13,6 +13,7 @@ const express  = require('express');
 const cors     = require('cors');
 const ping     = require('ping');
 const { Pool } = require('pg');
+const { discoverDevice, snmpTest } = require('../collector/discovery');
 
 const IS_WIN = process.platform === 'win32';
 
@@ -309,6 +310,94 @@ app.post('/api/devices/:id/ping-now', wrap(async (req, res) => {
   else status = 'up';
 
   res.json({ ms, status });
+}));
+
+// ══════════════════════════════════════════════════════════════
+// SNMP discovery & sensor selection
+// ══════════════════════════════════════════════════════════════
+// Walk the device and return grouped, available sensors with current values.
+app.post('/api/devices/:id/snmp-discover', wrap(async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const r = await sv.query(`SELECT * FROM monitored_devices WHERE id = $1`, [id]);
+  const dev = r.rows[0];
+  if (!dev) return res.status(404).json({ error: 'Device not found' });
+  if (!dev.snmp_enabled) return res.status(400).json({ error: 'SNMP is not enabled for this device' });
+
+  const result = await discoverDevice(dev, 15000);
+  if (result.error) return res.status(502).json({ error: result.error });
+  res.json(result);
+}));
+
+// All saved sensors for a device.
+app.get('/api/devices/:id/sensors', wrap(async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const r = await sv.query(
+    `SELECT id, sensor_key, sensor_name, category, metric_name, oid, enabled, created_at
+       FROM device_sensors WHERE device_id = $1
+       ORDER BY category, sensor_name`,
+    [id]
+  );
+  res.json(r.rows);
+}));
+
+// Upsert the device's sensor selection.
+app.put('/api/devices/:id/sensors', wrap(async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const list = Array.isArray(req.body && req.body.sensors) ? req.body.sensors : null;
+  if (!list) return res.status(400).json({ error: 'sensors array required' });
+
+  const dev = await sv.query(`SELECT id FROM monitored_devices WHERE id = $1`, [id]);
+  if (!dev.rows[0]) return res.status(404).json({ error: 'Device not found' });
+
+  for (const s of list) {
+    if (!s || !s.sensor_key || !s.metric_name) continue;
+    await sv.query(`
+      INSERT INTO device_sensors (device_id, sensor_key, sensor_name, category, metric_name, oid, enabled)
+      VALUES ($1,$2,$3,$4,$5,$6,$7)
+      ON CONFLICT (device_id, sensor_key) DO UPDATE
+        SET sensor_name = EXCLUDED.sensor_name,
+            category    = EXCLUDED.category,
+            metric_name = EXCLUDED.metric_name,
+            oid         = EXCLUDED.oid,
+            enabled     = EXCLUDED.enabled
+    `, [
+      id, s.sensor_key, s.sensor_name || s.sensor_key, s.category || 'system',
+      s.metric_name, s.oid || null, s.enabled !== false,
+    ]);
+  }
+
+  const saved = await sv.query(
+    `SELECT id, sensor_key, sensor_name, category, metric_name, oid, enabled, created_at
+       FROM device_sensors WHERE device_id = $1
+       ORDER BY category, sensor_name`,
+    [id]
+  );
+  res.json(saved.rows);
+}));
+
+// Test SNMP reachability for a saved device using its stored credentials.
+app.post('/api/devices/:id/snmp-test', wrap(async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const r = await sv.query(`SELECT * FROM monitored_devices WHERE id = $1`, [id]);
+  const dev = r.rows[0];
+  if (!dev) return res.status(404).json({ error: 'Device not found' });
+  res.json(await snmpTest(dev, 10000));
+}));
+
+// Test SNMP with ad-hoc credentials (before a device is saved).
+app.post('/api/snmp-test-adhoc', wrap(async (req, res) => {
+  const b = req.body || {};
+  if (!b.ip_address) return res.status(400).json({ error: 'ip_address required' });
+  const dev = {
+    ip_address: b.ip_address,
+    snmp_version: b.snmp_version || '2c',
+    snmp_community: b.snmp_community || 'public',
+    snmp_port: safeInt(b.snmp_port, 161),
+    snmp_v3_user: b.snmp_v3_user || null,
+    snmp_v3_auth_pass: b.snmp_v3_auth_pass || null,
+    snmp_v3_priv_pass: b.snmp_v3_priv_pass || null,
+  };
+  res.json(await snmpTest(dev, 10000));
 }));
 
 // ══════════════════════════════════════════════════════════════
