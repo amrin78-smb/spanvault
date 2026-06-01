@@ -57,6 +57,22 @@ CREATE TABLE IF NOT EXISTS snmp_results (
 );
 CREATE INDEX IF NOT EXISTS idx_snmp_device_metric_ts ON snmp_results(device_id, metric_name, ts DESC);
 
+-- Per-device sensor selection (PRTG-style). Populated by SNMP discovery; the
+-- collector polls only enabled sensors when any row exists for a device.
+CREATE TABLE IF NOT EXISTS device_sensors (
+  id           SERIAL PRIMARY KEY,
+  device_id    INTEGER NOT NULL REFERENCES monitored_devices(id) ON DELETE CASCADE,
+  sensor_key   TEXT NOT NULL,      -- unique key e.g. "cpu", "mem", "if_Gi0/0_bps_in"
+  sensor_name  TEXT NOT NULL,      -- display name e.g. "GigabitEthernet0/0 — In"
+  category     TEXT NOT NULL,      -- "system", "interface", "vendor"
+  metric_name  TEXT NOT NULL,      -- matches snmp_results.metric_name
+  oid          TEXT,               -- OID being polled
+  enabled      BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_device_sensors_key
+  ON device_sensors(device_id, sensor_key);
+
 CREATE TABLE IF NOT EXISTS alerts (
   id              SERIAL PRIMARY KEY,
   device_id       INTEGER REFERENCES monitored_devices(id) ON DELETE CASCADE,
@@ -128,6 +144,7 @@ INSERT INTO app_settings (key, value) VALUES
 ON CONFLICT (key) DO NOTHING;
 
 -- Grant permissions to app user
+GRANT ALL PRIVILEGES ON device_sensors TO spanvault_user;
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO spanvault_user;
 GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO spanvault_user;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO spanvault_user;
