@@ -88,8 +88,8 @@ async function loadSettings() {
 // Map<deviceId, Map<ifIndex, { inOctets, outOctets, ts }>>
 const ifPrev = new Map();
 
-// Devices whose alerts are currently suppressed because an ancestor is down.
-// Refreshed each ping tick by runSuppressionPass(); read by raiseAlert().
+// Devices whose alerts are currently suppressed because their site gateway is
+// down. Refreshed each ping tick by runSuppressionPass(); read by raiseAlert().
 let suppressedDevices = new Set();
 
 // ══════════════════════════════════════════════════════════════
@@ -416,7 +416,7 @@ async function inMaintenance(deviceId) {
 
 // ── Raise / resolve alerts (idempotent via unique active index) ─
 async function raiseAlert(device, alertType, severity, message, metricValue) {
-  // Dependency suppression: an ancestor is down, so this device's outage is a
+  // Gateway suppression: this device's site gateway is down, so its outage is a
   // downstream consequence — don't raise new alerts for it.
   if (suppressedDevices.has(device.id)) return;
   try {
@@ -451,78 +451,67 @@ async function resolveAlert(deviceId, alertType) {
 }
 
 // ══════════════════════════════════════════════════════════════
-// Dependency-based alert suppression
+// Site-gateway alert suppression
 // ══════════════════════════════════════════════════════════════
-// Walk up the parent chain; return the id of the first ancestor that is 'down'
-// (or null). depMap is child_id → parent_id; statusMap is id → current_status.
-function isAncestorDown(deviceId, statusMap, depMap) {
-  let current = depMap.get(deviceId);
-  let depth = 0;
-  while (current && depth < 10) { // depth guard against accidental cycles
-    if (statusMap.get(current) === 'down') return current;
-    current = depMap.get(current);
-    depth++;
-  }
-  return null;
-}
-
-// Refresh suppression state for every device: if an ancestor is down, suppress
-// the device's alerts (resolve active ones to 'suppressed'); otherwise clear a
-// previous suppression. Updates the in-memory suppressedDevices set.
+// When a site's gateway device is down, the whole site is assumed unreachable
+// through it, so alerts for every OTHER device at that site are suppressed. When
+// the gateway recovers (or a site has no gateway), suppression is cleared and
+// normal evaluation resumes. Updates the in-memory suppressedDevices set.
 async function runSuppressionPass() {
-  let deps, devices;
+  let downGateways;
   try {
-    deps = (await sv.query(`SELECT child_device_id, parent_device_id FROM device_dependencies`)).rows;
-    devices = (await sv.query(
-      `SELECT id, name, current_status, alert_suppressed FROM monitored_devices WHERE active = TRUE`
+    downGateways = (await sv.query(
+      `SELECT id, name, site_id FROM monitored_devices
+        WHERE is_gateway = TRUE AND current_status = 'down' AND active = TRUE`
     )).rows;
   } catch (err) {
     console.error('[suppress] load failed:', err.message);
     return;
   }
 
-  const depMap = new Map();    // child_id → parent_id
-  for (const d of deps) depMap.set(d.child_device_id, d.parent_device_id);
-  const statusMap = new Map(); // id → current_status
-  const nameMap = new Map();   // id → name
-  for (const d of devices) { statusMap.set(d.id, d.current_status); nameMap.set(d.id, d.name); }
-
   const next = new Set();
-  for (const d of devices) {
-    const ancestor = isAncestorDown(d.id, statusMap, depMap);
-    if (ancestor) {
-      next.add(d.id);
-      try {
-        await sv.query(
-          `UPDATE monitored_devices
-              SET alert_suppressed = TRUE, suppressed_by_device_id = $2, updated_at = NOW()
-            WHERE id = $1`,
-          [d.id, ancestor]
-        );
+  // 1+2. For each down gateway, suppress all other active devices in its site.
+  for (const g of downGateways) {
+    try {
+      const r = await sv.query(
+        `UPDATE monitored_devices
+            SET alert_suppressed = TRUE, suppressed_by_device_id = $2, updated_at = NOW()
+          WHERE site_id IS NOT DISTINCT FROM $1 AND id <> $2 AND active = TRUE
+          RETURNING id`,
+        [g.site_id, g.id]
+      );
+      const ids = r.rows.map((row) => row.id);
+      for (const dId of ids) next.add(dId);
+      // Resolve any active alerts on the suppressed devices to 'suppressed'.
+      if (ids.length) {
         await sv.query(
           `UPDATE alerts
               SET status = 'suppressed', resolved_at = NOW(),
                   suppressed_by = $2, suppression_reason = $3
-            WHERE device_id = $1 AND status = 'active'`,
-          [d.id, ancestor, `Parent device ${nameMap.get(ancestor) || ancestor} is down`]
+            WHERE device_id = ANY($1::int[]) AND status = 'active'`,
+          [ids, g.id, `Site gateway ${g.name} is down`]
         );
-      } catch (err) {
-        console.error('[suppress] apply failed:', err.message);
       }
-    } else if (d.alert_suppressed) {
-      // No ancestor down any more — resume normal evaluation.
-      try {
-        await sv.query(
-          `UPDATE monitored_devices
-              SET alert_suppressed = FALSE, suppressed_by_device_id = NULL, updated_at = NOW()
-            WHERE id = $1`,
-          [d.id]
-        );
-      } catch (err) {
-        console.error('[suppress] clear failed:', err.message);
-      }
+    } catch (err) {
+      console.error('[suppress] apply failed:', err.message);
     }
   }
+
+  // 3. Clear suppression everywhere a down gateway is no longer responsible
+  //    (gateway recovered, gateway cleared, or site never had a down gateway).
+  const downIds = downGateways.map((g) => g.id);
+  try {
+    await sv.query(
+      `UPDATE monitored_devices
+          SET alert_suppressed = FALSE, suppressed_by_device_id = NULL, updated_at = NOW()
+        WHERE suppressed_by_device_id IS NOT NULL
+          AND NOT (suppressed_by_device_id = ANY($1::int[]))`,
+      [downIds.length ? downIds : [0]]
+    );
+  } catch (err) {
+    console.error('[suppress] clear failed:', err.message);
+  }
+
   suppressedDevices = next;
 }
 
