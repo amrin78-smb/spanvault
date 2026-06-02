@@ -7,11 +7,18 @@ const CALLBACK = encodeURIComponent('/sso');
 export async function middleware(req: NextRequest) {
   const { pathname, search } = req.nextUrl;
 
-  // Proxy non-auth API calls directly to Express — never touches NextAuth
+  // Proxy non-auth API calls directly to Express — never touches NextAuth.
+  // Public map data (/api/maps/public/:uuid) is proxied like any other API call,
+  // so it stays reachable without a session.
   if (pathname.startsWith('/api/') && !pathname.startsWith('/api/auth/')) {
     return NextResponse.rewrite(
       new URL(`http://127.0.0.1:3009${pathname}${search}`)
     );
+  }
+
+  // Public map view pages render without authentication.
+  if (pathname.startsWith('/maps/public/')) {
+    return NextResponse.next();
   }
 
   // Auth guard for all page routes
@@ -27,7 +34,7 @@ export const config = {
   matcher: [
     // Non-auth API calls → proxy to Express
     '/api/((?!auth(?:/|$)).+)',
-    // All page routes → auth guard
-    '/((?!api|sso|_next/static|_next/image|favicon.ico).*)',
+    // All page routes → auth guard, except the public map view pages
+    '/((?!api|sso|maps/public|_next/static|_next/image|favicon.ico).*)',
   ],
 };
