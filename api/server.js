@@ -59,7 +59,7 @@ nv.on('error', (err) => console.error('[DB nv] Pool error:', err.message));
 
 // ── Middleware ────────────────────────────────────────────────
 app.use(cors());
-app.use(express.json({ limit: '2mb' }));
+app.use(express.json({ limit: '12mb' })); // generous — map background images arrive base64-encoded
 app.use((req, _res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
   next();
@@ -874,6 +874,185 @@ app.get('/api/map', wrap(async (_req, res) => {
     });
   }
   res.json(Object.values(sites));
+}));
+
+// ══════════════════════════════════════════════════════════════
+// Interactive map designer (sv_maps + map_devices/connections/labels)
+// ══════════════════════════════════════════════════════════════
+// Assemble a full map: properties + positioned devices (with live status),
+// connections, and labels. Returns null when the map row is absent.
+async function fetchFullMap(mapId) {
+  const m = await sv.query(`SELECT * FROM sv_maps WHERE id = $1`, [mapId]);
+  const map = m.rows[0];
+  if (!map) return null;
+  const devices = await sv.query(`
+    SELECT md.id, md.device_id, md.x, md.y, md.label, md.icon_type, md.width, md.height,
+           d.name AS device_name, d.ip_address, d.site_name,
+           d.current_status, d.last_response_ms, d.last_seen_at,
+           d.is_gateway, d.alert_suppressed
+    FROM map_devices md
+    LEFT JOIN monitored_devices d ON d.id = md.device_id
+    WHERE md.map_id = $1
+    ORDER BY md.id
+  `, [mapId]);
+  const connections = await sv.query(
+    `SELECT * FROM map_connections WHERE map_id = $1 ORDER BY id`, [mapId]
+  );
+  const labels = await sv.query(
+    `SELECT * FROM map_labels WHERE map_id = $1 ORDER BY id`, [mapId]
+  );
+  return { ...map, devices: devices.rows, connections: connections.rows, labels: labels.rows };
+}
+
+// List all maps (with a device count for the cards).
+app.get('/api/maps', wrap(async (_req, res) => {
+  const r = await sv.query(`
+    SELECT m.id, m.uuid, m.name, m.description, m.is_public,
+           m.bg_color, m.canvas_w, m.canvas_h, m.updated_at,
+           (SELECT COUNT(*)::int FROM map_devices md WHERE md.map_id = m.id) AS device_count
+    FROM sv_maps m
+    ORDER BY m.updated_at DESC
+  `);
+  res.json(r.rows);
+}));
+
+// Create a map.
+app.post('/api/maps', wrap(async (req, res) => {
+  const b = req.body || {};
+  if (!b.name) return res.status(400).json({ error: 'name is required' });
+  const r = await sv.query(`
+    INSERT INTO sv_maps (name, description, bg_color, canvas_w, canvas_h)
+    VALUES ($1,$2,$3,$4,$5) RETURNING *
+  `, [b.name, b.description || null, b.bg_color || '#f8fafc',
+      safeInt(b.canvas_w, 1600), safeInt(b.canvas_h, 900)]);
+  res.status(201).json(r.rows[0]);
+}));
+
+// Full map (properties + content + live device status).
+app.get('/api/maps/:id', wrap(async (req, res) => {
+  const map = await fetchFullMap(parseInt(req.params.id, 10));
+  if (!map) return res.status(404).json({ error: 'Map not found' });
+  res.json(map);
+}));
+
+// Update map properties.
+app.put('/api/maps/:id', wrap(async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const b = req.body || {};
+  const allowed = ['name', 'description', 'bg_color', 'canvas_w', 'canvas_h'];
+  const sets = [];
+  const params = [];
+  for (const k of allowed) {
+    if (b[k] !== undefined) { params.push(b[k]); sets.push(`${k} = $${params.length}`); }
+  }
+  if (!sets.length) return res.status(400).json({ error: 'No valid fields to update' });
+  params.push(id);
+  const r = await sv.query(
+    `UPDATE sv_maps SET ${sets.join(', ')}, updated_at = NOW() WHERE id = $${params.length} RETURNING *`,
+    params
+  );
+  if (!r.rows[0]) return res.status(404).json({ error: 'Map not found' });
+  res.json(r.rows[0]);
+}));
+
+// Delete a map (cascades to devices/connections/labels).
+app.delete('/api/maps/:id', wrap(async (req, res) => {
+  await sv.query(`DELETE FROM sv_maps WHERE id = $1`, [parseInt(req.params.id, 10)]);
+  res.json({ ok: true });
+}));
+
+// Replace all devices/connections/labels for a map in one transaction.
+// Connections reference the client-side map_device ids (real or temporary); we
+// remap them to the freshly inserted ids via idMap.
+app.put('/api/maps/:id/layout', wrap(async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const b = req.body || {};
+  const devices = Array.isArray(b.devices) ? b.devices : [];
+  const connections = Array.isArray(b.connections) ? b.connections : [];
+  const labels = Array.isArray(b.labels) ? b.labels : [];
+
+  const exists = await sv.query(`SELECT id FROM sv_maps WHERE id = $1`, [id]);
+  if (!exists.rows[0]) return res.status(404).json({ error: 'Map not found' });
+
+  const client = await sv.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(`DELETE FROM map_connections WHERE map_id = $1`, [id]);
+    await client.query(`DELETE FROM map_labels WHERE map_id = $1`, [id]);
+    await client.query(`DELETE FROM map_devices WHERE map_id = $1`, [id]);
+
+    const idMap = new Map(); // client device id → new db id
+    for (const d of devices) {
+      const r = await client.query(`
+        INSERT INTO map_devices (map_id, device_id, x, y, label, icon_type, width, height)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id
+      `, [id, d.device_id || null, Number(d.x) || 0, Number(d.y) || 0,
+          d.label || null, d.icon_type || 'circle', safeInt(d.width, 120), safeInt(d.height, 60)]);
+      if (d.id !== undefined && d.id !== null) idMap.set(String(d.id), r.rows[0].id);
+    }
+
+    for (const c of connections) {
+      const from = idMap.get(String(c.from_item_id));
+      const to = idMap.get(String(c.to_item_id));
+      if (!from || !to) continue; // skip dangling connections
+      await client.query(`
+        INSERT INTO map_connections (map_id, from_item_id, to_item_id, color, line_style, label)
+        VALUES ($1,$2,$3,$4,$5,$6)
+      `, [id, from, to, c.color || '#94a3b8', c.line_style || 'solid', c.label || null]);
+    }
+
+    for (const l of labels) {
+      if (!l || l.text === undefined || l.text === null) continue;
+      await client.query(`
+        INSERT INTO map_labels (map_id, x, y, text, font_size, color, bold)
+        VALUES ($1,$2,$3,$4,$5,$6,$7)
+      `, [id, Number(l.x) || 0, Number(l.y) || 0, String(l.text),
+          safeInt(l.font_size, 14), l.color || '#1a2744', !!l.bold]);
+    }
+
+    await client.query(`UPDATE sv_maps SET updated_at = NOW() WHERE id = $1`, [id]);
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+  res.json(await fetchFullMap(id));
+}));
+
+// Save (or clear) the background image. Pass bg_image_b64 = null/'' to clear.
+app.post('/api/maps/:id/background', wrap(async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const b64 = req.body && req.body.bg_image_b64 ? String(req.body.bg_image_b64) : null;
+  const r = await sv.query(
+    `UPDATE sv_maps SET bg_image_b64 = $2, updated_at = NOW() WHERE id = $1 RETURNING id`,
+    [id, b64]
+  );
+  if (!r.rows[0]) return res.status(404).json({ error: 'Map not found' });
+  res.json({ ok: true });
+}));
+
+// Toggle public sharing.
+app.post('/api/maps/:id/toggle-public', wrap(async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const r = await sv.query(
+    `UPDATE sv_maps SET is_public = NOT is_public, updated_at = NOW() WHERE id = $1 RETURNING is_public, uuid`,
+    [id]
+  );
+  if (!r.rows[0]) return res.status(404).json({ error: 'Map not found' });
+  res.json(r.rows[0]);
+}));
+
+// Public map view (NO AUTH). Only resolves when is_public = TRUE.
+app.get('/api/maps/public/:uuid', wrap(async (req, res) => {
+  const m = await sv.query(
+    `SELECT * FROM sv_maps WHERE uuid = $1 AND is_public = TRUE`, [String(req.params.uuid)]
+  );
+  const map = m.rows[0];
+  if (!map) return res.status(404).json({ error: 'Map not found or not public' });
+  const full = await fetchFullMap(map.id);
+  res.json(full);
 }));
 
 // ══════════════════════════════════════════════════════════════
