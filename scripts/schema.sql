@@ -206,3 +206,60 @@ GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO spanvault_user;
 GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO spanvault_user;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO spanvault_user;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO spanvault_user;
+
+-- ══ Interactive map designer ══════════════════════════════════════════════════
+-- User-designed network maps: a canvas with positioned device nodes, connection
+-- lines between them, and free-floating text labels. Maps can be made public
+-- (shared via uuid) for unauthenticated live viewing.
+CREATE TABLE IF NOT EXISTS sv_maps (
+  id           SERIAL PRIMARY KEY,
+  uuid         TEXT NOT NULL UNIQUE DEFAULT gen_random_uuid()::text,
+  name         TEXT NOT NULL,
+  description  TEXT,
+  bg_color     TEXT NOT NULL DEFAULT '#f8fafc',
+  bg_image_b64 TEXT,
+  canvas_w     INTEGER NOT NULL DEFAULT 1600,
+  canvas_h     INTEGER NOT NULL DEFAULT 900,
+  is_public    BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS map_devices (
+  id         SERIAL PRIMARY KEY,
+  map_id     INTEGER NOT NULL REFERENCES sv_maps(id) ON DELETE CASCADE,
+  device_id  INTEGER REFERENCES monitored_devices(id) ON DELETE CASCADE,
+  x          NUMERIC NOT NULL DEFAULT 100,
+  y          NUMERIC NOT NULL DEFAULT 100,
+  label      TEXT,
+  icon_type  TEXT NOT NULL DEFAULT 'circle',
+  width      INTEGER NOT NULL DEFAULT 120,
+  height     INTEGER NOT NULL DEFAULT 60
+);
+CREATE INDEX IF NOT EXISTS idx_map_devices_map ON map_devices(map_id);
+
+CREATE TABLE IF NOT EXISTS map_connections (
+  id           SERIAL PRIMARY KEY,
+  map_id       INTEGER NOT NULL REFERENCES sv_maps(id) ON DELETE CASCADE,
+  from_item_id INTEGER NOT NULL REFERENCES map_devices(id) ON DELETE CASCADE,
+  to_item_id   INTEGER NOT NULL REFERENCES map_devices(id) ON DELETE CASCADE,
+  color        TEXT NOT NULL DEFAULT '#94a3b8',
+  line_style   TEXT NOT NULL DEFAULT 'solid',
+  label        TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_map_connections_map ON map_connections(map_id);
+
+CREATE TABLE IF NOT EXISTS map_labels (
+  id      SERIAL PRIMARY KEY,
+  map_id  INTEGER NOT NULL REFERENCES sv_maps(id) ON DELETE CASCADE,
+  x       NUMERIC NOT NULL,
+  y       NUMERIC NOT NULL,
+  text    TEXT NOT NULL,
+  font_size INTEGER NOT NULL DEFAULT 14,
+  color   TEXT NOT NULL DEFAULT '#1a2744',
+  bold    BOOLEAN NOT NULL DEFAULT FALSE
+);
+CREATE INDEX IF NOT EXISTS idx_map_labels_map ON map_labels(map_id);
+
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO spanvault_user;
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO spanvault_user;
