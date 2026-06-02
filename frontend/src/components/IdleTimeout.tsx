@@ -10,32 +10,19 @@ const HUB =
   process.env.NOCVAULT_HUB_URL ||
   'http://localhost:3000';
 
-const DEFAULT_TIMEOUT_MINUTES = 15;   // used when the hub doesn't specify one
+const DEFAULT_TIMEOUT_MINUTES = 15;   // used only when the fetch fails
 const WARNING_SECONDS = 60;           // lead time the warning modal is shown for
 const ACTIVITY_EVENTS = ['mousemove', 'keydown', 'click'] as const;
 
-// The hub's /api/settings shape isn't versioned here, so accept any of the
-// likely key names NetVault may use for the idle timeout (in minutes).
-const SETTING_KEYS = [
-  'idle_timeout_minutes', 'session_timeout_minutes', 'inactivity_timeout_minutes',
-  'idle_timeout', 'session_timeout', 'timeout_minutes',
-];
-
-// Resolve the idle timeout (ms) from a settings object.
-//   - a positive value → that many minutes
-//   - an explicit 0 / negative → disabled (null)
-//   - no recognised key → default
-function resolveTimeoutMs(settings: any): number | null {
-  if (settings && typeof settings === 'object') {
-    for (const k of SETTING_KEYS) {
-      const raw = settings[k];
-      if (raw !== undefined && raw !== null && raw !== '') {
-        const n = Number(raw);
-        if (!isNaN(n)) return n > 0 ? n * 60000 : null;
-      }
-    }
-  }
-  return DEFAULT_TIMEOUT_MINUTES * 60000;
+// Resolve the idle timeout (ms) from the hub's idle_timeout_minutes value.
+// The endpoint returns either a number (minutes) or the string 'never'.
+//   - 'never' / 0 / negative / unparseable → disabled (null)
+//   - a positive number → that many minutes
+function resolveTimeoutMs(value: any): number | null {
+  if (typeof value === 'string' && value.trim().toLowerCase() === 'never') return null;
+  const n = Number(value);
+  if (isNaN(n) || n <= 0) return null;
+  return n * 60000;
 }
 
 export default function IdleTimeout() {
@@ -52,12 +39,24 @@ export default function IdleTimeout() {
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch(`${HUB}/api/settings`, {
+        const res = await fetch(`${HUB}/api/settings/idle_timeout_minutes`, {
           credentials: 'include',
           headers: { Accept: 'application/json' },
         });
-        const data = res.ok ? await res.json() : null;
-        if (!cancelled) setTimeoutMs(resolveTimeoutMs(data));
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        // The endpoint returns the bare value — either a number or 'never' —
+        // possibly JSON-wrapped (e.g. { value } or { idle_timeout_minutes }).
+        const text = (await res.text()).trim();
+        let value: any = text;
+        try {
+          const parsed = JSON.parse(text);
+          value = (parsed && typeof parsed === 'object')
+            ? (parsed.idle_timeout_minutes ?? parsed.value ?? parsed)
+            : parsed;
+        } catch {
+          // not JSON — fall back to the raw text (handles a quoted/plain 'never')
+        }
+        if (!cancelled) setTimeoutMs(resolveTimeoutMs(value));
       } catch {
         if (!cancelled) setTimeoutMs(DEFAULT_TIMEOUT_MINUTES * 60000);
       }
