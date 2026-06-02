@@ -13,8 +13,7 @@ type Device = {
   last_response_ms: number | null; last_seen_at: string | null;
   snmp_enabled: boolean; poll_interval_seconds: number; netvault_device_id: number | null;
   latest_cpu_pct: number | null; latest_mem_pct: number | null;
-  suppressed_by_device_id: number | null;
-  parent_device_id: number | null; parent_name: string | null;
+  is_gateway: boolean; alert_suppressed: boolean; suppressed_by_device_id: number | null;
 };
 type Site = { id: number; name: string };
 type SiteGroup = { key: string; name: string; siteId: number | null; devices: Device[] };
@@ -173,6 +172,9 @@ function SiteAccordion({
   const [open, setOpen] = useState(true);
   const counts = countByStatus(group.devices);
   const headStatus = worstStatus(group.devices);
+  const gateway = group.devices.find((d) => d.is_gateway) || null;
+  const gatewayDown = !!gateway && gateway.current_status === 'down';
+  const suppressedCount = group.devices.filter((d) => d.alert_suppressed).length;
 
   return (
     <div className="sv-acc">
@@ -197,6 +199,11 @@ function SiteAccordion({
           {group.devices.length} {group.devices.length === 1 ? 'device' : 'devices'}
         </span>
         <span className="sv-acc-summary">
+          {gatewayDown && (
+            <span className="sv-acc-gw-down" title={`Site gateway ${gateway?.name} is down`}>
+              ⚠ Gateway down — {suppressedCount} suppressed
+            </span>
+          )}
           {counts.up > 0 && <span className="sv-pill up">{counts.up} up</span>}
           {counts.down > 0 && <span className="sv-pill down">{counts.down} down</span>}
           {counts.warning > 0 && <span className="sv-pill warning">{counts.warning} warning</span>}
@@ -220,19 +227,17 @@ function DeviceRow({
 }) {
   return (
     <div className="sv-dev-row">
-      <StatusDot status={device.current_status} />
+      {device.alert_suppressed
+        ? <span className="sv-badge suppressed" title="Alerts suppressed — site gateway is down">suppressed</span>
+        : <StatusDot status={device.current_status} />}
       <div className="sv-dev-id">
-        <div className="nm">
+        <div className="nm" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           <Link href={`/devices/${device.id}`} style={{ color: 'var(--sv-crimson)' }}>
             {device.name}
           </Link>
+          {device.is_gateway && <span className="sv-gw-star" title="Site gateway">⭐</span>}
         </div>
         <div className="ip">{device.ip_address}{device.device_type ? ` · ${device.device_type}` : ''}</div>
-        {device.parent_name && (
-          <div className="sv-muted" style={{ fontSize: 11 }} title={`Depends on ${device.parent_name}`}>
-            ↑ {device.parent_name}
-          </div>
-        )}
       </div>
       <div className="sv-dev-lat">
         {fmtMs(device.last_response_ms)}

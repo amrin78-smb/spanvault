@@ -34,10 +34,7 @@ const EMPTY_FORM: any = {
   snmp_enabled: false, snmp_version: '2c', snmp_community: 'public', snmp_port: 161,
   snmp_v3_user: '', snmp_v3_auth_pass: '', snmp_v3_priv_pass: '',
   poll_interval_seconds: 300, ping_threshold_ms: 500, ping_failures_before_down: 3,
-  parent_device_id: '',
 };
-
-type PickerDevice = { id: number; name: string; ip_address: string; site_name: string | null };
 
 // ── Add / Edit device modal ────────────────────────────────────
 export function DeviceForm({
@@ -75,14 +72,10 @@ export function DeviceForm({
     let cancelled = false;
     (async () => {
       try {
-        const [full, deps] = await Promise.all([
-          apiGet<any>(`/api/devices/${device.id}`),
-          apiGet<any>(`/api/devices/${device.id}/dependencies`).catch(() => null),
-        ]);
+        const full = await apiGet<any>(`/api/devices/${device.id}`);
         if (cancelled) return;
         setForm((f: any) => ({
           ...f,
-          parent_device_id: deps && deps.parent ? deps.parent.id : '',
           name: full.name ?? f.name,
           ip_address: full.ip_address ?? f.ip_address,
           device_type: full.device_type || '',
@@ -112,24 +105,13 @@ export function DeviceForm({
     setErr(null);
     try {
       const site = sites.find((s) => String(s.id) === String(form.site_id));
-      const { parent_device_id, ...rest } = form;
       const payload = {
-        ...rest,
+        ...form,
         site_id: form.site_id === '' ? null : parseInt(form.site_id, 10),
         site_name: site ? site.name : null,
       };
-      let deviceId = device ? device.id : null;
       if (device) await apiSend(`/api/devices/${device.id}`, 'PUT', payload);
-      else {
-        const created = await apiSend<any>('/api/devices', 'POST', payload);
-        deviceId = created?.id ?? null;
-      }
-      // Sync the parent dependency (selected id, or null to clear).
-      if (deviceId != null) {
-        await apiSend(`/api/devices/${deviceId}/dependencies`, 'POST', {
-          parent_device_id: parent_device_id === '' ? null : parseInt(parent_device_id, 10),
-        });
-      }
+      else await apiSend<any>('/api/devices', 'POST', payload);
       onSaved();
     } catch (e: any) {
       setErr(e?.message || 'Save failed');
@@ -163,11 +145,6 @@ export function DeviceForm({
               {sites.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
             </select>
           </label>
-          <ParentDevicePicker
-            value={form.parent_device_id}
-            excludeId={device ? device.id : null}
-            onChange={(id) => set('parent_device_id', id)}
-          />
           <label className="sv-field">Poll Interval (s)
             <input className="sv-input" type="number" value={form.poll_interval_seconds}
               onChange={(e) => set('poll_interval_seconds', parseInt(e.target.value, 10) || 300)} />
@@ -278,98 +255,6 @@ function SnmpTest({ form }: { form: any }) {
         </span>
       )}
     </div>
-  );
-}
-
-// ── Searchable parent-device picker (top-level component) ──────
-function ParentDevicePicker({
-  value, excludeId, onChange,
-}: {
-  value: number | string;
-  excludeId: number | null;
-  onChange: (id: number | string) => void;
-}) {
-  const [devices, setDevices] = useState<PickerDevice[]>([]);
-  const [query, setQuery] = useState('');
-  const [open, setOpen] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const rows = await apiGet<PickerDevice[]>('/api/devices');
-        if (!cancelled) setDevices(rows || []);
-      } catch { /* leave empty — picker just shows no matches */ }
-    })();
-    return () => { cancelled = true; };
-  }, []);
-
-  const selected = devices.find((d) => String(d.id) === String(value)) || null;
-  const candidates = devices.filter((d) => String(d.id) !== String(excludeId));
-  const q = query.trim().toLowerCase();
-  const matches = (q
-    ? candidates.filter((d) =>
-        d.name.toLowerCase().includes(q) || d.ip_address.toLowerCase().includes(q))
-    : candidates
-  ).slice(0, 30);
-
-  function pick(id: number | string) {
-    onChange(id);
-    setOpen(false);
-    setQuery('');
-  }
-
-  return (
-    <label className="sv-field" style={{ position: 'relative' }}>
-      Parent Device
-      {selected && !open ? (
-        <div className="sv-input" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {selected.name} <span className="sv-muted">· {selected.ip_address}</span>
-          </span>
-          <span style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
-            <button type="button" className="sv-btn ghost sm" onClick={() => setOpen(true)}>Change</button>
-            <button type="button" className="sv-btn ghost sm" onClick={() => pick('')}>Clear</button>
-          </span>
-        </div>
-      ) : (
-        <input
-          className="sv-input"
-          placeholder="Search devices… (none = no parent)"
-          value={query}
-          onChange={(e) => { setQuery(e.target.value); setOpen(true); }}
-          onFocus={() => setOpen(true)}
-          onBlur={() => setTimeout(() => setOpen(false), 150)}
-        />
-      )}
-      {open && (
-        <div style={{
-          position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 20,
-          maxHeight: 220, overflowY: 'auto', background: '#fff',
-          border: '1px solid #d9dde5', borderRadius: 6, boxShadow: '0 6px 18px rgba(0,0,0,0.12)',
-        }}>
-          <div
-            onMouseDown={(e) => { e.preventDefault(); pick(''); }}
-            style={{ padding: '8px 10px', cursor: 'pointer', fontSize: 13 }}
-            className="sv-muted"
-          >
-            — No parent —
-          </div>
-          {matches.map((d) => (
-            <div
-              key={d.id}
-              onMouseDown={(e) => { e.preventDefault(); pick(d.id); }}
-              style={{ padding: '8px 10px', cursor: 'pointer', fontSize: 13, borderTop: '1px solid #f0f1f4' }}
-            >
-              {d.name} <span className="sv-muted">· {d.ip_address}{d.site_name ? ` · ${d.site_name}` : ''}</span>
-            </div>
-          ))}
-          {q && matches.length === 0 && (
-            <div style={{ padding: '8px 10px', fontSize: 13 }} className="sv-muted">No matches</div>
-          )}
-        </div>
-      )}
-    </label>
   );
 }
 

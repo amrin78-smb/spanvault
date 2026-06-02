@@ -16,7 +16,8 @@ type Summary = {
 type Problem = {
   id: number; name: string; ip_address: string; site_id: number | null; site_name: string | null;
   current_status: string; last_response_ms: number | null; last_checked_at: string | null;
-  last_seen_at: string | null; consecutive_failures: number; suppressed_children: number;
+  last_seen_at: string | null; consecutive_failures: number;
+  is_gateway: boolean; suppressed_in_site: number;
 };
 type Worst = {
   id: number; name: string; site_id: number | null; site_name: string | null;
@@ -198,6 +199,10 @@ function StatLink({
 function ActiveProblems({ api }: { api: Api<Problem[]> }) {
   const list = api.data || [];
   const sorted = [...list].sort((a, b) => {
+    // Down site gateways float to the very top — they're the root cause.
+    const ga = a.is_gateway && a.current_status === 'down' ? 0 : 1;
+    const gb = b.is_gateway && b.current_status === 'down' ? 0 : 1;
+    if (ga !== gb) return ga - gb;
     const r = statusRank(a.current_status) - statusRank(b.current_status);
     if (r) return r;
     // Longest-running first: older last_seen_at (down longer) comes first.
@@ -230,32 +235,36 @@ function ActiveProblems({ api }: { api: Api<Problem[]> }) {
         <>
           {shown.map((p) => {
             const down = p.current_status === 'down';
+            const gwDown = p.is_gateway && down;
             const ms = num(p.last_response_ms);
             return (
-              <div key={p.id} className="sv-prob">
-                <StatusDot status={p.current_status} size={11} />
-                <Link href={`/devices/${p.id}`} className="name">{p.name}</Link>
-                {p.site_id ? (
-                  <Link href={`/sites/${p.site_id}`} className="site">{p.site_name}</Link>
-                ) : (
-                  <span className="site">{p.site_name || 'Unassigned'}</span>
-                )}
-                <StatusBadge status={p.current_status} />
-                {p.suppressed_children > 0 && (
-                  <span className="sv-badge suppressed" title="Child devices with suppressed alerts">
-                    {p.suppressed_children} child{p.suppressed_children === 1 ? '' : 'ren'} suppressed
-                  </span>
-                )}
-                <span className="spacer" />
-                {down ? (
-                  <span className="dur">{durSince(p.last_seen_at) ? `down for ${durSince(p.last_seen_at)}` : 'down'}</span>
-                ) : (
-                  <span className="ms" style={{ color: msColor(ms) }}>
-                    {ms != null ? `${ms.toFixed(0)} ms` : 'high latency'}
-                  </span>
-                )}
-                {down && (
-                  <span className="ms" style={{ color: 'var(--sv-down)' }}>Timeout</span>
+              <div key={p.id}>
+                <div className="sv-prob">
+                  <StatusDot status={p.current_status} size={11} />
+                  <Link href={`/devices/${p.id}`} className="name">{p.name}</Link>
+                  {gwDown && <span className="sv-gw-down-tag" title="Site gateway is down">Gateway Down</span>}
+                  {p.site_id ? (
+                    <Link href={`/sites/${p.site_id}`} className="site">{p.site_name}</Link>
+                  ) : (
+                    <span className="site">{p.site_name || 'Unassigned'}</span>
+                  )}
+                  <StatusBadge status={p.current_status} />
+                  <span className="spacer" />
+                  {down ? (
+                    <span className="dur">{durSince(p.last_seen_at) ? `down for ${durSince(p.last_seen_at)}` : 'down'}</span>
+                  ) : (
+                    <span className="ms" style={{ color: msColor(ms) }}>
+                      {ms != null ? `${ms.toFixed(0)} ms` : 'high latency'}
+                    </span>
+                  )}
+                  {down && (
+                    <span className="ms" style={{ color: 'var(--sv-down)' }}>Timeout</span>
+                  )}
+                </div>
+                {gwDown && p.suppressed_in_site > 0 && (
+                  <div className="sv-prob-sub">
+                    ↳ {p.suppressed_in_site} device{p.suppressed_in_site === 1 ? '' : 's'} suppressed in {p.site_name || 'this site'}
+                  </div>
                 )}
               </div>
             );

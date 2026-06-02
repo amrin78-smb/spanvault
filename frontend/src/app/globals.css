@@ -648,3 +648,37 @@ label.sv-field .sv-input, label.sv-field .sv-select { font-weight: 400; }
 .sv-dep-pick button:hover { background: var(--sv-bg); }
 .sv-dep-pick .nm { font-weight: 600; }
 .sv-dep-pick .meta { color: var(--sv-muted); font-size: 12px; }
+
+/* ══ Site gateway ════════════════════════════════════════ */
+/* Gold "Site Gateway" badge (header + rows) — no leading dot. */
+.sv-gw-badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 10px; border-radius: 20px; font-size: 12px; font-weight: 700;
+  color: #9a6700; background: #fff4d6; border: 1px solid #f3d98b; white-space: nowrap;
+}
+.sv-gw-star { font-size: 12px; line-height: 1; }
+
+/* Gateway section on device detail */
+.sv-gw-panel .actions { display: flex; align-items: center; gap: 8px; }
+.sv-gw-panel .sv-gw-note { color: var(--sv-muted); font-size: 13.5px; margin: 10px 0 0; }
+.sv-gw-panel .sv-gw-current { margin: 10px 0 0; font-size: 13.5px; }
+.sv-gw-panel .sv-gw-current a { color: var(--sv-crimson); font-weight: 600; }
+.sv-gw-panel .sv-gw-current a:hover { text-decoration: underline; }
+.sv-gw-warn {
+  display: flex; align-items: center; gap: 8px; margin: 0 0 14px;
+  padding: 11px 13px; border-radius: 8px; font-weight: 600; font-size: 13.5px;
+  color: var(--sv-down); background: #fbe6ea; border-left: 4px solid var(--sv-down);
+}
+
+/* "GATEWAY DOWN" tag on dashboard active problems */
+.sv-gw-down-tag {
+  font-size: 10.5px; font-weight: 800; letter-spacing: .5px; text-transform: uppercase;
+  color: #fff; background: var(--sv-down); border-radius: 10px; padding: 2px 8px; white-space: nowrap;
+}
+.sv-prob-sub { font-size: 12.5px; color: var(--sv-muted); padding: 0 0 9px 21px; margin-top: -2px; }
+
+/* Gateway-down notice in a site accordion summary */
+.sv-acc-gw-down {
+  display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 700;
+  color: var(--sv-down); background: #fbe6ea; border-radius: 12px; padding: 2px 9px; white-space: nowrap;
+}

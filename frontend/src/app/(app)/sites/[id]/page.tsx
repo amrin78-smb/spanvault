@@ -14,6 +14,7 @@ type Device = {
   site_id: number | null; site_name: string | null; current_status: string;
   last_response_ms: number | null; last_seen_at: string | null;
   last_checked_at: string | null; uptime_24h_pct: number | null;
+  is_gateway: boolean; alert_suppressed: boolean;
 };
 type Alert = {
   id: number; device_id: number; device_name: string; ip_address: string;
@@ -80,6 +81,10 @@ export default function SiteDetailPage() {
   const siteName = site?.name || deviceList[0]?.site_name || `Site #${id}`;
   const siteCity = site?.city || null;
 
+  const gateway = deviceList.find((d) => d.is_gateway) || null;
+  const gatewayDown = !!gateway && gateway.current_status === 'down';
+  const suppressedCount = deviceList.filter((d) => d.alert_suppressed).length;
+
   return (
     <div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4, flexWrap: 'wrap' }}>
@@ -95,6 +100,21 @@ export default function SiteDetailPage() {
       </p>
       {deviceList.length > 0 && (
         <p className="sv-status-summary">{statusSummary(counts, deviceList.length)}</p>
+      )}
+
+      {gateway && (
+        <p className="sv-gw-current" style={{ marginTop: 4 }}>
+          <span className="sv-gw-star">⭐</span> Site gateway:{' '}
+          <Link href={`/devices/${gateway.id}`} style={{ color: 'var(--sv-crimson)', fontWeight: 600 }}>
+            {gateway.name}
+          </Link>
+        </p>
+      )}
+
+      {gatewayDown && (
+        <div className="sv-gw-warn">
+          ⚠ Site gateway is DOWN — {suppressedCount} device{suppressedCount === 1 ? '' : 's'} suppressed
+        </div>
       )}
 
       {(sites.error || devices.error) && <ErrorBox message={sites.error || devices.error || ''} />}
@@ -195,12 +215,15 @@ export default function SiteDetailPage() {
 function SiteDeviceRow({ device }: { device: Device }) {
   return (
     <div className="sv-dev-row">
-      <StatusDot status={device.current_status} />
+      {device.alert_suppressed
+        ? <span className="sv-badge suppressed" title="Alerts suppressed — site gateway is down">suppressed</span>
+        : <StatusDot status={device.current_status} />}
       <div className="sv-dev-id">
-        <div className="nm">
+        <div className="nm" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           <Link href={`/devices/${device.id}`} style={{ color: 'var(--sv-crimson)' }}>
             {device.name}
           </Link>
+          {device.is_gateway && <span className="sv-gw-star" title="Site gateway">⭐</span>}
         </div>
         <div className="ip">{device.ip_address}{device.device_type ? ` · ${device.device_type}` : ''}</div>
       </div>
