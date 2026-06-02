@@ -682,3 +682,28 @@ label.sv-field .sv-input, label.sv-field .sv-select { font-weight: 400; }
   display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 700;
   color: var(--sv-down); background: #fbe6ea; border-radius: 12px; padding: 2px 9px; white-space: nowrap;
 }
+
+/* ══ Maps list ════════════════════════════════════════════ */
+.sv-map-cards {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 16px; margin-top: 8px;
+}
+.sv-map-card {
+  background: #fff; border: 1px solid var(--sv-border); border-radius: 10px;
+  overflow: hidden; display: flex; flex-direction: column;
+}
+.sv-map-card .thumb {
+  position: relative; height: 120px; display: flex; align-items: center; justify-content: center;
+  border-bottom: 1px solid var(--sv-border);
+}
+.sv-map-public {
+  position: absolute; top: 8px; right: 8px; font-size: 11px; font-weight: 700;
+  color: #166534; background: #dcfce7; border: 1px solid #bbf7d0;
+  border-radius: 12px; padding: 2px 9px;
+}
+.sv-map-card .body { padding: 12px 13px; display: flex; flex-direction: column; gap: 4px; }
+.sv-map-card .body .nm { font-weight: 700; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sv-map-card .body .desc { font-size: 12.5px; color: var(--sv-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sv-map-card .body .meta { font-size: 12px; color: var(--sv-muted); margin-top: 2px; }
+.sv-map-card .actions { display: flex; align-items: center; gap: 6px; margin-top: 10px; }
+.sv-map-card .actions a { text-decoration: none; }

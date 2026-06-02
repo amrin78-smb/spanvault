@@ -11,7 +11,7 @@ const NAV = [
   { href: '/devices', label: 'Devices', Icon: IconDevices },
   { href: '/alerts', label: 'Alerts', Icon: IconAlerts },
   { href: '/reports', label: 'Reports', Icon: IconReports },
-  { href: '/map', label: 'Network Map', Icon: IconMap },
+  { href: '/maps', label: 'Maps', Icon: IconMap },
   { href: '/settings', label: 'Settings', Icon: IconSettings },
 ];
 
