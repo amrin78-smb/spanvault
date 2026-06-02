@@ -39,24 +39,15 @@ export default function IdleTimeout() {
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch(`${HUB}/api/settings/idle_timeout_minutes`, {
+        const res = await fetch(`${HUB}/api/settings`, {
           credentials: 'include',
           headers: { Accept: 'application/json' },
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        // The endpoint returns the bare value — either a number or 'never' —
-        // possibly JSON-wrapped (e.g. { value } or { idle_timeout_minutes }).
-        const text = (await res.text()).trim();
-        let value: any = text;
-        try {
-          const parsed = JSON.parse(text);
-          value = (parsed && typeof parsed === 'object')
-            ? (parsed.idle_timeout_minutes ?? parsed.value ?? parsed)
-            : parsed;
-        } catch {
-          // not JSON — fall back to the raw text (handles a quoted/plain 'never')
-        }
-        if (!cancelled) setTimeoutMs(resolveTimeoutMs(value));
+        // /api/settings returns the full settings object; the idle timeout is a
+        // string value under idle_timeout_minutes (e.g. "30" or "never").
+        const settings = await res.json();
+        if (!cancelled) setTimeoutMs(resolveTimeoutMs(settings?.idle_timeout_minutes));
       } catch {
         if (!cancelled) setTimeoutMs(DEFAULT_TIMEOUT_MINUTES * 60000);
       }
