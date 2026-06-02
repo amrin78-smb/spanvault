@@ -82,6 +82,21 @@ async function loadSettings() {
   }
 }
 
+// Liveness heartbeat: the collector stamps app_settings on a fixed cadence so
+// the API can report "running" even on a fresh install with 0 devices (where no
+// ping_results are ever written). The API treats the collector as alive if this
+// timestamp is recent. Kept independent of device polling on purpose.
+async function writeHeartbeat() {
+  try {
+    await sv.query(
+      `INSERT INTO app_settings (key, value) VALUES ('collector_heartbeat', NOW()::text)
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`
+    );
+  } catch (err) {
+    console.error('[heartbeat] write failed:', err.message);
+  }
+}
+
 // Standard OID constants + walk/get live in ./snmp-session (shared with the API).
 
 // Track previous interface octet counters for bps computation.
@@ -704,6 +719,12 @@ async function runPooled(items, limit, fn) {
 async function main() {
   log('SpanVault collector starting…');
   await loadSettings();
+
+  // Stamp liveness immediately, then keep it fresh every 30s regardless of
+  // whether there are any devices to poll.
+  await writeHeartbeat();
+  setInterval(writeHeartbeat, 30 * 1000);
+
   await syncNetVaultDevices();
 
   // Reload settings periodically so UI changes take effect.

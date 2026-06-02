@@ -126,11 +126,15 @@ app.get('/api/health', wrap(async (_req, res) => {
   res.json({ status: 'ok', service: 'spanvault-api', time: new Date().toISOString() });
 }));
 
-// Collector liveness: 'running' if any ping has been written in the last 10 min.
+// Collector liveness: 'running' if the collector has stamped its heartbeat in
+// app_settings within the last 2 min. The heartbeat is written on a fixed
+// cadence independent of device polling, so a fresh install with 0 devices
+// still reports 'running' as long as the collector process is alive.
 app.get('/api/collector/status', wrap(async (_req, res) => {
-  const r = await sv.query(`SELECT MAX(ts) AS last_ts FROM ping_results WHERE ts >= NOW() - INTERVAL '10 minutes'`);
-  const lastTs = r.rows[0] && r.rows[0].last_ts;
-  res.json({ status: lastTs ? 'running' : 'stopped', last_ts: lastTs || null });
+  const r = await sv.query(`SELECT value FROM app_settings WHERE key = 'collector_heartbeat'`);
+  const lastTs = r.rows[0] && r.rows[0].value ? new Date(r.rows[0].value) : null;
+  const fresh = lastTs && (Date.now() - lastTs.getTime()) <= 120 * 1000;
+  res.json({ status: fresh ? 'running' : 'stopped', last_ts: lastTs ? lastTs.toISOString() : null });
 }));
 
 // ══════════════════════════════════════════════════════════════
