@@ -8,11 +8,13 @@ import KeyboardShortcuts from '@/components/KeyboardShortcuts';
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   return (
     <>
-      <AlertBanner />
+      {/* Full-height column: header spans the full page width (over the
+          sidebar); below it a flex row holds the sidebar + scrolling content. */}
       <div className="sv-shell">
-        <Sidebar />
-        <div className="sv-main">
-          <TopBar />
+        <TopBar />
+        <AlertBanner />
+        <div className="sv-body">
+          <Sidebar />
           <main className="sv-content">{children}</main>
         </div>
       </div>
