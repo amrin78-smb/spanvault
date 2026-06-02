@@ -153,14 +153,18 @@ app.get('/api/dashboard/summary', wrap(async (_req, res) => {
 
 // Active problems — every device currently down or warning, worst first.
 app.get('/api/dashboard/problems', wrap(async (_req, res) => {
-  // Suppressed devices are hidden — they're covered by their parent's entry.
-  // Each remaining device reports how many of its children are suppressed.
+  // Suppressed devices are hidden — when a site gateway is down they're covered
+  // by the gateway's entry. A down gateway reports how many devices its outage
+  // is suppressing at the same site.
   const r = await sv.query(`
     SELECT d.id, d.name, d.ip_address, d.site_id, d.site_name, d.current_status,
            d.last_response_ms, d.last_checked_at, d.last_seen_at, d.consecutive_failures,
-           (SELECT COUNT(*)::int FROM device_dependencies dd
-              JOIN monitored_devices c ON c.id = dd.child_device_id
-             WHERE dd.parent_device_id = d.id AND c.alert_suppressed = TRUE) AS suppressed_children
+           d.is_gateway,
+           CASE WHEN d.is_gateway THEN (
+             SELECT COUNT(*)::int FROM monitored_devices c
+              WHERE c.site_id IS NOT DISTINCT FROM d.site_id AND c.id <> d.id
+                AND c.active = TRUE AND c.alert_suppressed = TRUE
+           ) ELSE 0 END AS suppressed_in_site
     FROM monitored_devices d
     WHERE d.active = TRUE AND d.current_status IN ('down', 'warning')
       AND d.alert_suppressed = FALSE
@@ -273,13 +277,10 @@ app.get('/api/devices', wrap(async (req, res) => {
     SELECT d.id, d.name, d.ip_address, d.device_type, d.site_id, d.site_name,
            d.current_status, d.last_response_ms, d.last_seen_at, d.last_checked_at,
            d.snmp_enabled, d.poll_interval_seconds, d.netvault_device_id,
-           d.suppressed_by_device_id,
-           dd.parent_device_id, p.name AS parent_name,
+           d.is_gateway, d.alert_suppressed, d.suppressed_by_device_id,
            cpu.value AS latest_cpu_pct, mem.value AS latest_mem_pct,
            avail.uptime_24h_pct
     FROM monitored_devices d
-    LEFT JOIN device_dependencies dd ON dd.child_device_id = d.id
-    LEFT JOIN monitored_devices p ON p.id = dd.parent_device_id
     LEFT JOIN LATERAL (
       SELECT value FROM snmp_results
       WHERE device_id = d.id AND metric_name = 'cpu_pct'
@@ -513,6 +514,50 @@ app.post('/api/devices/:id/ping-now', wrap(async (req, res) => {
   else status = 'up';
 
   res.json({ ms, status });
+}));
+
+// ══════════════════════════════════════════════════════════════
+// Site gateway (one per site; gateway-down suppresses the site)
+// ══════════════════════════════════════════════════════════════
+// Mark this device as its site's gateway. Any existing gateway at the same site
+// is cleared first so the one-gateway-per-site partial unique index holds.
+app.post('/api/devices/:id/set-gateway', wrap(async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const dq = await sv.query(`SELECT id, site_id FROM monitored_devices WHERE id = $1`, [id]);
+  const dev = dq.rows[0];
+  if (!dev) return res.status(404).json({ error: 'Device not found' });
+
+  const client = await sv.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(
+      `UPDATE monitored_devices SET is_gateway = FALSE, updated_at = NOW()
+        WHERE site_id IS NOT DISTINCT FROM $1 AND id <> $2 AND is_gateway = TRUE`,
+      [dev.site_id, id]
+    );
+    const r = await client.query(
+      `UPDATE monitored_devices SET is_gateway = TRUE, updated_at = NOW() WHERE id = $1 RETURNING *`,
+      [id]
+    );
+    await client.query('COMMIT');
+    res.json(r.rows[0]);
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}));
+
+// Clear this device's gateway status.
+app.post('/api/devices/:id/clear-gateway', wrap(async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const r = await sv.query(
+    `UPDATE monitored_devices SET is_gateway = FALSE, updated_at = NOW() WHERE id = $1 RETURNING *`,
+    [id]
+  );
+  if (!r.rows[0]) return res.status(404).json({ error: 'Device not found' });
+  res.json(r.rows[0]);
 }));
 
 // ══════════════════════════════════════════════════════════════
