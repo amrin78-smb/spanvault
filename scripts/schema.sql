@@ -168,6 +168,18 @@ ALTER TABLE monitored_devices ADD COLUMN IF NOT EXISTS
 ALTER TABLE monitored_devices ADD COLUMN IF NOT EXISTS
   suppressed_by_device_id INTEGER REFERENCES monitored_devices(id) ON DELETE SET NULL;
 
+-- ── Site Gateway model (supersedes manual parent-child dependencies) ──────────
+-- Each site may designate one gateway device. When that gateway is down, alerts
+-- for every other device at the same site are suppressed (the site is assumed
+-- unreachable through its gateway). The device_dependencies table + alert
+-- suppression columns above are reused by this logic. site_id matching replaces
+-- the parent-child walk.
+ALTER TABLE monitored_devices ADD COLUMN IF NOT EXISTS
+  is_gateway BOOLEAN NOT NULL DEFAULT FALSE;
+-- Only one active gateway per site (partial unique index).
+CREATE UNIQUE INDEX IF NOT EXISTS idx_one_gateway_per_site
+  ON monitored_devices(site_id) WHERE is_gateway = TRUE AND active = TRUE;
+
 GRANT ALL PRIVILEGES ON TABLE device_dependencies TO spanvault_user;
 GRANT ALL PRIVILEGES ON SEQUENCE device_dependencies_id_seq TO spanvault_user;
 
