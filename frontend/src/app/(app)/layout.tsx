@@ -2,6 +2,7 @@ import Sidebar from '@/components/Sidebar';
 import TopBar from '@/components/TopBar';
 import AlertBanner from '@/components/AlertBanner';
 import GlobalSearch from '@/components/GlobalSearch';
+import IdleTimeout from '@/components/IdleTimeout';
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -15,6 +16,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         </div>
       </div>
       <GlobalSearch />
+      <IdleTimeout />
     </>
   );
 }
