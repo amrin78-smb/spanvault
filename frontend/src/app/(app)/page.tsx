@@ -7,7 +7,10 @@ import {
 } from 'recharts';
 import { useApi } from '@/lib/api';
 import { StatusDot } from '@/components/StatusDot';
-import { StatusBadge, Loading, ErrorBox, Empty, fmtRel, fmtTime } from '@/components/ui';
+import {
+  StatusBadge, ErrorBox, Empty, fmtRel, fmtTime,
+  PageHeader, CardSkeleton, TableSkeleton, Skeleton, useRefreshKey,
+} from '@/components/ui';
 
 // ── Types ──────────────────────────────────────────────────────
 type Summary = {
@@ -110,6 +113,12 @@ export default function DashboardPage() {
   const updatedAt = useUpdatedAt(summary.data);
   const ago = useSecondsAgo(updatedAt);
 
+  // Global "R" shortcut / refresh button reloads every dashboard panel.
+  useRefreshKey(() => {
+    summary.reload(); problems.reload(); worst.reload();
+    trend.reload(); sites.reload(); events.reload();
+  });
+
   const s = summary.data;
   const tDir = availTrend(trend.data);
   // UP card: availability improving = good. DOWN card: improving means fewer down.
@@ -120,18 +129,16 @@ export default function DashboardPage() {
 
   return (
     <div>
-      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-        <h1 className="sv-page-title">Dashboard</h1>
+      <PageHeader title="Dashboard" subtitle="Live network health across all monitored devices.">
         <span className="sv-muted" style={{ fontSize: 13 }}>
           {updatedAt ? `Updated ${ago === 0 ? 'just now' : `${ago} second${ago === 1 ? '' : 's'} ago`}` : 'Loading…'}
         </span>
-      </div>
-      <p className="sv-page-sub">Live network health across all monitored devices.</p>
+      </PageHeader>
 
       {/* ── ROW 1: stat cards ───────────────────────────── */}
       {summary.error && <ErrorBox message={summary.error} />}
       {summary.loading && !s ? (
-        <Loading />
+        <div className="sv-dash-stats"><CardSkeleton count={6} /></div>
       ) : s ? (
         <div className="sv-dash-stats">
           <StatLink href="/devices" variant="total" num={s.total} label="Total Devices" />
@@ -158,7 +165,7 @@ export default function DashboardPage() {
         <div className="sv-dash-card">
           <div className="sv-dash-head"><h2>Network Availability (24h)</h2></div>
           {trend.loading && !trend.data ? (
-            <Loading />
+            <Skeleton height={200} radius={10} />
           ) : trend.error ? (
             <ErrorBox message={trend.error} />
           ) : (
@@ -223,7 +230,7 @@ function ActiveProblems({ api }: { api: Api<Problem[]> }) {
       </div>
 
       {api.loading && !api.data ? (
-        <Loading />
+        <TableSkeleton rows={5} cols={3} />
       ) : api.error ? (
         <ErrorBox message={api.error} />
       ) : !hasProblems ? (
@@ -287,7 +294,7 @@ function SlowestDevices({ api }: { api: Api<Worst[]> }) {
     <div className="sv-dash-card">
       <div className="sv-dash-head"><h2>Slowest Devices (last 1h)</h2></div>
       {api.loading && !api.data ? (
-        <Loading />
+        <TableSkeleton rows={5} cols={5} />
       ) : api.error ? (
         <ErrorBox message={api.error} />
       ) : !rows.length ? (
@@ -333,7 +340,7 @@ function SiteHealthCard({ api }: { api: Api<SiteHealth[]> }) {
     <div className="sv-dash-card">
       <div className="sv-dash-head"><h2>Site Health (24h)</h2></div>
       {api.loading && !api.data ? (
-        <Loading />
+        <TableSkeleton rows={5} cols={3} />
       ) : api.error ? (
         <ErrorBox message={api.error} />
       ) : !rows.length ? (
@@ -438,7 +445,7 @@ function humanEvent(type: string): string {
 
 function RecentEvents({ api }: { api: Api<EventRow[]> }) {
   const rows = (api.data || []).slice(0, 10);
-  if (api.loading && !api.data) return <Loading />;
+  if (api.loading && !api.data) return <TableSkeleton rows={6} cols={2} />;
   if (api.error) return <ErrorBox message={api.error} />;
   if (!rows.length) return <Empty message="No events in the last 24 hours" />;
   return (

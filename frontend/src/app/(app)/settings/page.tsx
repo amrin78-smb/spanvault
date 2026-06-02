@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useApi, apiSend } from '@/lib/api';
-import { Loading, ErrorBox, Empty, fmtTime } from '@/components/ui';
+import { Loading, ErrorBox, Empty, fmtTime, PageHeader, TableSkeleton } from '@/components/ui';
 
 const TABS = [
   { key: 'general', label: 'General' },
@@ -14,8 +14,7 @@ export default function SettingsPage() {
   const [tab, setTab] = useState('general');
   return (
     <div>
-      <h1 className="sv-page-title">Settings</h1>
-      <p className="sv-page-sub">Polling, thresholds, notifications, and alert rules.</p>
+      <PageHeader title="Settings" subtitle="Polling, thresholds, notifications, and alert rules." />
       <div className="sv-tabs">
         {TABS.map((t) => (
           <button key={t.key} className={`sv-tab ${tab === t.key ? 'active' : ''}`} onClick={() => setTab(t.key)}>
@@ -522,7 +521,7 @@ function Maintenance() {
 
       <div className="sv-panel" style={{ padding: 0 }}>
         {windows.loading && !windows.data ? (
-          <Loading />
+          <TableSkeleton rows={4} cols={5} />
         ) : windows.data && windows.data.length ? (
           <table className="sv-table">
             <thead>

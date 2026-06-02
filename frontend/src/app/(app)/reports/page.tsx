@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useApi } from '@/lib/api';
-import { Loading, ErrorBox, Empty, fmtBps } from '@/components/ui';
+import { ErrorBox, Empty, fmtBps, PageHeader, TableSkeleton, useRefreshKey } from '@/components/ui';
 
 // ── Types ──────────────────────────────────────────────────────
 type Site = { id: number; name: string };
@@ -145,6 +145,7 @@ export default function ReportsPage() {
   }
   // Auto-run once on mount with defaults.
   useEffect(() => { runReport(); /* eslint-disable-next-line */ }, []);
+  useRefreshKey(() => runReport());
 
   const q = applied ? buildQuery(applied) : '';
   const slaData = useApi<SlaResp>(applied?.type === 'sla' ? `/api/reports/sla?${q}` : null);
@@ -191,8 +192,10 @@ export default function ReportsPage() {
 
   return (
     <div>
-      <h1 className="sv-page-title">Reports</h1>
-      <p className="sv-page-sub">Availability &amp; SLA, response time, alerts, and bandwidth — printable for management.</p>
+      <PageHeader
+        title="Reports"
+        subtitle="Availability & SLA, response time, alerts, and bandwidth — printable for management."
+      />
 
       {/* Report type selector */}
       <div className="sv-tabs">
@@ -274,7 +277,7 @@ export default function ReportsPage() {
           {active?.error && <ErrorBox message={active.error} />}
           <div className="sv-panel" style={{ padding: 0 }}>
             {active?.loading && !active?.data ? (
-              <Loading />
+              <TableSkeleton rows={6} cols={cols.length || 6} />
             ) : rows.length ? (
               <ReportTable type={applied.type} cols={cols} rows={rows} slaTarget={Number(applied.slaTarget) || 99.5} />
             ) : (

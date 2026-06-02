@@ -3,8 +3,9 @@
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useApi, apiSend } from '@/lib/api';
-import { Loading, ErrorBox, Empty, fmtRel } from '@/components/ui';
+import { ErrorBox, fmtRel, PageHeader, TableSkeleton, EmptyState, useRefreshKey } from '@/components/ui';
 import { StatusDot } from '@/components/StatusDot';
+import { IconDevices } from '@/components/icons';
 import { DeviceForm, ImportModal } from '@/components/DeviceModals';
 
 type Device = {
@@ -85,6 +86,8 @@ export default function DevicesPage() {
   const devices = useApi<Device[]>(`/api/devices?${params.toString()}`, 20000);
   const sites = useApi<Site[]>('/api/netvault/sites');
 
+  useRefreshKey(() => { devices.reload(); sites.reload(); });
+
   function openAdd() { setEditing(null); setShowForm(true); }
   function openEdit(d: Device) { setEditing(d); setShowForm(true); }
 
@@ -98,8 +101,10 @@ export default function DevicesPage() {
 
   return (
     <div>
-      <h1 className="sv-page-title">Devices</h1>
-      <p className="sv-page-sub">Devices currently monitored by SpanVault, grouped by site.</p>
+      <PageHeader title="Devices" subtitle="Devices currently monitored by SpanVault, grouped by site.">
+        <button className="sv-btn ghost" onClick={() => setShowImport(true)}>Import from NetVault</button>
+        <button className="sv-btn" onClick={openAdd}>+ Add Device</button>
+      </PageHeader>
 
       <div className="sv-toolbar">
         <input
@@ -119,15 +124,12 @@ export default function DevicesPage() {
           <option value="">All sites</option>
           {sites.data?.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
         </select>
-        <div className="spacer" />
-        <button className="sv-btn ghost" onClick={() => setShowImport(true)}>Import from NetVault</button>
-        <button className="sv-btn" onClick={openAdd}>+ Add Device</button>
       </div>
 
       {devices.error && <ErrorBox message={devices.error} />}
 
       {devices.loading && !devices.data ? (
-        <div className="sv-panel"><Loading /></div>
+        <div className="sv-panel" style={{ padding: 0 }}><TableSkeleton rows={6} cols={4} /></div>
       ) : groups.length ? (
         groups.map((g) => (
           <SiteAccordion
@@ -139,7 +141,13 @@ export default function DevicesPage() {
         ))
       ) : (
         <div className="sv-panel" style={{ padding: 0 }}>
-          <Empty message="No monitored devices. Add one or import from NetVault." />
+          <EmptyState
+            icon={<IconDevices width={26} height={26} />}
+            title="No monitored devices"
+            message="Add a device manually or import your inventory from NetVault to start monitoring."
+            actionLabel="+ Add Device"
+            onAction={openAdd}
+          />
         </div>
       )}
 

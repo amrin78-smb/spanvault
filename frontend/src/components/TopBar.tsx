@@ -1,19 +1,30 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
-import { useSession, signOut } from 'next-auth/react';
+import Link from 'next/link';
+import { useSession } from 'next-auth/react';
 import { useApi } from '@/lib/api';
-import { IconHome, IconLogout } from './icons';
+import { IconHome, IconLogout, IconBell } from './icons';
 import TopBarSearch from './TopBarSearch';
+import ThemeToggle from './ThemeToggle';
 
 const HUB = process.env.NEXT_PUBLIC_NOCVAULT_HUB_URL || 'http://localhost:3000';
+
+type Summary = {
+  total: number; up: number; down: number; warning: number; unknown: number; active_alerts: number;
+};
 
 export default function TopBar() {
   const { data: session } = useSession();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+
   const collector = useApi<{ status: string }>('/api/collector/status', 30000);
   const collectorRunning = collector.data?.status === 'running';
+
+  // Unacknowledged alert count drives the notifications bell badge.
+  const summary = useApi<Summary>('/api/dashboard/summary', 30000);
+  const alertCount = summary.data?.active_alerts ?? 0;
 
   useEffect(() => {
     function onClick(e: MouseEvent) {
@@ -33,45 +44,86 @@ export default function TopBar() {
   // Label shown next to the avatar: name, else the email local-part.
   const displayName = user?.name || user?.email?.split('@')[0] || '';
 
+  // Suite-standard sign-out: clear the next-auth session via the CSRF-protected
+  // signout endpoint, then hard-redirect to the hub launcher. Avoids next-auth's
+  // signOut() which appends a callbackUrl back to SpanVault.
   const handleSignOut = async () => {
-    await signOut({ redirect: false });
-    window.location.href = `${HUB}/launcher`;
+    try {
+      const res = await fetch('/api/auth/csrf');
+      const { csrfToken } = await res.json();
+      await fetch('/api/auth/signout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ csrfToken, json: 'true' }),
+      });
+    } catch {
+      /* ignore — still redirect to the hub */
+    }
+    window.location.replace(`${HUB}/launcher`);
   };
 
   return (
     <header className="sv-topbar">
+      <div className="sv-topbar-brand">
+        <img className="sv-logo" src="/spanvault-logo-white.png" alt="SpanVault" />
+        <span className="sv-topbar-divider" />
+        <span className="sv-topbar-subtitle">Network Monitoring</span>
+      </div>
+
       <div className="sv-topbar-left">
         <TopBarSearch />
       </div>
+
       <div className="sv-topbar-right">
-        <span className={`sv-collector-pill ${collectorRunning ? 'running' : 'stopped'}`}>
-          ● COLLECTOR
+        <Link
+          className="sv-icon-btn"
+          href="/alerts?status=active"
+          title={alertCount > 0 ? `${alertCount} active alert${alertCount === 1 ? '' : 's'}` : 'No active alerts'}
+          aria-label="Notifications"
+        >
+          <IconBell width={18} height={18} />
+          {alertCount > 0 && (
+            <span className="sv-icon-badge">{alertCount > 99 ? '99+' : alertCount}</span>
+          )}
+        </Link>
+
+        <ThemeToggle />
+
+        <span
+          className={`sv-collector-pill ${collectorRunning ? 'running' : 'stopped'}`}
+          title={collectorRunning ? 'Collector is running' : 'Collector is not running'}
+        >
+          <span className="dot" />
+          COLLECTOR
         </span>
+
         <div className="sv-user" ref={ref}>
-        <button className="sv-user-btn" onClick={() => setOpen((o) => !o)} title={displayName}>
-          <div className="sv-avatar">{initials}</div>
-          <div className="sv-user-meta">
-            <span className="sv-user-name">{displayName}</span>
-            {role && <span className="sv-user-role">{role}</span>}
-          </div>
-        </button>
-        {open && (
-          <div className="sv-dropdown">
-            <div className="who">
-              <strong>{displayName}</strong>
-              {user?.email && <span>{user.email}</span>}
-              {role && <span>{role}</span>}
+          <button className="sv-user-btn" onClick={() => setOpen((o) => !o)} title={displayName}>
+            <div className="sv-avatar">{initials}</div>
+            <div className="sv-user-meta">
+              <span className="sv-user-name">{displayName}</span>
+              {role && <span className="sv-user-role">{role}</span>}
             </div>
-            <a className="sv-dropdown-item" href={`${HUB}/launcher`}>
-              <IconHome width={16} height={16} />
-              NocVault Hub
-            </a>
-            <button className="sv-dropdown-item" onClick={handleSignOut}>
-              <IconLogout width={16} height={16} />
-              Sign out
-            </button>
-          </div>
-        )}
+          </button>
+          {open && (
+            <div className="sv-dropdown">
+              <div className="who">
+                <strong>{displayName}</strong>
+                {user?.email && <span>{user.email}</span>}
+                {role && <span style={{ textTransform: 'capitalize' }}>{role}</span>}
+              </div>
+              <a className="sv-dropdown-item" href={`${HUB}/launcher`}>
+                <IconHome width={16} height={16} />
+                NocVault Hub
+              </a>
+              <ThemeToggle variant="item" />
+              <div className="sv-dropdown-divider" />
+              <button className="sv-dropdown-item danger" onClick={handleSignOut}>
+                <IconLogout width={16} height={16} />
+                Sign Out
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </header>

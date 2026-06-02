@@ -41,6 +41,16 @@ export default function TopBarSearch() {
     return () => document.removeEventListener('mousedown', onClick);
   }, []);
 
+  // Suite-standard "/" shortcut focuses the search (dispatched by KeyboardShortcuts).
+  useEffect(() => {
+    function onFocusSearch() {
+      setExpanded(true);
+      setTimeout(() => inputRef.current?.focus(), 0);
+    }
+    window.addEventListener('spanvault:focus-search', onFocusSearch);
+    return () => window.removeEventListener('spanvault:focus-search', onFocusSearch);
+  }, []);
+
   // Debounced search.
   useEffect(() => {
     const term = q.trim();
@@ -102,6 +112,7 @@ export default function TopBarSearch() {
           onFocus={() => { if (results.length) setOpenMenu(true); }}
           onKeyDown={onKey}
         />
+        <span className="sv-tbsearch-kbd">/</span>
       </div>
       {openMenu && (
         <div className="sv-tbsearch-menu">

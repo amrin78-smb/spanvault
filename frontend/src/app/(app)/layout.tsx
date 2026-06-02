@@ -3,6 +3,7 @@ import TopBar from '@/components/TopBar';
 import AlertBanner from '@/components/AlertBanner';
 import GlobalSearch from '@/components/GlobalSearch';
 import IdleTimeout from '@/components/IdleTimeout';
+import KeyboardShortcuts from '@/components/KeyboardShortcuts';
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -17,6 +18,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       </div>
       <GlobalSearch />
       <IdleTimeout />
+      <KeyboardShortcuts />
     </>
   );
 }

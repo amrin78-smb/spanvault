@@ -4,7 +4,8 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { useSession } from 'next-auth/react';
 import { useApi, apiSend } from '@/lib/api';
-import { StatusBadge, Loading, ErrorBox, Empty, fmtTime } from '@/components/ui';
+import { StatusBadge, ErrorBox, fmtTime, PageHeader, TableSkeleton, EmptyState, useRefreshKey } from '@/components/ui';
+import { IconAlerts } from '@/components/icons';
 
 type Alert = {
   id: number; device_id: number; device_name: string; ip_address: string;
@@ -24,6 +25,8 @@ export default function AlertsPage() {
   if (severity) params.set('severity', severity);
   const alerts = useApi<Alert[]>(`/api/alerts?${params.toString()}`, 15000);
 
+  useRefreshKey(() => alerts.reload());
+
   async function ack(a: Alert) {
     await apiSend(`/api/alerts/${a.id}/acknowledge`, 'POST', {
       acknowledged_by: session?.user?.name || session?.user?.email || 'unknown',
@@ -37,8 +40,7 @@ export default function AlertsPage() {
 
   return (
     <div>
-      <h1 className="sv-page-title">Alerts</h1>
-      <p className="sv-page-sub">Network alerts raised by the collector.</p>
+      <PageHeader title="Alerts" subtitle="Network alerts raised by the collector." />
 
       <div className="sv-toolbar">
         <select className="sv-select" value={status} onChange={(e) => setStatus(e.target.value)}>
@@ -58,7 +60,7 @@ export default function AlertsPage() {
       {alerts.error && <ErrorBox message={alerts.error} />}
       <div className="sv-panel" style={{ padding: 0 }}>
         {alerts.loading && !alerts.data ? (
-          <Loading />
+          <TableSkeleton rows={6} cols={7} />
         ) : alerts.data && alerts.data.length ? (
           <table className="sv-table">
             <thead>
@@ -103,7 +105,11 @@ export default function AlertsPage() {
             </tbody>
           </table>
         ) : (
-          <Empty message="No alerts match the current filters." />
+          <EmptyState
+            icon={<IconAlerts width={26} height={26} />}
+            title="No alerts"
+            message="No alerts match the current filters. Everything looks healthy."
+          />
         )}
       </div>
     </div>
