@@ -10,6 +10,7 @@
 require('dotenv').config({ path: require('path').join(__dirname, '..', '.env.local') });
 
 const express  = require('express');
+const path     = require('path');
 const cors     = require('cors');
 const ping     = require('ping');
 const { Pool } = require('pg');
@@ -119,6 +120,29 @@ function reportFilters(q, params) {
   return f;
 }
 
+// Public base URL agents use (frontend, which proxies /api/*). Prefer the
+// configured SV_PUBLIC_URL; otherwise derive from the incoming request.
+function getServerUrl(req) {
+  if (process.env.SV_PUBLIC_URL) return process.env.SV_PUBLIC_URL.replace(/\/+$/, '');
+  const proto = (req.headers['x-forwarded-proto'] || req.protocol || 'http').split(',')[0];
+  const host = req.headers['x-forwarded-host'] || req.headers.host || 'localhost';
+  return `${proto}://${host}`;
+}
+
+// ══════════════════════════════════════════════════════════════
+// Agent files (served unauthenticated for the bootstrap installer)
+// ══════════════════════════════════════════════════════════════
+app.get('/api/agent/install.ps1', (req, res) => {
+  res.setHeader('Content-Type', 'text/plain');
+  res.sendFile(path.join(__dirname, '..', 'agent', 'install.ps1'));
+});
+app.get('/api/agent/agent.js', (req, res) => {
+  res.sendFile(path.join(__dirname, '..', 'agent', 'agent.js'));
+});
+app.get('/api/agent/package.json', (req, res) => {
+  res.sendFile(path.join(__dirname, '..', 'agent', 'package.json'));
+});
+
 // ══════════════════════════════════════════════════════════════
 // Health
 // ══════════════════════════════════════════════════════════════
@@ -151,9 +175,37 @@ app.get('/api/dashboard/summary', wrap(async (_req, res) => {
   for (const row of q.rows) {
     if (counts[row.status] !== undefined) counts[row.status] = row.count;
   }
+  // Devices whose agent is offline are surfaced separately (not counted as down).
+  const offline = await sv.query(
+    `SELECT COUNT(*)::int AS c FROM monitored_devices WHERE active = TRUE AND current_status = 'agent_offline'`);
   const total = counts.up + counts.down + counts.warning + counts.unknown;
   const active = await sv.query(`SELECT COUNT(*)::int AS c FROM alerts WHERE status = 'active'`);
-  res.json({ total, ...counts, active_alerts: active.rows[0].c });
+  const agents = await sv.query(`
+    SELECT COUNT(*)::int AS total,
+           COUNT(*) FILTER (WHERE status = 'online')::int AS online
+    FROM agents`);
+  res.json({
+    total, ...counts,
+    agent_offline: offline.rows[0].c,
+    active_alerts: active.rows[0].c,
+    agents_total: agents.rows[0].total,
+    agents_online: agents.rows[0].online,
+  });
+}));
+
+// Devices unreachable because their polling agent is offline, grouped by agent.
+app.get('/api/dashboard/agent-offline', wrap(async (_req, res) => {
+  const r = await sv.query(`
+    SELECT a.id AS agent_id, a.name AS agent_name, a.hostname, a.last_seen_at,
+           COUNT(d.*)::int AS device_count
+    FROM agents a
+    JOIN monitored_devices d ON d.agent_id = a.id AND d.active = TRUE
+    WHERE a.status = 'offline'
+    GROUP BY a.id, a.name, a.hostname, a.last_seen_at
+    HAVING COUNT(d.*) > 0
+    ORDER BY a.name
+  `);
+  res.json(r.rows);
 }));
 
 // Active problems — every device currently down or warning, worst first.
@@ -283,9 +335,11 @@ app.get('/api/devices', wrap(async (req, res) => {
            d.current_status, d.last_response_ms, d.last_seen_at, d.last_checked_at,
            d.snmp_enabled, d.poll_interval_seconds, d.netvault_device_id,
            d.is_gateway, d.alert_suppressed, d.suppressed_by_device_id,
+           d.agent_id, ag.name AS agent_name, ag.status AS agent_status,
            cpu.value AS latest_cpu_pct, mem.value AS latest_mem_pct,
            avail.uptime_24h_pct
     FROM monitored_devices d
+    LEFT JOIN agents ag ON ag.id = d.agent_id
     LEFT JOIN LATERAL (
       SELECT value FROM snmp_results
       WHERE device_id = d.id AND metric_name = 'cpu_pct'
@@ -335,7 +389,13 @@ app.post('/api/devices', wrap(async (req, res) => {
     safeInt(b.ping_threshold_ms, 500), safeInt(b.ping_failures_before_down, 3),
   ]);
   if (!r.rows[0]) return res.status(409).json({ error: 'A device with this IP is already monitored' });
-  res.status(201).json(r.rows[0]);
+  // Auto-assign to a polling agent if one owns this device's site.
+  const agentId = await assignDeviceAgent(r.rows[0].id, r.rows[0].site_id);
+  if (agentId) {
+    try { await pushConfigToAgentId(agentId); } catch (e) { console.error('[devices] push config failed:', e.message); }
+  }
+  const fresh = await sv.query(`SELECT * FROM monitored_devices WHERE id = $1`, [r.rows[0].id]);
+  res.status(201).json(fresh.rows[0]);
 }));
 
 app.put('/api/devices/:id', wrap(async (req, res) => {
@@ -690,6 +750,7 @@ app.post('/api/netvault/import', wrap(async (req, res) => {
     WHERE d.id = ANY($1::int[]) AND d.ip_address IS NOT NULL
   `, [ids]);
   let imported = 0;
+  const touchedAgents = new Set();
   for (const row of src.rows) {
     const r = await sv.query(`
       INSERT INTO monitored_devices (name, ip_address, device_type, site_id, site_name, netvault_device_id)
@@ -697,7 +758,16 @@ app.post('/api/netvault/import', wrap(async (req, res) => {
       ON CONFLICT (ip_address) DO NOTHING
       RETURNING id
     `, [row.name, row.ip_address, row.device_type, row.site_id, row.site_name, row.netvault_device_id]);
-    if (r.rows[0]) imported++;
+    if (r.rows[0]) {
+      imported++;
+      // Auto-assign to a polling agent if one owns this device's site.
+      const agentId = await assignDeviceAgent(r.rows[0].id, row.site_id);
+      if (agentId) touchedAgents.add(agentId);
+    }
+  }
+  // Push refreshed config to each affected connected agent.
+  for (const agentId of touchedAgents) {
+    try { await pushConfigToAgentId(agentId); } catch (e) { console.error('[import] push config failed:', e.message); }
   }
   res.json({ imported, requested: ids.length });
 }));
@@ -711,6 +781,195 @@ app.get('/api/netvault/sites', wrap(async (_req, res) => {
     ORDER BY name
   `);
   res.json(r.rows);
+}));
+
+// ══════════════════════════════════════════════════════════════
+// Distributed polling agents
+// ══════════════════════════════════════════════════════════════
+// Build the one-line install command shown to the user after creating an agent.
+function installCommand(serverUrl, apiKey) {
+  return `irm ${serverUrl}/api/agent/install.ps1 | iex -ServerUrl "${serverUrl}" -ApiKey "${apiKey}"`;
+}
+
+// Auto-assign a device to whichever agent owns its site (NULL = local polling).
+// Returns the resolved agent_id (or null). Updates the device row in place.
+async function assignDeviceAgent(deviceId, siteId) {
+  let agentId = null;
+  if (siteId != null) {
+    const r = await sv.query(`SELECT agent_id FROM agent_sites WHERE site_id = $1 LIMIT 1`, [siteId]);
+    if (r.rows[0]) agentId = r.rows[0].agent_id;
+  }
+  await sv.query(`UPDATE monitored_devices SET agent_id = $2, updated_at = NOW() WHERE id = $1`,
+    [deviceId, agentId]);
+  return agentId;
+}
+
+// All agents with device counts + assigned sites.
+app.get('/api/agents', wrap(async (_req, res) => {
+  const r = await sv.query(`
+    SELECT a.id, a.name, a.status, a.version, a.ip_address, a.hostname,
+           a.last_seen_at, a.connected_at, a.created_at,
+           (SELECT COUNT(*)::int FROM monitored_devices d WHERE d.agent_id = a.id) AS device_count,
+           COALESCE((
+             SELECT json_agg(json_build_object('site_id', s.site_id, 'site_name', s.site_name) ORDER BY s.site_name)
+             FROM agent_sites s WHERE s.agent_id = a.id
+           ), '[]'::json) AS sites
+    FROM agents a
+    ORDER BY a.name
+  `);
+  res.json(r.rows);
+}));
+
+// Create an agent: generate api_key, assign sites, auto-assign existing devices.
+app.post('/api/agents', wrap(async (req, res) => {
+  const b = req.body || {};
+  if (!b.name) return res.status(400).json({ error: 'name is required' });
+  const siteIds = Array.isArray(b.site_ids) ? b.site_ids.map((n) => parseInt(n, 10)).filter((n) => !isNaN(n)) : [];
+
+  const client = await sv.connect();
+  try {
+    await client.query('BEGIN');
+    const ins = await client.query(`INSERT INTO agents (name) VALUES ($1) RETURNING *`, [b.name]);
+    const agent = ins.rows[0];
+
+    if (siteIds.length) {
+      // Resolve site names from NetVault for display (best-effort).
+      let names = {};
+      try {
+        const nr = await nv.query(`SELECT id, name FROM sites WHERE id = ANY($1::int[])`, [siteIds]);
+        for (const row of nr.rows) names[row.id] = row.name;
+      } catch (_e) { /* NetVault optional */ }
+
+      for (const sid of siteIds) {
+        await client.query(
+          `INSERT INTO agent_sites (agent_id, site_id, site_name) VALUES ($1,$2,$3)
+           ON CONFLICT (agent_id, site_id) DO UPDATE SET site_name = EXCLUDED.site_name`,
+          [agent.id, sid, names[sid] || null]
+        );
+      }
+      // Auto-assign every monitored device in those sites to this agent.
+      await client.query(
+        `UPDATE monitored_devices SET agent_id = $1, updated_at = NOW() WHERE site_id = ANY($2::int[])`,
+        [agent.id, siteIds]
+      );
+    }
+    await client.query('COMMIT');
+
+    const serverUrl = getServerUrl(req);
+    res.status(201).json({
+      ...agent,
+      install_command: installCommand(serverUrl, agent.api_key),
+    });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}));
+
+// Agent detail: agent + assigned sites + device list.
+app.get('/api/agents/:id', wrap(async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const a = await sv.query(`SELECT * FROM agents WHERE id = $1`, [id]);
+  if (!a.rows[0]) return res.status(404).json({ error: 'Agent not found' });
+  const sites = await sv.query(
+    `SELECT site_id, site_name FROM agent_sites WHERE agent_id = $1 ORDER BY site_name`, [id]);
+  const devices = await sv.query(`
+    SELECT id, name, ip_address, device_type, site_id, site_name,
+           current_status, last_response_ms, last_seen_at, last_checked_at, snmp_enabled
+    FROM monitored_devices WHERE agent_id = $1 AND active = TRUE
+    ORDER BY site_name NULLS LAST, name
+  `, [id]);
+  const serverUrl = getServerUrl(req);
+  res.json({
+    ...a.rows[0],
+    sites: sites.rows,
+    devices: devices.rows,
+    install_command: installCommand(serverUrl, a.rows[0].api_key),
+  });
+}));
+
+// Rename an agent.
+app.put('/api/agents/:id', wrap(async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const b = req.body || {};
+  if (!b.name) return res.status(400).json({ error: 'name is required' });
+  const r = await sv.query(
+    `UPDATE agents SET name = $2, updated_at = NOW() WHERE id = $1 RETURNING *`, [id, b.name]);
+  if (!r.rows[0]) return res.status(404).json({ error: 'Agent not found' });
+  res.json(r.rows[0]);
+}));
+
+// Delete an agent. Its devices fall back to local polling (agent_id → NULL via
+// FK), and any lingering 'agent_offline' status is reset so the collector repolls.
+app.delete('/api/agents/:id', wrap(async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  await sv.query(
+    `UPDATE monitored_devices SET current_status = 'unknown', updated_at = NOW()
+      WHERE agent_id = $1 AND current_status = 'agent_offline'`, [id]);
+  await sv.query(`DELETE FROM agents WHERE id = $1`, [id]);
+  res.json({ ok: true });
+}));
+
+// Replace an agent's site assignments + re-derive device ownership.
+app.post('/api/agents/:id/sites', wrap(async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const b = req.body || {};
+  const siteIds = Array.isArray(b.site_ids) ? b.site_ids.map((n) => parseInt(n, 10)).filter((n) => !isNaN(n)) : [];
+
+  const exists = await sv.query(`SELECT id FROM agents WHERE id = $1`, [id]);
+  if (!exists.rows[0]) return res.status(404).json({ error: 'Agent not found' });
+
+  const client = await sv.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(`DELETE FROM agent_sites WHERE agent_id = $1`, [id]);
+
+    if (siteIds.length) {
+      let names = {};
+      try {
+        const nr = await nv.query(`SELECT id, name FROM sites WHERE id = ANY($1::int[])`, [siteIds]);
+        for (const row of nr.rows) names[row.id] = row.name;
+      } catch (_e) { /* NetVault optional */ }
+      for (const sid of siteIds) {
+        await client.query(
+          `INSERT INTO agent_sites (agent_id, site_id, site_name) VALUES ($1,$2,$3)`,
+          [id, sid, names[sid] || null]
+        );
+      }
+    }
+
+    // Devices in sites no longer assigned to this agent fall back to local.
+    await client.query(
+      `UPDATE monitored_devices
+          SET agent_id = NULL,
+              current_status = CASE WHEN current_status = 'agent_offline' THEN 'unknown' ELSE current_status END,
+              updated_at = NOW()
+        WHERE agent_id = $1 AND NOT (site_id = ANY($2::int[]))`,
+      [id, siteIds.length ? siteIds : [-1]]
+    );
+    // Devices in the assigned sites are owned by this agent.
+    if (siteIds.length) {
+      await client.query(
+        `UPDATE monitored_devices SET agent_id = $1, updated_at = NOW() WHERE site_id = ANY($2::int[])`,
+        [id, siteIds]
+      );
+    }
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+
+  // Push the refreshed config to the agent if it is connected.
+  try { await pushConfigToAgentId(id); } catch (e) { console.error('[agents] push config failed:', e.message); }
+
+  const sites = await sv.query(
+    `SELECT site_id, site_name FROM agent_sites WHERE agent_id = $1 ORDER BY site_name`, [id]);
+  res.json({ ok: true, sites: sites.rows });
 }));
 
 // ══════════════════════════════════════════════════════════════
