@@ -306,3 +306,127 @@ CREATE INDEX IF NOT EXISTS idx_map_labels_map ON map_labels(map_id);
 
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO spanvault_user;
 GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO spanvault_user;
+
+-- ══ Intelligence Layer ════════════════════════════════════════════════════════
+-- Statistical analytics computed on top of the raw monitoring data
+-- (ping_results, snmp_results, alerts). All tables are written by the
+-- intelligence engine (api/intelligence.js), which runs on a timer inside the
+-- API process. Everything below is idempotent.
+
+-- Computed baselines per device per metric (updated hourly).
+CREATE TABLE IF NOT EXISTS device_baselines (
+  id          SERIAL PRIMARY KEY,
+  device_id   INTEGER NOT NULL REFERENCES monitored_devices(id) ON DELETE CASCADE,
+  metric      TEXT NOT NULL,        -- response_ms, cpu_pct, mem_pct, if_in_bps, etc.
+  period_days INTEGER NOT NULL DEFAULT 30,
+  mean        NUMERIC,
+  stddev      NUMERIC,
+  p50         NUMERIC,              -- median
+  p95         NUMERIC,              -- 95th percentile
+  p99         NUMERIC,              -- 99th percentile
+  min_val     NUMERIC,
+  max_val     NUMERIC,
+  sample_count INTEGER NOT NULL DEFAULT 0,
+  computed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_baseline_device_metric
+  ON device_baselines(device_id, metric, period_days);
+
+-- Health scores per device (updated every poll cycle).
+CREATE TABLE IF NOT EXISTS device_health_scores (
+  id              SERIAL PRIMARY KEY,
+  device_id       INTEGER NOT NULL REFERENCES monitored_devices(id) ON DELETE CASCADE,
+  score           NUMERIC NOT NULL DEFAULT 100,   -- 0-100
+  uptime_score    NUMERIC,   -- contribution from uptime
+  response_score  NUMERIC,   -- contribution from response time trend
+  anomaly_score   NUMERIC,   -- contribution from anomaly frequency
+  alert_score     NUMERIC,   -- contribution from alert frequency
+  grade           TEXT,      -- A/B/C/D/F
+  trend           TEXT,      -- improving/stable/degrading
+  computed_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_health_device
+  ON device_health_scores(device_id);
+
+-- Detected anomalies.
+CREATE TABLE IF NOT EXISTS device_anomalies (
+  id          SERIAL PRIMARY KEY,
+  device_id   INTEGER NOT NULL REFERENCES monitored_devices(id) ON DELETE CASCADE,
+  metric      TEXT NOT NULL,
+  value       NUMERIC NOT NULL,
+  baseline_mean   NUMERIC,
+  baseline_stddev NUMERIC,
+  z_score     NUMERIC NOT NULL,
+  severity    TEXT NOT NULL DEFAULT 'warning',  -- warning/critical
+  detected_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  resolved_at TIMESTAMPTZ,
+  status      TEXT NOT NULL DEFAULT 'active'  -- active/resolved
+);
+CREATE INDEX IF NOT EXISTS idx_anomaly_device ON device_anomalies(device_id);
+CREATE INDEX IF NOT EXISTS idx_anomaly_status ON device_anomalies(status);
+CREATE INDEX IF NOT EXISTS idx_anomaly_detected ON device_anomalies(detected_at DESC);
+-- At most one active anomaly per device/metric (the engine relies on this to
+-- avoid piling up duplicate rows on every detection pass).
+CREATE UNIQUE INDEX IF NOT EXISTS idx_anomaly_one_active
+  ON device_anomalies(device_id, metric) WHERE status = 'active';
+
+-- Detected patterns (recurring issues).
+CREATE TABLE IF NOT EXISTS device_patterns (
+  id           SERIAL PRIMARY KEY,
+  device_id    INTEGER NOT NULL REFERENCES monitored_devices(id) ON DELETE CASCADE,
+  pattern_type TEXT NOT NULL,   -- hourly/daily/weekly
+  metric       TEXT NOT NULL,
+  description  TEXT NOT NULL,   -- human readable: "High latency every Monday 08:00-09:00"
+  hour_of_day  INTEGER,         -- 0-23, null if not hour-specific
+  day_of_week  INTEGER,         -- 0-6 (Sun=0), null if not day-specific
+  avg_value    NUMERIC,
+  baseline_value NUMERIC,
+  confidence   NUMERIC,         -- 0-1, how confident we are
+  detected_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  occurrence_count INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS idx_pattern_device ON device_patterns(device_id);
+-- One row per recurring (device, type, metric, hour, day) slot — the engine
+-- upserts last_seen_at / occurrence_count against this key.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_pattern_slot
+  ON device_patterns(device_id, pattern_type, metric,
+                      COALESCE(hour_of_day, -1), COALESCE(day_of_week, -1));
+
+-- Incidents (correlated alert groups).
+CREATE TABLE IF NOT EXISTS incidents (
+  id            SERIAL PRIMARY KEY,
+  title         TEXT NOT NULL,
+  root_cause_device_id INTEGER REFERENCES monitored_devices(id) ON DELETE SET NULL,
+  affected_count INTEGER NOT NULL DEFAULT 1,
+  severity      TEXT NOT NULL DEFAULT 'warning',
+  status        TEXT NOT NULL DEFAULT 'active',  -- active/resolved
+  started_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  resolved_at   TIMESTAMPTZ,
+  duration_seconds INTEGER,
+  summary       TEXT,         -- auto-generated incident summary
+  timeline      JSONB         -- array of timeline events
+);
+CREATE INDEX IF NOT EXISTS idx_incident_status ON incidents(status);
+CREATE INDEX IF NOT EXISTS idx_incident_started ON incidents(started_at DESC);
+
+-- Links alerts to incidents.
+ALTER TABLE alerts ADD COLUMN IF NOT EXISTS incident_id INTEGER
+  REFERENCES incidents(id) ON DELETE SET NULL;
+
+-- Smart threshold recommendations.
+CREATE TABLE IF NOT EXISTS threshold_recommendations (
+  id                SERIAL PRIMARY KEY,
+  device_id         INTEGER NOT NULL REFERENCES monitored_devices(id) ON DELETE CASCADE,
+  metric            TEXT NOT NULL,
+  current_threshold NUMERIC,
+  recommended_threshold NUMERIC NOT NULL,
+  reasoning         TEXT NOT NULL,
+  confidence        NUMERIC,       -- 0-1
+  computed_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_threshold_rec_device_metric
+  ON threshold_recommendations(device_id, metric);
+
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO spanvault_user;
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO spanvault_user;
