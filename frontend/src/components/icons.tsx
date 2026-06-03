@@ -32,6 +32,9 @@ export const IconSettings = (p: SVGProps<SVGSVGElement>) => (
 export const IconAgents = (p: SVGProps<SVGSVGElement>) => (
   <svg {...base(p)}><rect x="2" y="2" width="20" height="8" rx="2" /><rect x="2" y="14" width="20" height="8" rx="2" /><line x1="6" y1="6" x2="6.01" y2="6" /><line x1="6" y1="18" x2="6.01" y2="18" /></svg>
 );
+export const IconIntelligence = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base(p)}><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" /></svg>
+);
 export const IconHome = (p: SVGProps<SVGSVGElement>) => (
   <svg {...base(p)}><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /><polyline points="9 22 9 12 15 12 15 22" /></svg>
 );

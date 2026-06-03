@@ -4,7 +4,8 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import {
-  IconDashboard, IconDevices, IconAlerts, IconReports, IconMap, IconAgents, IconSettings,
+  IconDashboard, IconDevices, IconAlerts, IconReports, IconMap, IconAgents,
+  IconIntelligence, IconSettings,
 } from './icons';
 
 const NAV = [
@@ -14,6 +15,7 @@ const NAV = [
   { href: '/reports', label: 'Reports', Icon: IconReports },
   { href: '/maps', label: 'Maps', Icon: IconMap },
   { href: '/agents', label: 'Agents', Icon: IconAgents },
+  { href: '/intelligence', label: 'Intelligence', Icon: IconIntelligence },
   { href: '/settings', label: 'Settings', Icon: IconSettings },
 ];
 
