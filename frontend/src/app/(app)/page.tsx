@@ -11,6 +11,9 @@ import {
   StatusBadge, ErrorBox, Empty, fmtRel, fmtTime,
   PageHeader, CardSkeleton, TableSkeleton, Skeleton, useRefreshKey,
 } from '@/components/ui';
+import {
+  GradeBadge, TrendArrow, scoreColor, n as intelNum, Overview, HealthRow,
+} from '@/components/intel';
 
 // ── Types ──────────────────────────────────────────────────────
 type Summary = {
@@ -115,6 +118,7 @@ export default function DashboardPage() {
   const sites = useApi<SiteHealth[]>('/api/dashboard/site-health', REFRESH_MS);
   const events = useApi<EventRow[]>('/api/dashboard/events', REFRESH_MS);
   const agentOffline = useApi<AgentOfflineRow[]>('/api/dashboard/agent-offline', REFRESH_MS);
+  const intel = useApi<Overview>('/api/intelligence/overview', REFRESH_MS);
 
   const updatedAt = useUpdatedAt(summary.data);
   const ago = useSecondsAgo(updatedAt);
@@ -123,6 +127,7 @@ export default function DashboardPage() {
   useRefreshKey(() => {
     summary.reload(); problems.reload(); worst.reload();
     trend.reload(); sites.reload(); events.reload(); agentOffline.reload();
+    intel.reload();
   });
 
   const s = summary.data;
@@ -156,6 +161,7 @@ export default function DashboardPage() {
             pulse={s.warning > 0} />
           <StatLink href="/devices?status=unknown" variant="unknown" num={s.unknown} label="Unknown" />
           <StatLink href="/alerts?status=active" variant="alerts" num={s.active_alerts} label="Active Alerts" />
+          <HealthScoreStat data={intel.data} />
           {s.agents_total > 0 && (
             <Link href="/agents" className={`sv-stat agents${s.agents_online < s.agents_total ? ' pulse' : ''}`}>
               <div className="sv-stat-top">
@@ -167,11 +173,17 @@ export default function DashboardPage() {
         </div>
       ) : null}
 
+      {/* ── Anomaly banner (subtle) ─────────────────────── */}
+      <AnomalyBanner data={intel.data} />
+
       {/* ── ROW 2: problems + slowest ───────────────────── */}
       <div className="sv-dash-row r6040">
         <ActiveProblems api={problems} />
         <SlowestDevices api={worst} />
       </div>
+
+      {/* ── At-risk devices (health score < 70) ─────────── */}
+      <AtRiskDevices data={intel.data} />
 
       {/* ── Agent-offline group (devices unreachable via an offline agent) ── */}
       <AgentOfflineGroup api={agentOffline} />
@@ -216,6 +228,74 @@ function StatLink({
       </div>
       <div className="label">{label}</div>
     </Link>
+  );
+}
+
+// ── Health-score stat card (top-level component) ───────────────
+function HealthScoreStat({ data }: { data: Overview | null }) {
+  const score = data ? data.overall_score : null;
+  const c = scoreColor(score);
+  return (
+    <Link href="/intelligence" className="sv-stat" style={{ borderLeftColor: c }}>
+      <div className="sv-stat-top">
+        <span className="num" style={{ color: c }}>{score != null ? Math.round(score) : '—'}</span>
+        {data && <GradeBadge grade={data.overall_grade} />}
+        {data && <TrendArrow trend={data.trend} />}
+      </div>
+      <div className="label">Health Score</div>
+    </Link>
+  );
+}
+
+// ── Anomaly banner (top-level component) ───────────────────────
+function AnomalyBanner({ data }: { data: Overview | null }) {
+  if (!data || !data.active_anomalies) return null;
+  const c = data.active_anomalies;
+  return (
+    <Link
+      href="/intelligence#anomalies"
+      style={{
+        display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px',
+        marginBottom: 16, borderRadius: 8, fontSize: 13.5, fontWeight: 600,
+        color: 'var(--sv-warning)', background: 'rgba(217,119,6,0.10)',
+        border: '1px solid rgba(217,119,6,0.30)', textDecoration: 'none',
+      }}
+    >
+      🔍 {c} {c === 1 ? 'anomaly' : 'anomalies'} detected — device{c === 1 ? '' : 's'} behaving outside normal baseline →
+    </Link>
+  );
+}
+
+// ── At-risk devices (health score < 70) (top-level component) ──
+function AtRiskDevices({ data }: { data: Overview | null }) {
+  const atRisk = (data && data.at_risk_devices ? data.at_risk_devices : [])
+    .filter((d: HealthRow) => { const s = intelNum(d.score); return s != null && s < 70; });
+  if (!atRisk.length) return null;
+  return (
+    <div className="sv-dash-card" style={{ marginBottom: 18, borderLeft: '4px solid var(--sv-warning)' }}>
+      <div className="sv-dash-head">
+        <StatusDot status="warning" size={11} />
+        <h2>At Risk</h2>
+        <span className="spacer" />
+        <span className="sv-muted" style={{ fontSize: 13 }}>{atRisk.length}</span>
+      </div>
+      {atRisk.map((d: HealthRow) => {
+        const s = intelNum(d.score);
+        return (
+          <div key={d.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 0', borderBottom: '1px solid var(--border-light)', fontSize: 13.5 }}>
+            <span style={{ color: 'var(--sv-warning)' }}>⚠</span>
+            <span>At Risk:</span>
+            <Link href={`/devices/${d.id}`} style={{ fontWeight: 600 }}>{d.name}</Link>
+            <span className="spacer" style={{ flex: 1 }} />
+            <span style={{ color: scoreColor(s) }}>Health score {s != null ? Math.round(s) : '—'}/100</span>
+            <span className="sv-muted">({d.trend || 'stable'})</span>
+          </div>
+        );
+      })}
+      <div style={{ marginTop: 10, textAlign: 'right' }}>
+        <Link href="/intelligence#health" className="sv-dash-link">View health scores →</Link>
+      </div>
+    </div>
   );
 }
 
