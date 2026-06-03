@@ -122,9 +122,17 @@ $ErrorActionPreference = $prevEAP
 # ── 2. Pull latest code ────────────────────────────────────────
 Write-Step 'Pulling latest code'
 Push-Location $AppRoot
-& $git fetch --all --prune
-& $git checkout $Branch
-& $git pull origin $Branch
+# git writes informational messages ("Already on 'main'", "Your branch is
+# up to date", fetch progress) to stderr, which PowerShell turns into a
+# terminating NativeCommandError under $ErrorActionPreference='Stop'. Relax
+# error handling for the whole pull block and merge stderr into stdout so the
+# script does not stop on benign git noise.
+$prevEAP = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+& $git fetch --all --prune 2>&1
+& $git checkout $Branch 2>&1
+& $git pull origin $Branch 2>&1
+$ErrorActionPreference = $prevEAP
 Write-Ok "On branch $Branch"
 Pop-Location
 
