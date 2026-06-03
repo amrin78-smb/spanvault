@@ -10,6 +10,7 @@ import { useApi, apiSend } from '@/lib/api';
 import { StatusDot } from '@/components/StatusDot';
 import SensorManager from '@/components/SensorManager';
 import { StatusBadge, Loading, ErrorBox, Empty, fmtTime, fmtRel, fmtBps } from '@/components/ui';
+import { GradeBadge, ScoreBar, TrendArrow, n as intelNum } from '@/components/intel';
 
 type Device = {
   id: number; name: string; ip_address: string; device_type: string | null;
@@ -173,6 +174,8 @@ export default function DeviceDetailPage() {
           <button className="sv-btn" onClick={() => setSensorsOpen(true)}>Manage Sensors</button>
         </div>
       )}
+
+      <DeviceIntelligence deviceId={d.id} />
 
       <SiteGateway device={d} onChanged={() => device.reload()} />
 
@@ -517,6 +520,166 @@ function SingleChart({
         <Line type="monotone" dataKey="value" stroke={color} strokeWidth={2} dot={false} connectNulls />
       </LineChart>
     </ResponsiveContainer>
+  );
+}
+
+// ── Device intelligence card (top-level component) ─────────────
+type DeviceIntel = {
+  health: {
+    score: number | string | null; grade: string | null; trend: string | null;
+    uptime_score: number | string | null; response_score: number | string | null;
+    anomaly_score: number | string | null; alert_score: number | string | null;
+    uptime_pct: number | string | null; computed_at: string;
+  } | null;
+  baseline: {
+    mean: number | string; stddev: number | string; p50: number | string;
+    p95: number | string; p99: number | string; min_val: number | string;
+    max_val: number | string; sample_count: number; computed_at: string;
+  } | null;
+  anomalies: {
+    id: number; metric: string; value: number | string; baseline_mean: number | string | null;
+    z_score: number | string; severity: string; detected_at: string;
+  }[];
+  patterns: {
+    id: number; pattern_type: string; metric: string; description: string;
+    confidence: number | string | null; occurrence_count: number; last_seen_at: string;
+  }[];
+  threshold: {
+    metric: string; current_threshold: number | string | null;
+    recommended_threshold: number | string; reasoning: string; confidence: number | string | null;
+  } | null;
+};
+
+function DeviceIntelligence({ deviceId }: { deviceId: number }) {
+  const intel = useApi<DeviceIntel>(`/api/intelligence/device/${deviceId}`, 30000);
+  const [applying, setApplying] = useState(false);
+  const [applied, setApplied] = useState<number | null>(null);
+
+  const d = intel.data;
+  const health = d ? d.health : null;
+  const baseline = d ? d.baseline : null;
+  const anomalies = d ? d.anomalies : [];
+  const patterns = d ? d.patterns : [];
+  const threshold = d ? d.threshold : null;
+
+  async function applyThreshold() {
+    setApplying(true);
+    try {
+      const r = await apiSend<{ applied_threshold: number }>(
+        `/api/intelligence/thresholds/${deviceId}/apply`, 'POST', {}
+      );
+      setApplied(r.applied_threshold);
+      intel.reload();
+    } catch {
+      /* ignore — recommendation stays visible */
+    } finally {
+      setApplying(false);
+    }
+  }
+
+  // Nothing computed yet → collecting state (don't render an empty card).
+  const hasAnything = health || baseline || anomalies.length || patterns.length || threshold;
+
+  return (
+    <div className="sv-panel" style={{ marginBottom: 20 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+        <h2 style={{ margin: 0 }}>⚡ Intelligence</h2>
+        <div style={{ flex: 1 }} />
+        <Link href={`/intelligence?device=${deviceId}#health`} className="sv-dash-link" style={{ fontSize: 13 }}>
+          Full intelligence →
+        </Link>
+      </div>
+
+      {intel.loading && !intel.data ? (
+        <Loading label="Analyzing device data…" />
+      ) : intel.error ? (
+        <ErrorBox message={intel.error} />
+      ) : !hasAnything ? (
+        <p className="sv-muted" style={{ marginBottom: 0 }}>
+          Collecting baseline data — intelligence appears once this device has a few hours of monitoring history.
+          Baselines become reliable after ~7 days.
+        </p>
+      ) : (
+        <div style={{ display: 'grid', gap: 14 }}>
+          {/* Health */}
+          {health && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+              <span className="sv-muted" style={{ fontSize: 13, minWidth: 90 }}>Health score</span>
+              <ScoreBar score={health.score} />
+              <GradeBadge grade={health.grade} />
+              <TrendArrow trend={health.trend} />
+              {intelNum(health.uptime_pct) != null && (
+                <span className="sv-muted" style={{ fontSize: 12.5 }}>
+                  Uptime {Number(health.uptime_pct).toFixed(1)}%
+                </span>
+              )}
+            </div>
+          )}
+
+          {/* Baseline */}
+          {baseline && (
+            <div style={{ fontSize: 13.5 }}>
+              <span className="sv-muted" style={{ minWidth: 90, display: 'inline-block' }}>Latency baseline</span>
+              Normal range: <strong>{Math.round(Number(baseline.min_val))}-{Math.round(Number(baseline.p95))}ms</strong>
+              {' '}(p95: {Math.round(Number(baseline.p95))}ms · p99: {Math.round(Number(baseline.p99))}ms · mean {Math.round(Number(baseline.mean))}ms)
+              <span className="sv-muted" style={{ fontSize: 12 }}> · {baseline.sample_count} samples</span>
+            </div>
+          )}
+
+          {/* Active anomalies */}
+          {anomalies.length > 0 && (
+            <div>
+              <div className="sv-muted" style={{ fontSize: 13, marginBottom: 4 }}>Active anomalies</div>
+              {anomalies.map((a) => {
+                const z = intelNum(a.z_score) ?? 0;
+                const val = intelNum(a.value);
+                const base = intelNum(a.baseline_mean);
+                const dir = val != null && base != null ? (val >= base ? 'above' : 'below') : '';
+                return (
+                  <div key={a.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, padding: '3px 0' }}>
+                    <span style={{ color: a.severity === 'critical' ? 'var(--sv-down)' : 'var(--sv-warning)' }}>●</span>
+                    <span>{a.metric}</span>
+                    <span className={`sv-badge ${a.severity === 'critical' ? 'down' : 'warning'}`}>{z.toFixed(1)}σ {dir} normal</span>
+                    <span className="sv-muted" style={{ fontSize: 12 }}>{fmtRel(a.detected_at)}</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Recurring patterns */}
+          {patterns.length > 0 && (
+            <div>
+              <div className="sv-muted" style={{ fontSize: 13, marginBottom: 4 }}>Recurring patterns</div>
+              {patterns.map((p) => (
+                <div key={p.id} style={{ fontSize: 13, padding: '2px 0' }}>
+                  ⚠ Recurring: {p.description}
+                  <span className="sv-muted" style={{ fontSize: 12 }}> · seen {p.occurrence_count}×</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Threshold recommendation */}
+          {threshold && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', padding: '10px 12px', background: 'var(--bg-primary)', borderRadius: 8 }}>
+              <span style={{ fontSize: 13.5 }} title={threshold.reasoning}>
+                Recommended threshold: <strong style={{ color: 'var(--primary)' }}>{Math.round(Number(threshold.recommended_threshold))}ms</strong>
+                {' '}(current: {intelNum(threshold.current_threshold) ?? '—'}ms)
+              </span>
+              <div style={{ flex: 1 }} />
+              <button className="sv-btn sm" onClick={applyThreshold} disabled={applying}>
+                {applying ? <span className="sv-spinner-sm" /> : 'Apply'}
+              </button>
+            </div>
+          )}
+
+          {applied != null && !threshold && (
+            <div style={{ fontSize: 13, color: 'var(--sv-up)' }}>✓ Threshold updated to {applied}ms</div>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 

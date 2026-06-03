@@ -1850,6 +1850,50 @@ app.post('/api/intelligence/thresholds/:device_id/apply', wrap(async (req, res) 
   res.json({ ok: true, device: upd.rows[0], applied_threshold: recommended });
 }));
 
+// Consolidated intelligence summary for a single device (device detail card).
+app.get('/api/intelligence/device/:id', wrap(async (req, res) => {
+  const deviceId = safeInt(req.params.id, 0);
+  if (!deviceId) return res.status(400).json({ error: 'invalid device id' });
+
+  const health = await sv.query(`
+    SELECT h.score, h.grade, h.trend, h.uptime_score, h.response_score,
+           h.anomaly_score, h.alert_score, h.computed_at,
+           ROUND(h.uptime_score / 40.0 * 100, 1) AS uptime_pct
+    FROM device_health_scores h WHERE h.device_id = $1
+  `, [deviceId]);
+
+  const baseline = await sv.query(`
+    SELECT mean, stddev, p50, p95, p99, min_val, max_val, sample_count, computed_at
+    FROM device_baselines WHERE device_id = $1 AND metric = 'response_ms'
+  `, [deviceId]);
+
+  const anomalies = await sv.query(`
+    SELECT id, metric, value, baseline_mean, baseline_stddev, z_score, severity, detected_at
+    FROM device_anomalies WHERE device_id = $1 AND status = 'active'
+    ORDER BY detected_at DESC
+  `, [deviceId]);
+
+  const patterns = await sv.query(`
+    SELECT id, pattern_type, metric, description, hour_of_day, day_of_week,
+           confidence, occurrence_count, last_seen_at
+    FROM device_patterns WHERE device_id = $1
+    ORDER BY confidence DESC LIMIT 10
+  `, [deviceId]);
+
+  const threshold = await sv.query(`
+    SELECT metric, current_threshold, recommended_threshold, reasoning, confidence
+    FROM threshold_recommendations WHERE device_id = $1 AND metric = 'response_ms'
+  `, [deviceId]);
+
+  res.json({
+    health: health.rows[0] || null,
+    baseline: baseline.rows[0] || null,
+    anomalies: anomalies.rows,
+    patterns: patterns.rows,
+    threshold: threshold.rows[0] || null,
+  });
+}));
+
 // Manually trigger a full recompute (testing / refresh).
 app.post('/api/intelligence/baselines/recompute', wrap(async (_req, res) => {
   intelligence.runAll().catch((e) => console.error('[Intelligence] manual recompute:', e.message));
