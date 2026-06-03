@@ -15,6 +15,11 @@ import {
 // ── Types ──────────────────────────────────────────────────────
 type Summary = {
   total: number; up: number; down: number; warning: number; unknown: number; active_alerts: number;
+  agent_offline: number; agents_total: number; agents_online: number;
+};
+type AgentOfflineRow = {
+  agent_id: number; agent_name: string; hostname: string | null;
+  last_seen_at: string | null; device_count: number;
 };
 type Problem = {
   id: number; name: string; ip_address: string; site_id: number | null; site_name: string | null;
@@ -109,6 +114,7 @@ export default function DashboardPage() {
   const trend = useApi<TrendPoint[]>('/api/dashboard/network-trend', REFRESH_MS);
   const sites = useApi<SiteHealth[]>('/api/dashboard/site-health', REFRESH_MS);
   const events = useApi<EventRow[]>('/api/dashboard/events', REFRESH_MS);
+  const agentOffline = useApi<AgentOfflineRow[]>('/api/dashboard/agent-offline', REFRESH_MS);
 
   const updatedAt = useUpdatedAt(summary.data);
   const ago = useSecondsAgo(updatedAt);
@@ -116,7 +122,7 @@ export default function DashboardPage() {
   // Global "R" shortcut / refresh button reloads every dashboard panel.
   useRefreshKey(() => {
     summary.reload(); problems.reload(); worst.reload();
-    trend.reload(); sites.reload(); events.reload();
+    trend.reload(); sites.reload(); events.reload(); agentOffline.reload();
   });
 
   const s = summary.data;
@@ -150,6 +156,14 @@ export default function DashboardPage() {
             pulse={s.warning > 0} />
           <StatLink href="/devices?status=unknown" variant="unknown" num={s.unknown} label="Unknown" />
           <StatLink href="/alerts?status=active" variant="alerts" num={s.active_alerts} label="Active Alerts" />
+          {s.agents_total > 0 && (
+            <Link href="/agents" className={`sv-stat agents${s.agents_online < s.agents_total ? ' pulse' : ''}`}>
+              <div className="sv-stat-top">
+                <span className="num">{s.agents_online}/{s.agents_total}</span>
+              </div>
+              <div className="label">Agents Online</div>
+            </Link>
+          )}
         </div>
       ) : null}
 
@@ -158,6 +172,9 @@ export default function DashboardPage() {
         <ActiveProblems api={problems} />
         <SlowestDevices api={worst} />
       </div>
+
+      {/* ── Agent-offline group (devices unreachable via an offline agent) ── */}
+      <AgentOfflineGroup api={agentOffline} />
 
       {/* ── ROW 3: site health + availability trend ─────── */}
       <div className="sv-dash-row r5050">
@@ -466,6 +483,35 @@ function RecentEvents({ api }: { api: Api<EventRow[]> }) {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+// ── Agent-offline group (top-level component) ──────────────────
+// Devices that can't be polled because their remote agent is offline. These are
+// surfaced separately and NOT counted as "down" in the stat cards.
+function AgentOfflineGroup({ api }: { api: Api<AgentOfflineRow[]> }) {
+  const rows = api.data || [];
+  if (!rows.length) return null;
+  return (
+    <div className="sv-dash-card sv-agent-offline-card" style={{ marginBottom: 18 }}>
+      <div className="sv-dash-head">
+        <StatusDot status="warning" size={11} />
+        <h2>Agent Offline</h2>
+        <span className="spacer" />
+        <span className="sv-muted" style={{ fontSize: 13 }}>{rows.length}</span>
+      </div>
+      {rows.map((r) => (
+        <div key={r.agent_id} className="sv-agent-offline-row">
+          <span>⚠</span>
+          <Link href={`/agents/${r.agent_id}`} className="nm">{r.agent_name}</Link>
+          {r.hostname && <span className="sv-muted" style={{ fontSize: 12 }}>· {r.hostname}</span>}
+          <span className="spacer" style={{ flex: 1 }} />
+          <span className="cnt">
+            {r.device_count} device{r.device_count === 1 ? '' : 's'} unreachable · last seen {fmtRel(r.last_seen_at)}
+          </span>
+        </div>
+      ))}
     </div>
   );
 }

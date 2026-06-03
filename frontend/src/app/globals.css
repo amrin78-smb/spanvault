@@ -1030,6 +1030,7 @@ label.sv-field .sv-input, label.sv-field .sv-select { font-weight: 400; }
 .sv-stat.unknown { border-left-color: var(--sv-unknown); }
 .sv-stat.total { border-left-color: var(--navy); }
 .sv-stat.alerts { border-left-color: var(--sv-down); }
+.sv-stat.agents { border-left-color: var(--purple); }
 .sv-stat-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .sv-stat .num { font-size: 32px; font-weight: 800; line-height: 1; letter-spacing: -1px; color: var(--text-primary); }
 .sv-stat .label { color: var(--text-muted); font-size: 12px; margin-top: 8px; text-transform: uppercase; letter-spacing: .4px; }
@@ -1299,3 +1300,79 @@ label.sv-field .sv-input, label.sv-field .sv-select { font-weight: 400; }
 }
 .sv-editor-props h3 { margin: 0; font-size: 14px; }
 .sv-editor-props.muted { background: var(--bg-primary); }
+
+/* ══ Distributed polling agents ════════════════════════════════ */
+.sv-agent-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; margin-bottom: 24px; }
+.sv-agent-card {
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: var(--shadow-sm); padding: 16px; display: flex; flex-direction: column; gap: 12px;
+}
+.sv-agent-card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.sv-agent-card-head .nm { font-size: 17px; font-weight: 800; color: var(--text-primary); }
+.sv-agent-card-head .nm:hover { color: var(--sv-crimson); }
+
+.sv-agent-status { font-size: 12.5px; font-weight: 700; white-space: nowrap; }
+.sv-agent-status.online { color: var(--sv-up); }
+.sv-agent-status.offline { color: var(--sv-down); }
+.sv-agent-status.never { color: var(--sv-unknown); }
+
+.sv-agent-meta { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 14px; }
+.sv-agent-meta > div { display: flex; justify-content: space-between; gap: 8px; font-size: 12.5px; }
+.sv-agent-meta .k { color: var(--text-muted); }
+.sv-agent-meta .v { color: var(--text-primary); font-weight: 600; text-align: right; }
+
+.sv-agent-sites { display: flex; flex-wrap: wrap; gap: 6px; }
+.sv-agent-sites .sv-pill { text-decoration: none; }
+.sv-agent-actions { display: flex; gap: 8px; margin-top: 2px; }
+
+.sv-install-box {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  background: var(--navy); border-radius: var(--radius); padding: 12px 14px;
+}
+.sv-install-cmd {
+  flex: 1; min-width: 220px; color: #e2e8f0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px; word-break: break-all; white-space: pre-wrap;
+}
+
+.sv-site-picker {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 6px;
+  max-height: 260px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius); padding: 10px;
+}
+.sv-site-opt {
+  display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 500;
+  padding: 6px 8px; border-radius: 6px; cursor: pointer; color: var(--text-primary);
+}
+.sv-site-opt:hover { background: var(--bg-primary); }
+.sv-site-opt.on { background: rgba(200,16,46,0.08); }
+.sv-site-opt input { accent-color: var(--sv-crimson); }
+
+.sv-err-inline {
+  background: #fee2e2; color: #b91c1c; border-radius: 8px; padding: 9px 12px;
+  font-size: 13px; margin-bottom: 14px;
+}
+[data-theme="dark"] .sv-err-inline { background: rgba(220,38,38,0.15); color: #fca5a5; }
+
+/* Agent grouping on the devices page */
+.sv-agent-group { margin-bottom: 18px; }
+.sv-agent-group-head {
+  display: flex; align-items: center; gap: 10px; padding: 11px 14px; cursor: pointer;
+  background: var(--navy); color: #fff; border-radius: var(--radius) var(--radius) 0 0;
+  border-left: 4px solid var(--navy);
+}
+.sv-agent-group-head.local { background: var(--bg-card); color: var(--text-primary); border-left-color: var(--sv-unknown); border: 1px solid var(--border); }
+.sv-agent-group-head.offline { border-left-color: var(--sv-down); }
+.sv-agent-group-head .chev { transition: transform 0.15s; flex: none; }
+.sv-agent-group-head .chev.open { transform: rotate(90deg); }
+.sv-agent-group-head .ag-nm { font-weight: 800; font-size: 15px; }
+.sv-agent-group-head .ag-status { font-size: 12.5px; font-weight: 700; }
+.sv-agent-group-body { border: 1px solid var(--border); border-top: none; border-radius: 0 0 var(--radius) var(--radius); padding: 12px; }
+.sv-agent-offline-warn { color: var(--sv-warning); font-size: 12.5px; font-weight: 700; }
+
+/* Dashboard agent-offline group */
+.sv-agent-offline-card { margin-top: 8px; }
+.sv-agent-offline-row {
+  display: flex; align-items: center; gap: 10px; padding: 9px 12px; font-size: 13.5px;
+  border-left: 3px solid var(--sv-warning); background: var(--bg-primary); border-radius: 6px; margin-bottom: 6px;
+}
+.sv-agent-offline-row .nm { font-weight: 700; }
+.sv-agent-offline-row .cnt { color: var(--text-muted); }

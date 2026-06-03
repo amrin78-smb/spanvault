@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import {
-  IconDashboard, IconDevices, IconAlerts, IconReports, IconMap, IconSettings,
+  IconDashboard, IconDevices, IconAlerts, IconReports, IconMap, IconAgents, IconSettings,
 } from './icons';
 
 const NAV = [
@@ -13,6 +13,7 @@ const NAV = [
   { href: '/alerts', label: 'Alerts', Icon: IconAlerts },
   { href: '/reports', label: 'Reports', Icon: IconReports },
   { href: '/maps', label: 'Maps', Icon: IconMap },
+  { href: '/agents', label: 'Agents', Icon: IconAgents },
   { href: '/settings', label: 'Settings', Icon: IconSettings },
 ];
 

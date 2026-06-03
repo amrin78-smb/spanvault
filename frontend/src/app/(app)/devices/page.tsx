@@ -15,11 +15,42 @@ type Device = {
   snmp_enabled: boolean; poll_interval_seconds: number; netvault_device_id: number | null;
   latest_cpu_pct: number | null; latest_mem_pct: number | null;
   is_gateway: boolean; alert_suppressed: boolean; suppressed_by_device_id: number | null;
+  agent_id: number | null; agent_name: string | null; agent_status: string | null;
 };
 type Site = { id: number; name: string };
 type SiteGroup = { key: string; name: string; siteId: number | null; devices: Device[] };
+type AgentGroupT = {
+  key: string; agentId: number | null; agentName: string; agentStatus: string | null; devices: Device[];
+};
 
 const UNASSIGNED = 'Unassigned';
+const LOCAL = 'Local Polling';
+
+// Top-level grouping by polling agent (agent_id null = local collector).
+function groupByAgent(devices: Device[]): AgentGroupT[] {
+  const map = new Map<string, AgentGroupT>();
+  for (const d of devices) {
+    const key = d.agent_id == null ? 'local' : `agent-${d.agent_id}`;
+    let g = map.get(key);
+    if (!g) {
+      g = {
+        key,
+        agentId: d.agent_id ?? null,
+        agentName: d.agent_id == null ? LOCAL : (d.agent_name || `Agent ${d.agent_id}`),
+        agentStatus: d.agent_id == null ? null : (d.agent_status || 'offline'),
+        devices: [],
+      };
+      map.set(key, g);
+    }
+    g.devices.push(d);
+  }
+  // Local first, then agents alphabetically.
+  return Array.from(map.values()).sort((a, b) => {
+    if (a.agentId == null) return -1;
+    if (b.agentId == null) return 1;
+    return a.agentName.localeCompare(b.agentName);
+  });
+}
 
 function groupBySite(devices: Device[]): SiteGroup[] {
   const map = new Map<string, SiteGroup>();
@@ -97,7 +128,11 @@ export default function DevicesPage() {
     devices.reload();
   }
 
-  const groups = devices.data ? groupBySite(devices.data) : [];
+  const agentGroups = devices.data ? groupByAgent(devices.data) : [];
+  // Only show the agent grouping layer when at least one agent owns devices;
+  // otherwise render site accordions flat (the original layout).
+  const hasAgents = agentGroups.some((g) => g.agentId !== null);
+  const flatGroups = devices.data ? groupBySite(devices.data) : [];
 
   return (
     <div>
@@ -130,8 +165,12 @@ export default function DevicesPage() {
 
       {devices.loading && !devices.data ? (
         <div className="sv-panel" style={{ padding: 0 }}><TableSkeleton rows={6} cols={4} /></div>
-      ) : groups.length ? (
-        groups.map((g) => (
+      ) : hasAgents ? (
+        agentGroups.map((g) => (
+          <AgentGroup key={g.key} group={g} onEdit={openEdit} onDelete={handleDelete} />
+        ))
+      ) : flatGroups.length ? (
+        flatGroups.map((g) => (
           <SiteAccordion
             key={g.key}
             group={g}
@@ -164,6 +203,67 @@ export default function DevicesPage() {
           onClose={() => setShowImport(false)}
           onImported={() => { setShowImport(false); devices.reload(); }}
         />
+      )}
+    </div>
+  );
+}
+
+// ── Agent group: collapsible wrapper holding per-site accordions ──
+function AgentGroup({
+  group, onEdit, onDelete,
+}: {
+  group: AgentGroupT;
+  onEdit: (d: Device) => void;
+  onDelete: (d: Device) => void;
+}) {
+  const [open, setOpen] = useState(true);
+  const isLocal = group.agentId == null;
+  const offline = group.agentStatus === 'offline';
+  const siteGroups = groupBySite(group.devices);
+  const counts = countByStatus(group.devices);
+
+  return (
+    <div className="sv-agent-group">
+      <div
+        className={`sv-agent-group-head ${isLocal ? 'local' : ''} ${offline ? 'offline' : ''}`}
+        onClick={() => setOpen((o) => !o)}
+      >
+        <svg className={`chev ${open ? 'open' : ''}`} width="14" height="14" viewBox="0 0 24 24"
+          fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="9 18 15 12 9 6" />
+        </svg>
+        {isLocal ? (
+          <span className="ag-nm">{group.agentName}</span>
+        ) : (
+          <Link href={`/agents/${group.agentId}`} className="ag-nm" style={{ color: 'inherit' }}
+            onClick={(e) => e.stopPropagation()} title="View agent detail">
+            Agent: {group.agentName}
+          </Link>
+        )}
+        {!isLocal && (
+          <span className="ag-status">
+            {group.agentStatus === 'online' ? '● Online' : group.agentStatus === 'offline' ? '○ Offline' : '○ Unknown'}
+          </span>
+        )}
+        <span style={{ fontWeight: 400, fontSize: 13, opacity: 0.85 }}>
+          {group.devices.length} {group.devices.length === 1 ? 'device' : 'devices'}
+        </span>
+        <span style={{ flex: 1 }} />
+        {offline && <span className="sv-agent-offline-warn">⚠ Agent offline — devices may be stale</span>}
+        {!offline && (
+          <span className="sv-acc-summary">
+            {counts.up > 0 && <span className="sv-pill up">{counts.up} up</span>}
+            {counts.down > 0 && <span className="sv-pill down">{counts.down} down</span>}
+            {counts.warning > 0 && <span className="sv-pill warning">{counts.warning} warning</span>}
+          </span>
+        )}
+      </div>
+      {open && (
+        <div className="sv-agent-group-body">
+          {siteGroups.map((g) => (
+            <SiteAccordion key={g.key} group={g} onEdit={onEdit} onDelete={onDelete} />
+          ))}
+        </div>
       )}
     </div>
   );
