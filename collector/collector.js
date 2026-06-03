@@ -132,8 +132,38 @@ async function syncNetVaultDevices() {
       updated += u.rowCount;
     }
     log(`[sync] NetVault sync complete: refreshed ${updated} monitored device(s).`);
+    // Re-derive agent ownership in case devices changed site since last sync.
+    await reassignAgents();
   } catch (err) {
     console.error('[sync] NetVault sync failed:', err.message);
+  }
+}
+
+// Reconcile monitored_devices.agent_id with agent_sites. A device in a site an
+// agent owns is assigned to that agent; a device whose agent no longer owns its
+// site falls back to local polling (agent_id → NULL). 'agent_offline' status is
+// reset to 'unknown' so the local collector repolls it on the next tick.
+async function reassignAgents() {
+  try {
+    await sv.query(`
+      UPDATE monitored_devices d
+         SET agent_id = sub.agent_id, updated_at = NOW()
+        FROM (SELECT DISTINCT ON (site_id) site_id, agent_id
+                FROM agent_sites ORDER BY site_id, agent_id) sub
+       WHERE d.site_id = sub.site_id AND d.agent_id IS DISTINCT FROM sub.agent_id
+    `);
+    await sv.query(`
+      UPDATE monitored_devices d
+         SET agent_id = NULL,
+             current_status = CASE WHEN current_status = 'agent_offline' THEN 'unknown' ELSE current_status END,
+             updated_at = NOW()
+       WHERE d.agent_id IS NOT NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM agent_sites s WHERE s.site_id = d.site_id AND s.agent_id = d.agent_id
+         )
+    `);
+  } catch (err) {
+    console.error('[sync] agent reassignment failed:', err.message);
   }
 }
 
@@ -648,7 +678,9 @@ async function sendAlertEmail(subject, body) {
 // Schedulers
 // ══════════════════════════════════════════════════════════════
 async function getActiveDevices() {
-  const r = await sv.query(`SELECT * FROM monitored_devices WHERE active = TRUE`);
+  // Only poll devices owned locally — agent_id IS NOT NULL devices are polled by
+  // their remote agent, which ships results straight to the server.
+  const r = await sv.query(`SELECT * FROM monitored_devices WHERE active = TRUE AND agent_id IS NULL`);
   return r.rows;
 }
 
