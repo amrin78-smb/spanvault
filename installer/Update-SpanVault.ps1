@@ -108,9 +108,9 @@ Write-Step 'Stopping services'
 $prevEAP = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
 foreach ($svc in $Services) {
-    $scQuery = sc.exe query $svc.Name 2>&1
+    $null = & sc.exe query $svc.Name 2>&1
     if ($LASTEXITCODE -eq 0) {
-        sc.exe stop $svc.Name | Out-Null
+        $null = & sc.exe stop $svc.Name 2>&1
         Start-Sleep -Seconds 2
         Write-Ok "Stopped $($svc.Name)"
     } else {
@@ -123,17 +123,24 @@ $ErrorActionPreference = $prevEAP
 Write-Step 'Pulling latest code'
 Push-Location $AppRoot
 # git writes informational messages ("Already on 'main'", "Your branch is
-# up to date", fetch progress) to stderr, which PowerShell turns into a
-# terminating NativeCommandError under $ErrorActionPreference='Stop'. Relax
-# error handling for the whole pull block and merge stderr into stdout so the
-# script does not stop on benign git noise.
+# up to date", fetch progress) to stderr. Over a remote PowerShell (WinRM)
+# session, stderr from a native command ALWAYS raises NativeCommandError —
+# a plain 2>&1 redirect is not enough because the merged error records still
+# surface. Assign every git invocation to $null (which fully consumes both
+# streams) and gate success on $LASTEXITCODE instead of trusting stderr.
 $prevEAP = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
-& $git fetch --all --prune 2>&1
-& $git checkout $Branch 2>&1
-& $git pull origin $Branch 2>&1
+$null = & $git fetch origin 2>&1
+$null = & $git checkout $Branch 2>&1
+$null = & $git pull origin $Branch 2>&1
+$pullExit = $LASTEXITCODE
+$null = & $git status 2>&1
 $ErrorActionPreference = $prevEAP
-Write-Ok "On branch $Branch"
+if ($pullExit -eq 0) {
+    Write-Ok "On branch $Branch"
+} else {
+    Write-Warn "git pull exited with code $pullExit — verify the working tree manually."
+}
 Pop-Location
 
 # ── 3. Write .env.local from template (SERVER_IP substitution) ──
@@ -162,14 +169,18 @@ Write-EnvFile $feExample   $feEnv
 # ── 4. Install dependencies ────────────────────────────────────
 Write-Step 'Installing dependencies (root)'
 Push-Location $AppRoot
-& $npm install --omit=dev
-Write-Ok 'Root dependencies installed'
+# npm writes progress/warnings to stderr; consume both streams to avoid
+# NativeCommandError over WinRM, and gate on $LASTEXITCODE for real failures.
+$null = & $npm install --omit=dev 2>&1
+if ($LASTEXITCODE -eq 0) { Write-Ok 'Root dependencies installed' }
+else { Write-Warn "npm install (root) exited with code $LASTEXITCODE" }
 Pop-Location
 
 Write-Step 'Installing dependencies (frontend)'
 Push-Location $Frontend
-& $npm install
-Write-Ok 'Frontend dependencies installed'
+$null = & $npm install 2>&1
+if ($LASTEXITCODE -eq 0) { Write-Ok 'Frontend dependencies installed' }
+else { Write-Warn "npm install (frontend) exited with code $LASTEXITCODE" }
 Pop-Location
 
 # ── 5. Apply database schema (idempotent) ──────────────────────
@@ -184,9 +195,14 @@ if ($psql -and (Test-Path $schema)) {
     $dbUser = [regex]::Match($envContent, 'SV_DB_USER=(.+)').Groups[1].Value.Trim()
     $dbName = [regex]::Match($envContent, 'SV_DB_NAME=(.+)').Groups[1].Value.Trim()
     $env:PGPASSWORD = $dbPass
-    & $psql -U $dbUser -d $dbName -f $schema
+    # --quiet suppresses NOTICE/INFO chatter that psql writes to stderr (which
+    # would otherwise raise NativeCommandError over WinRM); consume both streams
+    # and gate success on $LASTEXITCODE.
+    $null = & $psql --quiet -U $dbUser -d $dbName -f $schema 2>&1
+    $psqlExit = $LASTEXITCODE
     $env:PGPASSWORD = ''
-    Write-Ok "Schema applied (as $dbUser)"
+    if ($psqlExit -eq 0) { Write-Ok "Schema applied (as $dbUser)" }
+    else { Write-Warn "psql exited with code $psqlExit — apply scripts\schema.sql manually." }
 } else {
     Write-Warn 'psql not found or schema.sql missing — apply scripts\schema.sql manually.'
 }
@@ -194,8 +210,9 @@ if ($psql -and (Test-Path $schema)) {
 # ── 6. Build frontend (NOT standalone) ─────────────────────────
 Write-Step 'Building frontend'
 Push-Location $Frontend
-& $npm run build
-Write-Ok 'Frontend built'
+$null = & $npm run build 2>&1
+if ($LASTEXITCODE -eq 0) { Write-Ok 'Frontend built' }
+else { Write-Warn "Frontend build exited with code $LASTEXITCODE — check the build output." }
 Pop-Location
 
 # ── 7. (Re)register and start NSSM services ────────────────────
@@ -205,27 +222,27 @@ foreach ($svc in $Services) {
     # Same guard as the stop section: probe existence with sc.exe query rather
     # than nssm status, which would raise NativeCommandError for a service that
     # does not exist yet on first install. Non-zero $LASTEXITCODE means "install it".
-    sc.exe query $svc.Name 2>&1 | Out-Null
+    $null = & sc.exe query $svc.Name 2>&1
     if ($LASTEXITCODE -ne 0) {
-        & $nssm install $svc.Name $nodeExe | Out-Null
+        $null = & $nssm install $svc.Name $nodeExe 2>&1
         Write-Ok "Installed $($svc.Name)"
     }
     # (Re)apply configuration each run so changes propagate.
-    & $nssm set $svc.Name Application       $nodeExe              | Out-Null
-    & $nssm set $svc.Name AppDirectory      $svc.Dir             | Out-Null
-    & $nssm set $svc.Name AppParameters     $svc.Args            | Out-Null
-    & $nssm set $svc.Name AppStdout         (Join-Path $InstallDir "logs\$($svc.Name).log")     | Out-Null
-    & $nssm set $svc.Name AppStderr         (Join-Path $InstallDir "logs\$($svc.Name).err.log") | Out-Null
-    & $nssm set $svc.Name AppRotateFiles    1                    | Out-Null
-    & $nssm set $svc.Name AppRotateBytes    10485760             | Out-Null
-    & $nssm set $svc.Name Start             SERVICE_AUTO_START   | Out-Null
-    & $nssm set $svc.Name AppExit Default   Restart              | Out-Null
+    $null = & $nssm set $svc.Name Application       $nodeExe              2>&1
+    $null = & $nssm set $svc.Name AppDirectory      $svc.Dir             2>&1
+    $null = & $nssm set $svc.Name AppParameters     $svc.Args            2>&1
+    $null = & $nssm set $svc.Name AppStdout         (Join-Path $InstallDir "logs\$($svc.Name).log")     2>&1
+    $null = & $nssm set $svc.Name AppStderr         (Join-Path $InstallDir "logs\$($svc.Name).err.log") 2>&1
+    $null = & $nssm set $svc.Name AppRotateFiles    1                    2>&1
+    $null = & $nssm set $svc.Name AppRotateBytes    10485760             2>&1
+    $null = & $nssm set $svc.Name Start             SERVICE_AUTO_START   2>&1
+    $null = & $nssm set $svc.Name AppExit Default   Restart              2>&1
 }
 New-Item -ItemType Directory -Force -Path (Join-Path $InstallDir 'logs') | Out-Null
 
 Write-Step 'Starting services'
 foreach ($svc in $Services) {
-    & $nssm start $svc.Name 2>$null | Out-Null
+    $null = & $nssm start $svc.Name 2>&1
     Write-Ok "Started $($svc.Name)"
 }
 
