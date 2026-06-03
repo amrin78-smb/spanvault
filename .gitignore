@@ -3,3 +3,6 @@ node_modules/
 .env.local
 !.env.local.example
 *.log
+# Agent runtime files (generated at install time / runtime on the remote server)
+agent/config.json
+agent/buffer.json

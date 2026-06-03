@@ -1,0 +1,10 @@
+{
+  "name": "spanvault-agent",
+  "version": "1.0.0",
+  "main": "agent.js",
+  "dependencies": {
+    "ws": "^8.17.0",
+    "ping": "^0.4.4",
+    "net-snmp": "^3.11.2"
+  }
+}
