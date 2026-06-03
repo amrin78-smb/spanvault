@@ -110,7 +110,9 @@ function startWsServer(port) {
 
 // Build + send the device config snapshot for an agent.
 async function pushConfigToAgent(ws, agentId) {
-  if (!ws || ws.readyState !== ws.OPEN) return;
+  // 1 === WebSocket.OPEN; compare numerically so we don't depend on the instance
+  // exposing the OPEN constant.
+  if (!ws || ws.readyState !== 1) return;
   try {
     const devices = await sv.query(`
       SELECT id, name, ip_address, snmp_enabled, snmp_version, snmp_community,
