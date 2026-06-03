@@ -14,6 +14,7 @@ const cors     = require('cors');
 const ping     = require('ping');
 const { Pool } = require('pg');
 const { discoverDevice, snmpTest } = require('../collector/discovery');
+const { startWsServer, connectedAgents, pushConfigToAgent, pushConfigToAgentId } = require('./ws-server');
 
 const IS_WIN = process.platform === 'win32';
 
@@ -1341,4 +1342,12 @@ app.use((err, _req, res, _next) => {
 
 app.listen(PORT, '127.0.0.1', () => {
   console.log(`SpanVault API listening on 127.0.0.1:${PORT}`);
+  // Start the agent WebSocket server (bound to all interfaces so remote agents
+  // can reach it; the API itself stays loopback-only).
+  const wsPort = parseInt(process.env.SV_WS_PORT || '3010', 10);
+  try {
+    startWsServer(wsPort);
+  } catch (err) {
+    console.error('[WS] Failed to start WebSocket server:', err.message);
+  }
 });
