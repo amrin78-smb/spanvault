@@ -16,6 +16,7 @@ const ping     = require('ping');
 const { Pool } = require('pg');
 const { discoverDevice, snmpTest } = require('../collector/discovery');
 const { startWsServer, connectedAgents, pushConfigToAgent, pushConfigToAgentId } = require('./ws-server');
+const intelligence = require('./intelligence');
 
 const IS_WIN = process.platform === 'win32';
 
@@ -1593,6 +1594,268 @@ app.delete('/api/maintenance/:id', wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 
+// ══════════════════════════════════════════════════════════════
+// Intelligence Layer
+// ══════════════════════════════════════════════════════════════
+function intelGrade(score) {
+  const s = Number(score);
+  if (isNaN(s)) return null;
+  return s >= 90 ? 'A' : s >= 80 ? 'B' : s >= 70 ? 'C' : s >= 60 ? 'D' : 'F';
+}
+// Dominant trend from per-device counts.
+function dominantTrend(degrading, improving) {
+  if (degrading > improving) return 'degrading';
+  if (improving > degrading) return 'improving';
+  return 'stable';
+}
+
+// Network-wide intelligence summary for the Overview tab + dashboard card.
+app.get('/api/intelligence/overview', wrap(async (_req, res) => {
+  const overall = await sv.query(`
+    SELECT ROUND(AVG(h.score), 0) AS score, COUNT(*)::int AS device_count,
+           COUNT(*) FILTER (WHERE h.trend='degrading')::int AS degrading,
+           COUNT(*) FILTER (WHERE h.trend='improving')::int AS improving
+    FROM device_health_scores h
+    JOIN monitored_devices d ON d.id = h.device_id
+    WHERE d.active = TRUE
+  `);
+  const o = overall.rows[0] || {};
+  const overallScore = o.score != null ? Number(o.score) : null;
+
+  const sites = await sv.query(`
+    SELECT d.site_id,
+           COALESCE(d.site_name, 'Unassigned') AS site_name,
+           COUNT(h.*)::int AS device_count,
+           ROUND(AVG(h.score), 0) AS score,
+           COUNT(*) FILTER (WHERE h.trend='degrading')::int AS degrading,
+           COUNT(*) FILTER (WHERE h.trend='improving')::int AS improving,
+           (SELECT COUNT(*)::int FROM device_anomalies an
+              JOIN monitored_devices d2 ON d2.id = an.device_id
+             WHERE an.status='active' AND d2.site_id IS NOT DISTINCT FROM d.site_id) AS anomaly_count
+    FROM monitored_devices d
+    JOIN device_health_scores h ON h.device_id = d.id
+    WHERE d.active = TRUE
+    GROUP BY d.site_id, COALESCE(d.site_name, 'Unassigned')
+    ORDER BY AVG(h.score) ASC
+  `);
+
+  const atRisk = await sv.query(`
+    SELECT d.id, d.name, d.site_id, d.site_name, d.current_status,
+           h.score, h.grade, h.trend
+    FROM device_health_scores h
+    JOIN monitored_devices d ON d.id = h.device_id
+    WHERE d.active = TRUE
+    ORDER BY h.score ASC
+    LIMIT 5
+  `);
+
+  const recentAnomalies = await sv.query(`
+    SELECT an.id, an.device_id, d.name AS device_name, an.metric, an.value,
+           an.baseline_mean, an.z_score, an.severity, an.detected_at
+    FROM device_anomalies an
+    JOIN monitored_devices d ON d.id = an.device_id
+    WHERE an.status = 'active'
+    ORDER BY an.detected_at DESC
+    LIMIT 3
+  `);
+
+  const recentIncidents = await sv.query(`
+    SELECT id, title, affected_count, severity, status, started_at,
+           resolved_at, duration_seconds
+    FROM incidents
+    WHERE status = 'active'
+    ORDER BY started_at DESC
+    LIMIT 3
+  `);
+
+  const counts = await sv.query(`
+    SELECT
+      (SELECT COUNT(*)::int FROM device_anomalies WHERE status='active') AS active_anomalies,
+      (SELECT COUNT(*)::int FROM incidents WHERE status='active')        AS active_incidents,
+      (SELECT GREATEST(0, EXTRACT(DAY FROM (NOW() - MIN(ts))))::int FROM ping_results) AS data_coverage_days
+  `);
+  const c = counts.rows[0] || {};
+
+  res.json({
+    overall_score: overallScore,
+    overall_grade: intelGrade(overallScore),
+    trend: dominantTrend(Number(o.degrading || 0), Number(o.improving || 0)),
+    device_count: Number(o.device_count || 0),
+    sites: sites.rows.map((s) => ({
+      site_id: s.site_id,
+      site_name: s.site_name,
+      score: s.score != null ? Number(s.score) : null,
+      grade: intelGrade(s.score),
+      trend: dominantTrend(Number(s.degrading || 0), Number(s.improving || 0)),
+      device_count: s.device_count,
+      anomaly_count: s.anomaly_count,
+    })),
+    at_risk_devices: atRisk.rows,
+    recent_anomalies: recentAnomalies.rows,
+    recent_incidents: recentIncidents.rows,
+    active_anomalies: c.active_anomalies || 0,
+    active_incidents: c.active_incidents || 0,
+    data_coverage_days: c.data_coverage_days || 0,
+  });
+}));
+
+// Device health scores (all, by device, or by site).
+app.get('/api/intelligence/health', wrap(async (req, res) => {
+  const params = [];
+  let filter = '';
+  if (req.query.device_id) {
+    params.push(safeInt(req.query.device_id, 0));
+    filter = `AND d.id = $${params.length}`;
+  } else if (req.query.site_id) {
+    params.push(safeInt(req.query.site_id, 0));
+    filter = `AND d.site_id = $${params.length}`;
+  }
+  const r = await sv.query(`
+    SELECT d.id, d.name, d.site_id, d.site_name, d.current_status,
+           h.score, h.grade, h.trend, h.uptime_score, h.response_score,
+           h.anomaly_score, h.alert_score, h.computed_at,
+           ROUND(h.uptime_score / 40.0 * 100, 1) AS uptime_pct,
+           (SELECT COUNT(*)::int FROM device_anomalies an
+             WHERE an.device_id = d.id AND an.detected_at >= NOW() - INTERVAL '7 days') AS anomalies_7d,
+           (SELECT COUNT(*)::int FROM alerts al
+             WHERE al.device_id = d.id AND al.triggered_at >= NOW() - INTERVAL '7 days'
+               AND al.alert_type NOT LIKE 'recovery%') AS alerts_7d
+    FROM device_health_scores h
+    JOIN monitored_devices d ON d.id = h.device_id
+    WHERE d.active = TRUE ${filter}
+    ORDER BY h.score ASC
+  `, params);
+  res.json(r.rows);
+}));
+
+// Detected anomalies (filter by status / device).
+app.get('/api/intelligence/anomalies', wrap(async (req, res) => {
+  const params = [];
+  const where = [];
+  if (req.query.status) {
+    params.push(String(req.query.status));
+    where.push(`an.status = $${params.length}`);
+  }
+  if (req.query.device_id) {
+    params.push(safeInt(req.query.device_id, 0));
+    where.push(`an.device_id = $${params.length}`);
+  }
+  const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  const r = await sv.query(`
+    SELECT an.id, an.device_id, d.name AS device_name, d.site_id, d.site_name,
+           an.metric, an.value, an.baseline_mean, an.baseline_stddev,
+           an.z_score, an.severity, an.detected_at, an.resolved_at, an.status
+    FROM device_anomalies an
+    JOIN monitored_devices d ON d.id = an.device_id
+    ${whereSql}
+    ORDER BY an.detected_at DESC
+    LIMIT 200
+  `, params);
+  res.json(r.rows);
+}));
+
+// Capacity forecast for one device (computed on demand).
+app.get('/api/intelligence/capacity', wrap(async (req, res) => {
+  const deviceId = safeInt(req.query.device_id, 0);
+  if (!deviceId) return res.status(400).json({ error: 'device_id required' });
+  const forecast = await intelligence.computeCapacityForecasts(deviceId);
+  res.json(forecast);
+}));
+
+// Detected recurring patterns (all or by device).
+app.get('/api/intelligence/patterns', wrap(async (req, res) => {
+  const params = [];
+  let filter = '';
+  if (req.query.device_id) {
+    params.push(safeInt(req.query.device_id, 0));
+    filter = `WHERE p.device_id = $${params.length}`;
+  }
+  const r = await sv.query(`
+    SELECT p.id, p.device_id, d.name AS device_name, d.site_id, d.site_name,
+           p.pattern_type, p.metric, p.description, p.hour_of_day, p.day_of_week,
+           p.avg_value, p.baseline_value, p.confidence,
+           p.detected_at, p.last_seen_at, p.occurrence_count
+    FROM device_patterns p
+    JOIN monitored_devices d ON d.id = p.device_id
+    ${filter}
+    ORDER BY p.confidence DESC, p.last_seen_at DESC
+    LIMIT 200
+  `, params);
+  res.json(r.rows);
+}));
+
+// Correlated incidents with root cause + affected device list.
+app.get('/api/intelligence/incidents', wrap(async (req, res) => {
+  const params = [];
+  const where = [];
+  if (req.query.status) {
+    params.push(String(req.query.status));
+    where.push(`i.status = $${params.length}`);
+  }
+  if (req.query.days) {
+    params.push(safeInt(req.query.days, 30, 3650));
+    where.push(`i.started_at >= NOW() - ($${params.length} || ' days')::interval`);
+  }
+  params.push(safeInt(req.query.limit, 20, 200));
+  const limitIdx = params.length;
+  const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  const r = await sv.query(`
+    SELECT i.id, i.title, i.root_cause_device_id, rc.name AS root_cause_device_name,
+           i.affected_count, i.severity, i.status, i.started_at, i.resolved_at,
+           i.duration_seconds, i.summary, i.timeline,
+           (SELECT ARRAY_AGG(DISTINCT d2.name)
+              FROM alerts a2 JOIN monitored_devices d2 ON d2.id = a2.device_id
+             WHERE a2.incident_id = i.id) AS affected_devices
+    FROM incidents i
+    LEFT JOIN monitored_devices rc ON rc.id = i.root_cause_device_id
+    ${whereSql}
+    ORDER BY i.started_at DESC
+    LIMIT $${limitIdx}
+  `, params);
+  res.json(r.rows);
+}));
+
+// Smart threshold recommendations (highest confidence first).
+app.get('/api/intelligence/thresholds', wrap(async (_req, res) => {
+  const r = await sv.query(`
+    SELECT t.id, t.device_id, d.name AS device_name, d.site_id, d.site_name,
+           t.metric, t.current_threshold, t.recommended_threshold,
+           t.reasoning, t.confidence, t.computed_at
+    FROM threshold_recommendations t
+    JOIN monitored_devices d ON d.id = t.device_id
+    WHERE d.active = TRUE
+    ORDER BY t.confidence DESC, ABS(t.recommended_threshold - t.current_threshold) DESC
+  `);
+  res.json(r.rows);
+}));
+
+// Apply a recommended threshold to a device.
+app.post('/api/intelligence/thresholds/:device_id/apply', wrap(async (req, res) => {
+  const deviceId = safeInt(req.params.device_id, 0);
+  if (!deviceId) return res.status(400).json({ error: 'invalid device_id' });
+  const rec = await sv.query(`
+    SELECT recommended_threshold FROM threshold_recommendations
+    WHERE device_id = $1 AND metric = 'response_ms'
+  `, [deviceId]);
+  if (!rec.rows[0]) return res.status(404).json({ error: 'no recommendation for this device' });
+  const recommended = Math.round(Number(rec.rows[0].recommended_threshold));
+  const upd = await sv.query(`
+    UPDATE monitored_devices SET ping_threshold_ms = $1, updated_at = NOW()
+    WHERE id = $2
+    RETURNING id, name, ping_threshold_ms
+  `, [recommended, deviceId]);
+  if (!upd.rows[0]) return res.status(404).json({ error: 'device not found' });
+  // The recommendation is now applied — clear it so the advisor reflects reality.
+  await sv.query(`DELETE FROM threshold_recommendations WHERE device_id = $1 AND metric = 'response_ms'`, [deviceId]);
+  res.json({ ok: true, device: upd.rows[0], applied_threshold: recommended });
+}));
+
+// Manually trigger a full recompute (testing / refresh).
+app.post('/api/intelligence/baselines/recompute', wrap(async (_req, res) => {
+  intelligence.runAll().catch((e) => console.error('[Intelligence] manual recompute:', e.message));
+  res.json({ started: true });
+}));
+
 // ── Error handler (generic message in production) ─────────────
 app.use((err, _req, res, _next) => {
   console.error('[API Error]', err.message);
@@ -1608,5 +1871,12 @@ app.listen(PORT, '127.0.0.1', () => {
     startWsServer(wsPort);
   } catch (err) {
     console.error('[WS] Failed to start WebSocket server:', err.message);
+  }
+  // Start the intelligence engine (baselines, anomalies, health, patterns,
+  // thresholds, incidents) — runs on timers inside this process.
+  try {
+    intelligence.startIntelligenceEngine();
+  } catch (err) {
+    console.error('[Intelligence] Failed to start engine:', err.message);
   }
 });
