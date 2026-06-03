@@ -16,7 +16,7 @@
          the frontend build.
       4. Installs npm dependencies (root + frontend).
       5. Applies scripts/schema.sql (idempotent).
-      6. Builds the frontend (next build — NOT standalone).
+      6. Builds the frontend (next build - NOT standalone).
       7. (Re)registers the three NSSM services and starts them.
       8. Runs a health check against the API.
 
@@ -53,7 +53,7 @@ $Frontend = Join-Path $AppRoot 'frontend'
 # ── Configuration ──────────────────────────────────────────────
 # Note: SpanVault-API also starts a WebSocket server on SV_WS_PORT (default 3010)
 # for distributed polling agents. Ensure port 3010 is reachable from agent servers
-# (the loopback-only API on 3009 is NOT used by agents — they reach it through the
+# (the loopback-only API on 3009 is NOT used by agents - they reach it through the
 # frontend proxy on 3008 for file downloads, and 3010 directly for the WS link).
 $Services = @(
     @{ Name = 'SpanVault-API';       App = 'node'; Args = 'api\server.js';            Dir = $AppRoot },
@@ -72,7 +72,7 @@ function Resolve-Tool($name, $hint) {
 
 # psql is often not on PATH on Windows. Resolve it like the other tools, but fall
 # back to the standard PostgreSQL install locations (newest version first).
-# Returns $null if not found — the schema step treats psql as optional.
+# Returns $null if not found - the schema step treats psql as optional.
 function Resolve-Psql {
     $cmd = Get-Command psql -ErrorAction SilentlyContinue
     if ($cmd) { return $cmd.Source }
@@ -92,7 +92,7 @@ $psql = Resolve-Psql
 Write-Ok "nssm: $nssm"
 Write-Ok "git:  $git"
 Write-Ok "npm:  $npm"
-if ($psql) { Write-Ok "psql: $psql" } else { Write-Warn 'psql not found — schema apply will be skipped.' }
+if ($psql) { Write-Ok "psql: $psql" } else { Write-Warn 'psql not found - schema apply will be skipped.' }
 
 if (-not (Test-Path $AppRoot)) {
     throw "App directory '$AppRoot' does not exist. Clone the repo into '$AppRoot' first, then re-run."
@@ -124,7 +124,7 @@ Write-Step 'Pulling latest code'
 Push-Location $AppRoot
 # git writes informational messages ("Already on 'main'", "Your branch is
 # up to date", fetch progress) to stderr. Over a remote PowerShell (WinRM)
-# session, stderr from a native command ALWAYS raises NativeCommandError —
+# session, stderr from a native command ALWAYS raises NativeCommandError -
 # a plain 2>&1 redirect is not enough because the merged error records still
 # surface. Assign every git invocation to $null (which fully consumes both
 # streams) and gate success on $LASTEXITCODE instead of trusting stderr.
@@ -139,7 +139,7 @@ $ErrorActionPreference = $prevEAP
 if ($pullExit -eq 0) {
     Write-Ok "On branch $Branch"
 } else {
-    Write-Warn "git pull exited with code $pullExit — verify the working tree manually."
+    Write-Warn "git pull exited with code $pullExit - verify the working tree manually."
 }
 Pop-Location
 
@@ -202,9 +202,9 @@ if ($psql -and (Test-Path $schema)) {
     $psqlExit = $LASTEXITCODE
     $env:PGPASSWORD = ''
     if ($psqlExit -eq 0) { Write-Ok "Schema applied (as $dbUser)" }
-    else { Write-Warn "psql exited with code $psqlExit — apply scripts\schema.sql manually." }
+    else { Write-Warn "psql exited with code $psqlExit - apply scripts\schema.sql manually." }
 } else {
-    Write-Warn 'psql not found or schema.sql missing — apply scripts\schema.sql manually.'
+    Write-Warn 'psql not found or schema.sql missing - apply scripts\schema.sql manually.'
 }
 
 # ── 6. Build frontend (NOT standalone) ─────────────────────────
@@ -212,7 +212,7 @@ Write-Step 'Building frontend'
 Push-Location $Frontend
 $null = & $npm run build 2>&1
 if ($LASTEXITCODE -eq 0) { Write-Ok 'Frontend built' }
-else { Write-Warn "Frontend build exited with code $LASTEXITCODE — check the build output." }
+else { Write-Warn "Frontend build exited with code $LASTEXITCODE - check the build output." }
 Pop-Location
 
 # ── 7. (Re)register and start NSSM services ────────────────────
