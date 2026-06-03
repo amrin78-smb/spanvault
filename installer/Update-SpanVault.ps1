@@ -51,6 +51,10 @@ $AppRoot  = Join-Path $InstallDir 'app'
 $Frontend = Join-Path $AppRoot 'frontend'
 
 # ── Configuration ──────────────────────────────────────────────
+# Note: SpanVault-API also starts a WebSocket server on SV_WS_PORT (default 3010)
+# for distributed polling agents. Ensure port 3010 is reachable from agent servers
+# (the loopback-only API on 3009 is NOT used by agents — they reach it through the
+# frontend proxy on 3008 for file downloads, and 3010 directly for the WS link).
 $Services = @(
     @{ Name = 'SpanVault-API';       App = 'node'; Args = 'api\server.js';            Dir = $AppRoot },
     @{ Name = 'SpanVault-Collector'; App = 'node'; Args = 'collector\collector.js';   Dir = $AppRoot },

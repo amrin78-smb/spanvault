@@ -207,6 +207,49 @@ GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO spanvault_user;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO spanvault_user;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO spanvault_user;
 
+-- ══ Distributed polling agents ════════════════════════════════════════════════
+-- Remote agents poll devices at sites the SpanVault server cannot reach directly.
+-- An agent connects outbound over WebSocket, receives its device config, and
+-- ships ping/SNMP results back. The server does all alert evaluation + storage;
+-- the agent is "dumb" (poll + ship + buffer offline only).
+CREATE TABLE IF NOT EXISTS agents (
+  id               SERIAL PRIMARY KEY,
+  name             TEXT NOT NULL,
+  api_key          TEXT NOT NULL UNIQUE DEFAULT gen_random_uuid()::text,
+  status           TEXT NOT NULL DEFAULT 'never_connected',
+  version          TEXT,
+  ip_address       TEXT,
+  hostname         TEXT,
+  last_seen_at     TIMESTAMPTZ,
+  connected_at     TIMESTAMPTZ,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Site assignments: every device in an assigned site is polled by this agent.
+CREATE TABLE IF NOT EXISTS agent_sites (
+  agent_id  INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  site_id   INTEGER NOT NULL,
+  site_name TEXT,
+  PRIMARY KEY (agent_id, site_id)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_sites_site ON agent_sites(site_id);
+
+-- agent_id on monitored_devices: NULL = polled locally by the collector;
+-- non-NULL = polled by the referenced remote agent.
+ALTER TABLE monitored_devices ADD COLUMN IF NOT EXISTS
+  agent_id INTEGER REFERENCES agents(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_mdev_agent ON monitored_devices(agent_id);
+
+-- Tag each result with the agent that produced it (NULL = local collector).
+ALTER TABLE ping_results ADD COLUMN IF NOT EXISTS
+  agent_id INTEGER REFERENCES agents(id) ON DELETE SET NULL;
+ALTER TABLE snmp_results ADD COLUMN IF NOT EXISTS
+  agent_id INTEGER REFERENCES agents(id) ON DELETE SET NULL;
+
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO spanvault_user;
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO spanvault_user;
+
 -- ══ Interactive map designer ══════════════════════════════════════════════════
 -- User-designed network maps: a canvas with positioned device nodes, connection
 -- lines between them, and free-floating text labels. Maps can be made public
