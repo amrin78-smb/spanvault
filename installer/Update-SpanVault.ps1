@@ -198,7 +198,7 @@ if ($psql -and (Test-Path $schema)) {
     # --quiet suppresses NOTICE/INFO chatter that psql writes to stderr (which
     # would otherwise raise NativeCommandError over WinRM); consume both streams
     # and gate success on $LASTEXITCODE.
-    $null = & $psql --quiet -U $dbUser -d $dbName -f $schema 2>&1
+    try { $null = & $psql --quiet -U $dbUser -d $dbName -f $schema 2>&1 } catch {}
     $psqlExit = $LASTEXITCODE
     $env:PGPASSWORD = ''
     if ($psqlExit -eq 0) { Write-Ok "Schema applied (as $dbUser)" }
