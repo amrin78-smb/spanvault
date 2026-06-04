@@ -112,12 +112,39 @@ function sendCsv(res, filename, rows) {
 // async route wrapper
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
+// ── RBAC site scoping ─────────────────────────────────────────
+// The frontend middleware sets x-user-role / x-user-sites headers from the
+// session when proxying /api/* calls. A site_admin is scoped to their assigned
+// sites; admin/viewer (and missing headers) get null = no filter. Filtering is
+// enforced here, server-side, so a site_admin cannot bypass it by calling the
+// API directly.
+function getSiteFilter(req) {
+  const sites = req.headers['x-user-sites'];
+  const role = req.headers['x-user-role'];
+  if (role === 'site_admin' && sites) {
+    const siteIds = String(sites).split(',').map(Number).filter(Boolean);
+    return siteIds.length > 0 ? siteIds : null;
+  }
+  return null; // no filter for admin/viewer
+}
+
+// Push a site filter onto `params` and return the SQL clause (or null when the
+// user is unscoped). `col` is the site_id column reference, e.g. 'd.site_id'.
+function siteFilterClause(siteFilter, params, col) {
+  if (!siteFilter || !siteFilter.length) return null;
+  params.push(siteFilter);
+  return `${col} = ANY($${params.length}::int[])`;
+}
+
 // Device-scope filter for report queries (monitored_devices aliased as d).
-// Pushes any site_id/device_id values onto `params` and returns clause strings.
-function reportFilters(q, params) {
+// Pushes any site_id/device_id/site-scope values onto `params` and returns
+// clause strings.
+function reportFilters(q, params, siteFilter) {
   const f = ['d.active = TRUE'];
   if (q.site_id)   { params.push(parseInt(q.site_id, 10));   f.push(`d.site_id = $${params.length}`); }
   if (q.device_id) { params.push(parseInt(q.device_id, 10)); f.push(`d.id = $${params.length}`); }
+  const sc = siteFilterClause(siteFilter, params, 'd.site_id');
+  if (sc) f.push(sc);
   return f;
 }
 
@@ -166,21 +193,37 @@ app.get('/api/collector/status', wrap(async (_req, res) => {
 // ══════════════════════════════════════════════════════════════
 // Dashboard
 // ══════════════════════════════════════════════════════════════
-app.get('/api/dashboard/summary', wrap(async (_req, res) => {
+app.get('/api/dashboard/summary', wrap(async (req, res) => {
+  const siteFilter = getSiteFilter(req);
+  const p1 = [];
+  const sc1 = siteFilterClause(siteFilter, p1, 'site_id');
   const q = await sv.query(`
     SELECT current_status AS status, COUNT(*)::int AS count
-    FROM monitored_devices WHERE active = TRUE
+    FROM monitored_devices WHERE active = TRUE${sc1 ? ` AND ${sc1}` : ''}
     GROUP BY current_status
-  `);
+  `, p1);
   const counts = { up: 0, down: 0, warning: 0, unknown: 0 };
   for (const row of q.rows) {
     if (counts[row.status] !== undefined) counts[row.status] = row.count;
   }
   // Devices whose agent is offline are surfaced separately (not counted as down).
+  const p2 = [];
+  const sc2 = siteFilterClause(siteFilter, p2, 'site_id');
   const offline = await sv.query(
-    `SELECT COUNT(*)::int AS c FROM monitored_devices WHERE active = TRUE AND current_status = 'agent_offline'`);
+    `SELECT COUNT(*)::int AS c FROM monitored_devices WHERE active = TRUE AND current_status = 'agent_offline'${sc2 ? ` AND ${sc2}` : ''}`, p2);
   const total = counts.up + counts.down + counts.warning + counts.unknown;
-  const active = await sv.query(`SELECT COUNT(*)::int AS c FROM alerts WHERE status = 'active'`);
+  // Admin/viewer: count every active alert (original behavior). Site-scoped:
+  // only alerts on devices in the user's sites.
+  let active;
+  if (siteFilter) {
+    const p3 = [siteFilter];
+    active = await sv.query(
+      `SELECT COUNT(*)::int AS c FROM alerts a
+         JOIN monitored_devices d ON d.id = a.device_id
+        WHERE a.status = 'active' AND d.site_id = ANY($1::int[])`, p3);
+  } else {
+    active = await sv.query(`SELECT COUNT(*)::int AS c FROM alerts WHERE status = 'active'`);
+  }
   const agents = await sv.query(`
     SELECT COUNT(*)::int AS total,
            COUNT(*) FILTER (WHERE status = 'online')::int AS online
@@ -210,10 +253,12 @@ app.get('/api/dashboard/agent-offline', wrap(async (_req, res) => {
 }));
 
 // Active problems — every device currently down or warning, worst first.
-app.get('/api/dashboard/problems', wrap(async (_req, res) => {
+app.get('/api/dashboard/problems', wrap(async (req, res) => {
   // Suppressed devices are hidden — when a site gateway is down they're covered
   // by the gateway's entry. A down gateway reports how many devices its outage
   // is suppressing at the same site.
+  const params = [];
+  const sc = siteFilterClause(getSiteFilter(req), params, 'd.site_id');
   const r = await sv.query(`
     SELECT d.id, d.name, d.ip_address, d.site_id, d.site_name, d.current_status,
            d.last_response_ms, d.last_checked_at, d.last_seen_at, d.consecutive_failures,
@@ -225,15 +270,17 @@ app.get('/api/dashboard/problems', wrap(async (_req, res) => {
            ) ELSE 0 END AS suppressed_in_site
     FROM monitored_devices d
     WHERE d.active = TRUE AND d.current_status IN ('down', 'warning')
-      AND d.alert_suppressed = FALSE
+      AND d.alert_suppressed = FALSE${sc ? ` AND ${sc}` : ''}
     ORDER BY CASE d.current_status WHEN 'down' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END,
              d.name
-  `);
+  `, params);
   res.json(r.rows);
 }));
 
 // Top 10 worst devices by average response time over the last hour.
-app.get('/api/dashboard/top-worst', wrap(async (_req, res) => {
+app.get('/api/dashboard/top-worst', wrap(async (req, res) => {
+  const params = [];
+  const sc = siteFilterClause(getSiteFilter(req), params, 'd.site_id');
   const r = await sv.query(`
     SELECT d.id, d.name, d.site_id, d.site_name, d.current_status,
            ROUND(AVG(p.response_ms)::numeric, 1)      AS avg_ms,
@@ -241,26 +288,29 @@ app.get('/api/dashboard/top-worst', wrap(async (_req, res) => {
            ROUND(AVG(p.packet_loss_pct)::numeric, 1)  AS packet_loss_pct
     FROM ping_results p
     JOIN monitored_devices d ON d.id = p.device_id
-    WHERE p.ts >= NOW() - INTERVAL '1 hour' AND d.active = TRUE
+    WHERE p.ts >= NOW() - INTERVAL '1 hour' AND d.active = TRUE${sc ? ` AND ${sc}` : ''}
     GROUP BY d.id, d.name, d.site_id, d.site_name, d.current_status
     HAVING AVG(p.response_ms) IS NOT NULL
     ORDER BY AVG(p.response_ms) DESC
     LIMIT 10
-  `);
+  `, params);
   res.json(r.rows);
 }));
 
 // 24h network availability trend in 30-minute buckets (sparkline/area chart).
-app.get('/api/dashboard/network-trend', wrap(async (_req, res) => {
+app.get('/api/dashboard/network-trend', wrap(async (req, res) => {
+  const params = [];
+  const sc = siteFilterClause(getSiteFilter(req), params, 'd.site_id');
   const r = await sv.query(`
-    SELECT date_bin('30 minutes', ts, TIMESTAMPTZ '2000-01-01') AS bucket,
+    SELECT date_bin('30 minutes', p.ts, TIMESTAMPTZ '2000-01-01') AS bucket,
            COUNT(*)::int AS total_checks,
-           SUM(CASE WHEN status = 'up' THEN 1 ELSE 0 END)::int AS up_checks
-    FROM ping_results
-    WHERE ts >= NOW() - INTERVAL '24 hours'
+           SUM(CASE WHEN p.status = 'up' THEN 1 ELSE 0 END)::int AS up_checks
+    FROM ping_results p
+    ${sc ? 'JOIN monitored_devices d ON d.id = p.device_id' : ''}
+    WHERE p.ts >= NOW() - INTERVAL '24 hours'${sc ? ` AND ${sc}` : ''}
     GROUP BY bucket
     ORDER BY bucket
-  `);
+  `, params);
   const rows = r.rows.map((row) => ({
     bucket: row.bucket,
     total_checks: row.total_checks,
@@ -273,7 +323,10 @@ app.get('/api/dashboard/network-trend', wrap(async (_req, res) => {
 }));
 
 // Per-site health: device counts + 24h uptime (reachable = not down).
-app.get('/api/dashboard/site-health', wrap(async (_req, res) => {
+app.get('/api/dashboard/site-health', wrap(async (req, res) => {
+  const params = [];
+  const scDev = siteFilterClause(getSiteFilter(req), params, 'site_id');
+  const scUpt = scDev ? scDev.replace('site_id', 'd.site_id') : null;
   const r = await sv.query(`
     WITH dev AS (
       SELECT COALESCE(site_id, 0)            AS site_id,
@@ -283,7 +336,7 @@ app.get('/api/dashboard/site-health', wrap(async (_req, res) => {
              SUM(CASE WHEN current_status = 'down'    THEN 1 ELSE 0 END)::int AS down_count,
              SUM(CASE WHEN current_status = 'warning' THEN 1 ELSE 0 END)::int AS warning_count,
              SUM(CASE WHEN current_status = 'unknown' THEN 1 ELSE 0 END)::int AS unknown_count
-      FROM monitored_devices WHERE active = TRUE
+      FROM monitored_devices WHERE active = TRUE${scDev ? ` AND ${scDev}` : ''}
       GROUP BY 1, 2
     ),
     upt AS (
@@ -292,7 +345,7 @@ app.get('/api/dashboard/site-health', wrap(async (_req, res) => {
                          / NULLIF(COUNT(*), 0), 1) AS avg_uptime_pct
       FROM ping_results p
       JOIN monitored_devices d ON d.id = p.device_id
-      WHERE p.ts >= NOW() - INTERVAL '24 hours' AND d.active = TRUE
+      WHERE p.ts >= NOW() - INTERVAL '24 hours' AND d.active = TRUE${scUpt ? ` AND ${scUpt}` : ''}
       GROUP BY 1
     )
     SELECT dev.site_id, dev.site_name, dev.total_devices, dev.up_count,
@@ -331,6 +384,8 @@ app.get('/api/devices', wrap(async (req, res) => {
   if (status)  { params.push(status);  where.push(`d.current_status = $${params.length}`); }
   if (site_id) { params.push(parseInt(site_id, 10)); where.push(`d.site_id = $${params.length}`); }
   if (q)       { params.push(`%${q}%`); where.push(`(d.name ILIKE $${params.length} OR d.ip_address ILIKE $${params.length})`); }
+  const devSc = siteFilterClause(getSiteFilter(req), params, 'd.site_id');
+  if (devSc) where.push(devSc);
   const rows = await sv.query(`
     SELECT d.id, d.name, d.ip_address, d.device_type, d.site_id, d.site_name,
            d.current_status, d.last_response_ms, d.last_seen_at, d.last_checked_at,
@@ -983,6 +1038,8 @@ app.get('/api/alerts', wrap(async (req, res) => {
   if (status)    { params.push(status);    where.push(`a.status = $${params.length}`); }
   if (severity)  { params.push(severity);  where.push(`a.severity = $${params.length}`); }
   if (device_id) { params.push(parseInt(device_id, 10)); where.push(`a.device_id = $${params.length}`); }
+  const alSc = siteFilterClause(getSiteFilter(req), params, 'd.site_id');
+  if (alSc) where.push(alSc);
   const limit = safeInt(req.query.limit, 200, 1000);
   const rows = await sv.query(`
     SELECT a.id, a.device_id, d.name AS device_name, d.ip_address,
@@ -1113,7 +1170,9 @@ app.delete('/api/alert-rules/:id', wrap(async (req, res) => {
 // ══════════════════════════════════════════════════════════════
 // Network map — devices grouped by site
 // ══════════════════════════════════════════════════════════════
-app.get('/api/map', wrap(async (_req, res) => {
+app.get('/api/map', wrap(async (req, res) => {
+  const params = [];
+  const sc = siteFilterClause(getSiteFilter(req), params, 'd.site_id');
   const r = await sv.query(`
     SELECT COALESCE(d.site_id, 0) AS site_id,
            COALESCE(d.site_name, 'Unassigned') AS site_name,
@@ -1123,9 +1182,9 @@ app.get('/api/map', wrap(async (_req, res) => {
     FROM monitored_devices d
     LEFT JOIN device_dependencies dd ON dd.child_device_id = d.id
     LEFT JOIN monitored_devices p ON p.id = dd.parent_device_id
-    WHERE d.active = TRUE
+    WHERE d.active = TRUE${sc ? ` AND ${sc}` : ''}
     ORDER BY d.site_name NULLS LAST, d.name
-  `);
+  `, params);
   const sites = {};
   for (const row of r.rows) {
     const key = row.site_id;
@@ -1325,6 +1384,8 @@ app.get('/api/maps/public/:uuid', wrap(async (req, res) => {
 // ══════════════════════════════════════════════════════════════
 app.get('/api/reports/availability', wrap(async (req, res) => {
   const interval = rangeToInterval(req.query.range);
+  const params = [interval];
+  const sc = siteFilterClause(getSiteFilter(req), params, 'd.site_id');
   const r = await sv.query(`
     SELECT d.id AS device_id, d.name AS device_name, d.ip_address, d.site_name,
            ROUND((1 - (SUM(CASE WHEN p.status <> 'up' THEN 1 ELSE 0 END)::numeric
@@ -1333,10 +1394,10 @@ app.get('/api/reports/availability', wrap(async (req, res) => {
            SUM(CASE WHEN p.status <> 'up' THEN 1 ELSE 0 END)::int AS failed_checks
     FROM monitored_devices d
     LEFT JOIN ping_results p ON p.device_id = d.id AND p.ts >= NOW() - $1::interval
-    WHERE d.active = TRUE
+    WHERE d.active = TRUE${sc ? ` AND ${sc}` : ''}
     GROUP BY d.id, d.name, d.ip_address, d.site_name
     ORDER BY uptime_pct ASC NULLS LAST
-  `, [interval]);
+  `, params);
   if (req.query.format === 'csv') return sendCsv(res, 'availability.csv', r.rows);
   res.json(r.rows);
 }));
@@ -1344,9 +1405,10 @@ app.get('/api/reports/availability', wrap(async (req, res) => {
 app.get('/api/reports/response-time', wrap(async (req, res) => {
   const interval = rangeToInterval(req.query.range);
   const bucket = rangeToBucket(req.query.range);
+  const siteFilter = getSiteFilter(req);
 
   const p1 = [interval];
-  const f1 = reportFilters(req.query, p1);
+  const f1 = reportFilters(req.query, p1, siteFilter);
   const r = await sv.query(`
     SELECT d.id AS device_id, d.name AS device_name, d.ip_address, d.site_name,
            ROUND(AVG(p.response_ms)::numeric, 1) AS avg_ms,
@@ -1362,7 +1424,7 @@ app.get('/api/reports/response-time', wrap(async (req, res) => {
 
   // Per-device sparkline series (bucketed average) for the trend column.
   const p2 = [bucket, interval];
-  const f2 = reportFilters(req.query, p2);
+  const f2 = reportFilters(req.query, p2, siteFilter);
   const sp = await sv.query(`
     SELECT p.device_id,
            date_bin($1::interval, p.ts, TIMESTAMPTZ '2000-01-01') AS bucket,
@@ -1385,7 +1447,7 @@ app.get('/api/reports/response-time', wrap(async (req, res) => {
 app.get('/api/reports/alerts', wrap(async (req, res) => {
   const interval = rangeToInterval(req.query.range);
   const params = [interval];
-  const f = reportFilters(req.query, params);
+  const f = reportFilters(req.query, params, getSiteFilter(req));
   const r = await sv.query(`
     SELECT d.id AS device_id, d.name AS device_name, d.ip_address, d.site_name,
            COUNT(a.*)::int AS total_alerts,
@@ -1419,7 +1481,7 @@ function windowClause(col, w, start) {
 }
 
 // Per-device SLA rows for the requested window/scope. Shared by both SLA routes.
-async function slaRows(q) {
+async function slaRows(q, siteFilter) {
   const w = windowParams(q);
   const params = [...w.params];
   const pingTs = windowClause('ts', w, 1);
@@ -1427,6 +1489,8 @@ async function slaRows(q) {
   const filters = ['d.active = TRUE'];
   if (q.site_id)   { params.push(parseInt(q.site_id, 10));   filters.push(`d.site_id = $${params.length}`); }
   if (q.device_id) { params.push(parseInt(q.device_id, 10)); filters.push(`d.id = $${params.length}`); }
+  const sc = siteFilterClause(siteFilter, params, 'd.site_id');
+  if (sc) filters.push(sc);
   const t = parseFloat(q.sla_target);
   const slaTarget = isNaN(t) ? 99.5 : t;
 
@@ -1472,12 +1536,12 @@ async function slaRows(q) {
 }
 
 app.get('/api/reports/sla', wrap(async (req, res) => {
-  const { rows, slaTarget } = await slaRows(req.query);
+  const { rows, slaTarget } = await slaRows(req.query, getSiteFilter(req));
   res.json({ sla_target: slaTarget, generated_at: new Date().toISOString(), devices: rows });
 }));
 
 app.get('/api/reports/sla/summary', wrap(async (req, res) => {
-  const { rows, slaTarget } = await slaRows(req.query);
+  const { rows, slaTarget } = await slaRows(req.query, getSiteFilter(req));
   const withData = rows.filter((r) => r.total_checks > 0);
   const totalChecks = withData.reduce((a, r) => a + r.total_checks, 0);
   const totalFailed = withData.reduce((a, r) => a + r.failed_checks, 0);
@@ -1510,6 +1574,8 @@ app.get('/api/reports/bandwidth', wrap(async (req, res) => {
   ];
   if (q.site_id)   { params.push(parseInt(q.site_id, 10));   filters.push(`d.site_id = $${params.length}`); }
   if (q.device_id) { params.push(parseInt(q.device_id, 10)); filters.push(`d.id = $${params.length}`); }
+  const bwSc = siteFilterClause(getSiteFilter(req), params, 'd.site_id');
+  if (bwSc) filters.push(bwSc);
   const r = await sv.query(`
     SELECT s.device_id, d.name AS device_name, d.site_name, s.if_name, s.metric_name,
            ROUND(AVG(s.value)::numeric, 0) AS avg_bps,
@@ -1610,18 +1676,23 @@ function dominantTrend(degrading, improving) {
 }
 
 // Network-wide intelligence summary for the Overview tab + dashboard card.
-app.get('/api/intelligence/overview', wrap(async (_req, res) => {
+app.get('/api/intelligence/overview', wrap(async (req, res) => {
+  const siteFilter = getSiteFilter(req);
+  const pOverall = [];
+  const scOverall = siteFilterClause(siteFilter, pOverall, 'd.site_id');
   const overall = await sv.query(`
     SELECT ROUND(AVG(h.score), 0) AS score, COUNT(*)::int AS device_count,
            COUNT(*) FILTER (WHERE h.trend='degrading')::int AS degrading,
            COUNT(*) FILTER (WHERE h.trend='improving')::int AS improving
     FROM device_health_scores h
     JOIN monitored_devices d ON d.id = h.device_id
-    WHERE d.active = TRUE
-  `);
+    WHERE d.active = TRUE${scOverall ? ` AND ${scOverall}` : ''}
+  `, pOverall);
   const o = overall.rows[0] || {};
   const overallScore = o.score != null ? Number(o.score) : null;
 
+  const pSites = [];
+  const scSites = siteFilterClause(siteFilter, pSites, 'd.site_id');
   const sites = await sv.query(`
     SELECT d.site_id,
            COALESCE(d.site_name, 'Unassigned') AS site_name,
@@ -1634,47 +1705,73 @@ app.get('/api/intelligence/overview', wrap(async (_req, res) => {
              WHERE an.status='active' AND d2.site_id IS NOT DISTINCT FROM d.site_id) AS anomaly_count
     FROM monitored_devices d
     JOIN device_health_scores h ON h.device_id = d.id
-    WHERE d.active = TRUE
+    WHERE d.active = TRUE${scSites ? ` AND ${scSites}` : ''}
     GROUP BY d.site_id, COALESCE(d.site_name, 'Unassigned')
     ORDER BY AVG(h.score) ASC
-  `);
+  `, pSites);
 
+  const pAtRisk = [];
+  const scAtRisk = siteFilterClause(siteFilter, pAtRisk, 'd.site_id');
   const atRisk = await sv.query(`
     SELECT d.id, d.name, d.site_id, d.site_name, d.current_status,
            h.score, h.grade, h.trend
     FROM device_health_scores h
     JOIN monitored_devices d ON d.id = h.device_id
-    WHERE d.active = TRUE
+    WHERE d.active = TRUE${scAtRisk ? ` AND ${scAtRisk}` : ''}
     ORDER BY h.score ASC
     LIMIT 5
-  `);
+  `, pAtRisk);
 
+  const pAnom = [];
+  const scAnom = siteFilterClause(siteFilter, pAnom, 'd.site_id');
   const recentAnomalies = await sv.query(`
     SELECT an.id, an.device_id, d.name AS device_name, an.metric, an.value,
            an.baseline_mean, an.z_score, an.severity, an.detected_at
     FROM device_anomalies an
     JOIN monitored_devices d ON d.id = an.device_id
-    WHERE an.status = 'active'
+    WHERE an.status = 'active'${scAnom ? ` AND ${scAnom}` : ''}
     ORDER BY an.detected_at DESC
     LIMIT 3
-  `);
+  `, pAnom);
 
+  // Incidents are network-wide correlations; scope to those touching a device
+  // in the user's sites when site-scoped.
+  const pInc = [];
+  const scInc = siteFilterClause(siteFilter, pInc, 'd3.site_id');
   const recentIncidents = await sv.query(`
     SELECT id, title, affected_count, severity, status, started_at,
            resolved_at, duration_seconds
-    FROM incidents
-    WHERE status = 'active'
+    FROM incidents i
+    WHERE status = 'active'${scInc ? ` AND EXISTS (
+      SELECT 1 FROM alerts a3 JOIN monitored_devices d3 ON d3.id = a3.device_id
+       WHERE a3.incident_id = i.id AND ${scInc})` : ''}
     ORDER BY started_at DESC
     LIMIT 3
-  `);
+  `, pInc);
 
-  const counts = await sv.query(`
-    SELECT
-      (SELECT COUNT(*)::int FROM device_anomalies WHERE status='active') AS active_anomalies,
-      (SELECT COUNT(*)::int FROM incidents WHERE status='active')        AS active_incidents,
-      (SELECT GREATEST(0, EXTRACT(DAY FROM (NOW() - MIN(ts))))::int FROM ping_results) AS data_coverage_days
-  `);
-  const c = counts.rows[0] || {};
+  let c;
+  if (siteFilter) {
+    const counts = await sv.query(`
+      SELECT
+        (SELECT COUNT(*)::int FROM device_anomalies an
+           JOIN monitored_devices d ON d.id = an.device_id
+          WHERE an.status='active' AND d.site_id = ANY($1::int[])) AS active_anomalies,
+        (SELECT COUNT(*)::int FROM incidents i
+          WHERE i.status='active' AND EXISTS (
+            SELECT 1 FROM alerts a3 JOIN monitored_devices d3 ON d3.id = a3.device_id
+             WHERE a3.incident_id = i.id AND d3.site_id = ANY($1::int[]))) AS active_incidents,
+        (SELECT GREATEST(0, EXTRACT(DAY FROM (NOW() - MIN(ts))))::int FROM ping_results) AS data_coverage_days
+    `, [siteFilter]);
+    c = counts.rows[0] || {};
+  } else {
+    const counts = await sv.query(`
+      SELECT
+        (SELECT COUNT(*)::int FROM device_anomalies WHERE status='active') AS active_anomalies,
+        (SELECT COUNT(*)::int FROM incidents WHERE status='active')        AS active_incidents,
+        (SELECT GREATEST(0, EXTRACT(DAY FROM (NOW() - MIN(ts))))::int FROM ping_results) AS data_coverage_days
+    `);
+    c = counts.rows[0] || {};
+  }
 
   res.json({
     overall_score: overallScore,
@@ -1710,6 +1807,8 @@ app.get('/api/intelligence/health', wrap(async (req, res) => {
     params.push(safeInt(req.query.site_id, 0));
     filter = `AND d.site_id = $${params.length}`;
   }
+  const hSc = siteFilterClause(getSiteFilter(req), params, 'd.site_id');
+  if (hSc) filter += ` AND ${hSc}`;
   const r = await sv.query(`
     SELECT d.id, d.name, d.site_id, d.site_name, d.current_status,
            h.score, h.grade, h.trend, h.uptime_score, h.response_score,
@@ -1740,6 +1839,8 @@ app.get('/api/intelligence/anomalies', wrap(async (req, res) => {
     params.push(safeInt(req.query.device_id, 0));
     where.push(`an.device_id = $${params.length}`);
   }
+  const anSc = siteFilterClause(getSiteFilter(req), params, 'd.site_id');
+  if (anSc) where.push(anSc);
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
   const r = await sv.query(`
     SELECT an.id, an.device_id, d.name AS device_name, d.site_id, d.site_name,
@@ -1765,11 +1866,14 @@ app.get('/api/intelligence/capacity', wrap(async (req, res) => {
 // Detected recurring patterns (all or by device).
 app.get('/api/intelligence/patterns', wrap(async (req, res) => {
   const params = [];
-  let filter = '';
+  const conds = [];
   if (req.query.device_id) {
     params.push(safeInt(req.query.device_id, 0));
-    filter = `WHERE p.device_id = $${params.length}`;
+    conds.push(`p.device_id = $${params.length}`);
   }
+  const pSc = siteFilterClause(getSiteFilter(req), params, 'd.site_id');
+  if (pSc) conds.push(pSc);
+  const filter = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
   const r = await sv.query(`
     SELECT p.id, p.device_id, d.name AS device_name, d.site_id, d.site_name,
            p.pattern_type, p.metric, p.description, p.hour_of_day, p.day_of_week,
@@ -1795,6 +1899,13 @@ app.get('/api/intelligence/incidents', wrap(async (req, res) => {
   if (req.query.days) {
     params.push(safeInt(req.query.days, 30, 3650));
     where.push(`i.started_at >= NOW() - ($${params.length} || ' days')::interval`);
+  }
+  const incSc = siteFilterClause(getSiteFilter(req), params, 'd3.site_id');
+  if (incSc) {
+    where.push(`EXISTS (
+      SELECT 1 FROM alerts a3 JOIN monitored_devices d3 ON d3.id = a3.device_id
+       WHERE a3.incident_id = i.id AND ${incSc}
+    )`);
   }
   params.push(safeInt(req.query.limit, 20, 200));
   const limitIdx = params.length;
