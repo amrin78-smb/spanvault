@@ -6,6 +6,7 @@ import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine, ResponsiveContainer,
 } from 'recharts';
 import { useApi } from '@/lib/api';
+import { useRbac } from '@/lib/rbac';
 import { StatusDot } from '@/components/StatusDot';
 import {
   StatusBadge, ErrorBox, Empty, fmtRel, fmtTime,
@@ -111,6 +112,7 @@ function availTrend(points: TrendPoint[] | null | undefined): 'up' | 'down' | 'f
 }
 
 export default function DashboardPage() {
+  const { canManageAgents } = useRbac();
   const summary = useApi<Summary>('/api/dashboard/summary', REFRESH_MS);
   const problems = useApi<Problem[]>('/api/dashboard/problems', REFRESH_MS);
   const worst = useApi<Worst[]>('/api/dashboard/top-worst', REFRESH_MS);
@@ -140,6 +142,7 @@ export default function DashboardPage() {
 
   return (
     <div>
+      <RedirectNotice />
       <PageHeader title="Dashboard" subtitle="Live network health across all monitored devices.">
         <span className="sv-muted" style={{ fontSize: 13 }}>
           {updatedAt ? `Updated ${ago === 0 ? 'just now' : `${ago} second${ago === 1 ? '' : 's'} ago`}` : 'Loading…'}
@@ -162,7 +165,7 @@ export default function DashboardPage() {
           <StatLink href="/devices?status=unknown" variant="unknown" num={s.unknown} label="Unknown" />
           <StatLink href="/alerts?status=active" variant="alerts" num={s.active_alerts} label="Active Alerts" />
           <HealthScoreStat data={intel.data} />
-          {s.agents_total > 0 && (
+          {canManageAgents && s.agents_total > 0 && (
             <Link href="/agents" className={`sv-stat agents${s.agents_online < s.agents_total ? ' pulse' : ''}`}>
               <div className="sv-stat-top">
                 <span className="num">{s.agents_online}/{s.agents_total}</span>
@@ -208,6 +211,35 @@ export default function DashboardPage() {
         <div className="sv-dash-head"><h2>Recent Events</h2></div>
         <RecentEvents api={events} />
       </div>
+    </div>
+  );
+}
+
+// ── Redirect notice (top-level component) ──────────────────────
+// Shows a dismissible banner when another page bounced the user here with a
+// ?notice=... message (e.g. a view-only role hitting Settings or Agents).
+function RedirectNotice() {
+  const [msg, setMsg] = useState<string | null>(null);
+  useEffect(() => {
+    const n = new URLSearchParams(window.location.search).get('notice');
+    if (n) {
+      setMsg(n);
+      // Strip the param so a refresh doesn't re-show it.
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+  }, []);
+  if (!msg) return null;
+  return (
+    <div
+      onClick={() => setMsg(null)}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px',
+        marginBottom: 16, borderRadius: 8, fontSize: 13.5, fontWeight: 600,
+        cursor: 'pointer', color: '#92400e', background: 'rgba(217,119,6,0.10)',
+        border: '1px solid rgba(217,119,6,0.30)',
+      }}
+    >
+      <span aria-hidden>⚠</span><span>{msg}</span>
     </div>
   );
 }

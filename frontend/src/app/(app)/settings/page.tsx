@@ -1,7 +1,9 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { useApi, apiSend } from '@/lib/api';
+import { useRbac } from '@/lib/rbac';
 import { Loading, ErrorBox, Empty, fmtTime, PageHeader, TableSkeleton } from '@/components/ui';
 
 const TABS = [
@@ -11,7 +13,22 @@ const TABS = [
 ];
 
 export default function SettingsPage() {
+  const { canManageSettings } = useRbac();
+  const router = useRouter();
   const [tab, setTab] = useState('general');
+
+  // View-only roles (site_admin / viewer) cannot manage settings — bounce them
+  // to the dashboard with a notice.
+  useEffect(() => {
+    if (!canManageSettings) {
+      router.replace('/?notice=' + encodeURIComponent('Settings access requires admin role'));
+    }
+  }, [canManageSettings, router]);
+
+  if (!canManageSettings) {
+    return <div className="sv-panel" style={{ marginTop: 20 }}><Loading /></div>;
+  }
+
   return (
     <div>
       <PageHeader title="Settings" subtitle="Polling, thresholds, notifications, and alert rules." />

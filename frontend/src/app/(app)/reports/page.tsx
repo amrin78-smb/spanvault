@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useApi } from '@/lib/api';
 import { ErrorBox, Empty, fmtBps, PageHeader, TableSkeleton, useRefreshKey } from '@/components/ui';
+import SiteScopeBanner from '@/components/SiteScopeBanner';
 
 // ── Types ──────────────────────────────────────────────────────
 type Site = { id: number; name: string };
@@ -196,6 +197,8 @@ export default function ReportsPage() {
         title="Reports"
         subtitle="Availability & SLA, response time, alerts, and bandwidth — printable for management."
       />
+
+      <SiteScopeBanner />
 
       {/* Report type selector */}
       <div className="sv-tabs">

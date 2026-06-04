@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useApi, apiSend } from '@/lib/api';
+import { useRbac } from '@/lib/rbac';
 import { Loading, ErrorBox, Empty, fmtRel } from '@/components/ui';
 import type { MapSummary } from '@/lib/mapTypes';
 
@@ -13,6 +14,7 @@ const CANVAS_PRESETS = [
 ];
 
 export default function MapsPage() {
+  const { canEdit } = useRbac();
   const maps = useApi<MapSummary[]>('/api/maps', 0);
   const [showCreate, setShowCreate] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -48,7 +50,7 @@ export default function MapsPage() {
       <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
         <h1 className="sv-page-title" style={{ margin: 0 }}>Maps</h1>
         <div style={{ flex: 1 }} />
-        <button className="sv-btn" onClick={() => setShowCreate(true)}>+ New Map</button>
+        {canEdit && <button className="sv-btn" onClick={() => setShowCreate(true)}>+ New Map</button>}
       </div>
       <p className="sv-page-sub">Design interactive network maps with live device status.</p>
 
@@ -87,6 +89,7 @@ function MapCard({
   onDelete: (m: MapSummary) => void;
   onShare: (m: MapSummary) => void;
 }) {
+  const { canEdit } = useRbac();
   return (
     <div className="sv-map-card">
       <div className="thumb" style={{ background: map.bg_color || '#f8fafc' }}>
@@ -104,11 +107,11 @@ function MapCard({
           {map.device_count} device{map.device_count === 1 ? '' : 's'} · updated {fmtRel(map.updated_at)}
         </div>
         <div className="actions">
-          <a className="sv-btn ghost sm" href={`/maps/${map.id}/edit`}>Edit</a>
+          {canEdit && <a className="sv-btn ghost sm" href={`/maps/${map.id}/edit`}>Edit</a>}
           <a className="sv-btn ghost sm" href={`/maps/${map.id}`}>View</a>
-          <button className="sv-btn ghost sm" onClick={() => onShare(map)}>Share</button>
+          {canEdit && <button className="sv-btn ghost sm" onClick={() => onShare(map)}>Share</button>}
           <div style={{ flex: 1 }} />
-          <button className="sv-btn ghost sm" onClick={() => onDelete(map)} title="Delete map">Delete</button>
+          {canEdit && <button className="sv-btn ghost sm" onClick={() => onDelete(map)} title="Delete map">Delete</button>}
         </div>
       </div>
     </div>

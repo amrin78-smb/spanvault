@@ -7,6 +7,7 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from 'recharts';
 import { useApi, apiSend } from '@/lib/api';
+import { useRbac } from '@/lib/rbac';
 import { StatusDot } from '@/components/StatusDot';
 import SensorManager from '@/components/SensorManager';
 import { StatusBadge, Loading, ErrorBox, Empty, fmtTime, fmtRel, fmtBps } from '@/components/ui';
@@ -62,6 +63,7 @@ const TRAFFIC_IN_COLOR = '#3b82f6';
 const TRAFFIC_OUT_COLOR = '#f97316';
 
 export default function DeviceDetailPage() {
+  const { canEdit } = useRbac();
   const { id } = useParams<{ id: string }>();
   const [range, setRange] = useState('24h');
   const [sensorsOpen, setSensorsOpen] = useState(false);
@@ -108,7 +110,7 @@ export default function DeviceDetailPage() {
           </span>
         )}
         <div style={{ flex: 1 }} />
-        {snmpOn && (
+        {snmpOn && canEdit && (
           <button className="sv-btn ghost sm" onClick={() => setSensorsOpen(true)}>Manage Sensors</button>
         )}
         {snmpOn && <TestSnmpButton deviceId={d.id} onResult={setToast} />}
@@ -171,7 +173,7 @@ export default function DeviceDetailPage() {
           <p className="sv-muted" style={{ marginTop: 0 }}>
             No sensors configured. Run Discovery to choose what to monitor on this device.
           </p>
-          <button className="sv-btn" onClick={() => setSensorsOpen(true)}>Manage Sensors</button>
+          {canEdit && <button className="sv-btn" onClick={() => setSensorsOpen(true)}>Manage Sensors</button>}
         </div>
       )}
 
@@ -690,6 +692,7 @@ type SiteDevice = {
 };
 
 function SiteGateway({ device, onChanged }: { device: Device; onChanged: () => void }) {
+  const { canEdit } = useRbac();
   // Sibling devices at the same site — used to find the current gateway.
   const siteDevices = useApi<SiteDevice[]>(
     device.site_id != null ? `/api/devices?site_id=${device.site_id}` : '/api/devices', 0
@@ -720,11 +723,11 @@ function SiteGateway({ device, onChanged }: { device: Device; onChanged: () => v
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <h2 style={{ margin: 0 }}>Site Gateway</h2>
         <div style={{ flex: 1 }} />
-        {device.is_gateway ? (
+        {canEdit && device.is_gateway ? (
           <button className="sv-btn ghost sm" onClick={() => act('clear-gateway')} disabled={busy}>
             Remove gateway status
           </button>
-        ) : device.site_id != null ? (
+        ) : canEdit && device.site_id != null ? (
           <button className="sv-btn ghost sm" onClick={() => act('set-gateway')} disabled={busy}>
             Set as Site Gateway
           </button>

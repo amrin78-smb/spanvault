@@ -6,6 +6,7 @@ import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine, ResponsiveContainer,
 } from 'recharts';
 import { useApi, apiSend } from '@/lib/api';
+import { useRbac } from '@/lib/rbac';
 import { StatusDot } from '@/components/StatusDot';
 import {
   PageHeader, ErrorBox, Empty, Loading, TableSkeleton, CardSkeleton,
@@ -619,6 +620,7 @@ function IncidentCard({ incident: i }: { incident: IncidentRow }) {
 // TAB 6: THRESHOLDS
 // ════════════════════════════════════════════════════════════════
 function ThresholdsTab() {
+  const { canEdit } = useRbac();
   const api = useApi<ThresholdRow[]>('/api/intelligence/thresholds', REFRESH_MS);
   const [busy, setBusy] = useState<number | null>(null);
   const [bulkBusy, setBulkBusy] = useState(false);
@@ -673,7 +675,7 @@ function ThresholdsTab() {
           <span className="sv-muted" style={{ fontSize: 13 }}>Recommended alert thresholds based on device behavior history</span>
         </div>
         <span className="spacer" style={{ flex: 1 }} />
-        {highCount > 0 && (
+        {canEdit && highCount > 0 && (
           <button className="sv-btn" onClick={applyAll} disabled={bulkBusy}>
             {bulkBusy ? <><span className="sv-spinner-sm" /> Applying…</> : `Apply All High-Confidence (${highCount})`}
           </button>
@@ -714,9 +716,13 @@ function ThresholdsTab() {
                   </td>
                   <td><ConfidenceStars confidence={r.confidence} /></td>
                   <td>
-                    <button className="sv-btn sm" onClick={() => apply(r)} disabled={busy === r.device_id}>
-                      {busy === r.device_id ? <span className="sv-spinner-sm" /> : 'Apply'}
-                    </button>
+                    {canEdit ? (
+                      <button className="sv-btn sm" onClick={() => apply(r)} disabled={busy === r.device_id}>
+                        {busy === r.device_id ? <span className="sv-spinner-sm" /> : 'Apply'}
+                      </button>
+                    ) : (
+                      <span className="sv-muted">—</span>
+                    )}
                   </td>
                 </tr>
               ))}

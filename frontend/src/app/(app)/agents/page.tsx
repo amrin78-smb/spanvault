@@ -1,10 +1,12 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { useApi, apiSend } from '@/lib/api';
+import { useRbac } from '@/lib/rbac';
 import {
-  ErrorBox, fmtRel, PageHeader, CardSkeleton, EmptyState, useRefreshKey,
+  ErrorBox, fmtRel, PageHeader, CardSkeleton, EmptyState, useRefreshKey, Loading,
 } from '@/components/ui';
 import { IconAgents } from '@/components/icons';
 import { AgentStatusPill, AgentInstall, NewAgentModal } from '@/components/AgentBits';
@@ -18,12 +20,25 @@ export type Agent = {
 };
 
 export default function AgentsPage() {
-  const agents = useApi<Agent[]>('/api/agents', 15000);
+  const { canManageAgents } = useRbac();
+  const router = useRouter();
+  const agents = useApi<Agent[]>(canManageAgents ? '/api/agents' : null, 15000);
   const [showNew, setShowNew] = useState(false);
   // After creating an agent, surface its install command in a modal.
   const [created, setCreated] = useState<{ name: string; install_command: string } | null>(null);
 
+  // Agents management is admin-only — bounce view-only roles to the dashboard.
+  useEffect(() => {
+    if (!canManageAgents) {
+      router.replace('/?notice=' + encodeURIComponent('Agents access requires admin role'));
+    }
+  }, [canManageAgents, router]);
+
   useRefreshKey(() => agents.reload());
+
+  if (!canManageAgents) {
+    return <div className="sv-panel" style={{ marginTop: 20 }}><Loading /></div>;
+  }
 
   async function handleDelete(a: Agent) {
     if (!confirm(`Delete agent "${a.name}"? Its ${a.device_count} device(s) will move back to local polling.`)) return;

@@ -3,8 +3,10 @@
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useApi, apiSend } from '@/lib/api';
+import { useRbac } from '@/lib/rbac';
 import { ErrorBox, fmtRel, PageHeader, TableSkeleton, EmptyState, useRefreshKey } from '@/components/ui';
 import { StatusDot } from '@/components/StatusDot';
+import SiteScopeBanner from '@/components/SiteScopeBanner';
 import { IconDevices } from '@/components/icons';
 import { DeviceForm, ImportModal } from '@/components/DeviceModals';
 
@@ -96,6 +98,7 @@ function fmtPct(p: number | null): string {
 }
 
 export default function DevicesPage() {
+  const { canEdit } = useRbac();
   const [q, setQ] = useState('');
   const [status, setStatus] = useState('');
   const [siteId, setSiteId] = useState('');
@@ -137,9 +140,15 @@ export default function DevicesPage() {
   return (
     <div>
       <PageHeader title="Devices" subtitle="Devices currently monitored by SpanVault, grouped by site.">
-        <button className="sv-btn ghost" onClick={() => setShowImport(true)}>Import from NetVault</button>
-        <button className="sv-btn" onClick={openAdd}>+ Add Device</button>
+        {canEdit && (
+          <>
+            <button className="sv-btn ghost" onClick={() => setShowImport(true)}>Import from NetVault</button>
+            <button className="sv-btn" onClick={openAdd}>+ Add Device</button>
+          </>
+        )}
       </PageHeader>
+
+      <SiteScopeBanner />
 
       <div className="sv-toolbar">
         <input
@@ -184,8 +193,8 @@ export default function DevicesPage() {
             icon={<IconDevices width={26} height={26} />}
             title="No monitored devices"
             message="Add a device manually or import your inventory from NetVault to start monitoring."
-            actionLabel="+ Add Device"
-            onAction={openAdd}
+            actionLabel={canEdit ? '+ Add Device' : undefined}
+            onAction={canEdit ? openAdd : undefined}
           />
         </div>
       )}
@@ -333,6 +342,7 @@ function DeviceRow({
   onEdit: (d: Device) => void;
   onDelete: (d: Device) => void;
 }) {
+  const { canEdit } = useRbac();
   return (
     <div className="sv-dev-row">
       {device.alert_suppressed
@@ -352,10 +362,12 @@ function DeviceRow({
         <div className="sv-muted">{fmtRel(device.last_seen_at)}</div>
       </div>
       <MonitorBadges device={device} />
-      <div className="sv-dev-actions">
-        <button className="sv-btn ghost sm" onClick={() => onEdit(device)}>Edit</button>{' '}
-        <button className="sv-btn ghost sm" onClick={() => onDelete(device)}>Delete</button>
-      </div>
+      {canEdit && (
+        <div className="sv-dev-actions">
+          <button className="sv-btn ghost sm" onClick={() => onEdit(device)}>Edit</button>{' '}
+          <button className="sv-btn ghost sm" onClick={() => onDelete(device)}>Delete</button>
+        </div>
+      )}
     </div>
   );
 }

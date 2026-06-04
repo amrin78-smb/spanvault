@@ -4,7 +4,9 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { useSession } from 'next-auth/react';
 import { useApi, apiSend } from '@/lib/api';
+import { useRbac } from '@/lib/rbac';
 import { StatusBadge, ErrorBox, fmtTime, PageHeader, TableSkeleton, EmptyState, useRefreshKey } from '@/components/ui';
+import SiteScopeBanner from '@/components/SiteScopeBanner';
 import { IconAlerts } from '@/components/icons';
 
 type Alert = {
@@ -17,6 +19,7 @@ type Alert = {
 
 export default function AlertsPage() {
   const { data: session } = useSession();
+  const { canAcknowledgeAlerts } = useRbac();
   const [status, setStatus] = useState('active');
   const [severity, setSeverity] = useState('');
 
@@ -41,6 +44,8 @@ export default function AlertsPage() {
   return (
     <div>
       <PageHeader title="Alerts" subtitle="Network alerts raised by the collector." />
+
+      <SiteScopeBanner />
 
       <div className="sv-toolbar">
         <select className="sv-select" value={status} onChange={(e) => setStatus(e.target.value)}>
@@ -92,10 +97,10 @@ export default function AlertsPage() {
                     <td className="sv-muted">{fmtTime(a.triggered_at)}</td>
                     <td><StatusBadge status={a.status} /></td>
                     <td style={{ whiteSpace: 'nowrap' }}>
-                      {a.status === 'active' && (
+                      {canAcknowledgeAlerts && a.status === 'active' && (
                         <button className="sv-btn ghost sm" onClick={() => ack(a)}>Acknowledge</button>
                       )}{' '}
-                      {a.status !== 'resolved' && a.status !== 'suppressed' && (
+                      {canAcknowledgeAlerts && a.status !== 'resolved' && a.status !== 'suppressed' && (
                         <button className="sv-btn ghost sm" onClick={() => resolve(a)}>Resolve</button>
                       )}
                     </td>
