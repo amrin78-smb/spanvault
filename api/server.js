@@ -17,6 +17,7 @@ const { Pool } = require('pg');
 const { discoverDevice, snmpTest } = require('../collector/discovery');
 const { startWsServer, connectedAgents, pushConfigToAgent, pushConfigToAgentId } = require('./ws-server');
 const intelligence = require('./intelligence');
+const { getLicense, getLicenseState } = require('./licenseCheck');
 
 const IS_WIN = process.platform === 'win32';
 
@@ -67,6 +68,41 @@ app.use((req, _res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
   next();
 });
+
+// ── License enforcement ───────────────────────────────────────
+// Checks the NocVault license (cached 24h) and gates writes during grace and
+// all access once disabled. Never blocks on network failure.
+async function enforceLicense(req, res, next) {
+  const license = await getLicense();
+  const state   = getLicenseState(license);
+  req.licenseState = state;
+  req.license      = license;
+
+  // Block writes during grace/disabled
+  if (!state.canWrite && ['POST','PUT','PATCH','DELETE'].includes(req.method)) {
+    const isAck = req.path.includes('acknowledge') && req.method === 'POST';
+    if (!isAck) {
+      return res.status(402).json({
+        error: 'License expired — write operations disabled',
+        license_status: license?.status,
+        days_remaining: license?.daysRemaining,
+      });
+    }
+  }
+
+  // Block all access if disabled
+  const exemptPaths = ['/api/health', '/api/license-status'];
+  if (state.disabled && !exemptPaths.some(p => req.path.startsWith(p))) {
+    return res.status(402).json({
+      error: 'License has expired. Please renew your NocVault license.',
+      license_status: license?.status,
+    });
+  }
+
+  next();
+}
+
+app.use(enforceLicense);
 
 // ── Helpers ───────────────────────────────────────────────────
 function safeInt(val, def, max) {
@@ -177,6 +213,15 @@ app.get('/api/agent/package.json', (req, res) => {
 app.get('/api/health', wrap(async (_req, res) => {
   await sv.query('SELECT 1');
   res.json({ status: 'ok', service: 'spanvault-api', time: new Date().toISOString() });
+}));
+
+// ══════════════════════════════════════════════════════════════
+// License status
+// ══════════════════════════════════════════════════════════════
+app.get('/api/license-status', wrap(async (req, res) => {
+  const license = await getLicense();
+  const state   = getLicenseState(license);
+  res.json({ license, state });
 }));
 
 // Collector liveness: 'running' if the collector has stamped its heartbeat in
@@ -2016,6 +2061,13 @@ app.use((err, _req, res, _next) => {
   console.error('[API Error]', err.message);
   res.status(500).json({ error: PROD ? 'Internal server error' : err.message });
 });
+
+// ── License: check on startup, refresh every 24h ──────────────
+getLicense(true).then((lic) => {
+  const state = getLicenseState(lic);
+  console.log(`[License] Status: ${lic?.status || 'unreachable'}, mode: ${state.mode}`);
+});
+setInterval(() => getLicense(true), 24 * 60 * 60 * 1000);
 
 app.listen(PORT, '127.0.0.1', () => {
   console.log(`SpanVault API listening on 127.0.0.1:${PORT}`);

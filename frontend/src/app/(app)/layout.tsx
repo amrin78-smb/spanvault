@@ -4,15 +4,17 @@ import AlertBanner from '@/components/AlertBanner';
 import GlobalSearch from '@/components/GlobalSearch';
 import IdleTimeout from '@/components/IdleTimeout';
 import KeyboardShortcuts from '@/components/KeyboardShortcuts';
+import { LicenseProvider, LicenseBanner } from '@/components/LicenseGuard';
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   return (
-    <>
+    <LicenseProvider>
       {/* Full-height column: header spans the full page width (over the
           sidebar); below it a flex row holds the sidebar + scrolling content. */}
       <div className="sv-shell">
         <TopBar />
         <AlertBanner />
+        <LicenseBanner />
         <div className="sv-body">
           <Sidebar />
           <main className="sv-content">{children}</main>
@@ -21,6 +23,6 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       <GlobalSearch />
       <IdleTimeout />
       <KeyboardShortcuts />
-    </>
+    </LicenseProvider>
   );
 }

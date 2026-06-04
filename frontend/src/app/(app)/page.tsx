@@ -8,6 +8,7 @@ import {
 import { useApi } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
 import { StatusDot } from '@/components/StatusDot';
+import { useLicense, LicenseDisabledScreen } from '@/components/LicenseGuard';
 import {
   StatusBadge, ErrorBox, Empty, fmtRel, fmtTime,
   PageHeader, CardSkeleton, TableSkeleton, Skeleton, useRefreshKey,
@@ -113,6 +114,7 @@ function availTrend(points: TrendPoint[] | null | undefined): 'up' | 'down' | 'f
 
 export default function DashboardPage() {
   const { canManageAgents } = useRbac();
+  const { state: licenseState, loading: licenseLoading } = useLicense();
   const summary = useApi<Summary>('/api/dashboard/summary', REFRESH_MS);
   const problems = useApi<Problem[]>('/api/dashboard/problems', REFRESH_MS);
   const worst = useApi<Worst[]>('/api/dashboard/top-worst', REFRESH_MS);
@@ -139,6 +141,11 @@ export default function DashboardPage() {
   const upArrow = tDir === 'up' ? '↑' : tDir === 'down' ? '↓' : '';
   const downTrend = tDir === 'up' ? 'good' : tDir === 'down' ? 'bad' : null;
   const downArrow = tDir === 'up' ? '↓' : tDir === 'down' ? '↑' : '';
+
+  // License expired and grace period ended → lock the app behind a renewal screen.
+  if (!licenseLoading && licenseState.disabled) {
+    return <LicenseDisabledScreen />;
+  }
 
   return (
     <div>
