@@ -11,9 +11,19 @@ export async function middleware(req: NextRequest) {
   // Public map data (/api/maps/public/:uuid) is proxied like any other API call,
   // so it stays reachable without a session.
   if (pathname.startsWith('/api/') && !pathname.startsWith('/api/auth/')) {
-    return NextResponse.rewrite(
-      new URL(`http://127.0.0.1:3009${pathname}${search}`)
-    );
+    const target = new URL(`http://127.0.0.1:3009${pathname}${search}`);
+    // Forward the authenticated user's role + assigned sites so the API can
+    // enforce server-side RBAC scoping. We always overwrite these headers from
+    // the verified token, so a client cannot spoof them. Unauthenticated
+    // requests (e.g. public maps) pass through with no RBAC headers.
+    const token = await getToken({ req, secret: process.env.NEXTAUTH_SECRET });
+    if (token) {
+      const headers = new Headers(req.headers);
+      headers.set('x-user-role', (token.role as string) || 'viewer');
+      headers.set('x-user-sites', ((token.sites as number[]) || []).join(','));
+      return NextResponse.rewrite(target, { request: { headers } });
+    }
+    return NextResponse.rewrite(target);
   }
 
   // Public map view pages render without authentication.
