@@ -88,7 +88,22 @@ export const authOptions: NextAuthOptions = {
             const userRole = payload.role || credentials.role || dbUser.role || 'viewer';
             const id = userId || (dbUser.id != null ? String(dbUser.id) : '');
 
-            return { id, email, name: userName, role: userRole };
+            // Site assignments scope a site_admin to their sites. Looked up from
+            // the NetVault user_sites table; admin/viewer are unscoped (empty).
+            let userSites: number[] = [];
+            if (userRole === 'site_admin' && (dbUser.id || userId)) {
+              try {
+                const sitesResult = await netvaultPool.query(
+                  'SELECT site_id FROM user_sites WHERE user_id = $1',
+                  [dbUser.id || userId]
+                );
+                userSites = sitesResult.rows.map((r) => parseInt(r.site_id));
+              } catch {
+                // best effort — an unscoped site_admin simply sees no sites
+              }
+            }
+
+            return { id, email, name: userName, role: userRole, sites: userSites };
           } catch {
             return null;
           }
@@ -105,6 +120,7 @@ export const authOptions: NextAuthOptions = {
         token.id = user.id;
         token.name = user.name;
         token.email = user.email;
+        token.sites = (user as any).sites || [];
       }
       return token;
     },
@@ -114,6 +130,7 @@ export const authOptions: NextAuthOptions = {
         session.user.id = token.id;
         session.user.name = token.name;
         session.user.email = token.email;
+        (session.user as any).sites = token.sites || [];
       }
       return session;
     },
