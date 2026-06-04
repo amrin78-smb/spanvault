@@ -43,6 +43,11 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# FIREWALL NOTE: SpanVault agents connect outbound to port 3010.
+# Ensure port 3010 is reachable from all agent servers to this host.
+# Open inbound: netsh advfirewall firewall add rule name="SpanVault Agent WS"
+#   protocol=TCP dir=in localport=3010 action=allow
+
 # The repo is cloned one level deeper than the install dir: the install dir
 # ($InstallDir) holds top-level artifacts (logs, nssm), while the application
 # code lives in the 'app' subfolder. All git/npm/build/file operations and the
@@ -205,6 +210,43 @@ if ($psql -and (Test-Path $schema)) {
     else { Write-Warn "psql exited with code $psqlExit - apply scripts\schema.sql manually." }
 } else {
     Write-Warn 'psql not found or schema.sql missing - apply scripts\schema.sql manually.'
+}
+
+# ── 5b. Grant spanvault_user read access to the netvault DB ─────
+# Only on first install (-ServerIp given). SpanVault reads the netvault DB for
+# SSO auth (users/user_sites), device import (devices/device_types/sites) and
+# RBAC site filtering. The grants must run as a superuser/owner, so connect as
+# 'postgres' against the netvault database (NOT spanvault). Idempotent + wrapped
+# in try/catch so re-running (or pre-existing grants) never fails the install.
+if ($ServerIp) {
+    if ($psql) {
+        # Read the env file directly - the schema block's $envContent may be
+        # unset (e.g. schema.sql missing), so don't depend on it here.
+        $nvEnvContent = if (Test-Path $rootEnv) { Get-Content $rootEnv -Raw } else { '' }
+        $nvName = [regex]::Match($nvEnvContent, 'NETVAULT_DB_NAME=(.+)').Groups[1].Value.Trim()
+        $svUser = [regex]::Match($nvEnvContent, 'SV_DB_USER=(.+)').Groups[1].Value.Trim()
+        if (-not $nvName) { $nvName = 'netvault' }
+        if (-not $svUser) { $svUser = 'spanvault_user' }
+        $grantSql = "GRANT CONNECT ON DATABASE $nvName TO $svUser; " +
+                    "GRANT USAGE ON SCHEMA public TO $svUser; " +
+                    "GRANT SELECT ON users, user_sites, sites, devices, device_types TO $svUser;"
+        # Connect as the postgres superuser. PGPASSWORD is taken from the
+        # POSTGRES_PASSWORD env var when set; otherwise psql uses its own auth
+        # (pgpass / trust). Either way, failure is non-fatal.
+        $prevPg = $env:PGPASSWORD
+        if ($env:POSTGRES_PASSWORD) { $env:PGPASSWORD = $env:POSTGRES_PASSWORD }
+        try { $null = & $psql --quiet -U postgres -d $nvName -c $grantSql 2>&1 } catch {}
+        $grantExit = $LASTEXITCODE
+        $env:PGPASSWORD = $prevPg
+        if ($grantExit -eq 0) {
+            Write-Ok "Granted $svUser read access to the $nvName database"
+        } else {
+            Write-Warn "netvault grants exited with code $grantExit - run them manually as postgres:"
+            Write-Warn "  psql -U postgres -d $nvName -c `"$grantSql`""
+        }
+    } else {
+        Write-Warn 'psql not found - grant spanvault_user read access to netvault manually.'
+    }
 }
 
 # ── 6. Build frontend (NOT standalone) ─────────────────────────
