@@ -206,7 +206,8 @@ if ($psql -and (Test-Path $schema)) {
     try { $null = & $psql --quiet -U $dbUser -d $dbName -f $schema 2>&1 } catch {}
     $psqlExit = $LASTEXITCODE
     $env:PGPASSWORD = ''
-    if ($psqlExit -eq 0) { Write-Ok "Schema applied (as $dbUser)" }
+    # psql over WinRM commonly returns -1 on a successful run, so treat -1 as 0.
+    if ($psqlExit -eq 0 -or $psqlExit -eq -1) { Write-Ok "Schema applied (as $dbUser)" }
     else { Write-Warn "psql exited with code $psqlExit - apply scripts\schema.sql manually." }
 } else {
     Write-Warn 'psql not found or schema.sql missing - apply scripts\schema.sql manually.'
@@ -225,20 +226,21 @@ if ($ServerIp) {
         $nvEnvContent = if (Test-Path $rootEnv) { Get-Content $rootEnv -Raw } else { '' }
         $nvName = [regex]::Match($nvEnvContent, 'NETVAULT_DB_NAME=(.+)').Groups[1].Value.Trim()
         $svUser = [regex]::Match($nvEnvContent, 'SV_DB_USER=(.+)').Groups[1].Value.Trim()
+        $pgPass = [regex]::Match($nvEnvContent, 'POSTGRES_PASSWORD=(.+)').Groups[1].Value.Trim()
         if (-not $nvName) { $nvName = 'netvault' }
         if (-not $svUser) { $svUser = 'spanvault_user' }
         $grantSql = "GRANT CONNECT ON DATABASE $nvName TO $svUser; " +
                     "GRANT USAGE ON SCHEMA public TO $svUser; " +
                     "GRANT SELECT ON users, user_sites, sites, devices, device_types TO $svUser;"
-        # Connect as the postgres superuser. PGPASSWORD is taken from the
-        # POSTGRES_PASSWORD env var when set; otherwise psql uses its own auth
-        # (pgpass / trust). Either way, failure is non-fatal.
-        $prevPg = $env:PGPASSWORD
-        if ($env:POSTGRES_PASSWORD) { $env:PGPASSWORD = $env:POSTGRES_PASSWORD }
+        # Connect as the postgres superuser using POSTGRES_PASSWORD from .env.local
+        # so the grant runs unattended (no interactive password prompt). Failure is
+        # non-fatal.
+        if ($pgPass) { $env:PGPASSWORD = $pgPass }
         try { $null = & $psql --quiet -U postgres -d $nvName -c $grantSql 2>&1 } catch {}
         $grantExit = $LASTEXITCODE
-        $env:PGPASSWORD = $prevPg
-        if ($grantExit -eq 0) {
+        $env:PGPASSWORD = ''
+        # As with the schema apply, psql over WinRM may return -1 on success.
+        if ($grantExit -eq 0 -or $grantExit -eq -1) {
             Write-Ok "Granted $svUser read access to the $nvName database"
         } else {
             Write-Warn "netvault grants exited with code $grantExit - run them manually as postgres:"
