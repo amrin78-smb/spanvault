@@ -1,436 +1,403 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { useApi } from '@/lib/api';
-import { ErrorBox, Empty, fmtBps, PageHeader, TableSkeleton, useRefreshKey } from '@/components/ui';
-import SiteScopeBanner from '@/components/SiteScopeBanner';
+import { useSession } from 'next-auth/react';
+import { useApi, apiSend } from '@/lib/api';
+import { ErrorBox, PageHeader, Loading } from '@/components/ui';
+import NetworkSummaryReport from '@/components/reports/NetworkSummaryReport';
+import SiteReport from '@/components/reports/SiteReport';
+import DeviceDetailReport from '@/components/reports/DeviceDetailReport';
+import SlaComplianceReport from '@/components/reports/SlaComplianceReport';
+import TopWorstReport from '@/components/reports/TopWorstReport';
+import AlertAnalysisReport from '@/components/reports/AlertAnalysisReport';
+import CapacityReport from '@/components/reports/CapacityReport';
+import ExecutiveSummaryReport from '@/components/reports/ExecutiveSummaryReport';
 
 // ── Types ──────────────────────────────────────────────────────
 type Site = { id: number; name: string };
 type DeviceLite = { id: number; name: string; ip_address: string };
-type Row = Record<string, any>;
-type SlaResp = { sla_target: number; generated_at: string; devices: Row[] };
-type SlaSummary = {
-  sla_target: number; total_devices: number; devices_meeting_sla: number;
-  overall_availability_pct: number | null; total_downtime_minutes: number;
-  worst_device: { name: string; uptime_pct: number } | null;
-  best_device: { name: string; uptime_pct: number } | null;
+type SavedReport = {
+  id: number; name: string; template: string; scope_type: string;
+  scope_id: number | null; scope_name: string | null; date_range: string;
+  sla_target: number | null;
 };
-type Col = {
-  key: string; label: string; align?: 'left' | 'right';
-  fmt?: (v: any, row?: Row) => string; spark?: boolean; slaStatus?: boolean;
+// Scope modes a template supports.
+type ScopeKind = 'all' | 'site' | 'device' | 'flexible' | 'flexibleNoDevice';
+type Template = {
+  key: string; icon: string; label: string; desc: string;
+  scope: ScopeKind; sla?: boolean; metric?: boolean;
 };
 type Applied = {
-  type: string; range: string; from: string; to: string;
-  scope: string; siteId: string; deviceId: string; slaTarget: string;
-  siteLabel: string; deviceLabel: string;
+  template: string; range: string; from: string; to: string;
+  scopeMode: 'all' | 'site' | 'device';
+  siteId: string; siteLabel: string; deviceId: string; deviceLabel: string;
+  slaTarget: string; metric: string;
 };
 
-const REPORT_TYPES = [
-  { key: 'sla', label: 'Availability & SLA' },
-  { key: 'response', label: 'Response Time' },
-  { key: 'alerts', label: 'Alert Summary' },
-  { key: 'bandwidth', label: 'Bandwidth (SNMP)' },
+const TEMPLATES: Template[] = [
+  { key: 'network-summary', icon: '📊', label: 'Network Summary', desc: 'Overall health across all sites and devices', scope: 'all' },
+  { key: 'site-summary', icon: '🏢', label: 'Site Report', desc: 'All devices in a site with comparison table', scope: 'site' },
+  { key: 'device-detail', icon: '🖥', label: 'Device Detail Report', desc: 'Full history, graphs and metrics for one device', scope: 'device' },
+  { key: 'sla-compliance', icon: '✅', label: 'SLA Compliance', desc: 'Pass/fail per device vs SLA target', scope: 'flexible', sla: true },
+  { key: 'top-worst', icon: '⚠', label: 'Top 10 Worst', desc: 'Lowest availability, highest latency or most alerts', scope: 'flexibleNoDevice', metric: true },
+  { key: 'alert-analysis', icon: '🔔', label: 'Alert Analysis', desc: 'Most alerted devices, MTTR, and patterns', scope: 'flexibleNoDevice' },
+  { key: 'capacity', icon: '📈', label: 'Capacity Planning', desc: 'Bandwidth trends and utilization projections', scope: 'flexibleNoDevice' },
+  { key: 'executive', icon: '📋', label: 'Executive Summary', desc: 'Management-level overview with recommendations', scope: 'all' },
 ];
+const TEMPLATE_BY_KEY: Record<string, Template> = Object.fromEntries(TEMPLATES.map((t) => [t.key, t]));
+
 const RANGES = [
-  { key: '24h', label: '24 Hours' },
-  { key: '7d', label: '7 Days' },
-  { key: '30d', label: '30 Days' },
-  { key: '90d', label: '90 Days' },
-  { key: 'custom', label: 'Custom' },
+  { key: '7d', label: 'Last 7 Days' },
+  { key: '30d', label: 'Last 30 Days' },
+  { key: '90d', label: 'Last 90 Days' },
 ];
-const RANGE_LABEL: Record<string, string> = Object.fromEntries(RANGES.map((r) => [r.key, r.label]));
-
-// ── Column models per report type ──────────────────────────────
-const COLUMNS: Record<string, Col[]> = {
-  sla: [
-    { key: 'device_name', label: 'Device' },
-    { key: 'site_name', label: 'Site' },
-    { key: 'uptime_pct', label: 'Uptime %', align: 'right', fmt: (v) => (v == null ? '—' : `${v}%`) },
-    { key: 'downtime_minutes', label: 'Downtime (min)', align: 'right', fmt: (v) => (v == null ? '—' : `${v}`) },
-    { key: 'avg_response_ms', label: 'Avg Response', align: 'right', fmt: (v) => (v == null ? '—' : `${v} ms`) },
-    { key: 'total_alerts', label: 'Alerts', align: 'right' },
-    { key: 'mttr_minutes', label: 'MTTR (min)', align: 'right', fmt: (v) => (v == null ? '—' : `${v}`) },
-    { key: 'sla_met', label: 'SLA', align: 'right', slaStatus: true, fmt: (v) => (v ? 'MET' : 'FAILED') },
-  ],
-  response: [
-    { key: 'device_name', label: 'Device' },
-    { key: 'site_name', label: 'Site' },
-    { key: 'avg_ms', label: 'Avg ms', align: 'right', fmt: (v) => (v == null ? '—' : `${v}`) },
-    { key: 'min_ms', label: 'Min ms', align: 'right', fmt: (v) => (v == null ? '—' : `${v}`) },
-    { key: 'max_ms', label: 'Max ms', align: 'right', fmt: (v) => (v == null ? '—' : `${v}`) },
-    { key: 'p95_ms', label: 'P95 ms', align: 'right', fmt: (v) => (v == null ? '—' : `${v}`) },
-    { key: 'spark', label: 'Trend', spark: true },
-  ],
-  alerts: [
-    { key: 'device_name', label: 'Device' },
-    { key: 'site_name', label: 'Site' },
-    { key: 'total_alerts', label: 'Total Alerts', align: 'right' },
-    { key: 'critical_count', label: 'Critical', align: 'right' },
-    { key: 'warning_count', label: 'Warning', align: 'right' },
-    { key: 'mttr_minutes', label: 'MTTR (min)', align: 'right', fmt: (v) => (v == null ? '—' : `${v}`) },
-    { key: 'most_common_type', label: 'Most Common', fmt: (v) => v || '—' },
-  ],
-  bandwidth: [
-    { key: 'device_name', label: 'Device' },
-    { key: 'sensor_name', label: 'Interface' },
-    { key: 'site_name', label: 'Site' },
-    { key: 'avg_in_bps', label: 'Avg In', align: 'right', fmt: (v) => fmtBps(v) },
-    { key: 'avg_out_bps', label: 'Avg Out', align: 'right', fmt: (v) => fmtBps(v) },
-    { key: 'max_in_bps', label: 'Peak In', align: 'right', fmt: (v) => fmtBps(v) },
-    { key: 'max_out_bps', label: 'Peak Out', align: 'right', fmt: (v) => fmtBps(v) },
-    { key: 'p95_in_bps', label: 'P95 In', align: 'right', fmt: (v) => fmtBps(v) },
-    { key: 'p95_out_bps', label: 'P95 Out', align: 'right', fmt: (v) => fmtBps(v) },
-  ],
-};
-
-const ENDPOINT: Record<string, string> = {
-  sla: '/api/reports/sla',
-  response: '/api/reports/response-time',
-  alerts: '/api/reports/alerts',
-  bandwidth: '/api/reports/bandwidth',
-};
+const METRICS = [
+  { key: 'uptime', label: 'Availability' },
+  { key: 'response', label: 'Response Time' },
+  { key: 'alerts', label: 'Alerts' },
+];
 
 // ── Helpers (top-level) ────────────────────────────────────────
-function buildQuery(a: Applied): string {
+function buildEndpoint(a: Applied): string {
   const p = new URLSearchParams();
-  if (a.range === 'custom') {
-    p.set('range', 'custom');
-    if (a.from) p.set('from', a.from);
-    if (a.to) p.set('to', a.to);
-  } else {
-    p.set('range', a.range);
+  if (a.range === 'custom') { p.set('range', 'custom'); if (a.from) p.set('from', a.from); if (a.to) p.set('to', a.to); }
+  else p.set('range', a.range);
+  const useSite = (a.scopeMode === 'site') && a.siteId;
+  const useDevice = (a.scopeMode === 'device') && a.deviceId;
+  switch (a.template) {
+    case 'network-summary': return `/api/reports/network-summary?${p}`;
+    case 'executive':       return `/api/reports/executive?${p}`;
+    case 'site-summary':    p.set('site_id', a.siteId); return `/api/reports/site-summary?${p}`;
+    case 'device-detail':   p.set('device_id', a.deviceId); return `/api/reports/device-detail?${p}`;
+    case 'sla-compliance':
+      if (useSite) p.set('site_id', a.siteId);
+      if (useDevice) p.set('device_id', a.deviceId);
+      p.set('sla_target', a.slaTarget || '99.5');
+      return `/api/reports/sla-compliance?${p}`;
+    case 'top-worst':
+      if (useSite) p.set('site_id', a.siteId);
+      p.set('metric', a.metric || 'uptime'); p.set('limit', '10');
+      return `/api/reports/top-worst?${p}`;
+    case 'alert-analysis':
+      if (useSite) p.set('site_id', a.siteId);
+      return `/api/reports/alert-analysis?${p}`;
+    case 'capacity':
+      if (useSite) p.set('site_id', a.siteId);
+      return `/api/reports/capacity?${p}`;
+    default: return `/api/reports/network-summary?${p}`;
   }
-  if (a.scope === 'site' && a.siteId) p.set('site_id', a.siteId);
-  if (a.scope === 'device' && a.deviceId) p.set('device_id', a.deviceId);
-  if (a.type === 'sla') p.set('sla_target', a.slaTarget || '99.5');
-  return p.toString();
 }
-function scopeLabel(a: Applied): string {
-  if (a.scope === 'site') return `Site: ${a.siteLabel || a.siteId}`;
-  if (a.scope === 'device') return `Device: ${a.deviceLabel || a.deviceId}`;
-  return 'All Sites';
+// Whether a loaded report payload has no meaningful data to show.
+function isEmptyReport(template: string, data: any): boolean {
+  if (!data) return true;
+  switch (template) {
+    case 'network-summary': return !data.totals || data.totals.devices === 0;
+    case 'site-summary':    return !data.devices || data.devices.length === 0;
+    case 'sla-compliance':  return !data.devices || data.devices.length === 0;
+    case 'top-worst':       return !data.devices || data.devices.length === 0;
+    case 'alert-analysis':  return !data.total_alerts;
+    case 'capacity':        return !Array.isArray(data) || data.length === 0;
+    case 'device-detail':   return !data.device;
+    case 'executive':       return false; // executive always renders a summary
+    default: return false;
+  }
 }
 function rangeLabel(a: Applied): string {
   if (a.range === 'custom') return `${a.from || '…'} → ${a.to || '…'}`;
-  return RANGE_LABEL[a.range] || a.range;
+  return RANGES.find((r) => r.key === a.range)?.label || a.range;
 }
-function escHtml(s: any): string {
-  return String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c] as string));
-}
-function cellText(c: Col, row: Row): string {
-  if (c.spark) return '';
-  const v = row[c.key];
-  return c.fmt ? c.fmt(v, row) : (v == null ? '—' : String(v));
+function scopeLabel(a: Applied): string {
+  if (a.scopeMode === 'site') return `Site: ${a.siteLabel || a.siteId}`;
+  if (a.scopeMode === 'device') return `Device: ${a.deviceLabel || a.deviceId}`;
+  return 'All Sites';
 }
 
 export default function ReportsPage() {
+  const { data: session } = useSession();
+  const email = session?.user?.email || '';
   const sites = useApi<Site[]>('/api/netvault/sites');
   const devices = useApi<DeviceLite[]>('/api/devices');
+  const saved = useApi<SavedReport[]>(email ? `/api/reports/saved?created_by=${encodeURIComponent(email)}` : '/api/reports/saved');
 
-  const [type, setType] = useState('sla');
-  const [range, setRange] = useState('7d');
+  const [template, setTemplate] = useState('network-summary');
+  const [range, setRange] = useState('30d');
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
-  const [scope, setScope] = useState('all');
+  const [scopeMode, setScopeMode] = useState<'all' | 'site' | 'device'>('all');
   const [siteId, setSiteId] = useState('');
   const [deviceId, setDeviceId] = useState('');
   const [deviceSearch, setDeviceSearch] = useState('');
   const [slaTarget, setSlaTarget] = useState('99.5');
+  const [metric, setMetric] = useState('uptime');
   const [applied, setApplied] = useState<Applied | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saveName, setSaveName] = useState('');
+
+  const tpl = TEMPLATE_BY_KEY[template];
+
+  // Reset scope mode when switching to a template with a fixed scope.
+  useEffect(() => {
+    if (tpl.scope === 'all') setScopeMode('all');
+    else if (tpl.scope === 'site') setScopeMode('site');
+    else if (tpl.scope === 'device') setScopeMode('device');
+    // flexible / flexibleNoDevice keep whatever the user picked (but device
+    // isn't allowed on flexibleNoDevice — normalise that).
+    else if (tpl.scope === 'flexibleNoDevice' && scopeMode === 'device') setScopeMode('all');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [template]);
+
+  function canRun(): boolean {
+    if (tpl.scope === 'site' && !siteId) return false;
+    if (tpl.scope === 'device' && !deviceId) return false;
+    if (scopeMode === 'site' && !siteId) return false;
+    if (scopeMode === 'device' && !deviceId) return false;
+    return true;
+  }
 
   function runReport() {
+    if (!canRun()) return;
     const siteLabel = sites.data?.find((s) => String(s.id) === siteId)?.name || '';
     const deviceLabel = devices.data?.find((d) => String(d.id) === deviceId)?.name || '';
-    setApplied({ type, range, from, to, scope, siteId, deviceId, slaTarget, siteLabel, deviceLabel });
+    setApplied({ template, range, from, to, scopeMode, siteId, siteLabel, deviceId, deviceLabel, slaTarget, metric });
+    setSaveName('');
   }
-  // Auto-run once on mount with defaults.
-  useEffect(() => { runReport(); /* eslint-disable-next-line */ }, []);
-  useRefreshKey(() => runReport());
 
-  const q = applied ? buildQuery(applied) : '';
-  const slaData = useApi<SlaResp>(applied?.type === 'sla' ? `/api/reports/sla?${q}` : null);
-  const slaSummary = useApi<SlaSummary>(applied?.type === 'sla' ? `/api/reports/sla/summary?${q}` : null);
-  const respData = useApi<Row[]>(applied?.type === 'response' ? `/api/reports/response-time?${q}` : null);
-  const alertData = useApi<Row[]>(applied?.type === 'alerts' ? `/api/reports/alerts?${q}` : null);
-  const bwData = useApi<Row[]>(applied?.type === 'bandwidth' ? `/api/reports/bandwidth?${q}` : null);
+  const endpoint = applied ? buildEndpoint(applied) : null;
+  const report = useApi<any>(endpoint, 0);
 
-  const active = applied
-    ? (applied.type === 'sla' ? slaData : applied.type === 'response' ? respData
-      : applied.type === 'alerts' ? alertData : bwData)
-    : null;
-  const rows: Row[] = useMemo(() => {
-    if (!applied) return [];
-    if (applied.type === 'sla') return slaData.data?.devices || [];
-    return (active?.data as Row[]) || [];
-  }, [applied, slaData.data, active?.data]);
+  const loading = !!applied && report.loading && !report.data;
+  const empty = !!applied && !report.loading && !report.error && isEmptyReport(applied.template, report.data);
 
-  const cols = applied ? COLUMNS[applied.type] : [];
   const filteredDevices = (devices.data || []).filter((d) =>
     !deviceSearch || d.name.toLowerCase().includes(deviceSearch.toLowerCase()) || (d.ip_address || '').includes(deviceSearch));
 
-  function exportCsv() {
-    if (!applied || !rows.length) return;
-    const exportCols = cols.filter((c) => !c.spark);
-    const head = exportCols.map((c) => c.label).join(',');
-    const body = rows.map((r) => exportCols.map((c) => {
-      const t = cellText(c, r);
-      return /[",\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
-    }).join(',')).join('\n');
-    const blob = new Blob([head + '\n' + body], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `spanvault-${applied.type}-report.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+  async function saveReport() {
+    if (!applied || !saveName.trim()) return;
+    setSaving(true);
+    try {
+      await apiSend('/api/reports/saved', 'POST', {
+        name: saveName.trim(), template: applied.template,
+        scope_type: applied.scopeMode,
+        scope_id: applied.scopeMode === 'site' ? Number(applied.siteId) || null
+          : applied.scopeMode === 'device' ? Number(applied.deviceId) || null : null,
+        scope_name: applied.scopeMode === 'site' ? applied.siteLabel
+          : applied.scopeMode === 'device' ? applied.deviceLabel : null,
+        date_range: applied.range,
+        sla_target: applied.template === 'sla-compliance' ? Number(applied.slaTarget) || 99.5 : null,
+        created_by: email || null,
+      });
+      setSaveName('');
+      saved.reload();
+    } finally {
+      setSaving(false);
+    }
   }
 
-  function printView() {
-    if (!applied) return;
-    openPrintView(applied, cols, rows, applied.type === 'sla' ? slaSummary.data : null);
+  async function deleteSaved(id: number) {
+    await apiSend(`/api/reports/saved/${id}`, 'DELETE');
+    saved.reload();
   }
+
+  function loadSaved(s: SavedReport) {
+    setTemplate(s.template);
+    setRange(s.date_range && s.date_range !== 'custom' ? s.date_range : '30d');
+    const mode = (s.scope_type as 'all' | 'site' | 'device') || 'all';
+    setScopeMode(mode === 'site' || mode === 'device' ? mode : 'all');
+    setSiteId(mode === 'site' && s.scope_id ? String(s.scope_id) : '');
+    setDeviceId(mode === 'device' && s.scope_id ? String(s.scope_id) : '');
+    if (s.sla_target != null) setSlaTarget(String(s.sla_target));
+    const siteLabel = s.scope_type === 'site' ? (s.scope_name || '') : '';
+    const deviceLabel = s.scope_type === 'device' ? (s.scope_name || '') : '';
+    setApplied({
+      template: s.template, range: s.date_range && s.date_range !== 'custom' ? s.date_range : '30d',
+      from: '', to: '', scopeMode: mode === 'site' || mode === 'device' ? mode : 'all',
+      siteId: mode === 'site' && s.scope_id ? String(s.scope_id) : '',
+      siteLabel, deviceId: mode === 'device' && s.scope_id ? String(s.scope_id) : '',
+      deviceLabel, slaTarget: s.sla_target != null ? String(s.sla_target) : '99.5',
+      metric: 'uptime',
+    });
+  }
+
+  const showScopeSelector = tpl.scope === 'flexible' || tpl.scope === 'flexibleNoDevice';
 
   return (
     <div>
-      <PageHeader
-        title="Reports"
-        subtitle="Availability & SLA, response time, alerts, and bandwidth — printable for management."
-      />
+      <div className="sv-no-print">
+        <PageHeader title="Reports" subtitle="Run reports across your network — printable for management.">
+          {applied && !empty && !loading && (
+            <button className="sv-btn" onClick={() => window.print()}>Export PDF</button>
+          )}
+        </PageHeader>
 
-      <SiteScopeBanner />
+        {/* Template selector */}
+        <div className="sv-report-templates">
+          {TEMPLATES.map((t) => (
+            <button
+              key={t.key}
+              className={`sv-report-tpl ${template === t.key ? 'active' : ''}`}
+              onClick={() => setTemplate(t.key)}
+            >
+              <span className="ico">{t.icon}</span>
+              <span className="body">
+                <span className="nm">{t.label}</span>
+                <span className="desc">{t.desc}</span>
+              </span>
+            </button>
+          ))}
+        </div>
 
-      {/* Report type selector */}
-      <div className="sv-tabs">
-        {REPORT_TYPES.map((t) => (
-          <button key={t.key} className={`sv-tab ${type === t.key ? 'active' : ''}`} onClick={() => setType(t.key)}>
-            {t.label}
-          </button>
-        ))}
-      </div>
-
-      {/* Filters */}
-      <div className="sv-panel">
-        <div className="sv-toolbar" style={{ flexWrap: 'wrap' }}>
-          <label className="sv-field">Date range
-            <select className="sv-select" value={range} onChange={(e) => setRange(e.target.value)}>
-              {RANGES.map((r) => <option key={r.key} value={r.key}>{r.label}</option>)}
-            </select>
-          </label>
-          {range === 'custom' && (
-            <>
-              <label className="sv-field">From
-                <input className="sv-input" type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
+        {/* Controls */}
+        <div className="sv-panel">
+          <div className="sv-toolbar" style={{ flexWrap: 'wrap', alignItems: 'flex-end' }}>
+            {/* Scope */}
+            {showScopeSelector && (
+              <label className="sv-field">Scope
+                <select className="sv-select" value={scopeMode} onChange={(e) => setScopeMode(e.target.value as any)}>
+                  <option value="all">All</option>
+                  <option value="site">Site</option>
+                  {tpl.scope === 'flexible' && <option value="device">Device</option>}
+                </select>
               </label>
-              <label className="sv-field">To
-                <input className="sv-input" type="date" value={to} onChange={(e) => setTo(e.target.value)} />
+            )}
+            {(tpl.scope === 'site' || (showScopeSelector && scopeMode === 'site')) && (
+              <label className="sv-field">Site
+                <select className="sv-select" value={siteId} onChange={(e) => setSiteId(e.target.value)}>
+                  <option value="">Select…</option>
+                  {sites.data?.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                </select>
               </label>
-            </>
-          )}
-          <label className="sv-field">Scope
-            <select className="sv-select" value={scope} onChange={(e) => setScope(e.target.value)}>
-              <option value="all">All Sites</option>
-              <option value="site">Specific Site</option>
-              <option value="device">Specific Device</option>
-            </select>
-          </label>
-          {scope === 'site' && (
-            <label className="sv-field">Site
-              <select className="sv-select" value={siteId} onChange={(e) => setSiteId(e.target.value)}>
-                <option value="">Select…</option>
-                {sites.data?.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-              </select>
+            )}
+            {(tpl.scope === 'device' || (tpl.scope === 'flexible' && scopeMode === 'device')) && (
+              <>
+                <label className="sv-field">Search
+                  <input className="sv-input" placeholder="Device name or IP…" value={deviceSearch}
+                    onChange={(e) => setDeviceSearch(e.target.value)} style={{ width: 170 }} />
+                </label>
+                <label className="sv-field">Device
+                  <select className="sv-select" value={deviceId} onChange={(e) => setDeviceId(e.target.value)}>
+                    <option value="">Select…</option>
+                    {filteredDevices.slice(0, 100).map((d) => <option key={d.id} value={d.id}>{d.name} ({d.ip_address})</option>)}
+                  </select>
+                </label>
+              </>
+            )}
+
+            {/* Metric (top-worst only) */}
+            {tpl.metric && (
+              <label className="sv-field">Metric
+                <select className="sv-select" value={metric} onChange={(e) => setMetric(e.target.value)}>
+                  {METRICS.map((m) => <option key={m.key} value={m.key}>{m.label}</option>)}
+                </select>
+              </label>
+            )}
+
+            {/* SLA target */}
+            {tpl.sla && (
+              <label className="sv-field">SLA Target %
+                <input className="sv-input" type="number" step="0.1" value={slaTarget}
+                  onChange={(e) => setSlaTarget(e.target.value)} style={{ width: 90 }} />
+              </label>
+            )}
+
+            {/* Date range presets */}
+            <label className="sv-field">Date range
+              <div style={{ display: 'flex', gap: 6 }}>
+                {RANGES.map((r) => (
+                  <button key={r.key} type="button"
+                    className={`sv-btn ghost sm ${range === r.key ? 'active' : ''}`}
+                    onClick={() => setRange(r.key)}>{r.label}</button>
+                ))}
+                <button type="button" className={`sv-btn ghost sm ${range === 'custom' ? 'active' : ''}`}
+                  onClick={() => setRange('custom')}>Custom</button>
+              </div>
             </label>
+            {range === 'custom' && (
+              <>
+                <label className="sv-field">From
+                  <input className="sv-input" type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
+                </label>
+                <label className="sv-field">To
+                  <input className="sv-input" type="date" value={to} onChange={(e) => setTo(e.target.value)} />
+                </label>
+              </>
+            )}
+
+            <div className="spacer" style={{ flex: 1 }} />
+            <button className="sv-btn" onClick={runReport} disabled={!canRun()}>Run Report →</button>
+          </div>
+
+          {/* Saved reports chips */}
+          {(saved.data?.length || 0) > 0 && (
+            <div className="sv-saved-chips">
+              <span className="sv-muted" style={{ fontSize: 12.5, marginRight: 4 }}>Saved:</span>
+              {saved.data!.map((s) => (
+                <span key={s.id} className="sv-saved-chip">
+                  <button className="nm" onClick={() => loadSaved(s)} title={`Load "${s.name}"`}>{s.name}</button>
+                  <button className="del" onClick={() => deleteSaved(s.id)} title="Delete">×</button>
+                </span>
+              ))}
+            </div>
           )}
-          {scope === 'device' && (
-            <>
-              <input className="sv-input" placeholder="Search device…" value={deviceSearch}
-                onChange={(e) => setDeviceSearch(e.target.value)} style={{ width: 180 }} />
-              <select className="sv-select" value={deviceId} onChange={(e) => setDeviceId(e.target.value)}>
-                <option value="">Select…</option>
-                {filteredDevices.map((d) => <option key={d.id} value={d.id}>{d.name} ({d.ip_address})</option>)}
-              </select>
-            </>
+
+          {/* Save current report */}
+          {applied && !empty && !loading && (
+            <div className="sv-toolbar" style={{ marginTop: 10 }}>
+              <input className="sv-input" placeholder="Name this report…" value={saveName}
+                onChange={(e) => setSaveName(e.target.value)} style={{ width: 220 }} />
+              <button className="sv-btn ghost sm" onClick={saveReport} disabled={saving || !saveName.trim()}>
+                {saving ? 'Saving…' : '+ Save this report'}
+              </button>
+            </div>
           )}
-          {type === 'sla' && (
-            <label className="sv-field">SLA Target %
-              <input className="sv-input" type="number" step="0.1" value={slaTarget}
-                onChange={(e) => setSlaTarget(e.target.value)} style={{ width: 90 }} />
-            </label>
-          )}
-          <div className="spacer" />
-          <button className="sv-btn" onClick={runReport}>Run Report</button>
         </div>
       </div>
 
-      {/* Results */}
+      {/* Report output */}
       {applied && (
-        <>
-          {applied.type === 'sla' && <SlaSummaryCards summary={slaSummary.data} />}
-
-          <div className="sv-toolbar">
-            <span className="sv-muted" style={{ fontSize: 13 }}>
-              {REPORT_TYPES.find((t) => t.key === applied.type)?.label} · {rangeLabel(applied)} · {scopeLabel(applied)}
+        <div className="sv-report-output" id="report-print">
+          {/* Print-only header */}
+          <div className="sv-print-only sv-print-head">
+            <span className="brand">SpanVault</span>
+            <span className="meta">
+              {tpl.label} · {rangeLabel(applied)} · {scopeLabel(applied)} · Generated {new Date().toLocaleString()}
             </span>
-            <div className="spacer" />
-            <button className="sv-btn ghost" onClick={exportCsv} disabled={!rows.length}>Export CSV</button>
-            <button className="sv-btn ghost" onClick={printView} disabled={!rows.length}>Print / Save HTML</button>
           </div>
 
-          {active?.error && <ErrorBox message={active.error} />}
-          <div className="sv-panel" style={{ padding: 0 }}>
-            {active?.loading && !active?.data ? (
-              <TableSkeleton rows={6} cols={cols.length || 6} />
-            ) : rows.length ? (
-              <ReportTable type={applied.type} cols={cols} rows={rows} slaTarget={Number(applied.slaTarget) || 99.5} />
-            ) : (
-              <Empty message="No data for the selected filters." />
-            )}
+          <div className="sv-no-print" style={{ margin: '8px 0 14px', fontSize: 13, color: 'var(--text-muted)' }}>
+            {tpl.label} · {rangeLabel(applied)} · {scopeLabel(applied)}
           </div>
-        </>
+
+          {report.error && <ErrorBox message={report.error} />}
+          {loading ? (
+            <div className="sv-panel" style={{ textAlign: 'center', padding: '40px 20px' }}>
+              <Loading label="Generating report…" />
+            </div>
+          ) : empty ? (
+            <div className="sv-panel" style={{ textAlign: 'center', padding: '40px 20px' }}>
+              <p className="sv-muted" style={{ margin: 0 }}>
+                No data for {scopeLabel(applied)} in {rangeLabel(applied)}. Try extending the date range.
+              </p>
+            </div>
+          ) : report.data ? (
+            <ReportBody template={applied.template} data={report.data} />
+          ) : null}
+        </div>
       )}
     </div>
   );
 }
 
-// ── SLA summary cards (top-level) ──────────────────────────────
-function SlaSummaryCards({ summary }: { summary: SlaSummary | null }) {
-  if (!summary) return null;
-  return (
-    <div className="sv-cards">
-      <div className="sv-card total">
-        <div className="num">{summary.devices_meeting_sla}/{summary.total_devices}</div>
-        <div className="label">Meeting SLA (≥{summary.sla_target}%)</div>
-      </div>
-      <div className="sv-card up">
-        <div className="num">{summary.overall_availability_pct != null ? `${summary.overall_availability_pct}%` : '—'}</div>
-        <div className="label">Overall Availability</div>
-      </div>
-      <div className="sv-card warning">
-        <div className="num" style={{ fontSize: 24 }}>{summary.total_downtime_minutes}</div>
-        <div className="label">Total Downtime (min)</div>
-      </div>
-      <div className="sv-card down">
-        <div className="num" style={{ fontSize: 18 }}>
-          {summary.worst_device ? `${summary.worst_device.name}` : '—'}
-        </div>
-        <div className="label">Worst {summary.worst_device ? `(${summary.worst_device.uptime_pct}%)` : ''}</div>
-      </div>
-    </div>
-  );
-}
-
-// ── Report table (top-level) ───────────────────────────────────
-function ReportTable({ type, cols, rows, slaTarget }: { type: string; cols: Col[]; rows: Row[]; slaTarget: number }) {
-  return (
-    <table className="sv-table">
-      <thead>
-        <tr>{cols.map((c) => <th key={c.key} style={{ textAlign: c.align || 'left' }}>{c.label}</th>)}</tr>
-      </thead>
-      <tbody>
-        {rows.map((row, i) => {
-          const failing = type === 'sla' && !row.sla_met && row.uptime_pct != null;
-          return (
-            <tr key={i} style={failing ? { background: 'rgba(200,16,46,0.06)' } : undefined}>
-              {cols.map((c) => (
-                <td key={c.key} style={{ textAlign: c.align || 'left' }}
-                  className={c.key === 'device_name' ? '' : 'sv-muted'}>
-                  {c.spark ? (
-                    <Sparkline data={row.spark} />
-                  ) : c.slaStatus ? (
-                    <span className={`sv-badge ${row.sla_met ? 'up' : 'down'}`}>
-                      {row.sla_met ? '✓ MET' : '✗ FAILED'}
-                    </span>
-                  ) : (
-                    cellText(c, row)
-                  )}
-                </td>
-              ))}
-            </tr>
-          );
-        })}
-      </tbody>
-    </table>
-  );
-}
-
-// ── Inline sparkline (top-level) ───────────────────────────────
-function Sparkline({ data }: { data: number[] | undefined }) {
-  if (!data || data.length < 2) return <span className="sv-muted">—</span>;
-  const w = 84, h = 22, pad = 2;
-  const min = Math.min(...data), max = Math.max(...data);
-  const span = max - min || 1;
-  const pts = data.map((v, i) => {
-    const x = pad + (i / (data.length - 1)) * (w - 2 * pad);
-    const y = pad + (1 - (v - min) / span) * (h - 2 * pad);
-    return `${x.toFixed(1)},${y.toFixed(1)}`;
-  }).join(' ');
-  return (
-    <svg width={w} height={h} style={{ display: 'block' }}>
-      <polyline points={pts} fill="none" stroke="#C8102E" strokeWidth={1.5} />
-    </svg>
-  );
-}
-
-// ── Printable HTML view (top-level) ────────────────────────────
-function openPrintView(applied: Applied, cols: Col[], rows: Row[], summary: SlaSummary | null) {
-  const win = window.open('', '_blank');
-  if (!win) return;
-  const exportCols = cols.filter((c) => !c.spark);
-  const typeLabel = REPORT_TYPES.find((t) => t.key === applied.type)?.label || 'Report';
-  const head = exportCols.map((c) => `<th style="text-align:${c.align || 'left'}">${escHtml(c.label)}</th>`).join('');
-  const body = rows.map((r) => {
-    const failing = applied.type === 'sla' && !r.sla_met && r.uptime_pct != null;
-    const tds = exportCols.map((c) => {
-      let text = cellText(c, r);
-      if (c.slaStatus) text = r.sla_met ? '✓ MET' : '✗ FAILED';
-      const color = c.slaStatus ? (r.sla_met ? '#2e9e5b' : '#C8102E') : 'inherit';
-      return `<td style="text-align:${c.align || 'left'};color:${color}">${escHtml(text)}</td>`;
-    }).join('');
-    return `<tr style="${failing ? 'background:#fbecef' : ''}">${tds}</tr>`;
-  }).join('');
-
-  let summaryHtml = '';
-  if (summary) {
-    summaryHtml = `
-      <div class="summary">
-        <div class="card"><div class="n">${summary.devices_meeting_sla}/${summary.total_devices}</div><div class="l">Meeting SLA (≥${summary.sla_target}%)</div></div>
-        <div class="card"><div class="n">${summary.overall_availability_pct ?? '—'}%</div><div class="l">Overall Availability</div></div>
-        <div class="card"><div class="n">${summary.total_downtime_minutes}</div><div class="l">Total Downtime (min)</div></div>
-        <div class="card"><div class="n">${summary.worst_device ? escHtml(summary.worst_device.name) + ' (' + summary.worst_device.uptime_pct + '%)' : '—'}</div><div class="l">Worst Device</div></div>
-      </div>`;
+// ── Report body switch (top-level component) ───────────────────
+function ReportBody({ template, data }: { template: string; data: any }) {
+  switch (template) {
+    case 'network-summary': return <NetworkSummaryReport data={data} />;
+    case 'site-summary':    return <SiteReport data={data} />;
+    case 'device-detail':   return <DeviceDetailReport data={data} />;
+    case 'sla-compliance':  return <SlaComplianceReport data={data} />;
+    case 'top-worst':       return <TopWorstReport data={data} />;
+    case 'alert-analysis':  return <AlertAnalysisReport data={data} />;
+    case 'capacity':        return <CapacityReport data={data} />;
+    case 'executive':       return <ExecutiveSummaryReport data={data} />;
+    default: return null;
   }
-
-  const now = new Date().toLocaleString();
-  win.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>SpanVault — ${escHtml(typeLabel)}</title>
-  <style>
-    body { font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; color:#1a2744; margin:32px; }
-    .brand { color:#C8102E; font-weight:800; font-size:22px; letter-spacing:.5px; }
-    h1 { font-size:20px; margin:6px 0 2px; }
-    .meta { color:#6b7280; font-size:13px; margin-bottom:18px; }
-    .meta strong { color:#1a2744; }
-    .summary { display:flex; gap:14px; flex-wrap:wrap; margin:14px 0 20px; }
-    .card { border:1px solid #e3e6eb; border-radius:8px; padding:12px 16px; min-width:150px; }
-    .card .n { font-size:22px; font-weight:700; }
-    .card .l { color:#6b7280; font-size:12px; text-transform:uppercase; letter-spacing:.4px; margin-top:4px; }
-    table { width:100%; border-collapse:collapse; font-size:13px; margin-top:8px; }
-    th { text-align:left; border-bottom:2px solid #1a2744; padding:8px 10px; font-size:11px; text-transform:uppercase; letter-spacing:.4px; color:#6b7280; }
-    td { padding:7px 10px; border-bottom:1px solid #e3e6eb; }
-    .foot { margin-top:18px; color:#9aa1ad; font-size:11px; }
-    @media print { .noprint { display:none; } body { margin:12px; } }
-  </style></head><body>
-    <div class="brand">SpanVault</div>
-    <h1>Network ${escHtml(typeLabel)} Report</h1>
-    <div class="meta">
-      <div>Date range: <strong>${escHtml(rangeLabel(applied))}</strong></div>
-      <div>Scope: <strong>${escHtml(scopeLabel(applied))}</strong></div>
-      ${applied.type === 'sla' ? `<div>SLA target: <strong>${escHtml(applied.slaTarget || '99.5')}%</strong></div>` : ''}
-      <div>Generated: <strong>${escHtml(now)}</strong></div>
-    </div>
-    ${summaryHtml}
-    <table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>
-    <div class="foot">SpanVault — NocVault Suite · ${rows.length} row(s)</div>
-    <div class="noprint" style="margin-top:20px"><button onclick="window.print()">Print</button></div>
-  </body></html>`);
-  win.document.close();
 }
