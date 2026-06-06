@@ -238,14 +238,15 @@ async function pingDevice(device) {
   const inMaint = await inMaintenance(device.id);
   if (newStatus === 'down' && !inMaint) {
     await raiseAlert(device, 'device_down', 'critical',
-      `${device.name} (${device.ip_address}) is unreachable`, null);
+      await buildDeviceDownMessage(device), null);
   } else if (newStatus !== 'down') {
-    await resolveAlert(device.id, 'device_down');
+    const wasDown = await resolveAlert(device.id, 'device_down');
+    if (wasDown) await deviceRecoveryEvent(device, timeMs);
   }
 
   if (alive && timeMs !== null && timeMs > threshold && !inMaint) {
     await raiseAlert(device, 'high_latency', 'warning',
-      `${device.name} latency ${timeMs}ms exceeds ${threshold}ms`, timeMs);
+      await buildHighLatencyMessage(device, timeMs), timeMs);
   } else if (alive && (timeMs === null || timeMs <= threshold)) {
     await resolveAlert(device.id, 'high_latency');
   }
@@ -407,7 +408,7 @@ async function evaluateSnmpAlerts(device, samples) {
   if (latest.cpu_pct !== undefined) {
     if (latest.cpu_pct > cpuThresh) {
       await raiseAlert(device, 'high_cpu', 'warning',
-        `${device.name} CPU ${latest.cpu_pct.toFixed(0)}% exceeds ${cpuThresh}%`, latest.cpu_pct);
+        buildHighCpuMessage(device, latest.cpu_pct, cpuThresh), latest.cpu_pct);
     } else {
       await resolveAlert(device.id, 'high_cpu');
     }
@@ -415,7 +416,7 @@ async function evaluateSnmpAlerts(device, samples) {
   if (latest.mem_pct !== undefined) {
     if (latest.mem_pct > memThresh) {
       await raiseAlert(device, 'high_memory', 'warning',
-        `${device.name} memory ${latest.mem_pct.toFixed(0)}% exceeds ${memThresh}%`, latest.mem_pct);
+        buildHighMemMessage(device, latest.mem_pct, memThresh), latest.mem_pct);
     } else {
       await resolveAlert(device.id, 'high_memory');
     }
@@ -494,6 +495,144 @@ async function resolveAlert(deviceId, alertType) {
   } catch (err) {
     console.error('[alerts] resolve failed:', err.message);
     return false;
+  }
+}
+
+// ══════════════════════════════════════════════════════════════
+// Human-language alert messages
+// ══════════════════════════════════════════════════════════════
+// Each builder composes a readable, context-rich message. All enrichment
+// queries are best-effort: any failure degrades to a simpler sentence rather
+// than blocking the alert.
+
+function humanDuration(ms) {
+  if (ms == null || !isFinite(ms) || ms < 0) return 'an unknown time';
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ${m % 60}m`;
+  const d = Math.floor(h / 24);
+  return `${d}d ${h % 24}h`;
+}
+
+// Baseline mean for a metric (prefers the shortest period — usually 7/30d).
+async function getBaselineMean(deviceId, metric) {
+  try {
+    const r = await sv.query(
+      `SELECT mean FROM device_baselines
+        WHERE device_id = $1 AND metric = $2 AND mean IS NOT NULL
+        ORDER BY period_days ASC LIMIT 1`, [deviceId, metric]);
+    return r.rows[0] ? Number(r.rows[0].mean) : null;
+  } catch (_e) { return null; }
+}
+
+// The most recently seen LLDP/CDP neighbor of a device (for "connected via …").
+async function getFirstTopologyLink(deviceId) {
+  try {
+    const r = await sv.query(
+      `SELECT t.from_port, COALESCE(nd.name, t.to_name, t.to_ip) AS neighbor
+         FROM topology_links t
+         LEFT JOIN monitored_devices nd ON nd.id = t.to_device_id
+        WHERE t.from_device_id = $1 AND COALESCE(nd.name, t.to_name, t.to_ip) IS NOT NULL
+        ORDER BY t.last_seen_at DESC LIMIT 1`, [deviceId]);
+    return r.rows[0] || null;
+  } catch (_e) { return null; }
+}
+
+// An UP "backup" device in the same site (name heuristic), if any.
+async function getUpBackupInSite(device) {
+  if (device.site_id == null) return null;
+  try {
+    const r = await sv.query(
+      `SELECT name FROM monitored_devices
+        WHERE site_id = $1 AND id <> $2 AND active = TRUE
+          AND current_status = 'up' AND name ILIKE '%backup%' LIMIT 1`,
+      [device.site_id, device.id]);
+    return r.rows[0] || null;
+  } catch (_e) { return null; }
+}
+
+// A recurring pattern description for a metric, if one has been detected.
+async function getPatternNote(deviceId, metric) {
+  try {
+    const r = await sv.query(
+      `SELECT description FROM device_patterns
+        WHERE device_id = $1 AND metric = $2
+        ORDER BY confidence DESC NULLS LAST LIMIT 1`, [deviceId, metric]);
+    return r.rows[0] ? r.rows[0].description : null;
+  } catch (_e) { return null; }
+}
+
+async function buildDeviceDownMessage(device) {
+  let msg = `${device.name} (${device.ip_address}) is unreachable.`;
+  const lastSeen = device.last_seen_at
+    ? humanDuration(Date.now() - new Date(device.last_seen_at).getTime()) : null;
+  const baseline = await getBaselineMean(device.id, 'response_ms');
+  if (lastSeen && baseline != null) msg += ` Last seen ${lastSeen} ago with ${Math.round(baseline)}ms avg response time.`;
+  else if (lastSeen) msg += ` Last seen ${lastSeen} ago.`;
+  const link = await getFirstTopologyLink(device.id);
+  if (link) msg += ` Connected via ${link.from_port || 'an uplink'} to ${link.neighbor}.`;
+  const backup = await getUpBackupInSite(device);
+  if (backup) msg += ` ${backup.name} is UP and may be handling traffic.`;
+  return msg;
+}
+
+async function buildHighLatencyMessage(device, timeMs) {
+  let msg = `${device.name} is responding slowly — ${Math.round(timeMs)}ms average`;
+  const baseline = await getBaselineMean(device.id, 'response_ms');
+  if (baseline != null && baseline > 0) {
+    msg += ` (normal: ${Math.round(baseline)}ms). This is ${(timeMs / baseline).toFixed(1)}x above the normal baseline.`;
+  } else {
+    msg += '.';
+  }
+  const pattern = await getPatternNote(device.id, 'response_ms');
+  if (pattern) msg += ` This has occurred before: ${pattern}.`;
+  return msg;
+}
+
+function buildHighCpuMessage(device, pct, threshold) {
+  let msg = `${device.name} CPU is at ${Math.round(pct)}% (threshold: ${threshold}%).`;
+  const v = (device.device_vendor || '').toLowerCase();
+  if (v === 'fortinet') msg += ' Check active sessions and VPN tunnels.';
+  else if (v === 'cisco') msg += ' Check for routing loops or high traffic.';
+  return msg;
+}
+
+function buildHighMemMessage(device, pct, threshold) {
+  return `${device.name} memory usage is at ${Math.round(pct)}% (threshold: ${threshold}%). `
+    + 'Consider investigating running processes or memory leaks.';
+}
+
+async function buildInterfaceDownMessage(device) {
+  let msg = `An interface on ${device.name} has gone down.`;
+  const link = await getFirstTopologyLink(device.id);
+  if (link) msg += ` This link connects to ${link.neighbor}.`;
+  return msg;
+}
+
+// One-shot recovery record for a device coming back up, with downtime + latency.
+async function deviceRecoveryEvent(device, timeMs) {
+  try {
+    const r = await sv.query(
+      `SELECT triggered_at, resolved_at FROM alerts
+        WHERE device_id = $1 AND alert_type = 'device_down'
+        ORDER BY triggered_at DESC LIMIT 1`, [device.id]);
+    let downtime = 'an unknown time';
+    if (r.rows[0]) {
+      const t = new Date(r.rows[0].triggered_at).getTime();
+      const e = r.rows[0].resolved_at ? new Date(r.rows[0].resolved_at).getTime() : Date.now();
+      downtime = humanDuration(e - t);
+    }
+    const rt = timeMs != null ? `${Math.round(timeMs)}ms` : 'normal';
+    const msg = `${device.name} has recovered. Downtime was ${downtime}. Response time is back to ${rt}.`;
+    await sv.query(
+      `INSERT INTO alerts (device_id, alert_type, severity, message, status, resolved_at)
+       VALUES ($1,'recovery','info',$2,'resolved',NOW())`, [device.id, msg]);
+    log(`[alert] RECOVERY device_down on ${device.name}`);
+  } catch (err) {
+    console.error('[alerts] device recovery event failed:', err.message);
   }
 }
 
@@ -643,8 +782,11 @@ async function evaluateEffectiveRules(device, metrics) {
       : compare(Number(val), rule.operator || '>', Number(rule.threshold));
 
     if (triggered) {
+      const message = m === 'interface_down'
+        ? await buildInterfaceDownMessage(device)
+        : ruleMessage(device, rule, val);
       await raiseAlert(device, alertType, rule.severity || 'warning',
-        ruleMessage(device, rule, val), typeof val === 'number' ? val : null);
+        message, typeof val === 'number' ? val : null);
     } else {
       const wasActive = await resolveAlert(device.id, alertType);
       if (wasActive && rule.notify_recovery) await recoveryEvent(device, rule);

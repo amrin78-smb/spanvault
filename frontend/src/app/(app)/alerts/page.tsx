@@ -17,6 +17,15 @@ type Alert = {
   suppressed_by: number | null; suppression_reason: string | null; suppressed_by_name: string | null;
 };
 
+// Pretty label for an alert_type token (e.g. "high_cpu" → "High Cpu",
+// "rule_12" → "Custom Rule"). Shown as a small secondary badge.
+function prettyType(t: string): string {
+  if (!t) return 'Alert';
+  if (/^rule_/.test(t)) return 'Custom Rule';
+  if (/^recovery/.test(t)) return 'Recovery';
+  return t.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 export default function AlertsPage() {
   const { data: session } = useSession();
   const { canAcknowledgeAlerts } = useRbac();
@@ -70,7 +79,7 @@ export default function AlertsPage() {
           <table className="sv-table">
             <thead>
               <tr>
-                <th>Severity</th><th>Device</th><th>Type</th><th>Message</th>
+                <th>Severity</th><th>Device</th><th>Alert</th>
                 <th>Triggered</th><th>Status</th><th></th>
               </tr>
             </thead>
@@ -85,9 +94,9 @@ export default function AlertsPage() {
                         {a.device_name || a.ip_address || `#${a.device_id}`}
                       </Link>
                     </td>
-                    <td className="sv-muted">{a.alert_type}</td>
                     <td>
-                      {a.message}
+                      <div className="sv-alert-msg">{a.message}</div>
+                      <span className="sv-type-badge">{prettyType(a.alert_type)}</span>
                       {suppressed && (
                         <div className="sv-muted" style={{ fontSize: 12, marginTop: 2 }}>
                           Suppressed{a.suppressed_by_name ? ` — ${a.suppressed_by_name} is down` : (a.suppression_reason ? ` — ${a.suppression_reason}` : '')}

@@ -777,6 +777,15 @@ label.sv-field .sv-input, label.sv-field .sv-select { font-weight: 400; }
 .sv-sensor-item .nm .sv-status-dot { margin-right: 6px; vertical-align: middle; }
 .sv-sensor-item.enabled { cursor: default; }
 
+/* ── Alerts: human-language message + secondary type badge ─────── */
+.sv-alert-msg { color: var(--text-primary); font-weight: 500; line-height: 1.4; }
+.sv-type-badge {
+  display: inline-block; margin-top: 4px;
+  font-size: 10.5px; font-weight: 700; letter-spacing: .3px; text-transform: uppercase;
+  color: var(--text-muted); background: var(--bg-primary);
+  border: 1px solid var(--border); border-radius: 5px; padding: 1px 7px;
+}
+
 /* ── SNMP test (inline, in device form) ────────────────── */
 .sv-snmp-test { display: flex; align-items: center; gap: 12px; margin-top: 14px; flex-wrap: wrap; }
 .sv-snmp-test-result { font-size: 13px; font-weight: 600; }
