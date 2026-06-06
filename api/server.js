@@ -574,6 +574,110 @@ app.get('/api/devices/:id/alerts', wrap(async (req, res) => {
   res.json(r.rows);
 }));
 
+// Per-day availability for the 90-day calendar (only days with data are
+// returned; the UI fills the rest as "no data"). incidents = device_down
+// alerts that started that day.
+app.get('/api/devices/:id/uptime-calendar', wrap(async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const days = safeInt(req.query.days, 90, 366);
+  const r = await sv.query(`
+    WITH pings AS (
+      SELECT date_trunc('day', ts) AS d,
+             COUNT(*) AS total_checks,
+             SUM(CASE WHEN status <> 'up' THEN 1 ELSE 0 END) AS bad
+      FROM ping_results
+      WHERE device_id = $1 AND ts >= date_trunc('day', NOW()) - (($2 - 1) || ' days')::interval
+      GROUP BY 1
+    ),
+    incidents AS (
+      SELECT date_trunc('day', triggered_at) AS d, COUNT(*) AS incidents
+      FROM alerts
+      WHERE device_id = $1 AND alert_type = 'device_down'
+        AND triggered_at >= date_trunc('day', NOW()) - (($2 - 1) || ' days')::interval
+      GROUP BY 1
+    )
+    SELECT to_char(p.d, 'YYYY-MM-DD') AS day,
+           ROUND((1 - (p.bad::numeric / NULLIF(p.total_checks, 0))) * 100, 1) AS uptime_pct,
+           p.total_checks::int AS total_checks,
+           COALESCE(i.incidents, 0)::int AS incidents
+    FROM pings p LEFT JOIN incidents i ON i.d = p.d
+    ORDER BY p.d
+  `, [id, days]);
+  res.json(r.rows);
+}));
+
+// Quick-stat cards: 30-day uptime, 7-day avg response (vs baseline),
+// 30-day alert count, and the latest health score.
+app.get('/api/devices/:id/quick-stats', wrap(async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const [uptime, avg, baseline, alerts, health] = await Promise.all([
+    sv.query(`SELECT ROUND((1 - (SUM(CASE WHEN status <> 'up' THEN 1 ELSE 0 END)::numeric
+                   / NULLIF(COUNT(*), 0))) * 100, 2) AS pct
+                FROM ping_results WHERE device_id = $1 AND ts >= NOW() - INTERVAL '30 days'`, [id]),
+    sv.query(`SELECT ROUND(AVG(response_ms)::numeric, 1) AS ms
+                FROM ping_results WHERE device_id = $1 AND ts >= NOW() - INTERVAL '7 days'
+                  AND response_ms IS NOT NULL`, [id]),
+    sv.query(`SELECT mean FROM device_baselines WHERE device_id = $1 AND metric = 'response_ms'
+                ORDER BY period_days ASC LIMIT 1`, [id]),
+    sv.query(`SELECT COUNT(*)::int AS c FROM alerts WHERE device_id = $1
+                AND triggered_at >= NOW() - INTERVAL '30 days' AND alert_type <> 'recovery'`, [id]),
+    sv.query(`SELECT score, grade, trend FROM device_health_scores WHERE device_id = $1`, [id]),
+  ]);
+  res.json({
+    uptime_30d_pct: uptime.rows[0] ? uptime.rows[0].pct : null,
+    avg_response_7d: avg.rows[0] ? avg.rows[0].ms : null,
+    baseline_response: baseline.rows[0] ? Number(baseline.rows[0].mean) : null,
+    alerts_30d: alerts.rows[0] ? alerts.rows[0].c : 0,
+    health_score: health.rows[0] ? Number(health.rows[0].score) : null,
+    health_grade: health.rows[0] ? health.rows[0].grade : null,
+    health_trend: health.rows[0] ? health.rows[0].trend : null,
+  });
+}));
+
+// Latest per-interface status + traffic (for the interface status panel).
+app.get('/api/devices/:id/interfaces', wrap(async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const r = await sv.query(`
+    SELECT DISTINCT ON (metric_name) metric_name, if_index, if_name, value
+    FROM snmp_results
+    WHERE device_id = $1 AND metric_name ~ '^if_[0-9]+_(oper|in_bps|out_bps)$'
+      AND ts >= NOW() - INTERVAL '1 day'
+    ORDER BY metric_name, ts DESC
+  `, [id]);
+  const byIdx = new Map();
+  for (const row of r.rows) {
+    const m = /^if_(\d+)_(oper|in_bps|out_bps)$/.exec(row.metric_name);
+    if (!m) continue;
+    const idx = Number(m[1]);
+    let g = byIdx.get(idx);
+    if (!g) { g = { if_index: idx, if_name: row.if_name || `if${idx}`, status: null, in_bps: null, out_bps: null }; byIdx.set(idx, g); }
+    if (row.if_name && (!g.if_name || /^if\d+$/.test(g.if_name))) g.if_name = row.if_name;
+    const v = row.value == null ? null : Number(row.value);
+    if (m[2] === 'oper') g.status = v == null ? 'unknown' : (v >= 0.5 ? 'up' : 'down');
+    else if (m[2] === 'in_bps') g.in_bps = v;
+    else if (m[2] === 'out_bps') g.out_bps = v;
+  }
+  const order = { up: 0, down: 1, unknown: 2 };
+  const list = Array.from(byIdx.values()).sort((a, b) =>
+    (order[a.status] ?? 2) - (order[b.status] ?? 2) || a.if_name.localeCompare(b.if_name));
+  res.json(list);
+}));
+
+// Topology neighbors of this device (for the "Connected to" section).
+app.get('/api/devices/:id/connected', wrap(async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const r = await sv.query(`
+    SELECT t.from_port, t.to_port, t.protocol, t.to_device_id,
+           COALESCE(nd.name, t.to_name) AS neighbor_name,
+           COALESCE(nd.ip_address, t.to_ip) AS neighbor_ip
+    FROM topology_links t
+    LEFT JOIN monitored_devices nd ON nd.id = t.to_device_id
+    WHERE t.from_device_id = $1
+    ORDER BY t.from_port NULLS LAST
+  `, [id]);
+  res.json(r.rows);
+}));
+
 // ══════════════════════════════════════════════════════════════
 // Device dependencies (parent-child) for alert suppression
 // ══════════════════════════════════════════════════════════════

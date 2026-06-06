@@ -777,6 +777,29 @@ label.sv-field .sv-input, label.sv-field .sv-select { font-weight: 400; }
 .sv-sensor-item .nm .sv-status-dot { margin-right: 6px; vertical-align: middle; }
 .sv-sensor-item.enabled { cursor: default; }
 
+/* ── Device detail: 90-day availability calendar ──────────────── */
+.sv-uptime-cal { display: flex; flex-wrap: wrap; gap: 3px; }
+.sv-uptime-day { width: 12px; height: 12px; border-radius: 3px; cursor: default; flex: none; }
+.sv-uptime-day:hover { outline: 2px solid rgba(0,0,0,0.25); }
+
+/* ── Device detail: interface status panel ────────────────────── */
+.sv-if-list { display: flex; flex-direction: column; }
+.sv-if-row { display: flex; align-items: center; gap: 10px; padding: 7px 4px; border-bottom: 1px solid var(--border-light); font-size: 13.5px; }
+.sv-if-row:last-child { border-bottom: none; }
+.sv-if-name { font-weight: 600; min-width: 140px; }
+.sv-if-state { font-size: 12px; font-weight: 700; }
+.sv-if-state.up { color: var(--sv-up); }
+.sv-if-state.down { color: var(--sv-down); }
+.sv-if-state.unknown { color: var(--text-muted); }
+.sv-if-bps { margin-left: auto; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+
+/* ── Device detail: connected (topology) list ─────────────────── */
+.sv-conn-list { display: flex; flex-direction: column; }
+.sv-conn-row { display: flex; align-items: center; gap: 8px; padding: 7px 4px; border-bottom: 1px solid var(--border-light); font-size: 13.5px; }
+.sv-conn-row:last-child { border-bottom: none; }
+.sv-conn-port { font-family: ui-monospace, monospace; font-size: 12.5px; color: var(--text-secondary); min-width: 90px; }
+.sv-conn-arrow { color: var(--text-muted); }
+
 /* ── Alerts: human-language message + secondary type badge ─────── */
 .sv-alert-msg { color: var(--text-primary); font-weight: 500; line-height: 1.4; }
 .sv-type-badge {

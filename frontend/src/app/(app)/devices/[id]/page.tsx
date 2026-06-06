@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ReferenceLine, ResponsiveContainer,
 } from 'recharts';
 import { useApi, apiSend } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
@@ -121,6 +121,9 @@ export default function DeviceDetailPage() {
         {vendorLabel(d.device_vendor) && <> · {vendorLabel(d.device_vendor)}</>}
       </p>
 
+      <QuickStats deviceId={d.id} />
+      <UptimeCalendar deviceId={d.id} />
+
       <div className="sv-cards">
         <div className="sv-card total">
           <div className="num">{d.last_response_ms != null ? `${Number(d.last_response_ms).toFixed(0)}` : '—'}</div>
@@ -153,7 +156,11 @@ export default function DeviceDetailPage() {
       <div className="sv-sensor-grid">
         <div className="sv-sensor-cell wide">
           <h2>Ping Latency (ms)</h2>
-          <LatencyChart data={ping.data || []} loading={ping.loading} />
+          <LatencyChart
+            data={ping.data || []}
+            loading={ping.loading}
+            alertTimes={(alerts.data || []).map((a) => a.triggered_at)}
+          />
         </div>
         <div className="sv-sensor-cell wide">
           <h2>Packet Loss (%)</h2>
@@ -176,6 +183,9 @@ export default function DeviceDetailPage() {
           {canEdit && <button className="sv-btn" onClick={() => setSensorsOpen(true)}>Manage Sensors</button>}
         </div>
       )}
+
+      {snmpOn && <InterfacePanel deviceId={d.id} />}
+      <ConnectedDevices deviceId={d.id} />
 
       <DeviceIntelligence deviceId={d.id} />
 
@@ -484,13 +494,31 @@ function tickLabel(ts: string): string {
   return d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
-function LatencyChart({ data, loading }: { data: PingPoint[]; loading: boolean }) {
+// Snap an alert timestamp to the nearest chart bucket so a ReferenceLine lands
+// on a real x value (the X axis is categorical over bucket strings).
+function nearestBuckets(buckets: string[], alertTimes: string[]): string[] {
+  if (!buckets.length || !alertTimes.length) return [];
+  const bt = buckets.map((b) => ({ b, t: new Date(b).getTime() }));
+  const first = bt[0].t, last = bt[bt.length - 1].t;
+  const out = new Set<string>();
+  for (const a of alertTimes) {
+    const at = new Date(a).getTime();
+    if (isNaN(at) || at < first || at > last) continue; // only annotate in-range
+    let best = bt[0];
+    for (const x of bt) if (Math.abs(x.t - at) < Math.abs(best.t - at)) best = x;
+    out.add(best.b);
+  }
+  return Array.from(out);
+}
+
+function LatencyChart({ data, loading, alertTimes = [] }: { data: PingPoint[]; loading: boolean; alertTimes?: string[] }) {
   if (loading && !data.length) return <Loading />;
   if (!data.length) return <Empty message="No ping data for this range." />;
   const chartData = data.map((p) => ({
     bucket: p.bucket,
     ms: p.avg_ms != null ? Number(p.avg_ms) : null,
   }));
+  const marks = nearestBuckets(chartData.map((p) => p.bucket), alertTimes);
   return (
     <ResponsiveContainer width="100%" height={160}>
       <LineChart data={chartData} margin={{ top: 5, right: 16, bottom: 5, left: 0 }}>
@@ -498,6 +526,9 @@ function LatencyChart({ data, loading }: { data: PingPoint[]; loading: boolean }
         <XAxis dataKey="bucket" tickFormatter={tickLabel} fontSize={10} minTickGap={40} />
         <YAxis fontSize={10} width={44} />
         <Tooltip labelFormatter={tickLabel} formatter={(v: any) => [`${v} ms`, 'Latency']} />
+        {marks.map((b) => (
+          <ReferenceLine key={b} x={b} stroke="#dc2626" strokeDasharray="3 2" strokeOpacity={0.6} />
+        ))}
         <Line type="monotone" dataKey="ms" stroke="#C8102E" strokeWidth={2} dot={false} connectNulls />
       </LineChart>
     </ResponsiveContainer>
@@ -522,6 +553,147 @@ function SingleChart({
         <Line type="monotone" dataKey="value" stroke={color} strokeWidth={2} dot={false} connectNulls />
       </LineChart>
     </ResponsiveContainer>
+  );
+}
+
+// ── Quick stats row (top-level component) ──────────────────────
+type QuickStatsT = {
+  uptime_30d_pct: number | null; avg_response_7d: number | null;
+  baseline_response: number | null; alerts_30d: number;
+  health_score: number | null; health_grade: string | null; health_trend: string | null;
+};
+function QuickStats({ deviceId }: { deviceId: number }) {
+  const stats = useApi<QuickStatsT>(`/api/devices/${deviceId}/quick-stats`, 30000);
+  const s = stats.data;
+  const upPct = s && s.uptime_30d_pct != null ? Number(s.uptime_30d_pct) : null;
+  const upVariant = upPct == null ? 'unknown' : upPct >= 99.5 ? 'up' : upPct >= 95 ? 'warning' : 'down';
+  const avg = s && s.avg_response_7d != null ? Number(s.avg_response_7d) : null;
+  const base = s && s.baseline_response != null ? Number(s.baseline_response) : null;
+  return (
+    <div className="sv-cards">
+      <div className={`sv-card ${upVariant}`}>
+        <div className="num">{upPct != null ? `${upPct}%` : '—'}</div>
+        <div className="label">Uptime (30 days)</div>
+      </div>
+      <div className="sv-card">
+        <div className="num">{avg != null ? `${avg}` : '—'}<span style={{ fontSize: 13 }}> ms</span></div>
+        <div className="label">
+          Avg Response (7d){base != null ? ` · baseline ${Math.round(base)}ms` : ''}
+        </div>
+      </div>
+      <div className={`sv-card ${s && s.alerts_30d > 0 ? 'warning' : ''}`}>
+        <div className="num">{s ? s.alerts_30d : '—'}</div>
+        <div className="label">Alerts (30 days)</div>
+      </div>
+      <div className="sv-card">
+        <div className="num" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {s && s.health_score != null ? Math.round(s.health_score) : '—'}
+          {s && s.health_grade && <GradeBadge grade={s.health_grade} />}
+          {s && s.health_trend && <TrendArrow trend={s.health_trend} />}
+        </div>
+        <div className="label">Health Score</div>
+      </div>
+    </div>
+  );
+}
+
+// ── 90-day availability calendar (top-level component) ─────────
+type CalDay = { day: string; uptime_pct: number | null; total_checks: number; incidents: number };
+function calColor(d: CalDay | undefined): string {
+  if (!d || !d.total_checks) return 'var(--sv-unknown)';
+  const pct = d.uptime_pct == null ? 100 : Number(d.uptime_pct);
+  if (d.incidents > 0 || pct < 99) return 'var(--sv-down)';
+  if (pct < 99.9) return 'var(--sv-warning)';
+  return 'var(--sv-up)';
+}
+function UptimeCalendar({ deviceId }: { deviceId: number }) {
+  const cal = useApi<CalDay[]>(`/api/devices/${deviceId}/uptime-calendar?days=90`, 0);
+  const DAYS = 90;
+  const byDay = new Map<string, CalDay>();
+  for (const r of cal.data || []) byDay.set(r.day, r);
+  // Build a contiguous 90-day window ending today; fill gaps as "no data".
+  const cells: { key: string; label: string; d: CalDay | undefined }[] = [];
+  const today = new Date();
+  for (let i = DAYS - 1; i >= 0; i--) {
+    const dt = new Date(today);
+    dt.setDate(today.getDate() - i);
+    const key = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+    const label = dt.toLocaleDateString([], { month: 'short', day: 'numeric' });
+    cells.push({ key, label, d: byDay.get(key) });
+  }
+  return (
+    <div className="sv-panel" style={{ marginBottom: 18 }}>
+      <h2 style={{ marginTop: 0 }}>90-day availability</h2>
+      <div className="sv-uptime-cal">
+        {cells.map((c) => {
+          const tip = c.d && c.d.total_checks
+            ? `${c.label} — ${c.d.uptime_pct ?? 100}% uptime, ${c.d.incidents} incident${c.d.incidents === 1 ? '' : 's'}`
+            : `${c.label} — no data`;
+          return <span key={c.key} className="sv-uptime-day" style={{ background: calColor(c.d) }} title={tip} />;
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ── Interface status panel (top-level component) ───────────────
+type IfRow = { if_index: number; if_name: string; status: string | null; in_bps: number | null; out_bps: number | null };
+function InterfacePanel({ deviceId }: { deviceId: number }) {
+  const ifs = useApi<IfRow[]>(`/api/devices/${deviceId}/interfaces`, 30000);
+  if (ifs.loading && !ifs.data) return null;
+  if (!ifs.data || !ifs.data.length) return null;
+  return (
+    <div className="sv-panel">
+      <h2>Interface Status</h2>
+      <div className="sv-if-list">
+        {ifs.data.map((r) => (
+          <div key={r.if_index} className="sv-if-row">
+            <StatusDot status={r.status || 'unknown'} size={10} title={`Interface ${r.status || 'unknown'}`} />
+            <span className="sv-if-name">{r.if_name}</span>
+            <span className={`sv-if-state ${r.status || 'unknown'}`}>
+              {r.status ? r.status.charAt(0).toUpperCase() + r.status.slice(1) : 'Unknown'}
+            </span>
+            <span className="sv-if-bps">
+              {r.status === 'down' || (r.in_bps == null && r.out_bps == null)
+                ? '—'
+                : `${fmtBps(r.in_bps)} ↓ / ${fmtBps(r.out_bps)} ↑`}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── Connected devices from topology (top-level component) ──────
+type ConnRow = { from_port: string | null; to_port: string | null; protocol: string | null; to_device_id: number | null; neighbor_name: string | null; neighbor_ip: string | null };
+function ConnectedDevices({ deviceId }: { deviceId: number }) {
+  const conn = useApi<ConnRow[]>(`/api/devices/${deviceId}/connected`, 0);
+  if (conn.loading && !conn.data) return null;
+  if (!conn.data || !conn.data.length) return null;
+  return (
+    <div className="sv-panel">
+      <h2>Connected to</h2>
+      <div className="sv-conn-list">
+        {conn.data.map((c, i) => (
+          <div key={i} className="sv-conn-row">
+            <span className="sv-conn-port">{c.from_port || '—'}</span>
+            <span className="sv-conn-arrow">→</span>
+            <span className="sv-conn-nb">
+              {c.to_device_id ? (
+                <Link href={`/devices/${c.to_device_id}`} style={{ color: 'var(--sv-crimson)', fontWeight: 600 }}>
+                  {c.neighbor_name || c.neighbor_ip || `#${c.to_device_id}`}
+                </Link>
+              ) : (
+                <span style={{ fontWeight: 600 }}>{c.neighbor_name || c.neighbor_ip || 'Unknown neighbor'}</span>
+              )}
+              {c.to_port && <span className="sv-muted"> · {c.to_port}</span>}
+              {c.protocol && <span className="sv-muted"> · {c.protocol.toUpperCase()}</span>}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
