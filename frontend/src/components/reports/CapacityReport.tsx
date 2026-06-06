@@ -32,7 +32,7 @@ function trendCell(trend: CapacityRow['trend_in']) {
 
 function isAtRisk(row: CapacityRow): boolean {
   if (row.utilization_pct != null && row.utilization_pct >= 80) return true;
-  if (row.trend_in === 'increasing' && row.proj_90d_in > (row.avg_in_mbps || 0) * 1.5) return true;
+  if (row.trend_in === 'increasing' && (row.proj_90d_in || 0) > (row.avg_in_mbps || 0) * 1.5) return true;
   return false;
 }
 
@@ -43,6 +43,7 @@ const NUM_COL: React.CSSProperties = {
 };
 
 export default function CapacityReport({ data }: { data: CapacityRow[] }) {
+  const rows = Array.isArray(data) ? data : [];
   return (
     <div className="sv-panel">
       <table className="sv-table" style={{ width: '100%' }}>
@@ -61,7 +62,7 @@ export default function CapacityReport({ data }: { data: CapacityRow[] }) {
           </tr>
         </thead>
         <tbody>
-          {data.map((row, index) => {
+          {rows.map((row, index) => {
             const atRisk = isAtRisk(row);
             return (
               <tr key={`${row.device_name}-${row.interface}-${index}`}>
@@ -91,7 +92,7 @@ export default function CapacityReport({ data }: { data: CapacityRow[] }) {
               </tr>
             );
           })}
-          {data.length === 0 ? (
+          {rows.length === 0 ? (
             <tr>
               <td colSpan={10} className="sv-muted" style={{ textAlign: 'center', padding: 24 }}>
                 No bandwidth data.

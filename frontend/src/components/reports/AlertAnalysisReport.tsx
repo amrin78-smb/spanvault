@@ -59,7 +59,15 @@ const numCellStyle: React.CSSProperties = { textAlign: 'right' };
 const sectionStyle: React.CSSProperties = { marginTop: 24 };
 
 export default function AlertAnalysisReport({ data }: { data: AlertAnalysis }) {
-  const topRows = data.top_alerted && data.top_alerted.length > 0 ? data.top_alerted : data.by_device;
+  if (!data) return null;
+
+  const topAlerted = data.top_alerted || [];
+  const byDevice = data.by_device || [];
+  const byType = data.by_type || [];
+  const bySeverity = data.by_severity || [];
+  const bySite = data.by_site || [];
+
+  const topRows = topAlerted.length > 0 ? topAlerted : byDevice;
 
   const hasPattern = data.busiest_day != null && data.busiest_hour != null;
 
@@ -69,7 +77,7 @@ export default function AlertAnalysisReport({ data }: { data: AlertAnalysis }) {
       <div className="sv-cards">
         <div className="sv-card warning">
           <div className="sv-muted">Total Alerts</div>
-          <div style={{ fontSize: 28, fontWeight: 700 }}>{data.total_alerts}</div>
+          <div style={{ fontSize: 28, fontWeight: 700 }}>{data.total_alerts ?? 0}</div>
         </div>
         <div className="sv-card total">
           <div className="sv-muted">Avg MTTR</div>
@@ -144,8 +152,8 @@ export default function AlertAnalysisReport({ data }: { data: AlertAnalysis }) {
               </tr>
             </thead>
             <tbody>
-              {data.by_type && data.by_type.length > 0 ? (
-                data.by_type.map((t) => (
+              {byType.length > 0 ? (
+                byType.map((t) => (
                   <tr key={t.key}>
                     <td>{t.key}</td>
                     <td style={numCellStyle}>{t.count}</td>
@@ -172,8 +180,8 @@ export default function AlertAnalysisReport({ data }: { data: AlertAnalysis }) {
               </tr>
             </thead>
             <tbody>
-              {data.by_severity && data.by_severity.length > 0 ? (
-                data.by_severity.map((s) => (
+              {bySeverity.length > 0 ? (
+                bySeverity.map((s) => (
                   <tr key={s.key}>
                     <td>
                       <span className={severityBadgeClass(s.key)}>{s.key}</span>
@@ -202,8 +210,8 @@ export default function AlertAnalysisReport({ data }: { data: AlertAnalysis }) {
               </tr>
             </thead>
             <tbody>
-              {data.by_site && data.by_site.length > 0 ? (
-                data.by_site.map((s) => (
+              {bySite.length > 0 ? (
+                bySite.map((s) => (
                   <tr key={s.key}>
                     <td>{s.key}</td>
                     <td style={numCellStyle}>{s.count}</td>

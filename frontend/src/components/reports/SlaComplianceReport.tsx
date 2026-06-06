@@ -32,7 +32,7 @@ function escapeCsv(value: string): string {
 
 function buildCsv(devices: SlaCompliance['devices']): string {
   const header = ['Device', 'Site', 'Uptime %', 'Downtime', 'SLA Status'];
-  const rows = devices.map((d) => [
+  const rows = (devices || []).map((d) => [
     escapeCsv(d.device_name ?? ''),
     escapeCsv(d.site_name ?? ''),
     escapeCsv(d.uptime_pct == null ? '' : String(d.uptime_pct)),
@@ -43,7 +43,12 @@ function buildCsv(devices: SlaCompliance['devices']): string {
 }
 
 export default function SlaComplianceReport({ data }: { data: SlaCompliance }) {
-  const { sla_target, generated_at, summary, devices } = data;
+  if (!data) return null;
+
+  const generated_at = data.generated_at;
+  const sla_target = data.sla_target ?? 99.5;
+  const summary = data.summary || ({} as SlaCompliance['summary']);
+  const devices = data.devices || [];
 
   // Failing devices first, then by uptime ascending (worst first), preserving order otherwise.
   const sortedDevices = devices
@@ -102,7 +107,7 @@ export default function SlaComplianceReport({ data }: { data: SlaCompliance }) {
         </div>
         <div style={{ textAlign: 'right' }}>
           <div style={{ fontSize: 22, fontWeight: 700 }}>
-            {summary.meeting}/{summary.total}
+            {summary.meeting ?? 0}/{summary.total ?? 0}
           </div>
           <div className="sv-muted" style={{ fontSize: 13 }}>
             devices meeting SLA
@@ -117,12 +122,12 @@ export default function SlaComplianceReport({ data }: { data: SlaCompliance }) {
       <div className="sv-cards">
         <div className="sv-card up">
           <div className="num">
-            {summary.meeting}/{summary.total}
+            {summary.meeting ?? 0}/{summary.total ?? 0}
           </div>
           <div className="label">Meeting SLA</div>
         </div>
         <div className="sv-card down">
-          <div className="num">{summary.failing}</div>
+          <div className="num">{summary.failing ?? 0}</div>
           <div className="label">Failing</div>
         </div>
         <div className="sv-card total">
@@ -132,7 +137,7 @@ export default function SlaComplianceReport({ data }: { data: SlaCompliance }) {
           <div className="label">Overall Uptime</div>
         </div>
         <div className="sv-card warning">
-          <div className="num">{summary.total_downtime_minutes} min</div>
+          <div className="num">{summary.total_downtime_minutes ?? 0} min</div>
           <div className="label">Total Downtime</div>
         </div>
       </div>

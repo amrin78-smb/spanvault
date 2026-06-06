@@ -79,6 +79,11 @@ export default function SiteReport({ data }: { data: SiteSummary }) {
   const [sortKey, setSortKey] = useState<SortKey>('uptime_pct');
   const [sortDir, setSortDir] = useState<SortDir>('asc');
 
+  if (!data) return null;
+
+  const devices = data.devices || [];
+  const summary = data.summary || ({} as Partial<SiteSummary['summary']>);
+
   function toggleSort(key: SortKey) {
     if (key === sortKey) {
       setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
@@ -88,7 +93,7 @@ export default function SiteReport({ data }: { data: SiteSummary }) {
     }
   }
 
-  const rows = [...data.devices].sort((a, b) => {
+  const rows = [...(data.devices || [])].sort((a, b) => {
     const av = sortValue(a, sortKey);
     const bv = sortValue(b, sortKey);
     let cmp = 0;
@@ -114,28 +119,28 @@ export default function SiteReport({ data }: { data: SiteSummary }) {
   return (
     <div>
       {/* 1. Site header */}
-      <h2 style={{ margin: '0 0 4px' }}>{data.site_name}</h2>
+      <h2 style={{ margin: '0 0 4px' }}>{data.site_name ?? '—'}</h2>
       <div className="sv-muted" style={{ marginBottom: 16 }}>
-        {data.summary.total} devices · {fmtNum(data.summary.avg_uptime, 2)}% overall uptime ·{' '}
-        {data.summary.total_alerts} alerts
+        {summary.total ?? 0} devices · {fmtNum(summary.avg_uptime, 2)}% overall uptime ·{' '}
+        {summary.total_alerts ?? 0} alerts
       </div>
 
       <div className="sv-cards" style={{ marginBottom: 20 }}>
         <div className="sv-card total">
           <div className="sv-muted">Devices</div>
-          <div style={{ fontSize: 24, fontWeight: 700 }}>{data.summary.total}</div>
+          <div style={{ fontSize: 24, fontWeight: 700 }}>{summary.total ?? 0}</div>
         </div>
         <div className="sv-card up">
           <div className="sv-muted">Up</div>
-          <div style={{ fontSize: 24, fontWeight: 700 }}>{data.summary.up}</div>
+          <div style={{ fontSize: 24, fontWeight: 700 }}>{summary.up ?? 0}</div>
         </div>
         <div className="sv-card down">
           <div className="sv-muted">Down</div>
-          <div style={{ fontSize: 24, fontWeight: 700 }}>{data.summary.down}</div>
+          <div style={{ fontSize: 24, fontWeight: 700 }}>{summary.down ?? 0}</div>
         </div>
         <div className="sv-card warning">
           <div className="sv-muted">Overall Uptime %</div>
-          <div style={{ fontSize: 24, fontWeight: 700 }}>{fmtNum(data.summary.avg_uptime, 2)}%</div>
+          <div style={{ fontSize: 24, fontWeight: 700 }}>{fmtNum(summary.avg_uptime, 2)}%</div>
         </div>
       </div>
 
@@ -171,9 +176,9 @@ export default function SiteReport({ data }: { data: SiteSummary }) {
                   key={`${d.ip}-${d.name}-${i}`}
                   style={!d.sla_met ? { background: 'rgba(200,16,46,0.06)' } : undefined}
                 >
-                  <td>{d.name}</td>
+                  <td>{d.name ?? '—'}</td>
                   <td>{d.device_type || '—'}</td>
-                  <td>{d.ip}</td>
+                  <td>{d.ip ?? '—'}</td>
                   <td style={TD_RIGHT}>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 8 }}>
                       <span style={{ minWidth: 48, textAlign: 'right' }}>
@@ -227,12 +232,12 @@ export default function SiteReport({ data }: { data: SiteSummary }) {
           {/* 3. Summary footer */}
           <tfoot>
             <tr style={{ fontWeight: 700, borderTop: '2px solid #e2e8f0' }}>
-              <td>Total: {data.summary.total}</td>
+              <td>Total: {summary.total ?? 0}</td>
               <td />
               <td />
-              <td style={TD_RIGHT}>{fmtNum(data.summary.avg_uptime, 2)}% avg</td>
+              <td style={TD_RIGHT}>{fmtNum(summary.avg_uptime, 2)}% avg</td>
               <td />
-              <td style={TD_RIGHT}>{data.summary.total_alerts}</td>
+              <td style={TD_RIGHT}>{summary.total_alerts ?? 0}</td>
               <td />
               <td />
             </tr>

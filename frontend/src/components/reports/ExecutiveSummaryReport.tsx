@@ -31,6 +31,10 @@ function fmtPct(v: number | null | undefined): string {
 }
 
 export default function ExecutiveSummaryReport({ data }: { data: Executive }) {
+  if (!data) return null;
+
+  const sitesSummary = data.sites_summary || [];
+  const recommendations = data.recommendations || [];
   const uptimeDelta = data.improvement_vs_prev?.uptime_delta;
   const hasDelta = uptimeDelta !== null && uptimeDelta !== undefined;
   const deltaPositive = hasDelta && (uptimeDelta as number) >= 0;
@@ -48,11 +52,11 @@ export default function ExecutiveSummaryReport({ data }: { data: Executive }) {
             color: '#1a2744',
           }}
         >
-          {data.headline}
+          {data.headline || 'Network availability summary'}
         </h1>
         <div className="sv-muted" style={{ marginTop: 8, fontSize: 14 }}>
-          Reporting period: {data.period} · Generated{' '}
-          {new Date(data.generated_at).toLocaleString()}
+          Reporting period: {data.period || ''} · Generated{' '}
+          {data.generated_at ? new Date(data.generated_at).toLocaleString() : '—'}
         </div>
       </div>
 
@@ -76,11 +80,11 @@ export default function ExecutiveSummaryReport({ data }: { data: Executive }) {
           )}
         </div>
         <div className="sv-card down">
-          <div className="num">{data.total_incidents}</div>
+          <div className="num">{data.total_incidents ?? '—'}</div>
           <div className="label">Total Incidents</div>
         </div>
         <div className="sv-card warning">
-          <div className="num" style={{ fontSize: 24 }}>{data.total_downtime_minutes} min</div>
+          <div className="num" style={{ fontSize: 24 }}>{data.total_downtime_minutes ?? 0} min</div>
           <div className="label">Downtime</div>
         </div>
       </div>
@@ -100,7 +104,7 @@ export default function ExecutiveSummaryReport({ data }: { data: Executive }) {
             </tr>
           </thead>
           <tbody>
-            {data.sites_summary.map((s, i) => (
+            {sitesSummary.map((s, i) => (
               <tr key={`${s.site}-${i}`}>
                 <td>{s.site}</td>
                 <td>
@@ -110,7 +114,7 @@ export default function ExecutiveSummaryReport({ data }: { data: Executive }) {
                 <td style={numCell}>{s.incidents}</td>
               </tr>
             ))}
-            {data.sites_summary.length === 0 && (
+            {sitesSummary.length === 0 && (
               <tr>
                 <td colSpan={4} className="sv-muted" style={{ textAlign: 'center' }}>
                   No site data for this period.
@@ -163,9 +167,9 @@ export default function ExecutiveSummaryReport({ data }: { data: Executive }) {
         <h3 style={{ margin: '0 0 12px', fontSize: 16, fontWeight: 700, color: '#1a2744' }}>
           Recommendations
         </h3>
-        {data.recommendations.length > 0 ? (
+        {recommendations.length > 0 ? (
           <ul style={{ margin: 0, paddingLeft: 20, lineHeight: 1.7 }}>
-            {data.recommendations.map((r, i) => (
+            {recommendations.map((r, i) => (
               <li key={i} style={{ fontSize: 14, color: '#1a2744' }}>
                 {r}
               </li>

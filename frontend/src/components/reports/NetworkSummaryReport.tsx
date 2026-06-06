@@ -106,12 +106,18 @@ export default function NetworkSummaryReport({ data }: { data: NetworkSummary })
     }
   }
 
-  const sortedSites = [...data.sites].sort((a, b) => compareSites(a, b, sortKey, sortDir));
+  if (!data) return null;
+
+  const totals = data.totals || ({} as Partial<NetworkSummary['totals']>);
+  const sites = data.sites || [];
+  const topIssues = data.top_issues || [];
+
+  const sortedSites = [...sites].sort((a, b) => compareSites(a, b, sortKey, sortDir));
 
   const gradeCounts: Record<string, number> = { A: 0, B: 0, C: 0, D: 0, F: 0 };
-  for (const s of data.sites) {
-    if (s.grade && Object.prototype.hasOwnProperty.call(gradeCounts, s.grade)) {
-      gradeCounts[s.grade] += 1;
+  for (const s of sites) {
+    if (s && s.grade && Object.prototype.hasOwnProperty.call(gradeCounts, s.grade)) {
+      gradeCounts[s.grade] = Number(gradeCounts[s.grade] || 0) + 1;
     }
   }
 
@@ -120,23 +126,23 @@ export default function NetworkSummaryReport({ data }: { data: NetworkSummary })
       {/* 1. Headline stat cards */}
       <div className="sv-cards">
         <div className="sv-card total">
-          <div className="num">{fmtCount(data.totals.devices)}</div>
+          <div className="num">{fmtCount(totals.devices ?? 0)}</div>
           <div className="label">Total Devices</div>
         </div>
         <div className="sv-card up">
-          <div className="num">{fmtNum(data.totals.uptime_pct)}%</div>
+          <div className="num">{fmtNum(totals.uptime_pct ?? null)}%</div>
           <div className="label">Overall Uptime</div>
         </div>
         <div className="sv-card warning">
-          <div className="num">{fmtCount(data.totals.total_alerts)}</div>
+          <div className="num">{fmtCount(totals.total_alerts ?? 0)}</div>
           <div className="label">Total Alerts</div>
         </div>
         <div className="sv-card">
-          <div className="num">{fmtNum(data.totals.avg_response_ms)} ms</div>
+          <div className="num">{fmtNum(totals.avg_response_ms ?? null)} ms</div>
           <div className="label">Avg Response</div>
         </div>
         <div className="sv-card">
-          <div className="num">{fmtNum(data.totals.mttr_minutes)} min</div>
+          <div className="num">{fmtNum(totals.mttr_minutes ?? null)} min</div>
           <div className="label">Avg MTTR</div>
         </div>
       </div>
@@ -185,10 +191,10 @@ export default function NetworkSummaryReport({ data }: { data: NetworkSummary })
       {/* 3. Top Issues */}
       <div className="sv-panel" style={{ marginTop: 24 }}>
         <h3 style={{ marginTop: 0 }}>Top Issues</h3>
-        {data.top_issues.length === 0 ? (
+        {topIssues.length === 0 ? (
           <div className="sv-muted">No issues in this period.</div>
         ) : (
-          data.top_issues.slice(0, 5).map((issue) => {
+          topIssues.slice(0, 5).map((issue) => {
             const pct = issue.uptime_pct;
             const width = pct === null || pct === undefined ? 0 : Math.max(0, Math.min(100, pct));
             return (
@@ -241,7 +247,7 @@ export default function NetworkSummaryReport({ data }: { data: NetworkSummary })
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           {GRADES.map((g) => (
             <span key={g} className="sv-badge">
-              {g}: {gradeCounts[g]}
+              {g}: {Number(gradeCounts[g] ?? 0)}
             </span>
           ))}
         </div>

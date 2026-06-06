@@ -64,7 +64,10 @@ function barWidthPct(value: number | null, metric: TopWorst['metric'], maxValue:
 }
 
 export default function TopWorstReport({ data }: { data: TopWorst }) {
-  const { metric, generated_at, devices } = data;
+  if (!data) return null;
+  const metric = data.metric || 'uptime';
+  const generated_at = data.generated_at;
+  const devices = data.devices || [];
   const label = METRIC_LABELS[metric];
   const valueHeader = METRIC_COLUMN_HEADERS[metric];
   const maxValue = maxMetricValue(devices, metric);

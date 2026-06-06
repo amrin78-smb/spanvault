@@ -2306,6 +2306,26 @@ function gradeFromUptime(u) {
 function round1(v) { return v == null ? null : Math.round(Number(v) * 10) / 10; }
 function pct2(failed, total) { return total > 0 ? Math.round((1 - failed / total) * 10000) / 100 : null; }
 
+// Intelligence/topology tables are created by later migrations. Probe once and
+// cache so report queries can skip joins to tables that don't exist yet rather
+// than 500ing the whole report.
+let reportCaps = null;
+async function getReportCaps() {
+  if (reportCaps) return reportCaps;
+  try {
+    const r = await sv.query(`
+      SELECT
+        EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'device_health_scores') AS health,
+        EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'device_baselines')     AS baselines,
+        EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'incidents')            AS incidents
+    `);
+    reportCaps = r.rows[0] || { health: false, baselines: false, incidents: false };
+  } catch (_e) {
+    reportCaps = { health: false, baselines: false, incidents: false };
+  }
+  return reportCaps;
+}
+
 // ── Saved report configs (per-user via created_by) ────────────
 app.get('/api/reports/saved', wrap(async (req, res) => {
   const params = [];
@@ -2341,7 +2361,13 @@ app.delete('/api/reports/saved/:id', wrap(async (req, res) => {
 
 // Per-device aggregation shared by several report templates. interval is $1;
 // any RBAC site clause is appended by the caller. Returns one row per device.
-function perDeviceAggSql(extraWhere) {
+// `caps` (from getReportCaps) decides whether to join device_health_scores.
+function perDeviceAggSql(extraWhere, caps) {
+  const hasHealth = caps && caps.health;
+  const healthSel = hasHealth
+    ? 'h.score AS health_score, h.grade AS health_grade'
+    : 'NULL::numeric AS health_score, NULL::text AS health_grade';
+  const healthJoin = hasHealth ? 'LEFT JOIN device_health_scores h ON h.device_id = d.id' : '';
   return `
     SELECT d.id, d.name AS device_name, d.ip_address, d.device_type,
            COALESCE(d.site_name, 'Unassigned') AS site_name, d.site_id,
@@ -2353,7 +2379,7 @@ function perDeviceAggSql(extraWhere) {
                 ELSE NULL END AS uptime_pct,
            ROUND(pa.avg_ms::numeric, 1) AS avg_response_ms,
            COALESCE(al.cnt, 0)::int AS alerts_count,
-           h.score AS health_score, h.grade AS health_grade
+           ${healthSel}
     FROM monitored_devices d
     LEFT JOIN LATERAL (
       SELECT COUNT(*)::int AS total_checks,
@@ -2365,7 +2391,7 @@ function perDeviceAggSql(extraWhere) {
       SELECT COUNT(*)::int AS cnt FROM alerts
        WHERE device_id = d.id AND alert_type <> 'recovery' AND triggered_at >= NOW() - $1::interval
     ) al ON TRUE
-    LEFT JOIN device_health_scores h ON h.device_id = d.id
+    ${healthJoin}
     WHERE d.active = TRUE${extraWhere || ''}`;
 }
 function downtimeMin(d) {
@@ -2377,7 +2403,8 @@ app.get('/api/reports/network-summary', wrap(async (req, res) => {
   const interval = rangeToInterval(req.query.range);
   const params = [interval];
   const sc = siteFilterClause(getSiteFilter(req), params, 'd.site_id');
-  const dr = await sv.query(perDeviceAggSql(sc ? ` AND ${sc}` : ''), params);
+  const caps = await getReportCaps();
+  const dr = await sv.query(perDeviceAggSql(sc ? ` AND ${sc}` : '', caps), params);
   const mr = await sv.query(`
     SELECT ROUND(AVG(EXTRACT(EPOCH FROM (a.resolved_at - a.triggered_at)) / 60.0)::numeric, 1) AS mttr
     FROM alerts a JOIN monitored_devices d ON d.id = a.device_id
@@ -2440,8 +2467,9 @@ app.get('/api/reports/site-summary', wrap(async (req, res) => {
   const slaTarget = isNaN(t) ? 99.5 : t;
   const params = [interval, siteId];
   const sc = siteFilterClause(getSiteFilter(req), params, 'd.site_id');
+  const caps = await getReportCaps();
   const r = await sv.query(
-    perDeviceAggSql(` AND d.site_id = $2${sc ? ` AND ${sc}` : ''}`) + ` ORDER BY uptime_pct ASC NULLS LAST, d.name`,
+    perDeviceAggSql(` AND d.site_id = $2${sc ? ` AND ${sc}` : ''}`, caps) + ` ORDER BY uptime_pct ASC NULLS LAST, d.name`,
     params
   );
   const devices = r.rows.map((d) => ({
@@ -2481,21 +2509,28 @@ app.get('/api/reports/device-detail', wrap(async (req, res) => {
   if (!dev.rows[0]) return res.status(404).json({ error: 'Device not found' });
   const d = dev.rows[0];
 
+  // Each sub-query is isolated: a failure (e.g. an optional intelligence/topology
+  // table missing on an un-migrated DB) degrades that section to empty rather
+  // than failing the whole report.
+  const safeQ = (sql, p) => sv.query(sql, p).catch((e) => {
+    console.error('[reports/device-detail] subquery failed:', e.message);
+    return { rows: [] };
+  });
   const [avail, resp, health, baseline, alerts, byDay, snmpSummary, topo, longest] = await Promise.all([
-    sv.query(`SELECT COUNT(*)::int AS total_checks,
+    safeQ(`SELECT COUNT(*)::int AS total_checks,
                      SUM(CASE WHEN status <> 'up' THEN 1 ELSE 0 END)::int AS failed_checks
               FROM ping_results WHERE device_id = $1 AND ts >= NOW() - $2::interval`, [id, interval]),
-    sv.query(`SELECT ROUND(AVG(response_ms)::numeric,1) AS avg_ms, ROUND(MIN(response_ms)::numeric,1) AS min_ms,
+    safeQ(`SELECT ROUND(AVG(response_ms)::numeric,1) AS avg_ms, ROUND(MIN(response_ms)::numeric,1) AS min_ms,
                      ROUND(MAX(response_ms)::numeric,1) AS max_ms,
                      ROUND(percentile_cont(0.95) WITHIN GROUP (ORDER BY response_ms)::numeric,1) AS p95_ms
               FROM ping_results WHERE device_id = $1 AND status = 'up' AND ts >= NOW() - $2::interval`, [id, interval]),
-    sv.query(`SELECT score, grade, trend FROM device_health_scores WHERE device_id = $1`, [id]),
-    sv.query(`SELECT mean, p95 FROM device_baselines WHERE device_id = $1 AND metric = 'response_ms'
+    safeQ(`SELECT score, grade, trend FROM device_health_scores WHERE device_id = $1`, [id]),
+    safeQ(`SELECT mean, p95 FROM device_baselines WHERE device_id = $1 AND metric = 'response_ms'
                 ORDER BY period_days ASC LIMIT 1`, [id]),
-    sv.query(`SELECT id, alert_type, severity, message, triggered_at, resolved_at, acknowledged_by, status,
+    safeQ(`SELECT id, alert_type, severity, message, triggered_at, resolved_at, acknowledged_by, status,
                      ROUND(EXTRACT(EPOCH FROM (COALESCE(resolved_at, NOW()) - triggered_at)) / 60.0)::int AS duration_minutes
               FROM alerts WHERE device_id = $1 ORDER BY triggered_at DESC LIMIT 20`, [id]),
-    sv.query(`WITH series AS (
+    safeQ(`WITH series AS (
                 SELECT generate_series(date_trunc('day', NOW()) - INTERVAL '89 days', date_trunc('day', NOW()), INTERVAL '1 day') AS dd
               ), pings AS (
                 SELECT date_trunc('day', ts) AS dd, COUNT(*) AS tc,
@@ -2507,7 +2542,7 @@ app.get('/api/reports/device-detail', wrap(async (req, res) => {
                      CASE WHEN p.tc > 0 THEN ROUND((1 - (p.bad::numeric / p.tc)) * 100, 1) ELSE NULL END AS uptime_pct,
                      COALESCE(p.tc, 0)::int AS total_checks
               FROM series LEFT JOIN pings p ON p.dd = series.dd ORDER BY series.dd`, [id]),
-    sv.query(`SELECT s.sensor_name, s.metric_name, s.category, lv.value AS current_value, b.mean AS baseline_mean
+    safeQ(`SELECT s.sensor_name, s.metric_name, s.category, lv.value AS current_value, b.mean AS baseline_mean
               FROM device_sensors s
               LEFT JOIN LATERAL (
                 SELECT value FROM snmp_results WHERE device_id = $1 AND metric_name = s.metric_name
@@ -2518,12 +2553,12 @@ app.get('/api/reports/device-detail', wrap(async (req, res) => {
                 ORDER BY period_days ASC LIMIT 1
               ) b ON TRUE
               WHERE s.device_id = $1 AND s.enabled = TRUE ORDER BY s.category, s.sensor_name`, [id]),
-    sv.query(`SELECT t.from_port, t.to_port, t.protocol, t.to_device_id,
+    safeQ(`SELECT t.from_port, t.to_port, t.protocol, t.to_device_id,
                      COALESCE(nd.name, t.to_name) AS neighbor_name,
                      COALESCE(nd.ip_address, t.to_ip) AS neighbor_ip
               FROM topology_links t LEFT JOIN monitored_devices nd ON nd.id = t.to_device_id
               WHERE t.from_device_id = $1 ORDER BY t.from_port NULLS LAST`, [id]),
-    sv.query(`WITH s AS (
+    safeQ(`WITH s AS (
                 SELECT status, SUM(CASE WHEN status = 'up' THEN 1 ELSE 0 END) OVER (ORDER BY ts) AS grp
                 FROM ping_results WHERE device_id = $1 AND ts >= NOW() - $2::interval
               )
@@ -2582,7 +2617,8 @@ app.get('/api/reports/top-worst', wrap(async (req, res) => {
   const limit = safeInt(req.query.limit, 10, 100);
   const params = [interval];
   const sc = siteFilterClause(getSiteFilter(req), params, 'd.site_id');
-  const r = await sv.query(perDeviceAggSql(sc ? ` AND ${sc}` : ''), params);
+  const caps = await getReportCaps();
+  const r = await sv.query(perDeviceAggSql(sc ? ` AND ${sc}` : '', caps), params);
   let rows = r.rows.map((d) => ({
     device_id: d.id, device_name: d.device_name, site_name: d.site_name,
     uptime_pct: d.uptime_pct, avg_response_ms: d.avg_response_ms, alerts_count: d.alerts_count,
@@ -2714,7 +2750,7 @@ app.get('/api/reports/executive', wrap(async (req, res) => {
     FROM monitored_devices d
     LEFT JOIN ping_results p ON p.device_id = d.id AND p.ts >= NOW() - $1::interval
     WHERE d.active = TRUE${scAnd}
-    GROUP BY COALESCE(d.site_name, 'Unassigned') ORDER BY 1`, params);
+    GROUP BY d.site_name ORDER BY 1`, params);
 
   // Incidents are global (no site column); guard in case the table is absent.
   let totalIncidents = 0, biggest = null;
