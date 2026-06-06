@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { apiGet, apiSend } from '@/lib/api';
 import { Loading, ErrorBox } from '@/components/ui';
+import { StatusDot } from '@/components/StatusDot';
 
 type DiscoverSensor = {
   key: string; name: string; category: string;
@@ -35,10 +36,13 @@ function groupByCat(list: Avail[]): Record<string, Avail[]> {
   return g;
 }
 
+// Sort order for interface groups: active interfaces float to the top.
+const STATUS_ORDER: Record<string, number> = { up: 0, down: 1, unknown: 2 };
+
 // An interface group bundles the In/Out/Status sensors of one physical
 // interface behind a single checkbox (PRTG-style). Keys look like
 // "if_<idx>_in|out|status"; base_name like "ethernet1/1 — In".
-type IfGroup = { id: string; name: string; meta: string; members: Avail[] };
+type IfGroup = { id: string; name: string; meta: string; status: string; members: Avail[] };
 
 // Grouping id shared by an interface's sensors: the "if_<idx>" prefix.
 function ifGroupId(it: Avail): string {
@@ -60,19 +64,37 @@ function ifDir(it: Avail): string {
   return s === 'in' ? 'In' : s === 'out' ? 'Out' : s === 'status' ? 'Status' : s;
 }
 
+// Operational state of an interface group, read from its Status sensor's
+// current_value ("Up"/"Down"). Up wins if any status member reports Up;
+// Down if any reports Down; otherwise Unknown (no status data yet).
+function ifStatus(members: Avail[]): string {
+  let sawDown = false;
+  for (const m of members) {
+    if (ifDir(m) !== 'Status') continue;
+    const v = (m.current_value || '').toLowerCase();
+    if (v === 'up') return 'up';
+    if (v === 'down') sawDown = true;
+  }
+  return sawDown ? 'down' : 'unknown';
+}
+
 function groupInterfaces(items: Avail[]): IfGroup[] {
   const map = new Map<string, IfGroup>();
   for (const it of items) {
     const id = ifGroupId(it);
     let g = map.get(id);
-    if (!g) { g = { id, name: ifBaseName(it), meta: it.meta || '', members: [] }; map.set(id, g); }
+    if (!g) { g = { id, name: ifBaseName(it), meta: it.meta || '', status: 'unknown', members: [] }; map.set(id, g); }
     if (!g.meta && it.meta) g.meta = it.meta;
     g.members.push(it);
   }
   for (const g of map.values()) {
     g.members.sort((a, b) => (DIR_ORDER[ifDir(a)] ?? 9) - (DIR_ORDER[ifDir(b)] ?? 9));
+    g.status = ifStatus(g.members);
   }
-  return Array.from(map.values());
+  // Active interfaces first (Up → Down → Unknown), then by name.
+  return Array.from(map.values()).sort((a, b) =>
+    (STATUS_ORDER[a.status] ?? 9) - (STATUS_ORDER[b.status] ?? 9) || a.name.localeCompare(b.name)
+  );
 }
 
 // "In · Out · Status" — what monitoring a given set of interface sensors covers.
@@ -255,7 +277,10 @@ export default function SensorManager({
                                 onChange={() => toggleGroup(g.members)}
                               />
                               <span className="sv-sensor-info">
-                                <span className="nm">{g.name}{g.meta ? ` · ${g.meta}` : ''}</span>
+                                <span className="nm">
+                                  <StatusDot status={g.status} size={9} title={`Interface ${g.status}`} />
+                                  {g.name}{g.meta ? ` · ${g.meta}` : ''}
+                                </span>
                                 <span className="meta">{dirsLabel(g.members)}</span>
                               </span>
                             </label>

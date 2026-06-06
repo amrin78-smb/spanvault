@@ -774,6 +774,7 @@ label.sv-field .sv-input, label.sv-field .sv-select { font-weight: 400; }
 .sv-sensor-item .meta { color: var(--text-muted); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sv-sensor-item .val { font-weight: 600; color: var(--text-primary); white-space: nowrap; }
 .sv-sensor-item .oid { color: var(--text-muted); font-size: 11px; font-family: ui-monospace, monospace; white-space: nowrap; }
+.sv-sensor-item .nm .sv-status-dot { margin-right: 6px; vertical-align: middle; }
 .sv-sensor-item.enabled { cursor: default; }
 
 /* ── SNMP test (inline, in device form) ────────────────── */
