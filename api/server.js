@@ -237,6 +237,19 @@ app.get('/api/collector/status', wrap(async (_req, res) => {
   res.json({ status: fresh ? 'running' : 'stopped', last_ts: lastTs ? lastTs.toISOString() : null });
 }));
 
+// Proxy the NocVault hub's settings server-side so the browser doesn't make a
+// cross-origin (CORS-blocked) request to the hub. Used by the idle-timeout UI.
+app.get('/api/hub/settings', wrap(async (_req, res) => {
+  const hub = (process.env.NOCVAULT_HUB_URL || 'http://localhost:3000').replace(/\/+$/, '');
+  try {
+    const r = await fetch(`${hub}/api/settings`, { headers: { Accept: 'application/json' } });
+    if (!r.ok) return res.status(502).json({ error: `Hub returned ${r.status}` });
+    res.json(await r.json());
+  } catch (e) {
+    res.status(502).json({ error: e && e.message ? e.message : 'Hub unreachable' });
+  }
+}));
+
 // ══════════════════════════════════════════════════════════════
 // Dashboard
 // ══════════════════════════════════════════════════════════════

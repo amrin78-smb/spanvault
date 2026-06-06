@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { StatusDot } from '@/components/StatusDot';
 import { GradeBadge } from '@/components/intel';
-import { fmtTime, fmtRel } from '@/components/ui';
+import { fmtTime, Skeleton, CardSkeleton } from '@/components/ui';
 
 /**
  * Pure presentational device-detail report.
@@ -88,9 +88,40 @@ function sevClass(severity: string): string {
   return '';
 }
 
+// ── Loading skeleton (module scope) ────────────────────────────
+function DeviceReportSkeleton() {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div className="sv-panel"><Skeleton width={240} height={22} /></div>
+      <div className="sv-cards"><CardSkeleton count={4} height={72} /></div>
+      <div className="sv-panel"><Skeleton width="100%" height={120} /></div>
+      <div className="sv-panel"><Skeleton width="100%" height={140} /></div>
+    </div>
+  );
+}
+
+// Empty defaults so a partial payload never crashes the render.
+const EMPTY_AVAIL = { uptime_pct: null, total_checks: 0, failed_checks: 0, downtime_minutes: 0, longest_outage_minutes: 0 };
+const EMPTY_RESPONSE = { avg_ms: null, min_ms: null, max_ms: null, p95_ms: null };
+const EMPTY_HEALTH = { score: null, grade: null, trend: null };
+const EMPTY_BASELINE = { mean_ms: null, p95_ms: null };
+
 // ── Main report ────────────────────────────────────────────────
-export default function DeviceDetailReport({ data }: { data: DeviceDetail }) {
-  const { device, availability, response, health, baseline, alerts, uptime_by_day, snmp_summary, topology } = data;
+export default function DeviceDetailReport({ data }: { data?: DeviceDetail | null }) {
+  // The parent fetch may still be in flight (or a template switch may briefly
+  // hand us the previous report's payload). Guard until a real device payload
+  // is present rather than crashing on undefined sub-objects.
+  if (!data || !data.device) return <DeviceReportSkeleton />;
+
+  const device = data.device;
+  const availability = data.availability || EMPTY_AVAIL;
+  const response = data.response || EMPTY_RESPONSE;
+  const health = data.health || EMPTY_HEALTH;
+  const baseline = data.baseline || EMPTY_BASELINE;
+  const alerts = data.alerts || [];
+  const uptime_by_day = data.uptime_by_day || [];
+  const snmp_summary = data.snmp_summary || [];
+  const topology = data.topology || [];
 
   const subline = [device.ip, device.type, device.site, device.vendor]
     .filter((x) => x !== null && x !== undefined && x !== '')

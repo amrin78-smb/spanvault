@@ -165,8 +165,11 @@ export default function ReportsPage() {
   const endpoint = applied ? buildEndpoint(applied) : null;
   const report = useApi<any>(endpoint, 0);
 
-  const loading = !!applied && report.loading && !report.data;
-  const empty = !!applied && !report.loading && !report.error && isEmptyReport(applied.template, report.data);
+  // loading = any in-flight fetch (incl. refetch on template switch) so we never
+  // render a body with stale/mismatched data from the previous template.
+  const loading = !!applied && report.loading;
+  const empty = !!applied && !report.loading && !report.error && !!report.data
+    && isEmptyReport(applied.template, report.data);
 
   const filteredDevices = (devices.data || []).filter((d) =>
     !deviceSearch || d.name.toLowerCase().includes(deviceSearch.toLowerCase()) || (d.ip_address || '').includes(deviceSearch));
@@ -367,8 +370,9 @@ export default function ReportsPage() {
             {tpl.label} · {rangeLabel(applied)} · {scopeLabel(applied)}
           </div>
 
-          {report.error && <ErrorBox message={report.error} />}
-          {loading ? (
+          {report.error ? (
+            <ErrorBox message={report.error} />
+          ) : loading ? (
             <div className="sv-panel" style={{ textAlign: 'center', padding: '40px 20px' }}>
               <Loading label="Generating report…" />
             </div>

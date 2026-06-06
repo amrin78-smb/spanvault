@@ -39,8 +39,9 @@ export default function IdleTimeout() {
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch(`${HUB}/api/settings`, {
-          credentials: 'include',
+        // Fetch hub settings through SpanVault's own API (server-side proxy) to
+        // avoid a CORS-blocked cross-origin request straight to the hub.
+        const res = await fetch('/api/hub/settings', {
           headers: { Accept: 'application/json' },
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
