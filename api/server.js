@@ -15,6 +15,7 @@ const cors     = require('cors');
 const ping     = require('ping');
 const { Pool } = require('pg');
 const { discoverDevice, snmpTest } = require('../collector/discovery');
+const topology = require('../collector/topology');
 const { startWsServer, connectedAgents, pushConfigToAgent, pushConfigToAgentId } = require('./ws-server');
 const intelligence = require('./intelligence');
 const { getLicense, getLicenseState } = require('./licenseCheck');
@@ -1422,6 +1423,243 @@ app.get('/api/maps/public/:uuid', wrap(async (req, res) => {
   if (!map) return res.status(404).json({ error: 'Map not found or not public' });
   const full = await fetchFullMap(map.id);
   res.json(full);
+}));
+
+// ══════════════════════════════════════════════════════════════
+// Topology discovery (LLDP / CDP)
+// ══════════════════════════════════════════════════════════════
+// In-memory job tracker for the async discovery run. Persisted state (last run
+// time, link counts) is derived from topology_links itself in /status.
+let topoRun = { running: false, started_at: null, finished_at: null, devices: 0, links: 0, duration_ms: 0 };
+
+// Walk every active SNMP-enabled device and persist its neighbors. Long-running;
+// kicked off in the background by POST /discover (never awaited by the request).
+async function runTopologyDiscoveryAll() {
+  if (topoRun.running) return;
+  topoRun.running = true;
+  topoRun.started_at = new Date();
+  const t0 = Date.now();
+  let devices = 0, links = 0;
+  try {
+    const r = await sv.query(
+      `SELECT * FROM monitored_devices WHERE active = TRUE AND snmp_enabled = TRUE`);
+    for (const d of r.rows) {
+      try {
+        links += await topology.discoverAndStore(sv, d);
+        devices++;
+      } catch (e) {
+        console.error(`[topology] ${d.name} discovery failed:`, e.message);
+      }
+    }
+  } catch (e) {
+    console.error('[topology] discovery run failed:', e.message);
+  } finally {
+    topoRun = { running: false, started_at: topoRun.started_at, finished_at: new Date(),
+                devices, links, duration_ms: Date.now() - t0 };
+  }
+}
+
+// Trigger discovery (returns immediately; poll /status for completion).
+app.post('/api/topology/discover', wrap(async (_req, res) => {
+  if (topoRun.running) return res.json({ started: false, running: true });
+  runTopologyDiscoveryAll().catch((e) => console.error('[topology] async run:', e.message));
+  res.json({ started: true });
+}));
+
+// Discovery status: live run flag + derived last-run/link counts.
+app.get('/api/topology/status', wrap(async (_req, res) => {
+  const r = await sv.query(`
+    SELECT MAX(last_seen_at) AS last_run_at,
+           COUNT(*)::int AS links_found,
+           COUNT(DISTINCT from_device_id)::int AS devices_discovered
+    FROM topology_links`);
+  const row = r.rows[0] || {};
+  res.json({
+    running: topoRun.running,
+    last_run_at: row.last_run_at || null,
+    links_found: row.links_found || 0,
+    devices_discovered: row.devices_discovered || 0,
+    duration_ms: topoRun.duration_ms || 0,
+  });
+}));
+
+// All discovered links with both ends joined (?device_id=X scopes to one device).
+app.get('/api/topology/links', wrap(async (req, res) => {
+  const params = [];
+  const where = [];
+  if (req.query.device_id) {
+    params.push(parseInt(req.query.device_id, 10));
+    where.push(`(l.from_device_id = $${params.length} OR l.to_device_id = $${params.length})`);
+  }
+  const sc = siteFilterClause(getSiteFilter(req), params, 'fd.site_id');
+  if (sc) where.push(sc);
+  const r = await sv.query(`
+    SELECT l.id, l.from_device_id, fd.name AS from_device_name,
+           fd.ip_address AS from_ip, fd.site_name AS from_site, l.from_port,
+           l.to_device_id, td.name AS to_device_name, td.site_name AS to_site,
+           COALESCE(td.ip_address, l.to_ip) AS to_ip, l.to_name, l.to_port,
+           l.protocol, l.last_seen_at
+    FROM topology_links l
+    JOIN monitored_devices fd ON fd.id = l.from_device_id
+    LEFT JOIN monitored_devices td ON td.id = l.to_device_id
+    ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+    ORDER BY fd.name, l.from_port
+  `, params);
+  res.json(r.rows);
+}));
+
+// Deduplicate undirected (A↔B) links of the same protocol into one edge.
+function dedupeEdges(rows) {
+  const seen = new Set();
+  const out = [];
+  for (const row of rows) {
+    const a = Math.min(row.from_device_id, row.to_device_id);
+    const b = Math.max(row.from_device_id, row.to_device_id);
+    const key = `${a}-${b}-${row.protocol}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(row);
+  }
+  return out;
+}
+
+// Map-friendly topology: nodes (only devices with ≥1 link) + edges.
+app.get('/api/topology/map', wrap(async (req, res) => {
+  const params = [];
+  const sc = siteFilterClause(getSiteFilter(req), params, 'fd.site_id');
+  const e = await sv.query(`
+    SELECT l.from_device_id, l.to_device_id, l.from_port, l.to_port, l.protocol
+    FROM topology_links l
+    JOIN monitored_devices fd ON fd.id = l.from_device_id
+    JOIN monitored_devices td ON td.id = l.to_device_id
+    WHERE l.to_device_id IS NOT NULL${sc ? ` AND ${sc}` : ''}
+  `, params);
+  const edges = dedupeEdges(e.rows);
+  const ids = new Set();
+  for (const row of edges) { ids.add(row.from_device_id); ids.add(row.to_device_id); }
+  let nodes = [];
+  if (ids.size) {
+    const nr = await sv.query(`
+      SELECT id AS device_id, name, ip_address AS ip, site_name,
+             current_status AS status, is_gateway
+      FROM monitored_devices WHERE id = ANY($1::int[])
+    `, [Array.from(ids)]);
+    nodes = nr.rows;
+  }
+  res.json({ nodes, edges });
+}));
+
+// Apply the discovered topology to an existing map: place new devices in a grid
+// (preserving any already-positioned ones) and recreate connections from links.
+app.post('/api/topology/apply-to-map/:map_id', wrap(async (req, res) => {
+  const mapId = parseInt(req.params.map_id, 10);
+  const exists = await sv.query(`SELECT id FROM sv_maps WHERE id = $1`, [mapId]);
+  if (!exists.rows[0]) return res.status(404).json({ error: 'Map not found' });
+
+  const e = await sv.query(`
+    SELECT from_device_id, to_device_id, from_port, to_port, protocol
+    FROM topology_links WHERE to_device_id IS NOT NULL`);
+  const edges = dedupeEdges(e.rows);
+  const deviceIds = new Set();
+  for (const row of edges) { deviceIds.add(row.from_device_id); deviceIds.add(row.to_device_id); }
+
+  const client = await sv.connect();
+  try {
+    await client.query('BEGIN');
+    const existing = await client.query(
+      `SELECT id, device_id FROM map_devices WHERE map_id = $1 AND device_id IS NOT NULL`, [mapId]);
+    const mapDeviceId = new Map(); // device_id → map_devices.id
+    for (const row of existing.rows) mapDeviceId.set(row.device_id, row.id);
+
+    const toPlace = Array.from(deviceIds).filter((id) => !mapDeviceId.has(id));
+    const cols = Math.max(1, Math.ceil(Math.sqrt(toPlace.length || 1)));
+    const cellW = 200, cellH = 120, ox = 80, oy = 80;
+    let i = 0;
+    for (const devId of toPlace) {
+      const x = ox + (i % cols) * cellW;
+      const y = oy + Math.floor(i / cols) * cellH;
+      const ins = await client.query(
+        `INSERT INTO map_devices (map_id, device_id, x, y, icon_type, width, height)
+         VALUES ($1,$2,$3,$4,'rect',120,60) RETURNING id`,
+        [mapId, devId, x, y]);
+      mapDeviceId.set(devId, ins.rows[0].id);
+      i++;
+    }
+
+    await client.query(`DELETE FROM map_connections WHERE map_id = $1`, [mapId]);
+    for (const row of edges) {
+      const from = mapDeviceId.get(row.from_device_id);
+      const to = mapDeviceId.get(row.to_device_id);
+      if (!from || !to) continue;
+      const color = row.protocol === 'cdp' ? '#f97316' : '#2563eb';
+      const label = [row.from_port, row.to_port].filter(Boolean).join(' → ');
+      await client.query(
+        `INSERT INTO map_connections (map_id, from_item_id, to_item_id, color, line_style, label)
+         VALUES ($1,$2,$3,$4,'solid',$5)`,
+        [mapId, from, to, color, label || null]);
+    }
+    await client.query(`UPDATE sv_maps SET updated_at = NOW() WHERE id = $1`, [mapId]);
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+  res.json(await fetchFullMap(mapId));
+}));
+
+// Suggest site gateways from topology: devices spanning multiple sites, or the
+// most-connected device within a site, are likely gateways. Suggest-only.
+app.post('/api/topology/apply-dependencies', wrap(async (_req, res) => {
+  const e = await sv.query(`
+    SELECT l.from_device_id, l.to_device_id,
+           fd.site_id AS from_site, fd.name AS from_name, td.site_id AS to_site
+    FROM topology_links l
+    JOIN monitored_devices fd ON fd.id = l.from_device_id
+    JOIN monitored_devices td ON td.id = l.to_device_id
+    WHERE l.to_device_id IS NOT NULL`);
+
+  const info = new Map(); // id → { name, site, neighbors:Set, sites:Set }
+  const ensure = (id, name, site) => {
+    if (!info.has(id)) info.set(id, { name, site, neighbors: new Set(), sites: new Set() });
+    return info.get(id);
+  };
+  for (const row of e.rows) {
+    const a = ensure(row.from_device_id, row.from_name, row.from_site);
+    a.neighbors.add(row.to_device_id);
+    if (row.to_site != null) a.sites.add(row.to_site);
+  }
+
+  const bestPerSite = new Map(); // site → { id, degree }
+  for (const [id, d] of info) {
+    const cur = bestPerSite.get(d.site);
+    if (!cur || d.neighbors.size > cur.degree) bestPerSite.set(d.site, { id, degree: d.neighbors.size });
+  }
+
+  const suggestions = [];
+  for (const [id, d] of info) {
+    const reasons = [];
+    let confidence = 0;
+    if (d.sites.size > 1) {
+      reasons.push(`Connects to devices in ${d.sites.size} sites`);
+      confidence += 0.5;
+    }
+    const best = bestPerSite.get(d.site);
+    if (best && best.id === id && d.neighbors.size > 1) {
+      reasons.push(`Most-connected device in its site (${d.neighbors.size} links)`);
+      confidence += 0.4;
+    }
+    if (reasons.length) {
+      suggestions.push({
+        device_id: id, name: d.name,
+        reason: reasons.join('; '),
+        confidence: Math.min(1, confidence + 0.1),
+      });
+    }
+  }
+  suggestions.sort((a, b) => b.confidence - a.confidence);
+  res.json({ suggestions });
 }));
 
 // ══════════════════════════════════════════════════════════════

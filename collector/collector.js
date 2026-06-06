@@ -22,6 +22,7 @@ const nodemailer = require('nodemailer');
 const { detectVendor } = require('./parsers');
 const { createSession, get, OID } = require('./snmp-session');
 const { collectCandidates } = require('./discovery');
+const { discoverAndStore } = require('./topology');
 
 // ── Crash resilience ──────────────────────────────────────────
 process.on('uncaughtException', (err) => {
@@ -730,6 +731,36 @@ async function snmpTick() {
   }
 }
 
+// ══════════════════════════════════════════════════════════════
+// Topology discovery (LLDP / CDP)
+// ══════════════════════════════════════════════════════════════
+// Walks every locally-polled SNMP device's LLDP/CDP neighbor tables and stores
+// the links directly in topology_links. Topology changes infrequently, so this
+// runs once shortly after startup and then every 6 hours.
+let topoBusy = false;
+async function topologyTick() {
+  if (topoBusy) return;
+  topoBusy = true;
+  try {
+    const devices = (await getActiveDevices()).filter((d) => d.snmp_enabled);
+    let links = 0;
+    for (const d of devices) {
+      try {
+        links += await discoverAndStore(sv, d);
+      } catch (e) {
+        console.error(`[topology] ${d.name} failed:`, e.message);
+      }
+    }
+    if (devices.length) {
+      log(`[topology] discovered ${links} link(s) across ${devices.length} SNMP device(s)`);
+    }
+  } catch (err) {
+    console.error('[topology] tick failed:', err.message);
+  } finally {
+    topoBusy = false;
+  }
+}
+
 // Simple bounded-concurrency runner.
 async function runPooled(items, limit, fn) {
   const queue = items.slice();
@@ -769,6 +800,10 @@ async function main() {
   // Poll scheduler ticks. The due-check inside honors per-device intervals.
   setInterval(pingTick, 15 * 1000);
   setInterval(snmpTick, 15 * 1000);
+
+  // Topology discovery — once shortly after startup, then every 6 hours.
+  setTimeout(topologyTick, 60 * 1000);
+  setInterval(topologyTick, 6 * 60 * 60 * 1000);
 
   // Kick off an immediate first pass.
   pingTick();

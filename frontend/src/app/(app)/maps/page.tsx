@@ -54,6 +54,8 @@ export default function MapsPage() {
       </div>
       <p className="sv-page-sub">Design interactive network maps with live device status.</p>
 
+      <TopologyCard />
+
       {notice && <div className="sv-toast ok" onClick={() => setNotice(null)}>{notice}</div>}
       {maps.error && <ErrorBox message={maps.error} />}
 
@@ -77,6 +79,72 @@ export default function MapsPage() {
           onCreated={(id) => { setShowCreate(false); maps.reload(); }}
         />
       )}
+    </div>
+  );
+}
+
+// ── Topology discovery card (top-level component) ──────────────
+type TopologyStatus = {
+  running: boolean;
+  last_run_at: string | null;
+  links_found: number;
+  devices_discovered: number;
+};
+
+function TopologyCard() {
+  const { canEdit } = useRbac();
+  const status = useApi<TopologyStatus>('/api/topology/status', 0);
+  const [running, setRunning] = useState(false);
+
+  async function runDiscovery() {
+    setRunning(true);
+    try {
+      await apiSend('/api/topology/discover', 'POST', {});
+      // Discovery runs in the background; give it a moment, then refresh.
+      setTimeout(() => { status.reload(); setRunning(false); }, 2500);
+    } catch {
+      setRunning(false);
+    }
+  }
+
+  const s = status.data;
+  const busy = running || !!s?.running;
+
+  return (
+    <div className="sv-panel" style={{ display: 'flex', alignItems: 'center', gap: 18, flexWrap: 'wrap', marginBottom: 18 }}>
+      <div style={{
+        width: 44, height: 44, borderRadius: 10, flex: 'none',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        background: 'var(--bg-primary)', border: '1px solid var(--border)', color: 'var(--primary)',
+      }}>
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <circle cx="12" cy="5" r="2.5" /><circle cx="5" cy="19" r="2.5" /><circle cx="19" cy="19" r="2.5" />
+          <line x1="12" y1="7.5" x2="6" y2="16.8" /><line x1="12" y1="7.5" x2="18" y2="16.8" />
+          <line x1="7.5" y1="19" x2="16.5" y2="19" />
+        </svg>
+      </div>
+      <div style={{ flex: 1, minWidth: 220 }}>
+        <div style={{ fontWeight: 700, fontSize: 15 }}>Network Topology Discovery</div>
+        <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+          Auto-discover device connections via LLDP and CDP.
+        </div>
+        <div style={{ fontSize: 12.5, color: 'var(--text-muted)', marginTop: 4 }}>
+          {busy
+            ? 'Discovery running…'
+            : s && s.last_run_at
+              ? `Last run: ${fmtRel(s.last_run_at)} · ${s.links_found} link${s.links_found === 1 ? '' : 's'} found`
+              : 'Not run yet'}
+        </div>
+      </div>
+      <div style={{ display: 'flex', gap: 10 }}>
+        {canEdit && (
+          <button className="sv-btn" onClick={runDiscovery} disabled={busy}>
+            {busy ? 'Running…' : 'Run Discovery'}
+          </button>
+        )}
+        <a className="sv-btn ghost" href="/topology">View Topology</a>
+      </div>
     </div>
   );
 }

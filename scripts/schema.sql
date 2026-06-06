@@ -430,3 +430,34 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_threshold_rec_device_metric
 
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO spanvault_user;
 GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO spanvault_user;
+
+-- ══ Topology discovery (LLDP / CDP) ═══════════════════════════════════════════
+-- Discovered layer-2 neighbor links walked from each SNMP device's LLDP/CDP MIBs
+-- by collector/topology.js. A link is keyed by (from_device, from_port, protocol)
+-- and refreshed (last_seen_at) on every discovery pass. to_device_id resolves the
+-- neighbor when it is itself a monitored device; otherwise to_ip/to_name carry the
+-- neighbor identity for display only.
+CREATE TABLE IF NOT EXISTS topology_links (
+  id              SERIAL PRIMARY KEY,
+  from_device_id  INTEGER NOT NULL REFERENCES monitored_devices(id) ON DELETE CASCADE,
+  from_port       TEXT,
+  from_port_desc  TEXT,
+  to_device_id    INTEGER REFERENCES monitored_devices(id) ON DELETE SET NULL,
+  to_ip           TEXT,           -- neighbor IP even if not in monitored_devices
+  to_name         TEXT,           -- neighbor name even if not monitored
+  to_port         TEXT,
+  to_port_desc    TEXT,
+  protocol        TEXT NOT NULL DEFAULT 'lldp',  -- lldp / cdp
+  discovered_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  last_seen_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_topo_link_unique
+  ON topology_links(from_device_id, from_port, protocol);
+CREATE INDEX IF NOT EXISTS idx_topo_from ON topology_links(from_device_id);
+CREATE INDEX IF NOT EXISTS idx_topo_to ON topology_links(to_device_id);
+
+ALTER TABLE monitored_devices
+  ADD COLUMN IF NOT EXISTS topology_discovered_at TIMESTAMPTZ;
+
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO spanvault_user;
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO spanvault_user;
