@@ -459,10 +459,6 @@ function MonitorBadges({ device }: { device: Device }) {
           <span className="m">Mem {fmtPct(device.latest_mem_pct)}</span>
         </span>
       )}
-      <span className="sv-mon soon" title="NetFlow monitoring — coming soon">
-        <span className="k">NetFlow</span>
-        <span>coming soon</span>
-      </span>
     </div>
   );
 }
