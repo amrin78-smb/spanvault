@@ -544,3 +544,27 @@ CREATE INDEX IF NOT EXISTS idx_wireless_hist_ap_ts
 
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO spanvault_user;
 GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO spanvault_user;
+
+-- ══ Reporting suite ═══════════════════════════════════════════════════════════
+-- Saved report configurations (per-user, keyed by created_by). A saved report
+-- captures a template + scope + date range so it can be re-run from a chip.
+CREATE TABLE IF NOT EXISTS saved_reports (
+  id          SERIAL PRIMARY KEY,
+  name        TEXT NOT NULL,
+  template    TEXT NOT NULL,
+  scope_type  TEXT NOT NULL DEFAULT 'all',  -- all/site/device/multi
+  scope_id    INTEGER,                       -- site_id or device_id
+  scope_ids   INTEGER[],                     -- for multi-device
+  scope_name  TEXT,                          -- display name
+  date_range  TEXT NOT NULL DEFAULT '30d',   -- 24h/7d/30d/90d/custom
+  date_from   DATE,
+  date_to     DATE,
+  sla_target  NUMERIC DEFAULT 99.5,
+  created_by  TEXT,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  last_run_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_saved_reports_created_by ON saved_reports(created_by);
+
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO spanvault_user;
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO spanvault_user;
