@@ -101,7 +101,11 @@ export default function DeviceDetailPage() {
       )}
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4, flexWrap: 'wrap' }}>
-        <StatusDot status={d.current_status} size={14} />
+        <StatusDot
+          status={d.current_status}
+          size={14}
+          title={`${(d.current_status || 'unknown').replace(/^\w/, (c) => c.toUpperCase())} — last seen ${fmtRel(d.last_seen_at)}${d.last_response_ms != null ? `, ${Number(d.last_response_ms).toFixed(0)}ms` : ''}`}
+        />
         <h1 className="sv-page-title" style={{ margin: 0 }}>{d.name}</h1>
         <StatusBadge status={d.current_status} />
         {d.is_gateway && (

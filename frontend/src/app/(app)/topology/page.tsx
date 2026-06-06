@@ -213,7 +213,7 @@ function MapTab({
             <TopologyMapView nodes={tmap.data.nodes} edges={tmap.data.edges} interactive />
           </div>
         ) : (
-          <Empty message="No topology discovered yet. Run discovery to map device connections." />
+          <Empty message="No topology discovered yet — run topology discovery to see device connections →" />
         )}
       </div>
 

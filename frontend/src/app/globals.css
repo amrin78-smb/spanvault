@@ -821,6 +821,23 @@ label.sv-field .sv-input, label.sv-field .sv-select { font-weight: 400; }
 .sv-chip.active { background: var(--primary); border-color: var(--primary); color: #fff; }
 .sv-chip.clear { color: var(--text-muted); }
 
+/* ── NOC fullscreen view (dark, high-contrast, no chrome) ─────── */
+body.sv-noc .sv-sidebar,
+body.sv-noc .sv-topbar { display: none !important; }
+body.sv-noc .sv-shell,
+body.sv-noc .sv-body,
+body.sv-noc .sv-content { background: #0b1220 !important; }
+body.sv-noc .sv-content { padding: 28px 36px; }
+body.sv-noc .sv-page-title,
+body.sv-noc h1, body.sv-noc h2,
+body.sv-noc .sv-page-sub { color: #e2e8f0 !important; }
+body.sv-noc .sv-dash-stats { gap: 20px; }
+body.sv-noc .sv-stat { background: #111a2e !important; border-color: #1e293b !important; padding: 26px 24px; }
+body.sv-noc .sv-stat .num { font-size: 56px !important; color: #fff !important; }
+body.sv-noc .sv-stat .label { font-size: 14px !important; color: #94a3b8 !important; }
+body.sv-noc .sv-dash-card { background: #111a2e !important; border-color: #1e293b !important; color: #cbd5e1; }
+body.sv-noc .sv-status-dot { transform: scale(1.5); }
+
 /* ── Devices: 7-day uptime sparkline + recent-alert badge ─────── */
 .sv-spark { display: flex; align-items: flex-end; gap: 2px; height: 24px; width: 40px; flex: none; }
 .sv-spark .bar { flex: 1; min-width: 3px; border-radius: 1px; background: var(--sv-unknown); }

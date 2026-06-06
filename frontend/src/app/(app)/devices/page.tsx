@@ -118,6 +118,17 @@ function fmtPct(p: number | null): string {
   return p != null ? `${Number(p).toFixed(0)}%` : '—';
 }
 
+// Rich status-dot tooltip, e.g. "Up — last seen 2m ago, 15ms".
+function statusTooltip(d: Device): string {
+  const s = (d.current_status || 'unknown').toLowerCase();
+  const seen = d.last_seen_at ? fmtRel(d.last_seen_at) : 'never';
+  const ms = d.last_response_ms != null ? `${Number(d.last_response_ms).toFixed(0)}ms` : null;
+  if (s === 'up') return `Up — last seen ${seen}${ms ? `, ${ms}` : ''}`;
+  if (s === 'down') return `Down — last seen ${seen}`;
+  if (s === 'warning') return `Warning${ms ? ` — ${ms}` : ''} — last seen ${seen}`;
+  return `Unknown — last seen ${seen}`;
+}
+
 export default function DevicesPage() {
   const { canEdit } = useRbac();
   const [q, setQ] = useState('');
@@ -382,7 +393,7 @@ function DeviceRow({
     <div className="sv-dev-row">
       {device.alert_suppressed
         ? <span className="sv-badge suppressed" title="Alerts suppressed — site gateway is down">suppressed</span>
-        : <StatusDot status={device.current_status} />}
+        : <StatusDot status={device.current_status} title={statusTooltip(device)} />}
       <div className="sv-dev-id">
         <div className="nm" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           <Link href={`/devices/${device.id}`} style={{ color: 'var(--sv-crimson)' }}>

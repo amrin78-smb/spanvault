@@ -112,6 +112,41 @@ function availTrend(points: TrendPoint[] | null | undefined): 'up' | 'down' | 'f
   return 'flat';
 }
 
+// ── NOC fullscreen toggle (top-level component) ────────────────
+// Enters browser fullscreen and applies a dark high-contrast theme via a body
+// class. Escape (native fullscreen exit) is handled by the fullscreenchange
+// listener, which clears the class.
+function NocViewButton() {
+  const [on, setOn] = useState(false);
+  useEffect(() => {
+    function sync() {
+      const fs = !!document.fullscreenElement;
+      setOn(fs);
+      document.body.classList.toggle('sv-noc', fs);
+    }
+    document.addEventListener('fullscreenchange', sync);
+    return () => {
+      document.removeEventListener('fullscreenchange', sync);
+      document.body.classList.remove('sv-noc');
+    };
+  }, []);
+  async function toggle() {
+    if (document.fullscreenElement) {
+      try { await document.exitFullscreen(); } catch (_e) { /* ignore */ }
+      document.body.classList.remove('sv-noc');
+      setOn(false);
+    } else {
+      try { await document.documentElement.requestFullscreen(); }
+      catch (_e) { document.body.classList.add('sv-noc'); setOn(true); } // fallback: themed, not fullscreen
+    }
+  }
+  return (
+    <button className="sv-btn ghost" onClick={toggle} title="NOC fullscreen view (Esc to exit)">
+      📺 {on ? 'Exit NOC' : 'NOC View'}
+    </button>
+  );
+}
+
 export default function DashboardPage() {
   const { canManageAgents } = useRbac();
   const { state: licenseState, loading: licenseLoading } = useLicense();
@@ -154,6 +189,7 @@ export default function DashboardPage() {
         <span className="sv-muted" style={{ fontSize: 13 }}>
           {updatedAt ? `Updated ${ago === 0 ? 'just now' : `${ago} second${ago === 1 ? '' : 's'} ago`}` : 'Loading…'}
         </span>
+        <NocViewButton />
       </PageHeader>
 
       {/* ── ROW 1: stat cards ───────────────────────────── */}

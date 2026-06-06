@@ -712,7 +712,7 @@ function ControllersTab() {
         </div>
       ) : (
         <div className="sv-panel" style={{ padding: 0 }}>
-          <Empty message="No wireless controllers configured yet." />
+          <Empty message="No wireless controllers yet — add a wireless controller to get started →" />
         </div>
       )}
 
