@@ -1218,6 +1218,31 @@ app.post('/api/agents/:id/sites', wrap(async (req, res) => {
 // ══════════════════════════════════════════════════════════════
 // Alerts
 // ══════════════════════════════════════════════════════════════
+// Some alert columns/tables are added by later migrations (alerts.note,
+// alerts.incident_id, the incidents table). On a DB where schema.sql hasn't been
+// re-applied yet, referencing them 500s. Probe once and build the SELECT to suit
+// whatever exists, so the endpoint works before and after the migration.
+let alertCaps = null;
+async function getAlertCaps() {
+  if (alertCaps) return alertCaps;
+  try {
+    const r = await sv.query(`
+      SELECT
+        EXISTS (SELECT 1 FROM information_schema.columns
+                 WHERE table_name = 'alerts' AND column_name = 'note') AS has_note,
+        EXISTS (SELECT 1 FROM information_schema.columns
+                 WHERE table_name = 'alerts' AND column_name = 'incident_id') AS has_incident_id,
+        EXISTS (SELECT 1 FROM information_schema.tables
+                 WHERE table_name = 'incidents') AS has_incidents
+    `);
+    alertCaps = r.rows[0] || { has_note: false, has_incident_id: false, has_incidents: false };
+  } catch (_e) {
+    // If the probe itself fails, assume the optional pieces are absent.
+    alertCaps = { has_note: false, has_incident_id: false, has_incidents: false };
+  }
+  return alertCaps;
+}
+
 app.get('/api/alerts', wrap(async (req, res) => {
   const { status, severity, device_id } = req.query;
   const where = [];
@@ -1228,16 +1253,23 @@ app.get('/api/alerts', wrap(async (req, res) => {
   const alSc = siteFilterClause(getSiteFilter(req), params, 'd.site_id');
   if (alSc) where.push(alSc);
   const limit = safeInt(req.query.limit, 200, 1000);
+
+  const caps = await getAlertCaps();
+  const noteSel = caps.has_note ? `COALESCE(a.note, '') AS note` : `'' AS note`;
+  const incIdSel = caps.has_incident_id ? `a.incident_id` : `NULL::int AS incident_id`;
+  const incJoin = caps.has_incidents && caps.has_incident_id;
+  const incTitleSel = incJoin ? `inc.title AS incident_title` : `NULL::text AS incident_title`;
+
   const rows = await sv.query(`
     SELECT a.id, a.device_id, d.name AS device_name, d.ip_address,
            a.alert_type, a.severity, a.message, a.metric_value,
            a.triggered_at, a.acknowledged_at, a.acknowledged_by, a.resolved_at, a.status,
-           a.note, a.incident_id, inc.title AS incident_title,
+           ${noteSel}, ${incIdSel}, ${incTitleSel},
            a.suppressed_by, a.suppression_reason, sb.name AS suppressed_by_name
     FROM alerts a
     LEFT JOIN monitored_devices d  ON d.id = a.device_id
     LEFT JOIN monitored_devices sb ON sb.id = a.suppressed_by
-    LEFT JOIN incidents inc        ON inc.id = a.incident_id
+    ${incJoin ? 'LEFT JOIN incidents inc ON inc.id = a.incident_id' : ''}
     ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
     ORDER BY a.triggered_at DESC
     LIMIT ${limit}
@@ -1250,11 +1282,13 @@ app.post('/api/alerts/:id/acknowledge', wrap(async (req, res) => {
   const by = (req.body && req.body.acknowledged_by) || 'unknown';
   const note = req.body && typeof req.body.note === 'string' && req.body.note.trim()
     ? req.body.note.trim() : null;
+  // Only write the note column if it exists yet (it's a later migration).
+  const caps = await getAlertCaps();
+  const setNote = caps.has_note ? ', note = COALESCE($3, note)' : '';
   const r = await sv.query(`
-    UPDATE alerts SET status = 'acknowledged', acknowledged_at = NOW(), acknowledged_by = $2,
-                      note = COALESCE($3, note)
+    UPDATE alerts SET status = 'acknowledged', acknowledged_at = NOW(), acknowledged_by = $2${setNote}
     WHERE id = $1 AND status = 'active' RETURNING *
-  `, [id, by, note]);
+  `, caps.has_note ? [id, by, note] : [id, by]);
   if (!r.rows[0]) return res.status(404).json({ error: 'Active alert not found' });
   res.json(r.rows[0]);
 }));
