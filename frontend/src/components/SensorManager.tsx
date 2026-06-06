@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { apiGet, apiSend } from '@/lib/api';
 import { Loading, ErrorBox } from '@/components/ui';
 
@@ -26,10 +26,72 @@ const CAT_LABEL: Record<string, string> = {
   system: 'System', interface: 'Interfaces', vendor: 'Vendor-specific',
 };
 
+// Direction display order within an interface group (In → Out → Status).
+const DIR_ORDER: Record<string, number> = { In: 0, Out: 1, Status: 2 };
+
 function groupByCat(list: Avail[]): Record<string, Avail[]> {
   const g: Record<string, Avail[]> = {};
   for (const it of list) (g[it.category] = g[it.category] || []).push(it);
   return g;
+}
+
+// An interface group bundles the In/Out/Status sensors of one physical
+// interface behind a single checkbox (PRTG-style). Keys look like
+// "if_<idx>_in|out|status"; base_name like "ethernet1/1 — In".
+type IfGroup = { id: string; name: string; meta: string; members: Avail[] };
+
+// Grouping id shared by an interface's sensors: the "if_<idx>" prefix.
+function ifGroupId(it: Avail): string {
+  const m = /^(if_\d+)_/.exec(it.key);
+  return m ? m[1] : it.key;
+}
+
+// Bare interface name with the " — In/Out/Status" direction suffix stripped.
+function ifBaseName(it: Avail): string {
+  const src = it.base_name || it.name;
+  const m = /^(.*?)\s+—\s+(In|Out|Status)\b/.exec(src);
+  return (m ? m[1] : src).trim();
+}
+
+// The sensor's direction label, derived from its key suffix.
+function ifDir(it: Avail): string {
+  const m = /^if_\d+_(\w+)$/.exec(it.key);
+  const s = m ? m[1] : '';
+  return s === 'in' ? 'In' : s === 'out' ? 'Out' : s === 'status' ? 'Status' : s;
+}
+
+function groupInterfaces(items: Avail[]): IfGroup[] {
+  const map = new Map<string, IfGroup>();
+  for (const it of items) {
+    const id = ifGroupId(it);
+    let g = map.get(id);
+    if (!g) { g = { id, name: ifBaseName(it), meta: it.meta || '', members: [] }; map.set(id, g); }
+    if (!g.meta && it.meta) g.meta = it.meta;
+    g.members.push(it);
+  }
+  for (const g of map.values()) {
+    g.members.sort((a, b) => (DIR_ORDER[ifDir(a)] ?? 9) - (DIR_ORDER[ifDir(b)] ?? 9));
+  }
+  return Array.from(map.values());
+}
+
+// "In · Out · Status" — what monitoring a given set of interface sensors covers.
+function dirsLabel(members: Avail[]): string {
+  return members
+    .map(ifDir)
+    .filter(Boolean)
+    .sort((a, b) => (DIR_ORDER[a] ?? 9) - (DIR_ORDER[b] ?? 9))
+    .join(' · ');
+}
+
+// Checkbox that can render the tri-state "indeterminate" look (some-but-not-all
+// of a group selected). Top-level component so it isn't remounted each render.
+function IndeterminateCheckbox({ checked, indeterminate, onChange }: {
+  checked: boolean; indeterminate: boolean; onChange: () => void;
+}) {
+  const ref = useRef<HTMLInputElement>(null);
+  useEffect(() => { if (ref.current) ref.current.indeterminate = indeterminate; }, [indeterminate]);
+  return <input ref={ref} type="checkbox" checked={checked} onChange={onChange} />;
 }
 
 /**
@@ -121,6 +183,17 @@ export default function SensorManager({
     });
   }
 
+  // Toggle a whole interface group at once: if every member is already on,
+  // turn them all off; otherwise turn them all on (covers the partial case).
+  function toggleGroup(members: Avail[]) {
+    setSelected((prev) => {
+      const n = new Set(prev);
+      const allSel = members.every((m) => n.has(m.key));
+      for (const m of members) { if (allSel) n.delete(m.key); else n.add(m.key); }
+      return n;
+    });
+  }
+
   async function save() {
     setSaving(true);
     setErr(null);
@@ -170,17 +243,34 @@ export default function SensorManager({
                 CAT_ORDER.filter((c) => leftGroups[c]?.length).map((cat) => (
                   <div key={cat} className="sv-sensor-group">
                     <div className="sv-sensor-group-title">{CAT_LABEL[cat]}</div>
-                    {leftGroups[cat].map((it) => (
-                      <label key={it.key} className="sv-sensor-item">
-                        <input type="checkbox" checked={selected.has(it.key)} onChange={() => toggle(it.key)} />
-                        <span className="sv-sensor-info">
-                          <span className="nm">{it.base_name || it.name}</span>
-                          {it.meta && <span className="meta">{it.meta}</span>}
-                        </span>
-                        {it.current_value !== undefined && <span className="val">{it.current_value}</span>}
-                        <span className="oid">{it.oid || ''}</span>
-                      </label>
-                    ))}
+                    {cat === 'interface'
+                      ? groupInterfaces(leftGroups[cat]).map((g) => {
+                          const allSel = g.members.every((m) => selected.has(m.key));
+                          const someSel = g.members.some((m) => selected.has(m.key));
+                          return (
+                            <label key={g.id} className="sv-sensor-item">
+                              <IndeterminateCheckbox
+                                checked={allSel}
+                                indeterminate={someSel && !allSel}
+                                onChange={() => toggleGroup(g.members)}
+                              />
+                              <span className="sv-sensor-info">
+                                <span className="nm">{g.name}{g.meta ? ` · ${g.meta}` : ''}</span>
+                                <span className="meta">{dirsLabel(g.members)}</span>
+                              </span>
+                            </label>
+                          );
+                        })
+                      : leftGroups[cat].map((it) => (
+                          <label key={it.key} className="sv-sensor-item">
+                            <input type="checkbox" checked={selected.has(it.key)} onChange={() => toggle(it.key)} />
+                            <span className="sv-sensor-info">
+                              <span className="nm">{it.base_name || it.name}</span>
+                              {it.meta && <span className="meta">{it.meta}</span>}
+                            </span>
+                            {it.current_value !== undefined && <span className="val">{it.current_value}</span>}
+                          </label>
+                        ))}
                   </div>
                 ))
               )}
@@ -194,16 +284,26 @@ export default function SensorManager({
                 CAT_ORDER.filter((c) => rightGroups[c]?.length).map((cat) => (
                   <div key={cat} className="sv-sensor-group">
                     <div className="sv-sensor-group-title">{CAT_LABEL[cat]}</div>
-                    {rightGroups[cat].map((it) => (
-                      <div key={it.key} className="sv-sensor-item enabled">
-                        <span className="sv-sensor-info">
-                          <span className="nm">{it.base_name || it.name}</span>
-                          {it.meta && <span className="meta">{it.meta}</span>}
-                        </span>
-                        {it.current_value !== undefined && <span className="val">{it.current_value}</span>}
-                        <button className="sv-btn ghost sm" onClick={() => toggle(it.key)}>Remove</button>
-                      </div>
-                    ))}
+                    {cat === 'interface'
+                      ? groupInterfaces(rightGroups[cat]).map((g) => (
+                          <div key={g.id} className="sv-sensor-item enabled">
+                            <span className="sv-sensor-info">
+                              <span className="nm">{g.name} ({dirsLabel(g.members)})</span>
+                              {g.meta && <span className="meta">{g.meta}</span>}
+                            </span>
+                            <button className="sv-btn ghost sm" onClick={() => toggleGroup(g.members)}>Remove</button>
+                          </div>
+                        ))
+                      : rightGroups[cat].map((it) => (
+                          <div key={it.key} className="sv-sensor-item enabled">
+                            <span className="sv-sensor-info">
+                              <span className="nm">{it.base_name || it.name}</span>
+                              {it.meta && <span className="meta">{it.meta}</span>}
+                            </span>
+                            {it.current_value !== undefined && <span className="val">{it.current_value}</span>}
+                            <button className="sv-btn ghost sm" onClick={() => toggle(it.key)}>Remove</button>
+                          </div>
+                        ))}
                   </div>
                 ))
               )}
