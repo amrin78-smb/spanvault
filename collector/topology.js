@@ -20,6 +20,13 @@ const LLDP_REMOTE_PORTDESC   = '1.0.8802.1.1.2.1.4.1.1.8';
 const LLDP_REMOTE_MGMT_ADDR  = '1.0.8802.1.1.2.1.4.2.1.3';
 const LLDP_LOCAL_PORTDESC    = '1.0.8802.1.1.2.1.7.1.1.4';
 const LLDP_REMOTE_SYSDESC    = '1.0.8802.1.1.2.1.4.1.1.10';
+const LLDP_REMOTE_CHASSISID      = '1.0.8802.1.1.2.1.4.1.1.5'; // neighbor chassis id (often a MAC)
+const LLDP_REMOTE_CHASSIS_SUBTYPE = '1.0.8802.1.1.2.1.4.1.1.4'; // chassis id subtype (4 = macAddress)
+
+// ipNetToMediaTable (ARP) of the FROM device — used to resolve a neighbor's IP
+// from its chassis MAC when LLDP doesn't carry a management address.
+const IP_NET_TO_MEDIA_PHYS    = '1.3.6.1.2.1.4.22.1.2';        // ipNetToMediaPhysAddress (MAC)
+const IP_NET_TO_MEDIA_NETADDR = '1.3.6.1.2.1.4.22.1.3';        // ipNetToMediaNetAddress (IP)
 
 // CDP OID prefixes (Cisco only)
 const CDP_NEIGHBOR_DEVICEID  = '1.3.6.1.4.1.9.9.23.1.2.1.1.6';
@@ -67,15 +74,88 @@ function createSession(device) {
   );
 }
 
+// Normalise a MAC (6-byte SNMP OCTET STRING, or a "aa:bb:.." style string) to
+// 12 lowercase hex chars with no separators — the key shape for ARP matching.
+function macHex(val) {
+  if (Buffer.isBuffer(val) && val.length === 6) {
+    return Array.from(val).map((b) => b.toString(16).padStart(2, '0')).join('');
+  }
+  if (typeof val === 'string') {
+    const hex = val.replace(/[^0-9a-fA-F]/g, '').toLowerCase();
+    if (hex.length === 12) return hex;
+  }
+  return null;
+}
+
+// Coerce an SNMP IpAddress value (4-byte buffer or dotted string) to "a.b.c.d".
+function ipFromBuf(val) {
+  if (Buffer.isBuffer(val) && val.length === 4) return Array.from(val).join('.');
+  const s = val == null ? '' : val.toString();
+  return /^\d{1,3}(\.\d{1,3}){3}$/.test(s) ? s : null;
+}
+
+// The IP is also embedded in the ipNetToMedia index suffix (ifIndex.a.b.c.d).
+function ipFromArpSuffix(suffix) {
+  const p = suffix.split('.');
+  if (p.length < 5) return null;
+  return p.slice(-4).join('.');
+}
+
+// Build a MAC→IP map from the FROM device's ARP table. Correlates
+// ipNetToMediaPhysAddress (the MAC) with ipNetToMediaNetAddress (the IP) by
+// their shared index suffix; falls back to the IP encoded in the OID index.
+function buildArpMap(arpPhys, arpNet) {
+  const ipBySuffix = {};
+  for (const [oid, val] of Object.entries(arpNet)) {
+    const suffix = oid.slice(IP_NET_TO_MEDIA_NETADDR.length + 1);
+    ipBySuffix[suffix] = ipFromBuf(val) || ipFromArpSuffix(suffix);
+  }
+  const macToIp = {};
+  for (const [oid, val] of Object.entries(arpPhys)) {
+    const suffix = oid.slice(IP_NET_TO_MEDIA_PHYS.length + 1);
+    const mac = macHex(val);
+    if (!mac) continue;
+    const ip = ipBySuffix[suffix] || ipFromArpSuffix(suffix);
+    if (ip) macToIp[mac] = ip;
+  }
+  return macToIp;
+}
+
+// Parse the LLDP management-address TLV table into timemark.localport → IPv4.
+// The neighbor's IP is encoded in the OID index as:
+//   <timemark>.<localPort>.<remIndex>.<addrSubtype>.<addrLen>.<o1>.<o2>.<o3>.<o4>
+// addrSubtype 1 = IPv4. Keyed to match the entries map (timemark.localport).
+function parseLldpMgmtAddrs(mgmtAddrs) {
+  const out = {};
+  for (const oid of Object.keys(mgmtAddrs)) {
+    const p = oid.slice(LLDP_REMOTE_MGMT_ADDR.length + 1).split('.');
+    if (p.length < 9) continue;
+    if (p[3] !== '1' || p[4] !== '4') continue; // IPv4 only
+    const key = `${p[0]}.${p[1]}`;
+    if (!out[key]) out[key] = p.slice(5, 9).join('.');
+  }
+  return out;
+}
+
 async function discoverLldpNeighbors(device) {
   const session = createSession(device);
   const neighbors = [];
   try {
-    const [sysnames, portdescs, localports] = await Promise.all([
+    const [sysnames, portdescs, localports, chassisIds, chassisSubtypes, mgmtAddrs, arpPhys, arpNet] = await Promise.all([
       walkOid(session, LLDP_REMOTE_SYSNAME),
       walkOid(session, LLDP_REMOTE_PORTDESC),
       walkOid(session, LLDP_LOCAL_PORTDESC),
+      walkOid(session, LLDP_REMOTE_CHASSISID),
+      walkOid(session, LLDP_REMOTE_CHASSIS_SUBTYPE),
+      walkOid(session, LLDP_REMOTE_MGMT_ADDR),
+      walkOid(session, IP_NET_TO_MEDIA_PHYS),
+      walkOid(session, IP_NET_TO_MEDIA_NETADDR),
     ]);
+
+    // ARP MAC→IP map of this (FROM) device — fallback IP resolution.
+    const macToIp = buildArpMap(arpPhys, arpNet);
+    // Management-address TLV IPs, when the neighbor advertises them.
+    const mgmtIpByKey = parseLldpMgmtAddrs(mgmtAddrs);
 
     // Group by lldpRemTimeMark.lldpRemLocalPortNum.lldpRemIndex
     const entries = {};
@@ -91,6 +171,18 @@ async function discoverLldpNeighbors(device) {
       const key = parts.slice(-3, -1).join('.');
       if (entries[key]) entries[key].neighborPort = val.toString();
     }
+    // Chassis id subtype per entry (only subtype 4 = macAddress is a real MAC).
+    const chassisSubtypeByKey = {};
+    for (const [oid, val] of Object.entries(chassisSubtypes)) {
+      const parts = oid.split('.');
+      chassisSubtypeByKey[parts.slice(-3, -1).join('.')] = Number(val);
+    }
+    // Neighbor chassis MAC (lldpRemChassisId) — only when subtype is macAddress.
+    for (const [oid, val] of Object.entries(chassisIds)) {
+      const parts = oid.split('.');
+      const key = parts.slice(-3, -1).join('.');
+      if (entries[key] && chassisSubtypeByKey[key] === 4) entries[key].neighborMac = macHex(val);
+    }
 
     // Get local port descriptions
     const localPortMap = {};
@@ -101,11 +193,15 @@ async function discoverLldpNeighbors(device) {
 
     for (const [key, entry] of Object.entries(entries)) {
       if (entry.neighborName) {
+        // Prefer the management-address TLV IP; fall back to the ARP-resolved IP
+        // via the neighbor's chassis MAC (HPE/Aruba usually omit the TLV).
+        const arpIp = entry.neighborMac ? (macToIp[entry.neighborMac] || null) : null;
         neighbors.push({
           protocol: 'lldp',
           localPort: localPortMap[entry.portNum] || `port${entry.portNum}`,
           neighborName: entry.neighborName,
           neighborPort: entry.neighborPort || '',
+          neighborIp: mgmtIpByKey[key] || arpIp || null,
         });
       }
     }
