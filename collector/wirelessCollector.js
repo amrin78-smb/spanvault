@@ -148,8 +148,23 @@ async function upsertAp(pool, controller, ap) {
 }
 
 // ── Auto-detection of SNMP wireless controllers ───────────────
-// Any monitored, SNMP-enabled device whose detected vendor maps to a wireless
-// parser gets a wireless_controller (snmp_device_id) created once.
+// SQL predicate (on the given device_type column) that identifies genuine
+// wireless gear — a WLC, an access point, or anything tagged wireless/wifi.
+// Vendor alone is NOT sufficient: a Cisco/Aruba router or switch is not a
+// wireless controller, so device_type must confirm wireless capability.
+function wirelessTypeClause(col) {
+  return `(
+       ${col} ILIKE '%wireless%'
+    OR ${col} ILIKE '%wifi%'
+    OR ${col} ILIKE '%access point%'
+    OR ${col} ILIKE '%wlc%'
+  )`;
+}
+
+// A monitored, SNMP-enabled device gets a wireless_controller (snmp_device_id)
+// created once ONLY when its device_type indicates wireless gear AND its vendor
+// maps to a wireless parser. Routers/switches/firewalls are skipped regardless
+// of vendor.
 async function autoDetectControllers(pool) {
   let created = 0;
   try {
@@ -157,6 +172,7 @@ async function autoDetectControllers(pool) {
       SELECT id, name, device_vendor, site_id, site_name
       FROM monitored_devices
       WHERE active = TRUE AND snmp_enabled = TRUE AND device_vendor IS NOT NULL
+        AND device_type IS NOT NULL AND ${wirelessTypeClause('device_type')}
         AND id NOT IN (SELECT snmp_device_id FROM wireless_controllers WHERE snmp_device_id IS NOT NULL)
     `);
     for (const d of r.rows) {
@@ -174,6 +190,31 @@ async function autoDetectControllers(pool) {
     console.error('[wireless] auto-detect failed:', err.message);
   }
   if (created) log(`auto-created ${created} SNMP wireless controller(s)`);
+}
+
+// Remove wireless_controller rows that were auto-created (name ends "(wireless)",
+// no API URL, linked to an SNMP device) whose linked device's device_type is NOT
+// wireless — i.e. the over-aggressive entries created before the device_type
+// guard existed (e.g. routers/switches like the ITC-SK *MPLS links). Their APs
+// cascade-delete via the wireless_aps FK. Manually-configured controllers (with
+// a controller_url, or without the "(wireless)" suffix) are left untouched.
+async function cleanupBadAutoControllers(pool) {
+  try {
+    const r = await pool.query(`
+      DELETE FROM wireless_controllers wc
+      USING monitored_devices d
+      WHERE wc.snmp_device_id = d.id
+        AND wc.controller_url IS NULL
+        AND wc.name LIKE '% (wireless)'
+        AND (d.device_type IS NULL OR NOT ${wirelessTypeClause('d.device_type')})
+      RETURNING wc.name
+    `);
+    if (r.rowCount) {
+      log(`removed ${r.rowCount} mis-detected wireless controller(s): ${r.rows.map((x) => x.name).join(', ')}`);
+    }
+  } catch (err) {
+    console.error('[wireless] cleanup of mis-detected controllers failed:', err.message);
+  }
 }
 
 // ── Per-controller poll ───────────────────────────────────────
@@ -242,9 +283,14 @@ async function testController(pool, controller) {
 // Start the wireless collector on a 5-minute cadence (first pass after 20s so
 // the initial NetVault sync + vendor detection has a chance to populate).
 function startWirelessCollector(pool) {
+  // One-shot startup cleanup of previously mis-detected (non-wireless) controllers.
+  cleanupBadAutoControllers(pool).catch((e) => console.error('[wireless] startup cleanup:', e.message));
   setTimeout(() => pollAll(pool), 20 * 1000);
   setInterval(() => pollAll(pool), 5 * 60 * 1000);
   log('wireless collector started (every 5 min)');
 }
 
-module.exports = { startWirelessCollector, pollAll, pollController, upsertAp, autoDetectControllers, testController };
+module.exports = {
+  startWirelessCollector, pollAll, pollController, upsertAp,
+  autoDetectControllers, cleanupBadAutoControllers, testController,
+};
