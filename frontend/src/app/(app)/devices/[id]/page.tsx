@@ -610,30 +610,27 @@ function calColor(d: CalDay | undefined): string {
   if (pct < 99.9) return 'var(--sv-warning)';
   return 'var(--sv-up)';
 }
+// Format a 'YYYY-MM-DD' day string for display (parsed as a plain calendar date).
+function dayLabel(day: string): string {
+  const [y, m, d] = day.split('-').map(Number);
+  if (!y || !m || !d) return day;
+  return new Date(y, m - 1, d).toLocaleDateString([], { month: 'short', day: 'numeric' });
+}
 function UptimeCalendar({ deviceId }: { deviceId: number }) {
   const cal = useApi<CalDay[]>(`/api/devices/${deviceId}/uptime-calendar?days=90`, 0);
-  const DAYS = 90;
-  const byDay = new Map<string, CalDay>();
-  for (const r of cal.data || []) byDay.set(r.day, r);
-  // Build a contiguous 90-day window ending today; fill gaps as "no data".
-  const cells: { key: string; label: string; d: CalDay | undefined }[] = [];
-  const today = new Date();
-  for (let i = DAYS - 1; i >= 0; i--) {
-    const dt = new Date(today);
-    dt.setDate(today.getDate() - i);
-    const key = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
-    const label = dt.toLocaleDateString([], { month: 'short', day: 'numeric' });
-    cells.push({ key, label, d: byDay.get(key) });
-  }
+  // The API returns a complete, ordered day series (gaps already filled), so we
+  // render it directly — no client-side date keying / timezone matching.
+  const days = cal.data || [];
+  if (!days.length) return null;
   return (
     <div className="sv-panel" style={{ marginBottom: 18 }}>
       <h2 style={{ marginTop: 0 }}>90-day availability</h2>
       <div className="sv-uptime-cal">
-        {cells.map((c) => {
-          const tip = c.d && c.d.total_checks
-            ? `${c.label} — ${c.d.uptime_pct ?? 100}% uptime, ${c.d.incidents} incident${c.d.incidents === 1 ? '' : 's'}`
-            : `${c.label} — no data`;
-          return <span key={c.key} className="sv-uptime-day" style={{ background: calColor(c.d) }} title={tip} />;
+        {days.map((c) => {
+          const tip = c.total_checks
+            ? `${dayLabel(c.day)} — ${c.uptime_pct ?? 100}% uptime, ${c.incidents} incident${c.incidents === 1 ? '' : 's'}`
+            : `${dayLabel(c.day)} — no data`;
+          return <span key={c.day} className="sv-uptime-day" style={{ background: calColor(c) }} title={tip} />;
         })}
       </div>
     </div>

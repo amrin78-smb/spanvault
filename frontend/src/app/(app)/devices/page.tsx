@@ -425,23 +425,18 @@ function DeviceRow({
 }
 
 // ── 7-day uptime sparkline (top-level component) ───────────────
+// The API returns ascending daily-uptime entries (only days with data). We take
+// the most recent 7 and left-pad with "no data" — no client date math.
 function Sparkline({ spark }: { spark: SparkDay[] | null }) {
-  const by = new Map<string, number | null>();
-  for (const s of spark || []) by.set(s.day, s.uptime == null ? null : Number(s.uptime));
-  const cells: { key: string; up: number | null }[] = [];
-  const today = new Date();
-  for (let i = 6; i >= 0; i--) {
-    const dt = new Date(today);
-    dt.setDate(today.getDate() - i);
-    const key = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
-    cells.push({ key, up: by.has(key) ? (by.get(key) ?? null) : null });
-  }
+  const recent = (spark || []).slice(-7);
+  const ups: (number | null)[] = recent.map((s) => (s.uptime == null ? null : Number(s.uptime)));
+  while (ups.length < 7) ups.unshift(null);
   return (
     <div className="sv-spark" title="7-day uptime">
-      {cells.map((c) => {
-        const cls = c.up == null ? 'na' : c.up >= 99 ? 'ok' : c.up >= 90 ? 'warn' : 'bad';
-        const h = c.up == null ? 35 : Math.max(20, Math.min(100, c.up));
-        return <span key={c.key} className={`bar ${cls}`} style={{ height: `${h}%` }} />;
+      {ups.map((up, i) => {
+        const cls = up == null ? 'na' : up >= 99 ? 'ok' : up >= 90 ? 'warn' : 'bad';
+        const h = up == null ? 35 : Math.max(20, Math.min(100, up));
+        return <span key={i} className={`bar ${cls}`} style={{ height: `${h}%` }} />;
       })}
     </div>
   );

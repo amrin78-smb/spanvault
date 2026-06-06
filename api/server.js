@@ -596,8 +596,14 @@ app.get('/api/devices/:id/alerts', wrap(async (req, res) => {
 app.get('/api/devices/:id/uptime-calendar', wrap(async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const days = safeInt(req.query.days, 90, 366);
+  // Return a complete, ordered day series (gaps filled with nulls) so the client
+  // renders it directly with no date-key matching — avoids client/DB timezone skew.
   const r = await sv.query(`
-    WITH pings AS (
+    WITH series AS (
+      SELECT generate_series(date_trunc('day', NOW()) - (($2 - 1) || ' days')::interval,
+                             date_trunc('day', NOW()), INTERVAL '1 day') AS d
+    ),
+    pings AS (
       SELECT date_trunc('day', ts) AS d,
              COUNT(*) AS total_checks,
              SUM(CASE WHEN status <> 'up' THEN 1 ELSE 0 END) AS bad
@@ -605,19 +611,22 @@ app.get('/api/devices/:id/uptime-calendar', wrap(async (req, res) => {
       WHERE device_id = $1 AND ts >= date_trunc('day', NOW()) - (($2 - 1) || ' days')::interval
       GROUP BY 1
     ),
-    incidents AS (
+    inc AS (
       SELECT date_trunc('day', triggered_at) AS d, COUNT(*) AS incidents
       FROM alerts
       WHERE device_id = $1 AND alert_type = 'device_down'
         AND triggered_at >= date_trunc('day', NOW()) - (($2 - 1) || ' days')::interval
       GROUP BY 1
     )
-    SELECT to_char(p.d, 'YYYY-MM-DD') AS day,
-           ROUND((1 - (p.bad::numeric / NULLIF(p.total_checks, 0))) * 100, 1) AS uptime_pct,
-           p.total_checks::int AS total_checks,
+    SELECT to_char(series.d, 'YYYY-MM-DD') AS day,
+           CASE WHEN p.total_checks > 0
+                THEN ROUND((1 - (p.bad::numeric / p.total_checks)) * 100, 1) ELSE NULL END AS uptime_pct,
+           COALESCE(p.total_checks, 0)::int AS total_checks,
            COALESCE(i.incidents, 0)::int AS incidents
-    FROM pings p LEFT JOIN incidents i ON i.d = p.d
-    ORDER BY p.d
+    FROM series
+    LEFT JOIN pings p ON p.d = series.d
+    LEFT JOIN inc i   ON i.d = series.d
+    ORDER BY series.d
   `, [id, days]);
   res.json(r.rows);
 }));
@@ -653,25 +662,36 @@ app.get('/api/devices/:id/quick-stats', wrap(async (req, res) => {
 // Latest per-interface status + traffic (for the interface status panel).
 app.get('/api/devices/:id/interfaces', wrap(async (req, res) => {
   const id = parseInt(req.params.id, 10);
+  // Handles both selective metric names (if_<idx>_oper/in_bps/out_bps) and the
+  // backward-compat shared names (if_oper_status/if_in_bps/if_out_bps); both
+  // carry if_index, so group on that column. DISTINCT keeps the latest sample
+  // per (metric_name, if_index).
   const r = await sv.query(`
-    SELECT DISTINCT ON (metric_name) metric_name, if_index, if_name, value
+    SELECT DISTINCT ON (metric_name, if_index) metric_name, if_index, if_name, value
     FROM snmp_results
-    WHERE device_id = $1 AND metric_name ~ '^if_[0-9]+_(oper|in_bps|out_bps)$'
+    WHERE device_id = $1
+      AND (metric_name ~ '^if_[0-9]+_(oper|in_bps|out_bps)$'
+           OR metric_name IN ('if_oper_status', 'if_in_bps', 'if_out_bps'))
+      AND if_index IS NOT NULL
       AND ts >= NOW() - INTERVAL '1 day'
-    ORDER BY metric_name, ts DESC
+    ORDER BY metric_name, if_index, ts DESC
   `, [id]);
   const byIdx = new Map();
   for (const row of r.rows) {
-    const m = /^if_(\d+)_(oper|in_bps|out_bps)$/.exec(row.metric_name);
-    if (!m) continue;
-    const idx = Number(m[1]);
+    const idx = Number(row.if_index);
+    if (!isFinite(idx)) continue;
+    const mn = row.metric_name;
+    const kind = (mn === 'if_oper_status' || /_oper$/.test(mn)) ? 'oper'
+      : /_in_bps$/.test(mn) ? 'in'
+      : /_out_bps$/.test(mn) ? 'out' : null;
+    if (!kind) continue;
     let g = byIdx.get(idx);
     if (!g) { g = { if_index: idx, if_name: row.if_name || `if${idx}`, status: null, in_bps: null, out_bps: null }; byIdx.set(idx, g); }
     if (row.if_name && (!g.if_name || /^if\d+$/.test(g.if_name))) g.if_name = row.if_name;
     const v = row.value == null ? null : Number(row.value);
-    if (m[2] === 'oper') g.status = v == null ? 'unknown' : (v >= 0.5 ? 'up' : 'down');
-    else if (m[2] === 'in_bps') g.in_bps = v;
-    else if (m[2] === 'out_bps') g.out_bps = v;
+    if (kind === 'oper') g.status = v == null ? 'unknown' : (v >= 0.5 ? 'up' : 'down');
+    else if (kind === 'in') g.in_bps = v;
+    else if (kind === 'out') g.out_bps = v;
   }
   const order = { up: 0, down: 1, unknown: 2 };
   const list = Array.from(byIdx.values()).sort((a, b) =>
