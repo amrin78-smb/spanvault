@@ -23,6 +23,7 @@ const { detectVendor } = require('./parsers');
 const { createSession, get, OID } = require('./snmp-session');
 const { collectCandidates } = require('./discovery');
 const { discoverAndStore } = require('./topology');
+const { startWirelessCollector } = require('./wirelessCollector');
 
 // ── Crash resilience ──────────────────────────────────────────
 process.on('uncaughtException', (err) => {
@@ -804,6 +805,9 @@ async function main() {
   // Topology discovery — once shortly after startup, then every 6 hours.
   setTimeout(topologyTick, 60 * 1000);
   setInterval(topologyTick, 6 * 60 * 60 * 1000);
+
+  // Wireless controller polling (SNMP + API) on its own 5-minute cadence.
+  startWirelessCollector(sv);
 
   // Kick off an immediate first pass.
   pingTick();

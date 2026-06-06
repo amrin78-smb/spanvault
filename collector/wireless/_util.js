@@ -1,0 +1,89 @@
+'use strict';
+
+// Shared helpers for vendor wireless SNMP parsers.
+// Values from the walk helper may be a Node Buffer, a number, or a string.
+
+// num(v): decode to a finite Number, or null on failure / NaN.
+function num(v) {
+  if (v === null || v === undefined) return null;
+  if (Buffer.isBuffer(v)) v = v.toString();
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+// str(v): decode to a trimmed string, or null when empty / absent.
+function str(v) {
+  if (v === null || v === undefined) return null;
+  if (Buffer.isBuffer(v)) v = v.toString();
+  const s = String(v).trim();
+  return s.length ? s : null;
+}
+
+// indexAfter(oid, base): return the trailing portion of `oid` after `base`
+// (the table index used to correlate columns across OID walks).
+// Tolerates a leading dot on either side and a base that is/ isn't dot-terminated.
+function indexAfter(oid, base) {
+  if (!oid) return null;
+  let o = String(oid);
+  let b = String(base || '');
+  if (o[0] === '.') o = o.slice(1);
+  if (b[0] === '.') b = b.slice(1);
+  if (b && o.startsWith(b)) {
+    let rest = o.slice(b.length);
+    if (rest[0] === '.') rest = rest.slice(1);
+    return rest.length ? rest : null;
+  }
+  // Fallback: last numeric component.
+  const parts = o.split('.');
+  return parts.length ? parts[parts.length - 1] : null;
+}
+
+// Build a map { index -> value } from a walked column array given its base OID.
+function columnMap(rows, base) {
+  const out = {};
+  if (!Array.isArray(rows)) return out;
+  for (const r of rows) {
+    if (!r) continue;
+    const idx = indexAfter(r.oid, base);
+    if (idx === null) continue;
+    out[idx] = r.value;
+  }
+  return out;
+}
+
+// Map a single reported channel number onto a band: '2g' | '5g' | '6g'.
+// channel<=14 -> 2g, 15..177 -> 5g, else 6g.
+function bandForChannel(ch) {
+  const c = num(ch);
+  if (c === null) return null;
+  if (c <= 14) return '2g';
+  if (c <= 177) return '5g';
+  return '6g';
+}
+
+// A fresh WirelessAP with all the required defaults applied.
+function emptyAp() {
+  return {
+    name: null,
+    mac_address: null,
+    model: null,
+    ip_address: null,
+    status: 'unknown',
+    radio_2g_channel: null,
+    radio_5g_channel: null,
+    radio_6g_channel: null,
+    radio_2g_util_pct: null,
+    radio_5g_util_pct: null,
+    clients_2g: 0,
+    clients_5g: 0,
+    clients_6g: 0,
+    clients_total: 0,
+    tx_power_2g: null,
+    tx_power_5g: null,
+    uptime_seconds: null,
+    firmware_version: null,
+    _index: null,
+  };
+}
+
+module.exports = { num, str, indexAfter, columnMap, bandForChannel, emptyAp };

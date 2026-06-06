@@ -461,3 +461,83 @@ ALTER TABLE monitored_devices
 
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO spanvault_user;
 GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO spanvault_user;
+
+-- ══ Wireless visibility (controllers + access points) ═════════════════════════
+-- Wireless controllers are polled either via SNMP (snmp_device_id links to a
+-- monitored device whose stored SNMP credentials are reused) or via a vendor
+-- HTTP API (controller_url + credentials). API credentials are plaintext, same
+-- pattern as snmp_community — never logged. status reflects the last poll result.
+CREATE TABLE IF NOT EXISTS wireless_controllers (
+  id              SERIAL PRIMARY KEY,
+  name            TEXT NOT NULL,
+  vendor          TEXT NOT NULL,  -- aruba/cisco/fortinet/ruckus/mikrotik/hpe/grandstream/ubiquiti/omada
+  controller_url  TEXT,           -- for API-based polling
+  api_key         TEXT,           -- or username:password base64 for basic auth
+  api_username    TEXT,
+  api_password    TEXT,
+  site_id         INTEGER,
+  site_name       TEXT,
+  poll_interval_seconds INTEGER NOT NULL DEFAULT 300,
+  snmp_device_id  INTEGER REFERENCES monitored_devices(id) ON DELETE SET NULL,
+  active          BOOLEAN NOT NULL DEFAULT TRUE,
+  last_polled_at  TIMESTAMPTZ,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+-- Last poll outcome ('ok' / 'error') + error detail, surfaced in the UI.
+ALTER TABLE wireless_controllers ADD COLUMN IF NOT EXISTS status     TEXT;
+ALTER TABLE wireless_controllers ADD COLUMN IF NOT EXISTS last_error TEXT;
+-- Auto-created SNMP controllers are keyed on their device so they aren't dup'd.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_wctl_snmp_device
+  ON wireless_controllers(snmp_device_id) WHERE snmp_device_id IS NOT NULL;
+
+-- Access Points
+CREATE TABLE IF NOT EXISTS wireless_aps (
+  id               SERIAL PRIMARY KEY,
+  controller_id    INTEGER REFERENCES wireless_controllers(id) ON DELETE CASCADE,
+  monitored_device_id INTEGER REFERENCES monitored_devices(id) ON DELETE SET NULL,
+  name             TEXT NOT NULL,
+  mac_address      TEXT,
+  model            TEXT,
+  ip_address       TEXT,
+  site_id          INTEGER,
+  site_name        TEXT,
+  status           TEXT NOT NULL DEFAULT 'unknown',  -- online/offline/unknown
+  radio_2g_channel INTEGER,
+  radio_5g_channel INTEGER,
+  radio_6g_channel INTEGER,
+  radio_2g_util_pct NUMERIC,
+  radio_5g_util_pct NUMERIC,
+  clients_2g       INTEGER NOT NULL DEFAULT 0,
+  clients_5g       INTEGER NOT NULL DEFAULT 0,
+  clients_6g       INTEGER NOT NULL DEFAULT 0,
+  clients_total    INTEGER NOT NULL DEFAULT 0,
+  tx_power_2g      INTEGER,
+  tx_power_5g      INTEGER,
+  uptime_seconds   BIGINT,
+  firmware_version TEXT,
+  last_seen_at     TIMESTAMPTZ,
+  updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_wap_controller ON wireless_aps(controller_id);
+CREATE INDEX IF NOT EXISTS idx_wap_status ON wireless_aps(status);
+CREATE INDEX IF NOT EXISTS idx_wap_site ON wireless_aps(site_id);
+-- Upsert key: an AP is unique within its controller by name.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_wap_ctrl_name
+  ON wireless_aps(controller_id, name);
+
+-- Wireless time-series (AP metrics history)
+CREATE TABLE IF NOT EXISTS wireless_history (
+  id             BIGSERIAL PRIMARY KEY,
+  ap_id          INTEGER NOT NULL REFERENCES wireless_aps(id) ON DELETE CASCADE,
+  ts             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  clients_total  INTEGER,
+  clients_2g     INTEGER,
+  clients_5g     INTEGER,
+  radio_2g_util  NUMERIC,
+  radio_5g_util  NUMERIC
+);
+CREATE INDEX IF NOT EXISTS idx_wireless_hist_ap_ts
+  ON wireless_history(ap_id, ts DESC);
+
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO spanvault_user;
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO spanvault_user;

@@ -16,6 +16,7 @@ const ping     = require('ping');
 const { Pool } = require('pg');
 const { discoverDevice, snmpTest } = require('../collector/discovery');
 const topology = require('../collector/topology');
+const wireless = require('../collector/wirelessCollector');
 const { startWsServer, connectedAgents, pushConfigToAgent, pushConfigToAgentId } = require('./ws-server');
 const intelligence = require('./intelligence');
 const { getLicense, getLicenseState } = require('./licenseCheck');
@@ -1660,6 +1661,209 @@ app.post('/api/topology/apply-dependencies', wrap(async (_req, res) => {
   }
   suggestions.sort((a, b) => b.confidence - a.confidence);
   res.json({ suggestions });
+}));
+
+// ══════════════════════════════════════════════════════════════
+// Wireless visibility (controllers + access points)
+// ══════════════════════════════════════════════════════════════
+// Human-readable uptime ("3d 4h", "5h 12m", "8m").
+function fmtUptime(seconds) {
+  const s = Number(seconds);
+  if (!Number.isFinite(s) || s <= 0) return null;
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+
+// ── Controllers CRUD ──────────────────────────────────────────
+app.get('/api/wireless/controllers', wrap(async (_req, res) => {
+  const r = await sv.query(`
+    SELECT c.id, c.name, c.vendor, c.controller_url, c.api_username, c.snmp_device_id,
+           c.site_id, c.site_name, c.active, c.last_polled_at, c.status,
+           (SELECT COUNT(*)::int FROM wireless_aps a WHERE a.controller_id = c.id) AS ap_count,
+           (SELECT COALESCE(SUM(a.clients_total), 0)::int FROM wireless_aps a WHERE a.controller_id = c.id) AS client_count
+    FROM wireless_controllers c
+    ORDER BY c.name
+  `);
+  res.json(r.rows);
+}));
+
+app.post('/api/wireless/controllers', wrap(async (req, res) => {
+  const b = req.body || {};
+  if (!b.name || !b.vendor) return res.status(400).json({ error: 'name and vendor are required' });
+  const r = await sv.query(`
+    INSERT INTO wireless_controllers
+      (name, vendor, controller_url, api_key, api_username, api_password,
+       snmp_device_id, site_id, site_name, poll_interval_seconds, active)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+    RETURNING id, name, vendor, controller_url, api_username, snmp_device_id,
+              site_id, site_name, active, last_polled_at, status
+  `, [
+    b.name, b.vendor, b.controller_url || null, b.api_key || null, b.api_username || null,
+    b.api_password || null, b.snmp_device_id || null, b.site_id || null, b.site_name || null,
+    safeInt(b.poll_interval_seconds, 300), b.active === undefined ? true : !!b.active,
+  ]);
+  res.status(201).json(r.rows[0]);
+}));
+
+app.put('/api/wireless/controllers/:id', wrap(async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const b = req.body || {};
+  const allowed = ['name', 'vendor', 'controller_url', 'api_key', 'api_username', 'api_password',
+                   'snmp_device_id', 'site_id', 'site_name', 'poll_interval_seconds', 'active'];
+  const sets = [];
+  const params = [];
+  for (const k of allowed) {
+    if (b[k] !== undefined) { params.push(b[k]); sets.push(`${k} = $${params.length}`); }
+  }
+  if (!sets.length) return res.status(400).json({ error: 'No valid fields to update' });
+  params.push(id);
+  const r = await sv.query(
+    `UPDATE wireless_controllers SET ${sets.join(', ')} WHERE id = $${params.length}
+     RETURNING id, name, vendor, controller_url, api_username, snmp_device_id,
+               site_id, site_name, active, last_polled_at, status`,
+    params
+  );
+  if (!r.rows[0]) return res.status(404).json({ error: 'Controller not found' });
+  res.json(r.rows[0]);
+}));
+
+app.delete('/api/wireless/controllers/:id', wrap(async (req, res) => {
+  await sv.query(`DELETE FROM wireless_controllers WHERE id = $1`, [parseInt(req.params.id, 10)]);
+  res.json({ ok: true });
+}));
+
+// Test a controller's reachability (dry run — no DB writes).
+app.post('/api/wireless/controllers/:id/test', wrap(async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const r = await sv.query(`SELECT * FROM wireless_controllers WHERE id = $1`, [id]);
+  const controller = r.rows[0];
+  if (!controller) return res.status(404).json({ error: 'Controller not found' });
+  res.json(await wireless.testController(sv, controller));
+}));
+
+// ── Access points ─────────────────────────────────────────────
+app.get('/api/wireless/aps', wrap(async (req, res) => {
+  const where = [];
+  const params = [];
+  if (req.query.controller_id) { params.push(parseInt(req.query.controller_id, 10)); where.push(`a.controller_id = $${params.length}`); }
+  if (req.query.site_id)       { params.push(parseInt(req.query.site_id, 10));       where.push(`a.site_id = $${params.length}`); }
+  if (req.query.status)        { params.push(String(req.query.status));              where.push(`a.status = $${params.length}`); }
+  const sc = siteFilterClause(getSiteFilter(req), params, 'a.site_id');
+  if (sc) where.push(sc);
+  const r = await sv.query(`
+    SELECT a.id, a.name, a.controller_id, c.name AS controller_name, c.vendor,
+           a.monitored_device_id, a.site_id, a.site_name, a.status,
+           a.clients_total, a.clients_2g, a.clients_5g, a.clients_6g,
+           a.radio_2g_channel, a.radio_5g_channel, a.radio_6g_channel,
+           a.radio_2g_util_pct, a.radio_5g_util_pct,
+           a.ip_address, a.mac_address, a.model, a.firmware_version,
+           a.tx_power_2g, a.tx_power_5g, a.uptime_seconds, a.last_seen_at
+    FROM wireless_aps a
+    LEFT JOIN wireless_controllers c ON c.id = a.controller_id
+    ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+    ORDER BY a.site_name NULLS LAST, a.name
+  `, params);
+  res.json(r.rows.map((row) => ({ ...row, uptime_formatted: fmtUptime(row.uptime_seconds) })));
+}));
+
+app.get('/api/wireless/aps/:id', wrap(async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const r = await sv.query(`
+    SELECT a.*, c.name AS controller_name, c.vendor
+    FROM wireless_aps a LEFT JOIN wireless_controllers c ON c.id = a.controller_id
+    WHERE a.id = $1
+  `, [id]);
+  const ap = r.rows[0];
+  if (!ap) return res.status(404).json({ error: 'AP not found' });
+  const hist = await sv.query(`
+    SELECT date_bin('5 minutes', ts, TIMESTAMPTZ '2000-01-01') AS bucket,
+           ROUND(AVG(clients_total))::int AS clients_total,
+           ROUND(AVG(clients_2g))::int AS clients_2g,
+           ROUND(AVG(clients_5g))::int AS clients_5g,
+           ROUND(AVG(radio_2g_util)::numeric, 1) AS radio_2g_util,
+           ROUND(AVG(radio_5g_util)::numeric, 1) AS radio_5g_util
+    FROM wireless_history
+    WHERE ap_id = $1 AND ts >= NOW() - INTERVAL '24 hours'
+    GROUP BY bucket ORDER BY bucket
+  `, [id]);
+  res.json({ ...ap, uptime_formatted: fmtUptime(ap.uptime_seconds), history: hist.rows });
+}));
+
+// AP client/utilization history (bucketed by range).
+app.get('/api/wireless/history/:ap_id', wrap(async (req, res) => {
+  const id = parseInt(req.params.ap_id, 10);
+  const interval = rangeToInterval(req.query.range);
+  const bucket = rangeToBucket(req.query.range);
+  const r = await sv.query(`
+    SELECT date_bin($1::interval, ts, TIMESTAMPTZ '2000-01-01') AS bucket,
+           ROUND(AVG(clients_total))::int AS clients_total,
+           ROUND(AVG(clients_2g))::int AS clients_2g,
+           ROUND(AVG(clients_5g))::int AS clients_5g,
+           ROUND(AVG(radio_2g_util)::numeric, 1) AS radio_2g_util,
+           ROUND(AVG(radio_5g_util)::numeric, 1) AS radio_5g_util
+    FROM wireless_history
+    WHERE ap_id = $2 AND ts >= NOW() - $3::interval
+    GROUP BY bucket ORDER BY bucket
+  `, [bucket, id, interval]);
+  res.json(r.rows);
+}));
+
+// Wireless summary for the overview tab + dashboard card.
+app.get('/api/wireless/summary', wrap(async (req, res) => {
+  const params = [];
+  const sc = siteFilterClause(getSiteFilter(req), params, 'a.site_id');
+  const scWhere = sc ? ` WHERE ${sc}` : '';
+
+  const totals = await sv.query(`
+    SELECT COUNT(*)::int AS total_aps,
+           COUNT(*) FILTER (WHERE status = 'online')::int  AS online_aps,
+           COUNT(*) FILTER (WHERE status = 'offline')::int AS offline_aps,
+           COALESCE(SUM(clients_total), 0)::int AS total_clients
+    FROM wireless_aps a${scWhere}
+  `, params);
+
+  const bySite = await sv.query(`
+    SELECT COALESCE(a.site_id, 0) AS site_id,
+           COALESCE(a.site_name, 'Unassigned') AS site_name,
+           COUNT(*)::int AS aps,
+           COUNT(*) FILTER (WHERE a.status = 'online')::int AS online,
+           COALESCE(SUM(a.clients_total), 0)::int AS clients,
+           ROUND(AVG(GREATEST(COALESCE(a.radio_2g_util_pct,0), COALESCE(a.radio_5g_util_pct,0)))::numeric, 1) AS avg_util
+    FROM wireless_aps a${scWhere}
+    GROUP BY 1, 2 ORDER BY site_name
+  `, params);
+
+  const byController = await sv.query(`
+    SELECT c.id, c.name, c.vendor,
+           (SELECT COUNT(*)::int FROM wireless_aps a WHERE a.controller_id = c.id) AS aps,
+           (SELECT COALESCE(SUM(a.clients_total),0)::int FROM wireless_aps a WHERE a.controller_id = c.id) AS clients
+    FROM wireless_controllers c ORDER BY c.name
+  `);
+
+  const highUtil = await sv.query(`
+    SELECT a.id, a.name, a.site_name,
+           COALESCE(a.radio_5g_channel, a.radio_2g_channel) AS channel,
+           GREATEST(COALESCE(a.radio_2g_util_pct,0), COALESCE(a.radio_5g_util_pct,0)) AS util_pct,
+           a.clients_total
+    FROM wireless_aps a
+    WHERE GREATEST(COALESCE(a.radio_2g_util_pct,0), COALESCE(a.radio_5g_util_pct,0)) > 80${sc ? ` AND ${sc}` : ''}
+    ORDER BY util_pct DESC LIMIT 20
+  `, params);
+
+  const t = totals.rows[0] || {};
+  res.json({
+    total_aps: t.total_aps || 0,
+    online_aps: t.online_aps || 0,
+    offline_aps: t.offline_aps || 0,
+    total_clients: t.total_clients || 0,
+    by_site: bySite.rows.map((s) => ({ ...s, avg_util: s.avg_util === null ? null : Number(s.avg_util) })),
+    by_controller: byController.rows,
+    high_utilization: highUtil.rows.map((h) => ({ ...h, util_pct: Number(h.util_pct), channel: h.channel === null ? null : Number(h.channel) })),
+  });
 }));
 
 // ══════════════════════════════════════════════════════════════

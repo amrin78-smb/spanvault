@@ -6,7 +6,7 @@ import { useEffect, useState } from 'react';
 import { useRbac } from '@/lib/rbac';
 import {
   IconDashboard, IconDevices, IconAlerts, IconReports, IconMap, IconAgents,
-  IconIntelligence, IconSettings, IconTopology,
+  IconIntelligence, IconSettings, IconTopology, IconWireless,
 } from './icons';
 
 const NAV = [
@@ -15,6 +15,7 @@ const NAV = [
   { href: '/alerts', label: 'Alerts', Icon: IconAlerts },
   { href: '/reports', label: 'Reports', Icon: IconReports },
   { href: '/maps', label: 'Maps', Icon: IconMap },
+  { href: '/wireless', label: 'Wireless', Icon: IconWireless },
   { href: '/topology', label: 'Topology', Icon: IconTopology },
   // Agents + Settings are admin-only — gated below via useRbac.
   { href: '/agents', label: 'Agents', Icon: IconAgents, requires: 'agents' as const },

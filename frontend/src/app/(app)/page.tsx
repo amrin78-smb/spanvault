@@ -172,6 +172,7 @@ export default function DashboardPage() {
           <StatLink href="/devices?status=unknown" variant="unknown" num={s.unknown} label="Unknown" />
           <StatLink href="/alerts?status=active" variant="alerts" num={s.active_alerts} label="Active Alerts" />
           <HealthScoreStat data={intel.data} />
+          <WirelessStat />
           {canManageAgents && s.agents_total > 0 && (
             <Link href="/agents" className={`sv-stat agents${s.agents_online < s.agents_total ? ' pulse' : ''}`}>
               <div className="sv-stat-top">
@@ -282,6 +283,26 @@ function HealthScoreStat({ data }: { data: Overview | null }) {
         {data && <TrendArrow trend={data.trend} />}
       </div>
       <div className="label">Health Score</div>
+    </Link>
+  );
+}
+
+// ── Wireless stat card (top-level component) ───────────────────
+// Self-contained: fetches the wireless summary and links to /wireless. Hidden
+// until at least one AP exists, and pulses when any AP is offline.
+type WirelessSummaryLite = { total_aps: number; online_aps: number; offline_aps: number };
+
+function WirelessStat() {
+  const wifi = useApi<WirelessSummaryLite>('/api/wireless/summary', REFRESH_MS);
+  const w = wifi.data;
+  if (!w || !w.total_aps) return null;
+  const c = w.offline_aps > 0 ? 'var(--sv-down)' : 'var(--sv-up)';
+  return (
+    <Link href="/wireless" className={`sv-stat${w.offline_aps > 0 ? ' pulse' : ''}`} style={{ borderLeftColor: c }}>
+      <div className="sv-stat-top">
+        <span className="num">{w.online_aps}/{w.total_aps}</span>
+      </div>
+      <div className="label">Wireless APs Online</div>
     </Link>
   );
 }
