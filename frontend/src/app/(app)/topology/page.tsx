@@ -67,16 +67,12 @@ interface DependencySuggestion {
   confidence: number;
 }
 
-// A neighbor device with all the individual port-level links that reach it.
-interface NeighborGroup {
+// A monitored (from-) device with all the neighbor links it discovered.
+interface FromDeviceGroup {
   key: string;
-  monitored: boolean;
-  to_device_id: number | null;
-  name: string;
-  ip: string | null;
-  protocols: string[];
-  from_site_id: number | null;
-  from_site: string | null;
+  from_device_id: number;
+  from_device_name: string;
+  from_ip: string;
   last_seen_at: string;
   links: TopologyLink[];
 }
@@ -375,56 +371,42 @@ function ApplyToMapModal({
   );
 }
 
-// Group raw links by the neighbor (to-) device they reach. Monitored neighbors
-// key on to_device_id; unmonitored ones on their IP/name.
-function neighborKey(r: TopologyLink): string {
-  if (r.to_device_id != null) return `dev:${r.to_device_id}`;
-  return `nb:${(r.to_ip || r.to_name || 'unknown').toLowerCase()}`;
+// Resolve the display name for a neighbor (to-) device on a link.
+function neighborName(r: TopologyLink): string {
+  return r.to_device_id != null
+    ? (r.to_device_name || r.to_ip || 'Device')
+    : (r.to_name || r.to_ip || 'Unknown');
 }
 
-function buildNeighborGroups(rows: TopologyLink[]): NeighborGroup[] {
-  const map = new Map<string, NeighborGroup>();
+// Group raw links by the monitored (from-) device that discovered them.
+function buildFromDeviceGroups(rows: TopologyLink[]): FromDeviceGroup[] {
+  const map = new Map<string, FromDeviceGroup>();
   for (const r of rows) {
-    const key = neighborKey(r);
+    const key = String(r.from_device_id);
     let g = map.get(key);
     if (!g) {
       g = {
         key,
-        monitored: r.to_device_id != null,
-        to_device_id: r.to_device_id ?? null,
-        name: r.to_device_id != null
-          ? (r.to_device_name || r.to_ip || 'Device')
-          : (r.to_name || r.to_ip || 'Unknown'),
-        ip: r.to_ip ?? null,
-        protocols: [],
-        from_site_id: r.from_site_id ?? null,
-        from_site: r.from_site ?? null,
+        from_device_id: r.from_device_id,
+        from_device_name: r.from_device_name,
+        from_ip: r.from_ip,
         last_seen_at: r.last_seen_at,
         links: [],
       };
       map.set(key, g);
     }
     g.links.push(r);
-    const proto = (r.protocol || '').toLowerCase();
-    if (proto && !g.protocols.includes(proto)) g.protocols.push(proto);
-    if (!g.ip && r.to_ip) g.ip = r.to_ip;
-    if (g.from_site_id == null && r.from_site_id != null) { g.from_site_id = r.from_site_id; g.from_site = r.from_site ?? null; }
     if (r.last_seen_at > g.last_seen_at) g.last_seen_at = r.last_seen_at;
   }
   const groups = Array.from(map.values());
   for (const g of groups) {
-    g.protocols.sort();
-    g.links.sort((a, b) =>
-      (a.from_device_name || '').localeCompare(b.from_device_name || '') ||
-      (a.from_port || '').localeCompare(b.from_port || ''));
+    g.links.sort((a, b) => neighborName(a).localeCompare(neighborName(b)));
   }
-  // Unmonitored neighbors first (actionable), then by name.
-  groups.sort((a, b) =>
-    Number(a.monitored) - Number(b.monitored) || a.name.localeCompare(b.name));
+  groups.sort((a, b) => (a.from_device_name || '').localeCompare(b.from_device_name || ''));
   return groups;
 }
 
-// ── Tab 2: Link table — collapsed by neighbor device (top-level) ──
+// ── Tab 2: Link table — collapsed by from- (monitored) device (top-level) ──
 function LinkTable({
   canEdit,
   flash,
@@ -458,7 +440,7 @@ function LinkTable({
       : all;
   }, [links.data, q]);
 
-  const groups = useMemo<NeighborGroup[]>(() => buildNeighborGroups(filtered), [filtered]);
+  const groups = useMemo<FromDeviceGroup[]>(() => buildFromDeviceGroups(filtered), [filtered]);
 
   if (links.loading && !links.data) {
     return <div className="sv-panel"><Loading /></div>;
@@ -493,15 +475,14 @@ function LinkTable({
             <thead>
               <tr>
                 <th style={{ width: 32 }} />
-                <th>Neighbor</th>
-                <th>Protocol</th>
-                <th>Connections</th>
+                <th>Device</th>
+                <th>Neighbors</th>
                 <th style={{ whiteSpace: 'nowrap' }}>Last Seen</th>
               </tr>
             </thead>
             <tbody>
-              {groups.map((g: NeighborGroup) => (
-                <NeighborRow
+              {groups.map((g: FromDeviceGroup) => (
+                <FromDeviceRow
                   key={g.key}
                   group={g}
                   expanded={expanded.has(g.key)}
@@ -518,45 +499,20 @@ function LinkTable({
   );
 }
 
-// ── Neighbor group row + expandable port-level detail (top-level) ──
-function NeighborRow({
+// ── From-device group row + expandable neighbor detail (top-level) ──
+function FromDeviceRow({
   group,
   expanded,
   onToggle,
   canEdit,
   flash,
 }: {
-  group: NeighborGroup;
+  group: FromDeviceGroup;
   expanded: boolean;
   onToggle: () => void;
   canEdit: boolean;
   flash: (node: React.ReactNode) => void;
 }) {
-  const [adding, setAdding] = useState(false);
-
-  async function addToMonitoring() {
-    if (!group.ip) {
-      flash('No IP address was discovered for this neighbor — add it manually from the Devices page.');
-      return;
-    }
-    setAdding(true);
-    try {
-      // Inherit the site from the device that discovered this neighbor.
-      await apiSend('/api/devices', 'POST', {
-        name: group.name || group.ip,
-        ip_address: group.ip,
-        site_id: group.from_site_id ?? null,
-        site_name: group.from_site ?? null,
-      });
-      const where = group.from_site ? ` (site: ${group.from_site})` : '';
-      flash(`Added ${group.name || group.ip} to monitoring${where}.`);
-    } catch (e: any) {
-      flash(e?.message || 'Failed to add device');
-    } finally {
-      setAdding(false);
-    }
-  }
-
   const count = group.links.length;
 
   return (
@@ -565,67 +521,33 @@ function NeighborRow({
         <td style={{ textAlign: 'center', color: 'var(--text-muted)' }}>{expanded ? '▾' : '▸'}</td>
         <td>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-            <StatusDot status={group.monitored ? 'up' : 'unknown'} />
+            <StatusDot status="up" />
             <div>
-              {group.monitored && group.to_device_id ? (
-                <a href={`/devices/${group.to_device_id}`} style={{ textDecoration: 'underline' }} onClick={(e) => e.stopPropagation()}>
-                  {group.name}
-                </a>
-              ) : (
-                <span>{group.name}</span>
-              )}
-              {group.ip && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{group.ip}</div>}
+              <a href={`/devices/${group.from_device_id}`} style={{ textDecoration: 'underline' }} onClick={(e) => e.stopPropagation()}>
+                {group.from_device_name}
+              </a>
+              {group.from_ip && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{group.from_ip}</div>}
             </div>
-            <span className="sv-badge">{group.monitored ? 'Monitored' : 'Not monitored'}</span>
-            {canEdit && !group.monitored && (
-              <button
-                className="sv-btn ghost sm"
-                onClick={(e) => { e.stopPropagation(); addToMonitoring(); }}
-                disabled={adding}
-              >
-                {adding ? 'Adding…' : 'Add to monitoring'}
-              </button>
-            )}
           </div>
         </td>
-        <td>
-          {group.protocols.map((p) => (
-            <span
-              key={p}
-              className="sv-badge"
-              style={{ color: p === 'cdp' ? '#f97316' : '#2563eb', textTransform: 'uppercase', marginRight: 4 }}
-            >
-              {p}
-            </span>
-          ))}
-        </td>
-        <td style={{ whiteSpace: 'nowrap' }}>{count} connection{count === 1 ? '' : 's'}</td>
+        <td style={{ whiteSpace: 'nowrap' }}>{count} neighbor{count === 1 ? '' : 's'} discovered</td>
         <td title={fmtTime(group.last_seen_at)} style={{ whiteSpace: 'nowrap' }}>{fmtRel(group.last_seen_at)}</td>
       </tr>
       {expanded && (
         <tr className="sv-neighbor-detail">
           <td />
-          <td colSpan={4} style={{ padding: 0 }}>
+          <td colSpan={3} style={{ padding: 0 }}>
             <table className="sv-table" style={{ margin: 0 }}>
               <thead>
                 <tr>
-                  <th>From Device</th>
-                  <th>From Port</th>
+                  <th>Neighbor</th>
+                  <th>Protocol</th>
                   <th>To Port</th>
-                  <th style={{ whiteSpace: 'nowrap' }}>Last Seen</th>
                 </tr>
               </thead>
               <tbody>
                 {group.links.map((l: TopologyLink) => (
-                  <tr key={l.id}>
-                    <td>
-                      <div>{l.from_device_name}</div>
-                      <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{l.from_ip}</div>
-                    </td>
-                    <td>{l.from_port || '—'}</td>
-                    <td>{l.to_port || '—'}</td>
-                    <td title={fmtTime(l.last_seen_at)} style={{ whiteSpace: 'nowrap' }}>{fmtRel(l.last_seen_at)}</td>
-                  </tr>
+                  <NeighborDetailRow key={l.id} link={l} canEdit={canEdit} flash={flash} />
                 ))}
               </tbody>
             </table>
@@ -633,5 +555,82 @@ function NeighborRow({
         </tr>
       )}
     </Fragment>
+  );
+}
+
+// ── Per-neighbor detail row with its own "add to monitoring" state (top-level) ──
+function NeighborDetailRow({
+  link,
+  canEdit,
+  flash,
+}: {
+  link: TopologyLink;
+  canEdit: boolean;
+  flash: (node: React.ReactNode) => void;
+}) {
+  const [adding, setAdding] = useState(false);
+  const monitored = link.to_device_id != null;
+  const name = neighborName(link);
+  const proto = (link.protocol || '').toLowerCase();
+
+  async function addToMonitoring() {
+    if (!link.to_ip) {
+      flash('No IP address was discovered for this neighbor — add it manually from the Devices page.');
+      return;
+    }
+    setAdding(true);
+    try {
+      // Inherit the site from the device that discovered this neighbor.
+      await apiSend('/api/devices', 'POST', {
+        name: link.to_name || link.to_ip,
+        ip_address: link.to_ip,
+        site_id: link.from_site_id ?? null,
+        site_name: link.from_site ?? null,
+      });
+      const where = link.from_site ? ` (site: ${link.from_site})` : '';
+      flash(`Added ${link.to_name || link.to_ip} to monitoring${where}.`);
+    } catch (e: any) {
+      flash(e?.message || 'Failed to add device');
+    } finally {
+      setAdding(false);
+    }
+  }
+
+  return (
+    <tr>
+      <td>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <div>
+            {monitored && link.to_device_id ? (
+              <a href={`/devices/${link.to_device_id}`} style={{ textDecoration: 'underline' }}>{name}</a>
+            ) : (
+              <span>{name}</span>
+            )}
+            {link.to_ip && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{link.to_ip}</div>}
+          </div>
+          <span className="sv-badge">{monitored ? 'Monitored' : 'Not monitored'}</span>
+          {canEdit && link.to_device_id == null && (
+            <button
+              className="sv-btn ghost sm"
+              onClick={(e) => { e.stopPropagation(); addToMonitoring(); }}
+              disabled={adding}
+            >
+              {adding ? 'Adding…' : 'Add to monitoring'}
+            </button>
+          )}
+        </div>
+      </td>
+      <td>
+        {proto && (
+          <span
+            className="sv-badge"
+            style={{ color: proto === 'cdp' ? '#f97316' : '#2563eb', textTransform: 'uppercase' }}
+          >
+            {proto}
+          </span>
+        )}
+      </td>
+      <td>{link.to_port || '—'}</td>
+    </tr>
   );
 }
