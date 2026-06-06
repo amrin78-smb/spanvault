@@ -821,6 +821,19 @@ label.sv-field .sv-input, label.sv-field .sv-select { font-weight: 400; }
 .sv-chip.active { background: var(--primary); border-color: var(--primary); color: #fff; }
 .sv-chip.clear { color: var(--text-muted); }
 
+/* ── Devices: 7-day uptime sparkline + recent-alert badge ─────── */
+.sv-spark { display: flex; align-items: flex-end; gap: 2px; height: 24px; width: 40px; flex: none; }
+.sv-spark .bar { flex: 1; min-width: 3px; border-radius: 1px; background: var(--sv-unknown); }
+.sv-spark .bar.ok { background: var(--sv-up); }
+.sv-spark .bar.warn { background: var(--sv-warning); }
+.sv-spark .bar.bad { background: var(--sv-down); }
+.sv-spark .bar.na { background: var(--border); }
+.sv-alert-recent {
+  font-size: 11px; font-weight: 700; color: #b45309;
+  background: #fef3c7; border: 1px solid #fcd34d; border-radius: 5px; padding: 0 6px;
+  white-space: nowrap;
+}
+
 /* ── Alerts: incident group header row ────────────────────────── */
 .sv-incident-head { cursor: pointer; background: var(--bg-primary); }
 .sv-incident-head:hover { background: var(--bg-primary-hover, #eef1f6); }

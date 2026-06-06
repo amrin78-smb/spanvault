@@ -440,7 +440,7 @@ app.get('/api/devices', wrap(async (req, res) => {
            d.is_gateway, d.alert_suppressed, d.suppressed_by_device_id,
            d.agent_id, ag.name AS agent_name, ag.status AS agent_status,
            cpu.value AS latest_cpu_pct, mem.value AS latest_mem_pct,
-           avail.uptime_24h_pct
+           avail.uptime_24h_pct, la.last_alert_at, spark.days AS spark
     FROM monitored_devices d
     LEFT JOIN agents ag ON ag.id = d.agent_id
     LEFT JOIN LATERAL (
@@ -459,6 +459,22 @@ app.get('/api/devices', wrap(async (req, res) => {
       FROM ping_results
       WHERE device_id = d.id AND ts >= NOW() - INTERVAL '24 hours'
     ) avail ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT MAX(triggered_at) AS last_alert_at
+      FROM alerts WHERE device_id = d.id AND alert_type <> 'recovery'
+        AND triggered_at >= NOW() - INTERVAL '24 hours'
+    ) la ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT json_agg(json_build_object('day', to_char(day, 'YYYY-MM-DD'), 'uptime', uptime) ORDER BY day) AS days
+      FROM (
+        SELECT date_trunc('day', ts) AS day,
+               ROUND((1 - (SUM(CASE WHEN status <> 'up' THEN 1 ELSE 0 END)::numeric
+                      / NULLIF(COUNT(*), 0))) * 100, 0) AS uptime
+        FROM ping_results
+        WHERE device_id = d.id AND ts >= date_trunc('day', NOW()) - INTERVAL '6 days'
+        GROUP BY 1
+      ) s
+    ) spark ON TRUE
     WHERE ${where.join(' AND ')}
     ORDER BY d.site_name NULLS LAST, d.name
   `, params);

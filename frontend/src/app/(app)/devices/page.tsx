@@ -10,6 +10,7 @@ import SiteScopeBanner from '@/components/SiteScopeBanner';
 import { IconDevices } from '@/components/icons';
 import { DeviceForm, ImportModal } from '@/components/DeviceModals';
 
+type SparkDay = { day: string; uptime: number | null };
 type Device = {
   id: number; name: string; ip_address: string; device_type: string | null;
   site_id: number | null; site_name: string | null; current_status: string;
@@ -18,7 +19,27 @@ type Device = {
   latest_cpu_pct: number | null; latest_mem_pct: number | null;
   is_gateway: boolean; alert_suppressed: boolean; suppressed_by_device_id: number | null;
   agent_id: number | null; agent_name: string | null; agent_status: string | null;
+  last_alert_at: string | null; spark: SparkDay[] | null;
 };
+
+// Quick-filter chips above the search bar (client-side, single-select).
+const DEVICE_CHIPS = [
+  { key: 'all', label: 'All' },
+  { key: 'down', label: 'Down' },
+  { key: 'warning', label: 'Warning' },
+  { key: 'nosnmp', label: 'No SNMP' },
+  { key: 'alertstoday', label: 'Has Alerts Today' },
+];
+function chipMatch(d: Device, chip: string): boolean {
+  const s = (d.current_status || 'unknown').toLowerCase();
+  switch (chip) {
+    case 'down': return s === 'down';
+    case 'warning': return s === 'warning';
+    case 'nosnmp': return !d.snmp_enabled;
+    case 'alertstoday': return d.last_alert_at != null;
+    default: return true;
+  }
+}
 type Site = { id: number; name: string };
 type SiteGroup = { key: string; name: string; siteId: number | null; devices: Device[] };
 type AgentGroupT = {
@@ -105,6 +126,7 @@ export default function DevicesPage() {
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<Device | null>(null);
   const [showImport, setShowImport] = useState(false);
+  const [chip, setChip] = useState('all');
 
   // Pre-select the status filter from the URL (?status=up|down|warning|unknown)
   // so dashboard stat-card links land on a filtered device list.
@@ -131,11 +153,12 @@ export default function DevicesPage() {
     devices.reload();
   }
 
-  const agentGroups = devices.data ? groupByAgent(devices.data) : [];
+  const visible = (devices.data || []).filter((d) => chipMatch(d, chip));
+  const agentGroups = groupByAgent(visible);
   // Only show the agent grouping layer when at least one agent owns devices;
   // otherwise render site accordions flat (the original layout).
   const hasAgents = agentGroups.some((g) => g.agentId !== null);
-  const flatGroups = devices.data ? groupBySite(devices.data) : [];
+  const flatGroups = groupBySite(visible);
 
   return (
     <div>
@@ -149,6 +172,18 @@ export default function DevicesPage() {
       </PageHeader>
 
       <SiteScopeBanner />
+
+      <div className="sv-chips">
+        {DEVICE_CHIPS.map((c) => (
+          <button
+            key={c.key}
+            className={`sv-chip ${chip === c.key ? 'active' : ''}`}
+            onClick={() => setChip(c.key)}
+          >
+            {c.label}
+          </button>
+        ))}
+      </div>
 
       <div className="sv-toolbar">
         <input
@@ -354,6 +389,11 @@ function DeviceRow({
             {device.name}
           </Link>
           {device.is_gateway && <span className="sv-gw-star" title="Site gateway">⭐</span>}
+          {device.last_alert_at && (
+            <span className="sv-alert-recent" title={`Last alert ${fmtRel(device.last_alert_at)}`}>
+              ⚠ {fmtRel(device.last_alert_at)}
+            </span>
+          )}
         </div>
         <div className="ip">{device.ip_address}{device.device_type ? ` · ${device.device_type}` : ''}</div>
       </div>
@@ -361,6 +401,7 @@ function DeviceRow({
         {fmtMs(device.last_response_ms)}
         <div className="sv-muted">{fmtRel(device.last_seen_at)}</div>
       </div>
+      <Sparkline spark={device.spark} />
       <MonitorBadges device={device} />
       {canEdit && (
         <div className="sv-dev-actions">
@@ -368,6 +409,29 @@ function DeviceRow({
           <button className="sv-btn ghost sm" onClick={() => onDelete(device)}>Delete</button>
         </div>
       )}
+    </div>
+  );
+}
+
+// ── 7-day uptime sparkline (top-level component) ───────────────
+function Sparkline({ spark }: { spark: SparkDay[] | null }) {
+  const by = new Map<string, number | null>();
+  for (const s of spark || []) by.set(s.day, s.uptime == null ? null : Number(s.uptime));
+  const cells: { key: string; up: number | null }[] = [];
+  const today = new Date();
+  for (let i = 6; i >= 0; i--) {
+    const dt = new Date(today);
+    dt.setDate(today.getDate() - i);
+    const key = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+    cells.push({ key, up: by.has(key) ? (by.get(key) ?? null) : null });
+  }
+  return (
+    <div className="sv-spark" title="7-day uptime">
+      {cells.map((c) => {
+        const cls = c.up == null ? 'na' : c.up >= 99 ? 'ok' : c.up >= 90 ? 'warn' : 'bad';
+        const h = c.up == null ? 35 : Math.max(20, Math.min(100, c.up));
+        return <span key={c.key} className={`bar ${cls}`} style={{ height: `${h}%` }} />;
+      })}
     </div>
   );
 }
