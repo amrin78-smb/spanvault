@@ -65,15 +65,20 @@ function ifDir(it: Avail): string {
 }
 
 // Operational state of an interface group, read from its Status sensor's
-// current_value ("Up"/"Down"). Up wins if any status member reports Up;
-// Down if any reports Down; otherwise Unknown (no status data yet).
+// current_value. Handles both string ("Up"/"Down"/RFC2863 labels) and raw
+// integer (1=up, 2=down, …) for robustness. Up wins if any status member
+// reports Up; Down if any reports Down; otherwise Unknown (no status data yet).
 function ifStatus(members: Avail[]): string {
   let sawDown = false;
   for (const m of members) {
     if (ifDir(m) !== 'Status') continue;
-    const v = (m.current_value || '').toLowerCase();
-    if (v === 'up') return 'up';
-    if (v === 'down') sawDown = true;
+    const raw = m.current_value;
+    if (raw === undefined || raw === null || String(raw).trim() === '') continue;
+    const v = String(raw).trim().toLowerCase();
+    if (v === 'up' || v === '1') return 'up';
+    if (v === 'down' || v === '2') { sawDown = true; continue; }
+    // testing(3)/unknown(4)/dormant(5)/'—' → not up; leaves group Unknown
+    // unless another member is explicitly Down.
   }
   return sawDown ? 'down' : 'unknown';
 }

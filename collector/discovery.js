@@ -130,6 +130,19 @@ function fmtValue(value, unit) {
     default:      return `${n}`;
   }
 }
+// Human-readable ifOperStatus label (RFC 2863). The stored sensor value stays a
+// 0/1 numeric (collector down-detection + graphs depend on that), but the
+// discovery modal shows the full operational state here.
+function ifOperLabel(n) {
+  switch (Number(n)) {
+    case 1:  return 'Up';
+    case 2:  return 'Down';
+    case 3:  return 'Testing';
+    case 4:  return 'Unknown';
+    case 5:  return 'Dormant';
+    default: return 'Down';
+  }
+}
 
 // ── vendor OID fetch (mirrors collector's metric def kinds) ────
 async function fetchVendorRaw(session, parser) {
@@ -200,7 +213,8 @@ async function collectCandidates(session, vendor, prev, now, want) {
     for (const o of opers) {
       const idx = lastIndex(o.oid);
       const ifName = nameByIdx.get(idx) || descrByIdx.get(idx) || `if${idx}`;
-      const operUp = num(o.value) === 1 ? 1 : 0;
+      const operRaw = num(o.value);
+      const operUp = operRaw === 1 ? 1 : 0;
 
       // Enrichment from ifXTable: admin description, link speed, MAC.
       const alias = (aliasByIdx.get(idx) || '').trim();
@@ -227,7 +241,10 @@ async function collectCandidates(session, vendor, prev, now, want) {
         oid: `${oidBase}.${idx}`, value, if_index: idx, if_name: ifName, unit,
       });
 
-      candidates.push(mk('Status', 'status', 'if_oper_status', 'oper', OID.ifOperStatus, operUp, 'state'));
+      const statusCand = mk('Status', 'status', 'if_oper_status', 'oper', OID.ifOperStatus, operUp, 'state');
+      // Display the full RFC 2863 operational state; stored value stays 0/1.
+      statusCand.display_value = ifOperLabel(operRaw);
+      candidates.push(statusCand);
 
       const curIn = inByIdx.get(idx);
       const curOut = outByIdx.get(idx);
@@ -329,7 +346,8 @@ async function discoverDevice(device, overallMs) {
     const sensors = cands.map((c) => ({
       key: c.key, name: c.name, category: c.category,
       metric_name: c.metric, oid: c.oid,
-      current_value: fmtValue(c.value, c.unit), unit: c.unit,
+      current_value: c.display_value !== undefined ? c.display_value : fmtValue(c.value, c.unit),
+      unit: c.unit,
       base_name: c.base_name || c.name, meta: c.meta || '',
     }));
     return { vendor, sysDescr, sysName, sensors };
