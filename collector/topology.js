@@ -187,11 +187,11 @@ async function discoverDevice(device) {
 // ── Neighbor → monitored device matching + persistence ────────────────────────
 // Match a discovered neighbor to a monitored device: exact IP first, then by
 // name (exact case-insensitive, then either name contains the other). Returns
-// the matched device row { id, name } or null.
+// the matched device row { id, name, ip_address } or null.
 async function matchNeighborDevice(pool, neighbor) {
   if (neighbor.neighborIp) {
     const r = await pool.query(
-      `SELECT id, name FROM monitored_devices WHERE ip_address = $1 LIMIT 1`,
+      `SELECT id, name, ip_address FROM monitored_devices WHERE ip_address = $1 LIMIT 1`,
       [neighbor.neighborIp]
     );
     if (r.rows[0]) return r.rows[0];
@@ -199,7 +199,7 @@ async function matchNeighborDevice(pool, neighbor) {
   const name = (neighbor.neighborName || '').trim();
   if (name) {
     const r = await pool.query(
-      `SELECT id, name FROM monitored_devices
+      `SELECT id, name, ip_address FROM monitored_devices
         WHERE active = TRUE AND (
           lower(name) = lower($1)
           OR lower(name) LIKE '%' || lower($1) || '%'
@@ -220,7 +220,15 @@ async function matchNeighborDevice(pool, neighbor) {
 async function storeNeighbors(pool, device, neighbors) {
   let count = 0;
   for (const n of neighbors) {
+    // Resolve to_device_id whenever the neighbor matches a monitored device (by
+    // IP first, then name). On a re-run this re-resolves via ON CONFLICT, so a
+    // neighbor that was unmonitored at first — then added later (e.g. via the
+    // "Add to monitoring" flow) — gets linked on the next discovery pass.
     const match = await matchNeighborDevice(pool, n);
+    // Backfill to_ip from the matched device when the protocol didn't carry one
+    // (LLDP often omits the management address) so the link displays + future
+    // IP-based resolution both work.
+    const toIp = n.neighborIp || (match && match.ip_address) || null;
     await pool.query(
       `INSERT INTO topology_links
          (from_device_id, from_port, to_device_id, to_ip, to_name, to_port, protocol, discovered_at, last_seen_at)
@@ -232,7 +240,7 @@ async function storeNeighbors(pool, device, neighbors) {
              to_port      = EXCLUDED.to_port,
              last_seen_at = NOW()`,
       [device.id, n.localPort || null, match ? match.id : null,
-       n.neighborIp || null, n.neighborName || null, n.neighborPort || null, n.protocol || 'lldp']
+       toIp, n.neighborName || null, n.neighborPort || null, n.protocol || 'lldp']
     );
     count++;
   }

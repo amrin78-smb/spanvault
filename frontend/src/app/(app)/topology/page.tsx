@@ -5,8 +5,7 @@ import { useApi, apiSend } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
 import { Loading, ErrorBox, Empty, fmtRel, fmtTime } from '@/components/ui';
 import { StatusDot } from '@/components/StatusDot';
-import SVGMapView from '@/components/SVGMapView';
-import { type FullMap, type MapDevice, type MapConnection } from '@/lib/mapTypes';
+import TopologyMapView from '@/components/TopologyMapView';
 
 // ── API response types ─────────────────────────────────────────
 interface TopologyStatus {
@@ -42,11 +41,13 @@ interface TopologyLink {
   from_device_id: number;
   from_device_name: string;
   from_ip: string;
+  from_site_id: number | null;
   from_site: string | null;
   from_port: string | null;
   to_device_id: number | null;
   to_device_name: string | null;
   to_ip: string | null;
+  to_site_id: number | null;
   to_site: string | null;
   to_name: string | null;
   to_port: string | null;
@@ -68,108 +69,6 @@ interface DependencySuggestion {
 
 type SortKey = 'from' | 'from_port' | 'to' | 'to_port' | 'protocol' | 'last_seen';
 type SortDir = 'asc' | 'desc';
-
-// ── Layout: synthetic force-directed-ish ring placement ────────
-const NODE_W = 120;
-const NODE_H = 60;
-const CANVAS_W = 1600;
-const CANVAS_H = 900;
-const CENTER_X = 800;
-const CENTER_Y = 450;
-const RING_RADII = [220, 360, 500, 640, 780];
-const PER_RING = 10;
-
-function buildFullMap(tmap: TopologyMap): FullMap {
-  // Only nodes that appear in at least one edge.
-  const connectedIds = new Set<number>();
-  for (const e of tmap.edges) {
-    connectedIds.add(e.from_device_id);
-    connectedIds.add(e.to_device_id);
-  }
-  const nodes = tmap.nodes.filter((n: TopologyMapNode) => connectedIds.has(n.device_id));
-
-  // Degree per node.
-  const degree = new Map<number, number>();
-  for (const n of nodes) degree.set(n.device_id, 0);
-  for (const e of tmap.edges) {
-    if (degree.has(e.from_device_id)) degree.set(e.from_device_id, (degree.get(e.from_device_id) || 0) + 1);
-    if (degree.has(e.to_device_id)) degree.set(e.to_device_id, (degree.get(e.to_device_id) || 0) + 1);
-  }
-
-  // Highest degree first.
-  const ordered = [...nodes].sort(
-    (a: TopologyMapNode, b: TopologyMapNode) =>
-      (degree.get(b.device_id) || 0) - (degree.get(a.device_id) || 0)
-  );
-
-  const pos = new Map<number, { x: number; y: number }>();
-  if (ordered.length > 0) {
-    // Center node = most connected.
-    const center = ordered[0];
-    pos.set(center.device_id, { x: CENTER_X - NODE_W / 2, y: CENTER_Y - NODE_H / 2 });
-
-    const rest = ordered.slice(1);
-    for (let idx = 0; idx < rest.length; idx++) {
-      const ring = Math.floor(idx / PER_RING);
-      const radius =
-        ring < RING_RADII.length
-          ? RING_RADII[ring]
-          : RING_RADII[RING_RADII.length - 1] + (ring - RING_RADII.length + 1) * 140;
-      const onThisRing = Math.min(PER_RING, rest.length - ring * PER_RING);
-      const within = idx - ring * PER_RING;
-      const angle = (within / Math.max(1, onThisRing)) * Math.PI * 2 - Math.PI / 2;
-      const cx = CENTER_X + radius * Math.cos(angle);
-      const cy = CENTER_Y + radius * Math.sin(angle);
-      pos.set(rest[idx].device_id, { x: cx - NODE_W / 2, y: cy - NODE_H / 2 });
-    }
-  }
-
-  const devices: MapDevice[] = nodes.map((n: TopologyMapNode) => {
-    const p = pos.get(n.device_id) || { x: CENTER_X - NODE_W / 2, y: CENTER_Y - NODE_H / 2 };
-    return {
-      id: n.device_id,
-      device_id: n.device_id,
-      x: p.x,
-      y: p.y,
-      label: n.name,
-      icon_type: 'circle',
-      width: NODE_W,
-      height: NODE_H,
-      device_name: n.name,
-      ip_address: n.ip,
-      site_name: n.site_name,
-      current_status: n.status,
-      is_gateway: n.is_gateway,
-    };
-  });
-
-  let cid = 1;
-  const connections: MapConnection[] = tmap.edges.map((e: TopologyMapEdge) => ({
-    id: cid++,
-    from_item_id: e.from_device_id,
-    to_item_id: e.to_device_id,
-    color: e.protocol === 'cdp' ? '#f97316' : '#2563eb',
-    line_style: 'solid',
-    label: [e.from_port, e.to_port].filter(Boolean).join(' → '),
-  }));
-
-  return {
-    id: 0,
-    uuid: 'topology',
-    name: 'Network Topology',
-    description: null,
-    bg_color: '#f8fafc',
-    bg_image_b64: null,
-    canvas_w: CANVAS_W,
-    canvas_h: CANVAS_H,
-    is_public: false,
-    created_at: '',
-    updated_at: '',
-    devices,
-    connections,
-    labels: [],
-  };
-}
 
 // ── CSV export helpers ─────────────────────────────────────────
 function csvCell(v: string | number | null | undefined): string {
@@ -285,11 +184,6 @@ function MapTab({
   const [suggestions, setSuggestions] = useState<DependencySuggestion[] | null>(null);
   const [applyingDeps, setApplyingDeps] = useState(false);
 
-  const fullMap = useMemo<FullMap | null>(() => {
-    if (!tmap.data) return null;
-    return buildFullMap(tmap.data);
-  }, [tmap.data]);
-
   async function applyDependencies() {
     setApplyingDeps(true);
     try {
@@ -309,14 +203,14 @@ function MapTab({
     return <ErrorBox message={tmap.error} />;
   }
 
-  const hasGraph = !!fullMap && fullMap.devices.length > 0 && fullMap.connections.length > 0;
+  const hasGraph = !!tmap.data && tmap.data.edges.length > 0 && tmap.data.nodes.length > 0;
 
   return (
     <div>
       <div className="sv-panel" style={{ padding: 12 }}>
-        {hasGraph ? (
+        {hasGraph && tmap.data ? (
           <div style={{ width: '100%', height: 620, background: '#f8fafc', borderRadius: 8, overflow: 'hidden' }}>
-            <SVGMapView map={fullMap as FullMap} interactive />
+            <TopologyMapView nodes={tmap.data.nodes} edges={tmap.data.edges} interactive />
           </div>
         ) : (
           <Empty message="No topology discovered yet. Run discovery to map device connections." />
@@ -623,11 +517,15 @@ function LinkRow({
     if (!row.to_ip) return;
     setAdding(true);
     try {
+      // Inherit the site from the device that discovered this neighbor.
       await apiSend('/api/devices', 'POST', {
         name: row.to_name || row.to_ip,
         ip_address: row.to_ip,
+        site_id: row.from_site_id ?? null,
+        site_name: row.from_site ?? null,
       });
-      flash(`Added ${row.to_name || row.to_ip} to monitoring.`);
+      const where = row.from_site ? ` (site: ${row.from_site})` : '';
+      flash(`Added ${row.to_name || row.to_ip} to monitoring${where}.`);
     } catch (e: any) {
       flash(e?.message || 'Failed to add device');
     } finally {

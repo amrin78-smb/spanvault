@@ -1496,8 +1496,8 @@ app.get('/api/topology/links', wrap(async (req, res) => {
   if (sc) where.push(sc);
   const r = await sv.query(`
     SELECT l.id, l.from_device_id, fd.name AS from_device_name,
-           fd.ip_address AS from_ip, fd.site_name AS from_site, l.from_port,
-           l.to_device_id, td.name AS to_device_name, td.site_name AS to_site,
+           fd.ip_address AS from_ip, fd.site_id AS from_site_id, fd.site_name AS from_site, l.from_port,
+           l.to_device_id, td.name AS to_device_name, td.site_id AS to_site_id, td.site_name AS to_site,
            COALESCE(td.ip_address, l.to_ip) AS to_ip, l.to_name, l.to_port,
            l.protocol, l.last_seen_at
     FROM topology_links l
