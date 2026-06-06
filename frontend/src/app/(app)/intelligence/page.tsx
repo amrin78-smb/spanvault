@@ -13,7 +13,7 @@ import {
   StatusBadge, fmtRel, fmtTime, fmtBps,
 } from '@/components/ui';
 import {
-  GradeBadge, ScoreBar, TrendArrow, ConfidenceStars, fmtDuration, deviationLabel,
+  GradeBadge, ScoreBar, TrendArrow, ConfidenceStars, fmtDuration, deviationLabel, deviationTooltip,
   scoreColor, n,
   Overview, HealthRow, AnomalyRow, PatternRow, IncidentRow, ThresholdRow,
 } from '@/components/intel';
@@ -155,7 +155,7 @@ function OverviewTab() {
                 <div key={a.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: '1px solid var(--border-light)' }}>
                   <span style={{ width: 8, height: 8, borderRadius: '50%', background: a.severity === 'critical' ? 'var(--sv-down)' : 'var(--sv-warning)' }} />
                   <Link href={`/devices/${a.device_id}`} style={{ fontWeight: 600 }}>{a.device_name}</Link>
-                  <span className="sv-muted" style={{ fontSize: 12.5 }}>{a.metric} · {deviationLabel(a)}</span>
+                  <span className="sv-muted" style={{ fontSize: 12.5 }} title={deviationTooltip(a)}>{a.metric} · {deviationLabel(a)}</span>
                   <span className="spacer" style={{ flex: 1 }} />
                   <span className="sv-muted" style={{ fontSize: 12 }}>{fmtRel(a.detected_at)}</span>
                 </div>
@@ -286,7 +286,7 @@ function AnomaliesTab() {
                     <td>{a.metric}</td>
                     <td style={{ textAlign: 'right', fontWeight: 600 }}>{val != null ? val.toFixed(1) : '—'}</td>
                     <td style={{ textAlign: 'right' }} className="sv-muted">{base != null ? base.toFixed(1) : '—'}</td>
-                    <td><span className={`sv-badge ${a.severity === 'critical' ? 'down' : 'warning'}`}>{deviationLabel(a)}</span></td>
+                    <td><span className={`sv-badge ${a.severity === 'critical' ? 'down' : 'warning'}`} title={deviationTooltip(a)}>{deviationLabel(a)}</span></td>
                     <td><StatusBadge status={a.severity} /></td>
                     <td className="sv-muted" title={fmtTime(a.detected_at)}>{fmtRel(a.detected_at)}</td>
                     <td>{a.status === 'active'

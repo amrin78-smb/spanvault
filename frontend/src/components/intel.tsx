@@ -149,11 +149,21 @@ export function fmtDuration(seconds: number | null | undefined): string {
   return parts.join(' ');
 }
 
-// ── Anomaly deviation label: "2.8σ above normal" ───────────────
+// ── Anomaly deviation label: "2.8x above normal baseline" ──────
+// Plain-language label for NOC users; the technical σ value lives in the
+// tooltip via deviationTooltip().
 export function deviationLabel(a: { value: number | string; baseline_mean: number | string | null; z_score: number | string }): string {
   const z = n(a.z_score) ?? 0;
   const val = n(a.value);
   const base = n(a.baseline_mean);
   const dir = val != null && base != null ? (val >= base ? 'above' : 'below') : '';
-  return `${z.toFixed(1)}σ ${dir} normal`.trim();
+  return `${z.toFixed(1)}x ${dir} normal baseline`.trim();
+}
+// Technical detail for the tooltip: keeps the standard-deviation (σ) notation.
+export function deviationTooltip(a: { value: number | string; baseline_mean: number | string | null; z_score: number | string }): string {
+  const z = n(a.z_score) ?? 0;
+  const val = n(a.value);
+  const base = n(a.baseline_mean);
+  const dir = val != null && base != null ? (val >= base ? 'above' : 'below') : '';
+  return `${z.toFixed(1)}σ (standard deviations) ${dir} normal`.trim();
 }
