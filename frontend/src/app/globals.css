@@ -858,6 +858,10 @@ body.sv-noc .sv-status-dot { transform: scale(1.5); }
 .sv-incident-title { font-weight: 700; color: var(--text-primary); }
 .sv-incident-exp { margin-left: auto; font-size: 12px; font-weight: 600; color: var(--primary); }
 
+/* ── Topology: neighbor-grouped link table ────────────────────── */
+.sv-neighbor-head:hover { background: var(--bg-primary); }
+.sv-neighbor-detail > td { background: var(--bg-primary); padding: 0; }
+
 /* ── SNMP test (inline, in device form) ────────────────── */
 .sv-snmp-test { display: flex; align-items: center; gap: 12px; margin-top: 14px; flex-wrap: wrap; }
 .sv-snmp-test-result { font-size: 13px; font-weight: 600; }
