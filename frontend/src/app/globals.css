@@ -808,6 +808,25 @@ label.sv-field .sv-input, label.sv-field .sv-select { font-weight: 400; }
   color: var(--text-muted); background: var(--bg-primary);
   border: 1px solid var(--border); border-radius: 5px; padding: 1px 7px;
 }
+.sv-alert-note { margin-top: 4px; font-size: 12.5px; color: var(--text-secondary); }
+
+/* ── Quick-filter chips (alerts + devices) ────────────────────── */
+.sv-chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 14px; }
+.sv-chip {
+  font-size: 12.5px; font-weight: 600; padding: 5px 12px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--bg-card); color: var(--text-secondary);
+  cursor: pointer; transition: background .12s, color .12s, border-color .12s;
+}
+.sv-chip:hover { background: var(--bg-primary); }
+.sv-chip.active { background: var(--primary); border-color: var(--primary); color: #fff; }
+.sv-chip.clear { color: var(--text-muted); }
+
+/* ── Alerts: incident group header row ────────────────────────── */
+.sv-incident-head { cursor: pointer; background: var(--bg-primary); }
+.sv-incident-head:hover { background: var(--bg-primary-hover, #eef1f6); }
+.sv-incident-toggle { display: flex; align-items: center; gap: 8px; }
+.sv-incident-title { font-weight: 700; color: var(--text-primary); }
+.sv-incident-exp { margin-left: auto; font-size: 12px; font-weight: 600; color: var(--primary); }
 
 /* ── SNMP test (inline, in device form) ────────────────── */
 .sv-snmp-test { display: flex; align-items: center; gap: 12px; margin-top: 14px; flex-wrap: wrap; }

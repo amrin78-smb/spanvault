@@ -414,6 +414,9 @@ CREATE INDEX IF NOT EXISTS idx_incident_started ON incidents(started_at DESC);
 ALTER TABLE alerts ADD COLUMN IF NOT EXISTS incident_id INTEGER
   REFERENCES incidents(id) ON DELETE SET NULL;
 
+-- Optional free-text note captured when an operator acknowledges an alert.
+ALTER TABLE alerts ADD COLUMN IF NOT EXISTS note TEXT;
+
 -- Smart threshold recommendations.
 CREATE TABLE IF NOT EXISTS threshold_recommendations (
   id                SERIAL PRIMARY KEY,
