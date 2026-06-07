@@ -11,6 +11,7 @@ require('dotenv').config({ path: require('path').join(__dirname, '..', '.env.loc
 
 const express  = require('express');
 const path     = require('path');
+const { execSync, spawn } = require('child_process');
 const cors     = require('cors');
 const ping     = require('ping');
 const { Pool } = require('pg');
@@ -216,6 +217,55 @@ app.get('/api/agent/package.json', (req, res) => {
 app.get('/api/health', wrap(async (_req, res) => {
   await sv.query('SELECT 1');
   res.json({ status: 'ok', service: 'spanvault-api', time: new Date().toISOString() });
+}));
+
+// ══════════════════════════════════════════════════════════════
+// System updates (Check for Updates)
+// ══════════════════════════════════════════════════════════════
+// Compares the local checkout against origin/main via git. All git commands run
+// in the repo root. Wrapped so a git failure degrades to "up to date" instead of
+// 500ing the Settings page.
+app.get('/api/system/update-status', wrap(async (_req, res) => {
+  const repoRoot = path.join(__dirname, '..');
+  const git = (cmd) => execSync(cmd, { cwd: repoRoot, encoding: 'utf8', timeout: 30000 }).trim();
+  try {
+    git('git fetch origin main');
+    const current = git('git rev-parse HEAD').slice(0, 7);
+    const latest  = git('git rev-parse origin/main').slice(0, 7);
+    const behind  = parseInt(git('git rev-list HEAD..origin/main --count'), 10) || 0;
+    const log     = git('git log HEAD..origin/main --pretty=format:"%h %s"');
+    const changes = log ? log.split('\n').map((l) => l.trim()).filter(Boolean) : [];
+    res.json({
+      current_version: current,
+      latest_version: latest,
+      commits_behind: behind,
+      up_to_date: behind === 0,
+      changes,
+    });
+  } catch (e) {
+    console.error('[update-status] git check failed:', e.message);
+    res.json({ error: 'Could not check for updates', up_to_date: true });
+  }
+}));
+
+// Spawns the update script as a DETACHED process so it keeps running after this
+// API service is stopped/restarted by the script itself. Returns immediately.
+app.post('/api/system/update', wrap(async (_req, res) => {
+  const scriptPath = path.join(__dirname, '..', 'installer', 'Update-SpanVault.ps1');
+  // No hardcoded IP (CLAUDE.md): prefer an explicit SERVER_IP env var, otherwise
+  // derive the host from SV_PUBLIC_URL / NEXTAUTH_URL (both set at install time).
+  // On an update the installer preserves the existing .env.local, so -ServerIp is
+  // optional; we pass it only when we can resolve it.
+  let serverIp = process.env.SERVER_IP || '';
+  if (!serverIp) {
+    const base = process.env.SV_PUBLIC_URL || process.env.NEXTAUTH_URL || '';
+    try { if (base) serverIp = new URL(base).hostname; } catch (_e) { /* ignore */ }
+  }
+  const args = ['-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptPath];
+  if (serverIp) args.push('-ServerIp', serverIp);
+  const child = spawn('powershell.exe', args, { detached: true, stdio: 'ignore', windowsHide: true });
+  child.unref();
+  res.json({ started: true });
 }));
 
 // ══════════════════════════════════════════════════════════════
