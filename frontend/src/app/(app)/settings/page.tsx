@@ -733,9 +733,10 @@ function UpdatingOverlay() {
 
       // Per-poll timeout via AbortController so a hung connection during the
       // restart still resolves as "down" within the polling cadence rather than
-      // blocking detection until the browser's default fetch timeout.
+      // blocking detection until the browser's default fetch timeout. Kept under
+      // the 2s poll interval so probes don't pile up.
       const ctrl = new AbortController();
-      const abortId = setTimeout(() => ctrl.abort(), 2500);
+      const abortId = setTimeout(() => ctrl.abort(), 1800);
       let ok = false;
       try {
         const res = await fetch('/api/health', { cache: 'no-store', signal: ctrl.signal });
@@ -758,12 +759,14 @@ function UpdatingOverlay() {
       if (wentDown.current) {
         setPhase('back_up');
         stopPolling();
-        reloadId = setTimeout(() => { window.location.reload(); }, 2000);
+        // Land on the dashboard with a success banner instead of reloading the
+        // settings page in place.
+        reloadId = setTimeout(() => { window.location.href = '/?updated=true'; }, 2000);
       }
       // else: still the pre-restart API — keep waiting for it to go down.
     };
 
-    pollId = setInterval(tick, 3000);
+    pollId = setInterval(tick, 2000); // poll every 2 seconds
     tick(); // immediate first poll
 
     return () => {

@@ -11,7 +11,7 @@ require('dotenv').config({ path: require('path').join(__dirname, '..', '.env.loc
 
 const express  = require('express');
 const path     = require('path');
-const { execSync, spawn } = require('child_process');
+const { execSync } = require('child_process');
 const cors     = require('cors');
 const ping     = require('ping');
 const { Pool } = require('pg');
@@ -248,13 +248,14 @@ app.get('/api/system/update-status', wrap(async (_req, res) => {
   }
 }));
 
-// Launches the update script in a process fully independent of this Node service.
-// NSSM tears down the service's child-process tree on stop, so a directly-spawned
-// (even detached) PowerShell gets killed mid-update. Writing a temp batch file and
-// launching it via `cmd /c start /b` detaches it from the service so it survives
-// the restart. Returns { started: true } immediately.
+// Launches the update via a one-time Windows Scheduled Task running as SYSTEM.
+// Why a scheduled task and not a spawned child: this API runs as a limited
+// service account (e.g. THAIUNION\service.prtg). When it spawns the updater as a
+// child, stopping the API service tears that child down before it can restart the
+// services — and the service account may also lack rights to start services. A
+// scheduled task launched by the Task Scheduler under SYSTEM is fully detached
+// from this service's process tree and has the permissions + lifetime to finish.
 app.post('/api/system/update', wrap(async (_req, res) => {
-  const scriptPath = path.join(__dirname, '..', 'installer', 'Update-SpanVault.ps1');
   // SERVER_IP is loaded from .env.local via dotenv at startup. No hardcoded IP
   // and no fallback (CLAUDE.md) — if it isn't configured we cannot update.
   const serverIp = process.env.SERVER_IP || '';
@@ -263,26 +264,29 @@ app.post('/api/system/update', wrap(async (_req, res) => {
       error: 'SERVER_IP not configured in .env.local — add SERVER_IP=your_server_ip to .env.local',
     });
   }
+  const scriptPath = path.join(__dirname, '..', 'installer', 'Update-SpanVault.ps1').replace(/\//g, '\\');
+  try {
+    // Remove any leftover task from a previous run (ignore "not found").
+    try { execSync('schtasks /delete /tn "SpanVaultUpdate" /f', { stdio: 'ignore' }); } catch (_e) { /* none */ }
 
-  // Write a temp batch file that runs the update script, then launch it with
-  // cmd START so it runs completely independently of this service.
-  const batchContent =
-    `@echo off\r\n` +
-    `powershell.exe -NonInteractive -ExecutionPolicy Bypass ` +
-    `-File "${scriptPath}" -ServerIp "${serverIp}"\r\n`;
-  const batchPath = path.join(__dirname, '..', 'update-run.bat');
-  require('fs').writeFileSync(batchPath, batchContent);
+    // Create a one-time task under the SYSTEM account (full permissions).
+    execSync(
+      `schtasks /create /tn "SpanVaultUpdate" ` +
+      `/tr "powershell.exe -NonInteractive -ExecutionPolicy Bypass ` +
+      `-File \\"${scriptPath}\\" -ServerIp \\"${serverIp}\\"" ` +
+      `/sc once /st 00:00 /f /ru SYSTEM`,
+      { stdio: 'pipe' }
+    );
 
-  const child = spawn('cmd.exe', ['/c', 'start', '/b', batchPath], {
-    detached: true,
-    stdio: 'ignore',
-    windowsHide: true,
-  });
-  child.on('error', (err) => console.error('[Update] spawn error:', err.message));
-  child.unref();
+    // Run it immediately.
+    execSync('schtasks /run /tn "SpanVaultUpdate"', { stdio: 'pipe' });
 
-  console.log('[Update] Launched via cmd START, ServerIp:', serverIp);
-  res.json({ started: true });
+    console.log('[Update] Task scheduled under SYSTEM, ServerIp:', serverIp);
+    res.json({ started: true });
+  } catch (err) {
+    console.error('[Update] schtasks error:', err.message);
+    res.status(500).json({ error: 'Failed to schedule update: ' + err.message });
+  }
 }));
 
 // ══════════════════════════════════════════════════════════════

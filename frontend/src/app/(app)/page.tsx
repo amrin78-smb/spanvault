@@ -184,6 +184,7 @@ export default function DashboardPage() {
 
   return (
     <div>
+      <UpdatedNotice />
       <RedirectNotice />
       <PageHeader title="Dashboard" subtitle="Live network health across all monitored devices.">
         <span className="sv-muted" style={{ fontSize: 13 }}>
@@ -284,6 +285,35 @@ function RedirectNotice() {
       }}
     >
       <span aria-hidden>⚠</span><span>{msg}</span>
+    </div>
+  );
+}
+
+// Dismissible success banner shown after the in-app updater redirects here with
+// ?updated=true. Mirrors RedirectNotice: reads the query param on mount (no
+// useSearchParams → no Suspense requirement) and strips it so a refresh won't
+// re-show it.
+function UpdatedNotice() {
+  const [show, setShow] = useState(false);
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('updated') === 'true') {
+      setShow(true);
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+  }, []);
+  if (!show) return null;
+  return (
+    <div
+      onClick={() => setShow(false)}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px',
+        marginBottom: 16, borderRadius: 8, fontSize: 13.5, fontWeight: 600,
+        cursor: 'pointer', color: '#166534', background: 'rgba(22,163,74,0.10)',
+        border: '1px solid rgba(22,163,74,0.30)',
+      }}
+    >
+      <span aria-hidden>✓</span><span>SpanVault updated successfully</span>
     </div>
   );
 }
