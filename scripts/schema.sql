@@ -566,5 +566,29 @@ CREATE TABLE IF NOT EXISTS saved_reports (
 );
 CREATE INDEX IF NOT EXISTS idx_saved_reports_created_by ON saved_reports(created_by);
 
+-- ── Scheduled reports (Phase 2) ───────────────────────────────────────────────
+-- A saved report can be scheduled to run on a cadence and be emailed to a set of
+-- recipients. The report scheduler (api/reportScheduler.js) polls next_run_at.
+ALTER TABLE saved_reports
+  ADD COLUMN IF NOT EXISTS schedule TEXT,            -- none/daily/weekly/monthly
+  ADD COLUMN IF NOT EXISTS schedule_day INTEGER,     -- 0-6 for weekly (0=Sun)
+  ADD COLUMN IF NOT EXISTS schedule_hour INTEGER DEFAULT 7,
+  ADD COLUMN IF NOT EXISTS recipients TEXT,          -- comma-separated emails
+  ADD COLUMN IF NOT EXISTS last_sent_at TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS next_run_at TIMESTAMPTZ;
+
+-- Audit log of every scheduled-report run (success or failure).
+CREATE TABLE IF NOT EXISTS report_history (
+  id          SERIAL PRIMARY KEY,
+  report_id   INTEGER REFERENCES saved_reports(id) ON DELETE CASCADE,
+  run_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  status      TEXT NOT NULL DEFAULT 'success',  -- success/failed
+  error       TEXT,
+  recipients  TEXT,
+  report_data JSONB
+);
+CREATE INDEX IF NOT EXISTS idx_report_hist_report
+  ON report_history(report_id, run_at DESC);
+
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO spanvault_user;
 GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO spanvault_user;
