@@ -20,6 +20,7 @@ const wireless = require('../collector/wirelessCollector');
 const { startWsServer, connectedAgents, pushConfigToAgent, pushConfigToAgentId } = require('./ws-server');
 const intelligence = require('./intelligence');
 const { getLicense, getLicenseState } = require('./licenseCheck');
+const reportScheduler = require('./reportScheduler');
 
 const IS_WIN = process.platform === 'win32';
 
@@ -2362,23 +2363,90 @@ app.get('/api/reports/saved', wrap(async (req, res) => {
   res.json(r.rows);
 }));
 
+// Normalise schedule inputs from a request body into stored column values plus
+// the computed next_run_at (null when not scheduled / no recipients).
+function scheduleFields(b) {
+  const allowed = ['none', 'daily', 'weekly', 'monthly'];
+  const schedule = allowed.includes(b.schedule) ? b.schedule : 'none';
+  const hr = parseInt(b.schedule_hour, 10);
+  const schedule_hour = !isNaN(hr) && hr >= 0 && hr <= 23 ? hr : 7;
+  const dy = parseInt(b.schedule_day, 10);
+  const schedule_day = !isNaN(dy) && dy >= 0 && dy <= 6 ? dy : null;
+  const recipients = b.recipients && String(b.recipients).trim()
+    ? String(b.recipients).trim() : null;
+  const next_run_at = schedule !== 'none' && recipients
+    ? reportScheduler.calculateNextRun({ schedule, schedule_day, schedule_hour })
+    : null;
+  return { schedule, schedule_hour, schedule_day, recipients, next_run_at };
+}
+
 app.post('/api/reports/saved', wrap(async (req, res) => {
   const b = req.body || {};
   if (!b.name || !b.template) return res.status(400).json({ error: 'name and template are required' });
   const scopeIds = Array.isArray(b.scope_ids)
     ? b.scope_ids.map((n) => parseInt(n, 10)).filter((n) => !isNaN(n)) : null;
+  const s = scheduleFields(b);
   const r = await sv.query(`
     INSERT INTO saved_reports
       (name, template, scope_type, scope_id, scope_ids, scope_name,
-       date_range, date_from, date_to, sla_target, created_by)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *
+       date_range, date_from, date_to, sla_target, created_by,
+       schedule, schedule_day, schedule_hour, recipients, next_run_at)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING *
   `, [
     b.name, b.template, b.scope_type || 'all', b.scope_id || null,
     scopeIds && scopeIds.length ? scopeIds : null, b.scope_name || null,
     b.date_range || '30d', b.date_from || null, b.date_to || null,
     b.sla_target != null && b.sla_target !== '' ? b.sla_target : 99.5, b.created_by || null,
+    s.schedule, s.schedule_day, s.schedule_hour, s.recipients, s.next_run_at,
   ]);
   res.status(201).json(r.rows[0]);
+}));
+
+// Update a saved report's schedule/recipients (recomputes next_run_at).
+app.put('/api/reports/saved/:id', wrap(async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (isNaN(id)) return res.status(400).json({ error: 'invalid id' });
+  const s = scheduleFields(req.body || {});
+  const r = await sv.query(`
+    UPDATE saved_reports
+       SET schedule = $2, schedule_day = $3, schedule_hour = $4,
+           recipients = $5, next_run_at = $6
+     WHERE id = $1 RETURNING *
+  `, [id, s.schedule, s.schedule_day, s.schedule_hour, s.recipients, s.next_run_at]);
+  if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
+  res.json(r.rows[0]);
+}));
+
+// Run a saved report immediately and email it now (does not change next_run_at).
+app.post('/api/reports/saved/:id/run-now', wrap(async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (isNaN(id)) return res.status(400).json({ error: 'invalid id' });
+  const r = await sv.query(`SELECT * FROM saved_reports WHERE id = $1`, [id]);
+  const report = r.rows[0];
+  if (!report) return res.status(404).json({ error: 'not found' });
+  if (!report.recipients) return res.status(400).json({ error: 'no recipients configured' });
+  try {
+    const out = await reportScheduler.runAndEmailReport(sv, report, getSmtpSettings);
+    await sv.query(`UPDATE saved_reports SET last_sent_at = NOW() WHERE id = $1`, [id]);
+    res.json({ ok: true, recipients: out.recipients });
+  } catch (e) {
+    await sv.query(`
+      INSERT INTO report_history (report_id, status, error, recipients)
+      VALUES ($1, 'failed', $2, $3)
+    `, [id, e.message, report.recipients]).catch(() => {});
+    res.status(500).json({ error: e.message });
+  }
+}));
+
+// Run history for a saved report (most recent first).
+app.get('/api/reports/saved/:id/history', wrap(async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (isNaN(id)) return res.status(400).json({ error: 'invalid id' });
+  const r = await sv.query(`
+    SELECT id, report_id, run_at, status, error, recipients
+    FROM report_history WHERE report_id = $1 ORDER BY run_at DESC LIMIT 50
+  `, [id]);
+  res.json(r.rows);
 }));
 
 app.delete('/api/reports/saved/:id', wrap(async (req, res) => {
@@ -3275,4 +3343,28 @@ app.listen(PORT, '127.0.0.1', () => {
   } catch (err) {
     console.error('[Intelligence] Failed to start engine:', err.message);
   }
+  // Start the scheduled-reports engine (daily/weekly/monthly email delivery).
+  try {
+    reportScheduler.startReportScheduler(sv, getSmtpSettings);
+  } catch (err) {
+    console.error('[Reports] Failed to start scheduler:', err.message);
+  }
 });
+
+// SMTP config for scheduled reports, read from app_settings (the same keys the
+// collector uses for alert emails). Returns null-ish when unconfigured.
+async function getSmtpSettings() {
+  const r = await sv.query(
+    `SELECT key, value FROM app_settings WHERE key IN
+       ('smtp_host','smtp_port','smtp_user','smtp_pass','smtp_from')`
+  );
+  const m = {};
+  for (const row of r.rows) m[row.key] = row.value;
+  return {
+    host: m.smtp_host || '',
+    port: m.smtp_port ? parseInt(m.smtp_port, 10) : 587,
+    user: m.smtp_user || '',
+    pass: m.smtp_pass || '',
+    from: m.smtp_from || '',
+  };
+}
