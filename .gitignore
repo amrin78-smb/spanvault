@@ -6,3 +6,5 @@ node_modules/
 # Agent runtime files (generated at install time / runtime on the remote server)
 agent/config.json
 agent/buffer.json
+# Temp batch file written by POST /api/system/update to launch the updater
+update-run.bat

@@ -248,8 +248,11 @@ app.get('/api/system/update-status', wrap(async (_req, res) => {
   }
 }));
 
-// Spawns the update script as a DETACHED process so it keeps running after this
-// API service is stopped/restarted by the script itself. Returns immediately.
+// Launches the update script in a process fully independent of this Node service.
+// NSSM tears down the service's child-process tree on stop, so a directly-spawned
+// (even detached) PowerShell gets killed mid-update. Writing a temp batch file and
+// launching it via `cmd /c start /b` detaches it from the service so it survives
+// the restart. Returns { started: true } immediately.
 app.post('/api/system/update', wrap(async (_req, res) => {
   const scriptPath = path.join(__dirname, '..', 'installer', 'Update-SpanVault.ps1');
   // SERVER_IP is loaded from .env.local via dotenv at startup. No hardcoded IP
@@ -260,11 +263,25 @@ app.post('/api/system/update', wrap(async (_req, res) => {
       error: 'SERVER_IP not configured in .env.local — add SERVER_IP=your_server_ip to .env.local',
     });
   }
-  console.log('[Update] Spawning update, ServerIp:', serverIp);
-  const args = ['-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, '-ServerIp', serverIp];
-  const child = spawn('powershell.exe', args, { detached: true, stdio: 'ignore', windowsHide: true });
+
+  // Write a temp batch file that runs the update script, then launch it with
+  // cmd START so it runs completely independently of this service.
+  const batchContent =
+    `@echo off\r\n` +
+    `powershell.exe -NonInteractive -ExecutionPolicy Bypass ` +
+    `-File "${scriptPath}" -ServerIp "${serverIp}"\r\n`;
+  const batchPath = path.join(__dirname, '..', 'update-run.bat');
+  require('fs').writeFileSync(batchPath, batchContent);
+
+  const child = spawn('cmd.exe', ['/c', 'start', '/b', batchPath], {
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: true,
+  });
   child.on('error', (err) => console.error('[Update] spawn error:', err.message));
   child.unref();
+
+  console.log('[Update] Launched via cmd START, ServerIp:', serverIp);
   res.json({ started: true });
 }));
 

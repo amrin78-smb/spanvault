@@ -43,6 +43,11 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# Give the API a moment to return its { started: true } response to the frontend
+# before we start stopping services.
+Write-Host "=== Update starting in 5 seconds ==="
+Start-Sleep -Seconds 5
+
 # FIREWALL NOTE: SpanVault agents connect outbound to port 3010.
 # Ensure port 3010 is reachable from all agent servers to this host.
 # Open inbound: netsh advfirewall firewall add rule name="SpanVault Agent WS"
