@@ -738,30 +738,77 @@ function InterfacePanel({ deviceId }: { deviceId: number }) {
 type ConnRow = { from_port: string | null; to_port: string | null; protocol: string | null; to_device_id: number | null; neighbor_name: string | null; neighbor_ip: string | null };
 function ConnectedDevices({ deviceId }: { deviceId: number }) {
   const conn = useApi<ConnRow[]>(`/api/devices/${deviceId}/connected`, 0);
+  const storageKey = `sv-topology-expanded-${deviceId}`;
+  const [expanded, setExpanded] = useState(false);
+
+  // Sync from localStorage after mount to avoid hydration mismatch.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      if (window.localStorage.getItem(storageKey) === '1') setExpanded(true);
+    } catch {
+      /* ignore */
+    }
+  }, [storageKey]);
+
+  function toggle(next: boolean) {
+    setExpanded(next);
+    if (typeof window !== 'undefined') {
+      try {
+        window.localStorage.setItem(storageKey, next ? '1' : '0');
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
   if (conn.loading && !conn.data) return null;
   if (!conn.data || !conn.data.length) return null;
+
+  const rows = conn.data;
+  const total = rows.length;
+
   return (
     <div className="sv-panel">
       <h2>Connected to</h2>
-      <div className="sv-conn-list">
-        {conn.data.map((c, i) => (
-          <div key={i} className="sv-conn-row">
-            <span className="sv-conn-port">{c.from_port || '—'}</span>
-            <span className="sv-conn-arrow">→</span>
-            <span className="sv-conn-nb">
-              {c.to_device_id ? (
-                <Link href={`/devices/${c.to_device_id}`} style={{ color: 'var(--sv-crimson)', fontWeight: 600 }}>
-                  {c.neighbor_name || c.neighbor_ip || `#${c.to_device_id}`}
-                </Link>
-              ) : (
-                <span style={{ fontWeight: 600 }}>{c.neighbor_name || c.neighbor_ip || 'Unknown neighbor'}</span>
-              )}
-              {c.to_port && <span className="sv-muted"> · {c.to_port}</span>}
-              {c.protocol && <span className="sv-muted"> · {c.protocol.toUpperCase()}</span>}
+
+      {expanded ? (
+        <>
+          <button type="button" className="sv-if-toggle" onClick={() => toggle(false)}>
+            Show summary
+          </button>
+          <div className="sv-conn-list" style={{ maxHeight: 300, overflowY: 'auto' }}>
+            {rows.map((c, i) => (
+              <div key={i} className="sv-conn-row">
+                <span className="sv-conn-port">{c.from_port || '—'}</span>
+                <span className="sv-conn-arrow">→</span>
+                <span className="sv-conn-nb">
+                  {c.to_device_id ? (
+                    <Link href={`/devices/${c.to_device_id}`} style={{ color: 'var(--sv-crimson)', fontWeight: 600 }}>
+                      {c.neighbor_name || c.neighbor_ip || `#${c.to_device_id}`}
+                    </Link>
+                  ) : (
+                    <span style={{ fontWeight: 600 }}>{c.neighbor_name || c.neighbor_ip || 'Unknown neighbor'}</span>
+                  )}
+                  {c.to_port && <span className="sv-muted"> · {c.to_port}</span>}
+                  {c.protocol && <span className="sv-muted"> · {c.protocol.toUpperCase()}</span>}
+                </span>
+              </div>
+            ))}
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="sv-if-summary">
+            <span className="sv-if-summary-item">
+              Connected to {total} neighbor{total === 1 ? '' : 's'}
             </span>
           </div>
-        ))}
-      </div>
+          <button type="button" className="sv-if-toggle" onClick={() => toggle(true)}>
+            Show all {total} connections
+          </button>
+        </>
+      )}
     </div>
   );
 }
