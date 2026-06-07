@@ -2159,12 +2159,39 @@ function windowClause(col, w, start) {
     : `${col} >= NOW() - $${start}::interval`;
 }
 
+// Resolve a report's reporting window to explicit start/end timestamps so every
+// report endpoint can support an arbitrary custom date range (not just the
+// relative NOW()-interval windows). Accepts either date_from/date_to (the saved-
+// report column names) or from/to (what the reports UI sends) for the custom
+// range. Returns ISO timestamps + a human label; with $1=start, $2=end the
+// report queries filter with `ts BETWEEN $1 AND $2`.
+function getDateRange(query) {
+  const range = query.range || '30d';
+  const dateFrom = query.date_from || query.from;
+  const dateTo = query.date_to || query.to;
+  if (range === 'custom' && dateFrom && dateTo) {
+    return {
+      start: new Date(dateFrom).toISOString(),
+      end: new Date(dateTo + 'T23:59:59').toISOString(),
+      label: `${dateFrom} to ${dateTo}`,
+    };
+  }
+  const days = range === '7d' ? 7 : range === '90d' ? 90 : range === '24h' ? 1 : 30;
+  const end = new Date();
+  const start = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+  return {
+    start: start.toISOString(),
+    end: end.toISOString(),
+    label: `Last ${days === 1 ? '24 hours' : days + ' days'}`,
+  };
+}
+
 // Per-device SLA rows for the requested window/scope. Shared by both SLA routes.
 async function slaRows(q, siteFilter) {
-  const w = windowParams(q);
-  const params = [...w.params];
-  const pingTs = windowClause('ts', w, 1);
-  const alertTs = windowClause('triggered_at', w, 1);
+  const win = getDateRange(q);
+  const params = [win.start, win.end];
+  const pingTs = 'ts BETWEEN $1 AND $2';
+  const alertTs = 'triggered_at BETWEEN $1 AND $2';
   const filters = ['d.active = TRUE'];
   if (q.site_id)   { params.push(parseInt(q.site_id, 10));   filters.push(`d.site_id = $${params.length}`); }
   if (q.device_id) { params.push(parseInt(q.device_id, 10)); filters.push(`d.id = $${params.length}`); }
@@ -2385,11 +2412,11 @@ function perDeviceAggSql(extraWhere, caps) {
       SELECT COUNT(*)::int AS total_checks,
              SUM(CASE WHEN status <> 'up' THEN 1 ELSE 0 END)::int AS failed_checks,
              AVG(response_ms) FILTER (WHERE status = 'up') AS avg_ms
-      FROM ping_results WHERE device_id = d.id AND ts >= NOW() - $1::interval
+      FROM ping_results WHERE device_id = d.id AND ts BETWEEN $1 AND $2
     ) pa ON TRUE
     LEFT JOIN LATERAL (
       SELECT COUNT(*)::int AS cnt FROM alerts
-       WHERE device_id = d.id AND alert_type <> 'recovery' AND triggered_at >= NOW() - $1::interval
+       WHERE device_id = d.id AND alert_type <> 'recovery' AND triggered_at BETWEEN $1 AND $2
     ) al ON TRUE
     ${healthJoin}
     WHERE d.active = TRUE${extraWhere || ''}`;
@@ -2400,15 +2427,15 @@ function downtimeMin(d) {
 
 // ── Network summary (always all devices) ──────────────────────
 app.get('/api/reports/network-summary', wrap(async (req, res) => {
-  const interval = rangeToInterval(req.query.range);
-  const params = [interval];
+  const win = getDateRange(req.query);
+  const params = [win.start, win.end];
   const sc = siteFilterClause(getSiteFilter(req), params, 'd.site_id');
   const caps = await getReportCaps();
   const dr = await sv.query(perDeviceAggSql(sc ? ` AND ${sc}` : '', caps), params);
   const mr = await sv.query(`
     SELECT ROUND(AVG(EXTRACT(EPOCH FROM (a.resolved_at - a.triggered_at)) / 60.0)::numeric, 1) AS mttr
     FROM alerts a JOIN monitored_devices d ON d.id = a.device_id
-    WHERE a.resolved_at IS NOT NULL AND a.triggered_at >= NOW() - $1::interval${sc ? ` AND ${sc}` : ''}
+    WHERE a.resolved_at IS NOT NULL AND a.triggered_at BETWEEN $1 AND $2${sc ? ` AND ${sc}` : ''}
   `, params);
 
   const devices = dr.rows;
@@ -2460,16 +2487,16 @@ app.get('/api/reports/network-summary', wrap(async (req, res) => {
 
 // ── Site summary ──────────────────────────────────────────────
 app.get('/api/reports/site-summary', wrap(async (req, res) => {
-  const interval = rangeToInterval(req.query.range);
+  const win = getDateRange(req.query);
   const siteId = parseInt(req.query.site_id, 10);
   if (isNaN(siteId)) return res.status(400).json({ error: 'site_id is required' });
   const t = parseFloat(req.query.sla_target);
   const slaTarget = isNaN(t) ? 99.5 : t;
-  const params = [interval, siteId];
+  const params = [win.start, win.end, siteId];
   const sc = siteFilterClause(getSiteFilter(req), params, 'd.site_id');
   const caps = await getReportCaps();
   const r = await sv.query(
-    perDeviceAggSql(` AND d.site_id = $2${sc ? ` AND ${sc}` : ''}`, caps) + ` ORDER BY uptime_pct ASC NULLS LAST, d.name`,
+    perDeviceAggSql(` AND d.site_id = $3${sc ? ` AND ${sc}` : ''}`, caps) + ` ORDER BY uptime_pct ASC NULLS LAST, d.name`,
     params
   );
   const devices = r.rows.map((d) => ({
@@ -2502,7 +2529,7 @@ app.get('/api/reports/site-summary', wrap(async (req, res) => {
 app.get('/api/reports/device-detail', wrap(async (req, res) => {
   const id = parseInt(req.query.device_id, 10);
   if (isNaN(id)) return res.status(400).json({ error: 'device_id is required' });
-  const interval = rangeToInterval(req.query.range);
+  const win = getDateRange(req.query);
   const dev = await sv.query(
     `SELECT id, name, ip_address, site_name, device_type, device_vendor, snmp_enabled, poll_interval_seconds
        FROM monitored_devices WHERE id = $1`, [id]);
@@ -2519,11 +2546,11 @@ app.get('/api/reports/device-detail', wrap(async (req, res) => {
   const [avail, resp, health, baseline, alerts, byDay, snmpSummary, topo, longest] = await Promise.all([
     safeQ(`SELECT COUNT(*)::int AS total_checks,
                      SUM(CASE WHEN status <> 'up' THEN 1 ELSE 0 END)::int AS failed_checks
-              FROM ping_results WHERE device_id = $1 AND ts >= NOW() - $2::interval`, [id, interval]),
+              FROM ping_results WHERE device_id = $1 AND ts BETWEEN $2 AND $3`, [id, win.start, win.end]),
     safeQ(`SELECT ROUND(AVG(response_ms)::numeric,1) AS avg_ms, ROUND(MIN(response_ms)::numeric,1) AS min_ms,
                      ROUND(MAX(response_ms)::numeric,1) AS max_ms,
                      ROUND(percentile_cont(0.95) WITHIN GROUP (ORDER BY response_ms)::numeric,1) AS p95_ms
-              FROM ping_results WHERE device_id = $1 AND status = 'up' AND ts >= NOW() - $2::interval`, [id, interval]),
+              FROM ping_results WHERE device_id = $1 AND status = 'up' AND ts BETWEEN $2 AND $3`, [id, win.start, win.end]),
     safeQ(`SELECT score, grade, trend FROM device_health_scores WHERE device_id = $1`, [id]),
     safeQ(`SELECT mean, p95 FROM device_baselines WHERE device_id = $1 AND metric = 'response_ms'
                 ORDER BY period_days ASC LIMIT 1`, [id]),
@@ -2560,9 +2587,9 @@ app.get('/api/reports/device-detail', wrap(async (req, res) => {
               WHERE t.from_device_id = $1 ORDER BY t.from_port NULLS LAST`, [id]),
     safeQ(`WITH s AS (
                 SELECT status, SUM(CASE WHEN status = 'up' THEN 1 ELSE 0 END) OVER (ORDER BY ts) AS grp
-                FROM ping_results WHERE device_id = $1 AND ts >= NOW() - $2::interval
+                FROM ping_results WHERE device_id = $1 AND ts BETWEEN $2 AND $3
               )
-              SELECT COUNT(*)::int AS run FROM s WHERE status <> 'up' GROUP BY grp ORDER BY run DESC LIMIT 1`, [id, interval]),
+              SELECT COUNT(*)::int AS run FROM s WHERE status <> 'up' GROUP BY grp ORDER BY run DESC LIMIT 1`, [id, win.start, win.end]),
   ]);
 
   const a0 = avail.rows[0] || { total_checks: 0, failed_checks: 0 };
@@ -2612,10 +2639,10 @@ app.get('/api/reports/sla-compliance', wrap(async (req, res) => {
 
 // ── Top N worst ───────────────────────────────────────────────
 app.get('/api/reports/top-worst', wrap(async (req, res) => {
-  const interval = rangeToInterval(req.query.range);
+  const win = getDateRange(req.query);
   const metric = ['uptime', 'response', 'alerts'].includes(req.query.metric) ? req.query.metric : 'uptime';
   const limit = safeInt(req.query.limit, 10, 100);
-  const params = [interval];
+  const params = [win.start, win.end];
   const sc = siteFilterClause(getSiteFilter(req), params, 'd.site_id');
   const caps = await getReportCaps();
   const r = await sv.query(perDeviceAggSql(sc ? ` AND ${sc}` : '', caps), params);
@@ -2632,11 +2659,11 @@ app.get('/api/reports/top-worst', wrap(async (req, res) => {
 
 // ── Alert analysis ────────────────────────────────────────────
 app.get('/api/reports/alert-analysis', wrap(async (req, res) => {
-  const interval = rangeToInterval(req.query.range);
-  const params = [interval];
+  const win = getDateRange(req.query);
+  const params = [win.start, win.end];
   const sc = siteFilterClause(getSiteFilter(req), params, 'd.site_id');
   const base = `FROM alerts a JOIN monitored_devices d ON d.id = a.device_id
-    WHERE a.alert_type <> 'recovery' AND a.triggered_at >= NOW() - $1::interval${sc ? ` AND ${sc}` : ''}`;
+    WHERE a.alert_type <> 'recovery' AND a.triggered_at BETWEEN $1 AND $2${sc ? ` AND ${sc}` : ''}`;
   const [tot, byType, bySev, bySite, byDevice, mttr, hour, day] = await Promise.all([
     sv.query(`SELECT COUNT(*)::int AS c ${base}`, params),
     sv.query(`SELECT a.alert_type AS key, COUNT(*)::int AS count ${base} GROUP BY a.alert_type ORDER BY count DESC`, params),
@@ -2665,9 +2692,11 @@ app.get('/api/reports/alert-analysis', wrap(async (req, res) => {
 // ── Capacity planning ─────────────────────────────────────────
 app.get('/api/reports/capacity', wrap(async (req, res) => {
   const q = req.query;
-  const interval = rangeToInterval(q.range || '90d');
-  const params = [interval];
-  const filters = [`s.metric_name ~ '^if_[0-9]+_(in|out)_bps$'`, `s.ts >= NOW() - $1::interval`];
+  const win = getDateRange({ ...q, range: q.range || '90d' });
+  // Midpoint splits the window into halves for the increasing/decreasing trend.
+  const midpoint = new Date((Date.parse(win.start) + Date.parse(win.end)) / 2).toISOString();
+  const params = [win.start, win.end, midpoint];
+  const filters = [`s.metric_name ~ '^if_[0-9]+_(in|out)_bps$'`, `s.ts BETWEEN $1 AND $2`];
   if (q.site_id) { params.push(parseInt(q.site_id, 10)); filters.push(`d.site_id = $${params.length}`); }
   const sc = siteFilterClause(getSiteFilter(req), params, 'd.site_id');
   if (sc) filters.push(sc);
@@ -2675,8 +2704,8 @@ app.get('/api/reports/capacity', wrap(async (req, res) => {
     SELECT s.device_id, d.name AS device_name, COALESCE(d.site_name, 'Unassigned') AS site_name,
            s.if_name, s.metric_name,
            AVG(s.value) AS avg_bps, MAX(s.value) AS peak_bps,
-           AVG(s.value) FILTER (WHERE s.ts <  NOW() - ($1::interval) / 2) AS first_half,
-           AVG(s.value) FILTER (WHERE s.ts >= NOW() - ($1::interval) / 2) AS second_half
+           AVG(s.value) FILTER (WHERE s.ts <  $3) AS first_half,
+           AVG(s.value) FILTER (WHERE s.ts >= $3) AS second_half
     FROM snmp_results s JOIN monitored_devices d ON d.id = s.device_id
     WHERE ${filters.join(' AND ')}
     GROUP BY s.device_id, d.name, site_name, s.if_name, s.metric_name
@@ -2714,53 +2743,57 @@ app.get('/api/reports/capacity', wrap(async (req, res) => {
 
 // ── Executive summary ─────────────────────────────────────────
 app.get('/api/reports/executive', wrap(async (req, res) => {
-  const interval = rangeToInterval(req.query.range || '30d');
-  const params = [interval];
+  const win = getDateRange({ ...req.query, range: req.query.range || '30d' });
+  // Previous comparison window: the same-length span immediately before the
+  // reporting window ([prevStart, start)).
+  const durationMs = Date.parse(win.end) - Date.parse(win.start);
+  const prevStart = new Date(Date.parse(win.start) - durationMs).toISOString();
+  const params = [win.start, win.end, prevStart];
   const sc = siteFilterClause(getSiteFilter(req), params, 'd.site_id');
   const scAnd = sc ? ` AND ${sc}` : '';
 
   const ov = await sv.query(`
     SELECT COUNT(*)::int AS tc, SUM(CASE WHEN p.status <> 'up' THEN 1 ELSE 0 END)::int AS bad
     FROM ping_results p JOIN monitored_devices d ON d.id = p.device_id
-    WHERE p.ts >= NOW() - $1::interval${scAnd}`, params);
+    WHERE p.ts BETWEEN $1 AND $2${scAnd}`, params);
   const prev = await sv.query(`
     SELECT COUNT(*)::int AS tc, SUM(CASE WHEN p.status <> 'up' THEN 1 ELSE 0 END)::int AS bad
     FROM ping_results p JOIN monitored_devices d ON d.id = p.device_id
-    WHERE p.ts >= NOW() - ($1::interval) * 2 AND p.ts < NOW() - $1::interval${scAnd}`, params);
+    WHERE p.ts >= $3 AND p.ts < $1${scAnd}`, params);
   const dt = await sv.query(`
     SELECT COALESCE(SUM(sub.failed * d.poll_interval_seconds / 60.0), 0) AS dt
     FROM monitored_devices d
     JOIN LATERAL (
       SELECT SUM(CASE WHEN status <> 'up' THEN 1 ELSE 0 END) AS failed
-      FROM ping_results WHERE device_id = d.id AND ts >= NOW() - $1::interval
+      FROM ping_results WHERE device_id = d.id AND ts BETWEEN $1 AND $2
     ) sub ON TRUE
     WHERE d.active = TRUE${scAnd}`, params);
   const alertCounts = await sv.query(`
     SELECT
-      COUNT(*) FILTER (WHERE a.triggered_at >= NOW() - $1::interval)::int AS cur,
-      COUNT(*) FILTER (WHERE a.triggered_at >= NOW() - ($1::interval) * 2 AND a.triggered_at < NOW() - $1::interval)::int AS prev
+      COUNT(*) FILTER (WHERE a.triggered_at BETWEEN $1 AND $2)::int AS cur,
+      COUNT(*) FILTER (WHERE a.triggered_at >= $3 AND a.triggered_at < $1)::int AS prev
     FROM alerts a JOIN monitored_devices d ON d.id = a.device_id
-    WHERE a.alert_type <> 'recovery' AND a.triggered_at >= NOW() - ($1::interval) * 2${scAnd}`, params);
+    WHERE a.alert_type <> 'recovery' AND a.triggered_at >= $3${scAnd}`, params);
   const siteRows = await sv.query(`
     SELECT COALESCE(d.site_name, 'Unassigned') AS site_name,
            COUNT(p.*)::int AS tc, SUM(CASE WHEN p.status <> 'up' THEN 1 ELSE 0 END)::int AS bad,
            (SELECT COUNT(*)::int FROM alerts a JOIN monitored_devices d2 ON d2.id = a.device_id
              WHERE d2.site_name IS NOT DISTINCT FROM d.site_name
-               AND a.alert_type = 'device_down' AND a.triggered_at >= NOW() - $1::interval) AS incidents
+               AND a.alert_type = 'device_down' AND a.triggered_at BETWEEN $1 AND $2) AS incidents
     FROM monitored_devices d
-    LEFT JOIN ping_results p ON p.device_id = d.id AND p.ts >= NOW() - $1::interval
+    LEFT JOIN ping_results p ON p.device_id = d.id AND p.ts BETWEEN $1 AND $2
     WHERE d.active = TRUE${scAnd}
     GROUP BY d.site_name ORDER BY 1`, params);
 
   // Incidents are global (no site column); guard in case the table is absent.
   let totalIncidents = 0, biggest = null;
   try {
-    const ic = await sv.query(`SELECT COUNT(*)::int AS c FROM incidents WHERE started_at >= NOW() - $1::interval`, [interval]);
+    const ic = await sv.query(`SELECT COUNT(*)::int AS c FROM incidents WHERE started_at BETWEEN $1 AND $2`, [win.start, win.end]);
     totalIncidents = ic.rows[0] ? ic.rows[0].c : 0;
     const bg = await sv.query(`
       SELECT title, duration_seconds, affected_count FROM incidents
-      WHERE started_at >= NOW() - $1::interval
-      ORDER BY COALESCE(duration_seconds, 0) DESC, affected_count DESC LIMIT 1`, [interval]);
+      WHERE started_at BETWEEN $1 AND $2
+      ORDER BY COALESCE(duration_seconds, 0) DESC, affected_count DESC LIMIT 1`, [win.start, win.end]);
     if (bg.rows[0]) biggest = {
       title: bg.rows[0].title,
       duration_minutes: bg.rows[0].duration_seconds != null ? Math.round(bg.rows[0].duration_seconds / 60) : null,
