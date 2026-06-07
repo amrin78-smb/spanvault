@@ -640,25 +640,6 @@ function UptimeCalendar({ deviceId }: { deviceId: number }) {
 // ── Interface status panel (top-level components) ──────────────
 type IfRow = { if_index: number; if_name: string; status: string | null; in_bps: number | null; out_bps: number | null };
 
-// Single full-width row (status dot + name + state + bps) — used for the
-// actionable (down) interfaces shown in the collapsed/summary view.
-function IfFullRow({ r }: { r: IfRow }) {
-  return (
-    <div className="sv-if-row">
-      <StatusDot status={r.status || 'unknown'} size={10} title={`Interface ${r.status || 'unknown'}`} />
-      <span className="sv-if-name">{r.if_name}</span>
-      <span className={`sv-if-state ${r.status || 'unknown'}`}>
-        {r.status ? r.status.charAt(0).toUpperCase() + r.status.slice(1) : 'Unknown'}
-      </span>
-      <span className="sv-if-bps">
-        {r.status === 'down' || (r.in_bps == null && r.out_bps == null)
-          ? '—'
-          : `${fmtBps(r.in_bps)} ↓ / ${fmtBps(r.out_bps)} ↑`}
-      </span>
-    </div>
-  );
-}
-
 // Compact grid cell — used in the expanded "show all" view.
 function IfGridCell({ r }: { r: IfRow }) {
   const bps =
@@ -708,7 +689,6 @@ function InterfacePanel({ deviceId }: { deviceId: number }) {
   const upCount = rows.filter((r) => r.status === 'up').length;
   const downCount = rows.filter((r) => r.status === 'down').length;
   const unknownCount = total - upCount - downCount;
-  const downRows = rows.filter((r) => r.status === 'down');
 
   return (
     <div className="sv-panel">
@@ -744,16 +724,6 @@ function InterfacePanel({ deviceId }: { deviceId: number }) {
               </span>
             )}
           </div>
-
-          {downRows.length ? (
-            <div className="sv-if-list">
-              {downRows.map((r) => (
-                <IfFullRow key={r.if_index} r={r} />
-              ))}
-            </div>
-          ) : (
-            <div className="sv-if-allup">All interfaces up ✓</div>
-          )}
 
           <button type="button" className="sv-if-toggle" onClick={() => toggle(true)}>
             Show all {total} interfaces
