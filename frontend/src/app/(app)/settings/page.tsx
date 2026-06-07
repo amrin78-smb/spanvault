@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useApi, apiSend } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
@@ -10,6 +10,7 @@ const TABS = [
   { key: 'general', label: 'General' },
   { key: 'rules', label: 'Alert Rules' },
   { key: 'maintenance', label: 'Maintenance' },
+  { key: 'updates', label: 'Updates' },
 ];
 
 export default function SettingsPage() {
@@ -42,6 +43,7 @@ export default function SettingsPage() {
       {tab === 'general' && <GeneralSettings />}
       {tab === 'rules' && <AlertRules />}
       {tab === 'maintenance' && <Maintenance />}
+      {tab === 'updates' && <SystemUpdates />}
     </div>
   );
 }
@@ -558,6 +560,221 @@ function Maintenance() {
           </table>
         ) : (
           <Empty message="No maintenance windows scheduled." />
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── System Updates ─────────────────────────────────────────────
+type UpdateStatus = {
+  current_version?: string;
+  latest_version?: string;
+  commits_behind?: number;
+  up_to_date?: boolean;
+  changes?: string[];
+  error?: string;
+};
+
+// Strip the leading short-hash from a "abc1234 subject" change line, keeping it readable.
+function changeSubject(line: string): string {
+  const m = line.match(/^([0-9a-f]{7,40})\s+(.*)$/i);
+  return m ? m[2] : line;
+}
+
+const UPDATE_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes
+
+function SystemUpdates() {
+  const [status, setStatus] = useState<UpdateStatus | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [checkErr, setCheckErr] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const [updating, setUpdating] = useState(false);
+
+  async function check() {
+    setChecking(true);
+    setCheckErr(null);
+    try {
+      const s = await apiSend<UpdateStatus>('/api/system/update-status', 'GET' as any);
+      setStatus(s);
+    } catch (e: any) {
+      setCheckErr(e?.message || 'Could not check for updates');
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  // Auto-load status on mount (button click still available below).
+  useEffect(() => { check(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+
+  async function startUpdate() {
+    setConfirming(false);
+    setUpdating(true);
+    try {
+      await apiSend('/api/system/update', 'POST', {});
+    } catch (e: any) {
+      // Even if the response is cut off by a fast restart, proceed to the
+      // updating overlay so health polling can detect recovery.
+    }
+  }
+
+  const hasError = !!(status?.error) || !!checkErr;
+  const errText = status?.error || checkErr;
+  const upToDate = !hasError && !!status?.up_to_date;
+  const updatesAvailable = !hasError && !upToDate && (status?.commits_behind ?? 0) > 0;
+
+  return (
+    <div>
+      <div className="sv-panel">
+        <h2>System Updates</h2>
+
+        {status?.current_version && (
+          <p className="sv-muted" style={{ marginTop: -4 }}>
+            Current version: <code>{status.current_version}</code>
+          </p>
+        )}
+
+        {checking ? (
+          <p className="sv-muted"><span className="sv-spinner-sm" /> Checking for updates…</p>
+        ) : hasError ? (
+          <div style={{ marginTop: 8 }}>
+            <p style={{ color: 'var(--sv-down, #C8102E)', fontWeight: 600 }}>{errText}</p>
+            <button className="sv-btn" onClick={check}>Check for Updates</button>
+          </div>
+        ) : upToDate ? (
+          <div style={{ marginTop: 8 }}>
+            <p style={{ color: 'var(--sv-up, #16a34a)', fontWeight: 600 }}>✓ SpanVault is up to date</p>
+            <button className="sv-btn" onClick={check}>Check for Updates</button>
+          </div>
+        ) : updatesAvailable ? (
+          <div style={{ marginTop: 8 }}>
+            <p style={{ fontWeight: 700, fontSize: 16 }}>🔄 {status?.commits_behind} update{(status?.commits_behind ?? 0) === 1 ? '' : 's'} available</p>
+            <p className="sv-muted">
+              Current: <code>{status?.current_version}</code>{'  →  '}Latest: <code>{status?.latest_version}</code>
+            </p>
+            {status?.changes && status.changes.length > 0 && (
+              <div style={{ margin: '12px 0' }}>
+                <strong>Changes:</strong>
+                <ul style={{ margin: '6px 0 0', paddingLeft: 20 }}>
+                  {status.changes.map((c, i) => (
+                    <li key={i} style={{ marginBottom: 2 }}>{changeSubject(c)}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            <p style={{ color: 'var(--sv-warn, #d97706)', fontWeight: 600 }}>
+              ⚠ Services will restart during update. You may lose connection briefly (30-60 seconds).
+            </p>
+            <div className="sv-toolbar">
+              <button className="sv-btn" onClick={() => setConfirming(true)}>Update Now</button>
+              <button className="sv-btn ghost" onClick={check}>Re-check</button>
+            </div>
+          </div>
+        ) : (
+          <div style={{ marginTop: 8 }}>
+            <button className="sv-btn" onClick={check}>Check for Updates</button>
+          </div>
+        )}
+      </div>
+
+      {confirming && (
+        <UpdateConfirmModal
+          onCancel={() => setConfirming(false)}
+          onConfirm={startUpdate}
+        />
+      )}
+
+      {updating && <UpdatingOverlay />}
+    </div>
+  );
+}
+
+// Confirmation modal (top-level).
+function UpdateConfirmModal({ onCancel, onConfirm }: { onCancel: () => void; onConfirm: () => void }) {
+  return (
+    <div className="sv-modal-backdrop" onMouseDown={onCancel}>
+      <div className="sv-modal" style={{ maxWidth: 460 }} onMouseDown={(e) => e.stopPropagation()}>
+        <h2>Start Update?</h2>
+        <p>Start update? Services will restart and you will lose connection for 30-60 seconds.</p>
+        <div className="sv-modal-actions">
+          <button className="sv-btn ghost" onClick={onCancel}>Cancel</button>
+          <button className="sv-btn" onClick={onConfirm}>Start Update</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Full-screen overlay shown during an update; polls /api/health for recovery.
+function UpdatingOverlay() {
+  const [phase, setPhase] = useState<'starting' | 'restarting' | 'complete' | 'timeout'>('starting');
+  const sawDown = useRef(false);
+
+  useEffect(() => {
+    let active = true;
+    const startedAt = Date.now();
+
+    const tick = async () => {
+      if (!active) return;
+      if (Date.now() - startedAt > UPDATE_TIMEOUT_MS) {
+        if (active) setPhase('timeout');
+        cleanup();
+        return;
+      }
+      try {
+        const res = await fetch('/api/health', { cache: 'no-store' });
+        if (!res.ok) throw new Error('not ok');
+        // Healthy response — only counts as "complete" after a down was seen.
+        if (sawDown.current) {
+          if (!active) return;
+          setPhase('complete');
+          cleanup();
+          setTimeout(() => { window.location.reload(); }, 2000);
+        }
+        // else: still the pre-restart API; keep waiting for it to go down.
+      } catch {
+        sawDown.current = true;
+        if (active) setPhase('restarting');
+      }
+    };
+
+    const id = setInterval(tick, 3000);
+    // Run an immediate first poll too.
+    tick();
+
+    function cleanup() {
+      clearInterval(id);
+    }
+
+    return () => {
+      active = false;
+      clearInterval(id);
+    };
+  }, []);
+
+  let statusLine = 'Starting update…';
+  if (phase === 'restarting') statusLine = 'Services restarting… ⟳';
+  else if (phase === 'complete') statusLine = '✓ Update complete! Reloading…';
+  else if (phase === 'timeout') statusLine = 'Update is taking longer than expected. Try refreshing the page manually.';
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 1000,
+      background: 'rgba(15,23,42,0.78)', backdropFilter: 'blur(4px)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16,
+    }}>
+      <div className="sv-panel" style={{ maxWidth: 440, textAlign: 'center', width: '100%' }}>
+        {phase !== 'complete' && phase !== 'timeout' && (
+          <div style={{ fontSize: 44, lineHeight: 1, display: 'inline-block', animation: 'spin 1s linear infinite' }}>⟳</div>
+        )}
+        {phase === 'complete' && <div style={{ fontSize: 44, lineHeight: 1 }}>✓</div>}
+        {phase === 'timeout' && <div style={{ fontSize: 44, lineHeight: 1 }}>⚠</div>}
+        <h2 style={{ marginTop: 14 }}>Updating SpanVault…</h2>
+        <p className="sv-muted">Pulling latest code and restarting services. Do not close this window.</p>
+        <p style={{ fontWeight: 600, margin: '14px 0' }}>{statusLine}</p>
+        <p className="sv-muted" style={{ fontSize: 12 }}>(This usually takes 30-60 seconds)</p>
+        {phase === 'timeout' && (
+          <button className="sv-btn" style={{ marginTop: 10 }} onClick={() => window.location.reload()}>Reload</button>
         )}
       </div>
     </div>
