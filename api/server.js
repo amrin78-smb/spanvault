@@ -252,18 +252,18 @@ app.get('/api/system/update-status', wrap(async (_req, res) => {
 // API service is stopped/restarted by the script itself. Returns immediately.
 app.post('/api/system/update', wrap(async (_req, res) => {
   const scriptPath = path.join(__dirname, '..', 'installer', 'Update-SpanVault.ps1');
-  // No hardcoded IP (CLAUDE.md): prefer an explicit SERVER_IP env var, otherwise
-  // derive the host from SV_PUBLIC_URL / NEXTAUTH_URL (both set at install time).
-  // On an update the installer preserves the existing .env.local, so -ServerIp is
-  // optional; we pass it only when we can resolve it.
-  let serverIp = process.env.SERVER_IP || '';
+  // SERVER_IP is loaded from .env.local via dotenv at startup. No hardcoded IP
+  // and no fallback (CLAUDE.md) — if it isn't configured we cannot update.
+  const serverIp = process.env.SERVER_IP || '';
   if (!serverIp) {
-    const base = process.env.SV_PUBLIC_URL || process.env.NEXTAUTH_URL || '';
-    try { if (base) serverIp = new URL(base).hostname; } catch (_e) { /* ignore */ }
+    return res.status(400).json({
+      error: 'SERVER_IP not configured in .env.local — add SERVER_IP=your_server_ip to .env.local',
+    });
   }
-  const args = ['-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptPath];
-  if (serverIp) args.push('-ServerIp', serverIp);
+  console.log('[Update] Spawning update, ServerIp:', serverIp);
+  const args = ['-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, '-ServerIp', serverIp];
   const child = spawn('powershell.exe', args, { detached: true, stdio: 'ignore', windowsHide: true });
+  child.on('error', (err) => console.error('[Update] spawn error:', err.message));
   child.unref();
   res.json({ started: true });
 }));

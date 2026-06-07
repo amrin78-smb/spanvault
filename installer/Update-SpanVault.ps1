@@ -164,12 +164,32 @@ function Write-EnvFile($examplePath, $targetPath) {
     if (-not $ServerIp) {
         throw "No -ServerIp given and $targetPath does not exist. Provide -ServerIp on first install."
     }
-    (Get-Content $examplePath -Raw).Replace('SERVER_IP', $ServerIp) |
+    (Get-Content $examplePath -Raw).Replace('SERVER_IP:', ($ServerIp + ':')) |
         Set-Content -Path $targetPath -Encoding UTF8 -NoNewline
     Write-Ok "Wrote $targetPath (SERVER_IP -> $ServerIp)"
 }
 Write-EnvFile $rootExample $rootEnv
 Write-EnvFile $feExample   $feEnv
+
+# ── Ensure SERVER_IP is recorded in the root .env.local ─────────
+# The in-app updater (Settings -> Updates) reads SERVER_IP via dotenv to re-run
+# this installer. Set it from -ServerIp, replacing the template placeholder or
+# appending it when missing. A real existing value is left untouched. This runs
+# even on updates (where .env.local is preserved) so existing installs get it.
+if ((Test-Path $rootEnv) -and $ServerIp) {
+    $envText = Get-Content $rootEnv -Raw
+    if ($envText -match '(?m)^\s*SERVER_IP\s*=\s*(your_server_ip\s*)?$') {
+        # Empty or template-placeholder value → set the real one.
+        $envText = $envText -replace '(?m)^\s*SERVER_IP\s*=.*$', "SERVER_IP=$ServerIp"
+        Set-Content -Path $rootEnv -Value $envText -Encoding UTF8 -NoNewline
+        Write-Ok "Set SERVER_IP=$ServerIp in $rootEnv"
+    } elseif ($envText -notmatch '(?m)^\s*SERVER_IP\s*=') {
+        Add-Content -Path $rootEnv -Value "SERVER_IP=$ServerIp"
+        Write-Ok "Added SERVER_IP=$ServerIp to $rootEnv"
+    } else {
+        Write-Ok "Preserving existing SERVER_IP in $rootEnv"
+    }
+}
 
 # ── 4. Install dependencies ────────────────────────────────────
 Write-Step 'Installing dependencies (root)'
