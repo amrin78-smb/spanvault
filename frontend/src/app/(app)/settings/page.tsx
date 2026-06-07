@@ -706,55 +706,76 @@ function UpdateConfirmModal({ onCancel, onConfirm }: { onCancel: () => void; onC
 }
 
 // Full-screen overlay shown during an update; polls /api/health for recovery.
+// State machine: 'starting' → 'down' → 'back_up'. A healthy response only counts
+// as recovery once the API has actually been seen down first, so we never declare
+// "complete" against the still-running pre-restart service.
 function UpdatingOverlay() {
-  const [phase, setPhase] = useState<'starting' | 'restarting' | 'complete' | 'timeout'>('starting');
-  const sawDown = useRef(false);
+  const [phase, setPhase] = useState<'starting' | 'down' | 'back_up' | 'timeout'>('starting');
+  const wentDown = useRef(false);
 
   useEffect(() => {
     let active = true;
     const startedAt = Date.now();
+    let pollId: ReturnType<typeof setInterval> | null = null;
+    let reloadId: ReturnType<typeof setTimeout> | null = null;
+
+    function stopPolling() {
+      if (pollId !== null) { clearInterval(pollId); pollId = null; }
+    }
 
     const tick = async () => {
       if (!active) return;
       if (Date.now() - startedAt > UPDATE_TIMEOUT_MS) {
+        stopPolling();
         if (active) setPhase('timeout');
-        cleanup();
         return;
       }
+
+      // Per-poll timeout via AbortController so a hung connection during the
+      // restart still resolves as "down" within the polling cadence rather than
+      // blocking detection until the browser's default fetch timeout.
+      const ctrl = new AbortController();
+      const abortId = setTimeout(() => ctrl.abort(), 2500);
+      let ok = false;
       try {
-        const res = await fetch('/api/health', { cache: 'no-store' });
-        if (!res.ok) throw new Error('not ok');
-        // Healthy response — only counts as "complete" after a down was seen.
-        if (sawDown.current) {
-          if (!active) return;
-          setPhase('complete');
-          cleanup();
-          setTimeout(() => { window.location.reload(); }, 2000);
-        }
-        // else: still the pre-restart API; keep waiting for it to go down.
+        const res = await fetch('/api/health', { cache: 'no-store', signal: ctrl.signal });
+        ok = res.ok; // non-200 counts as down
       } catch {
-        sawDown.current = true;
-        if (active) setPhase('restarting');
+        ok = false;
+      } finally {
+        clearTimeout(abortId);
       }
+      if (!active) return;
+
+      if (!ok) {
+        // Fetch failed or non-200 → API is down (restarting).
+        wentDown.current = true;
+        setPhase('down');
+        return;
+      }
+
+      // Healthy response. Only a recovery if we previously saw it go down.
+      if (wentDown.current) {
+        setPhase('back_up');
+        stopPolling();
+        reloadId = setTimeout(() => { window.location.reload(); }, 2000);
+      }
+      // else: still the pre-restart API — keep waiting for it to go down.
     };
 
-    const id = setInterval(tick, 3000);
-    // Run an immediate first poll too.
-    tick();
-
-    function cleanup() {
-      clearInterval(id);
-    }
+    pollId = setInterval(tick, 3000);
+    tick(); // immediate first poll
 
     return () => {
       active = false;
-      clearInterval(id);
+      stopPolling();
+      if (reloadId !== null) clearTimeout(reloadId);
     };
   }, []);
 
   let statusLine = 'Starting update…';
-  if (phase === 'restarting') statusLine = 'Services restarting… ⟳';
-  else if (phase === 'complete') statusLine = '✓ Update complete! Reloading…';
+  if (phase === 'down') statusLine = 'Services restarting… ⟳';
+  else if (phase === 'back_up') statusLine = '✓ Update complete! Reloading…';
   else if (phase === 'timeout') statusLine = 'Update is taking longer than expected. Try refreshing the page manually.';
 
   return (
@@ -764,18 +785,18 @@ function UpdatingOverlay() {
       display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16,
     }}>
       <div className="sv-panel" style={{ maxWidth: 440, textAlign: 'center', width: '100%' }}>
-        {phase !== 'complete' && phase !== 'timeout' && (
+        {phase !== 'back_up' && phase !== 'timeout' && (
           <div style={{ fontSize: 44, lineHeight: 1, display: 'inline-block', animation: 'spin 1s linear infinite' }}>⟳</div>
         )}
-        {phase === 'complete' && <div style={{ fontSize: 44, lineHeight: 1 }}>✓</div>}
+        {phase === 'back_up' && <div style={{ fontSize: 44, lineHeight: 1 }}>✓</div>}
         {phase === 'timeout' && <div style={{ fontSize: 44, lineHeight: 1 }}>⚠</div>}
         <h2 style={{ marginTop: 14 }}>Updating SpanVault…</h2>
         <p className="sv-muted">Pulling latest code and restarting services. Do not close this window.</p>
         <p style={{ fontWeight: 600, margin: '14px 0' }}>{statusLine}</p>
         <p className="sv-muted" style={{ fontSize: 12 }}>(This usually takes 30-60 seconds)</p>
-        {phase === 'timeout' && (
-          <button className="sv-btn" style={{ marginTop: 10 }} onClick={() => window.location.reload()}>Reload</button>
-        )}
+        <button className="sv-btn" style={{ marginTop: 10 }} onClick={() => window.location.reload()}>
+          Reload Now
+        </button>
       </div>
     </div>
   );
