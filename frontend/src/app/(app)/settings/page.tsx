@@ -19,6 +19,13 @@ export default function SettingsPage() {
   const router = useRouter();
   const [tab, setTab] = useState('general');
 
+  // Deep-link support: /settings?tab=updates opens the Updates tab (used by the
+  // update-notifier banner).
+  useEffect(() => {
+    const t = new URLSearchParams(window.location.search).get('tab');
+    if (t && TABS.some((x) => x.key === t)) setTab(t);
+  }, []);
+
   // View-only roles (site_admin / viewer) cannot manage settings — bounce them
   // to the dashboard with a notice.
   useEffect(() => {
@@ -70,6 +77,7 @@ const SMTP_FIELDS = [
 
 function GeneralSettings() {
   const settings = useApi<Record<string, string>>('/api/settings');
+  const health = useApi<{ version?: string }>('/api/health');
   const [form, setForm] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -135,6 +143,16 @@ function GeneralSettings() {
           {saving ? 'Saving…' : 'Save Settings'}
         </button>
         {saved && <span style={{ color: 'var(--sv-up)', fontWeight: 600 }}>Saved ✓</span>}
+      </div>
+
+      <div className="sv-panel">
+        <h2>About</h2>
+        <div style={{ lineHeight: 1.7 }}>
+          <div style={{ fontWeight: 600 }}>SpanVault Network Monitoring</div>
+          <div>Version: <code>v{health.data?.version || '—'}</code></div>
+          <div className="sv-muted">Part of the NocVault Intelligence Suite</div>
+          <div className="sv-muted">© 2026 NocVault</div>
+        </div>
       </div>
     </div>
   );
@@ -571,16 +589,27 @@ function Maintenance() {
 type UpdateStatus = {
   current_version?: string;
   latest_version?: string;
-  commits_behind?: number;
   up_to_date?: boolean;
-  changes?: string[];
+  update_available?: boolean;
+  changelog?: string;
+  release_date?: string;
   error?: string;
 };
 
-// Strip the leading short-hash from a "abc1234 subject" change line, keeping it readable.
-function changeSubject(line: string): string {
-  const m = line.match(/^([0-9a-f]{7,40})\s+(.*)$/i);
-  return m ? m[2] : line;
+const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December'];
+// Format an ISO date "2026-06-09" → "June 9, 2026" (no timezone shifting).
+function fmtReleaseDate(d?: string): string {
+  if (!d) return '';
+  const [y, m, day] = d.split('-').map(Number);
+  if (!y || !m || !day) return d;
+  return `${MONTHS[m - 1]} ${day}, ${y}`;
+}
+// Drop the leading "## v1.1.0 — date" header from a changelog section so the box
+// shows just the body (the version + date are rendered separately above it).
+function changelogBody(md?: string): string {
+  if (!md) return '';
+  return md.replace(/^##\s+.*$/m, '').trim();
 }
 
 const UPDATE_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes
@@ -639,49 +668,56 @@ function SystemUpdates() {
   const hasError = !!(status?.error) || !!checkErr;
   const errText = status?.error || checkErr;
   const upToDate = !hasError && !!status?.up_to_date;
-  const updatesAvailable = !hasError && !upToDate && (status?.commits_behind ?? 0) > 0;
+  const updatesAvailable = !hasError && !!status?.update_available;
 
   return (
     <div>
       <div className="sv-panel">
         <h2>System Updates</h2>
 
-        {status?.current_version && (
-          <p className="sv-muted" style={{ marginTop: -4 }}>
-            Current version: <code>{status.current_version}</code>
-          </p>
-        )}
-
         {checking ? (
           <p className="sv-muted"><span className="sv-spinner-sm" /> Checking for updates…</p>
         ) : hasError ? (
           <div style={{ marginTop: 8 }}>
             <p style={{ color: 'var(--sv-down, #C8102E)', fontWeight: 600 }}>{errText}</p>
+            {status?.current_version && (
+              <p className="sv-muted">Version: <code>v{status.current_version}</code></p>
+            )}
             <button className="sv-btn" onClick={check}>Check for Updates</button>
           </div>
         ) : upToDate ? (
           <div style={{ marginTop: 8 }}>
             <p style={{ color: 'var(--sv-up, #16a34a)', fontWeight: 600 }}>✓ SpanVault is up to date</p>
-            <button className="sv-btn" onClick={check}>Check for Updates</button>
+            <div className="sv-toolbar">
+              <span className="sv-muted">Version: <code>v{status?.current_version}</code></span>
+              <button className="sv-btn ghost" onClick={check}>Re-check</button>
+            </div>
           </div>
         ) : updatesAvailable ? (
           <div style={{ marginTop: 8 }}>
-            <p style={{ fontWeight: 700, fontSize: 16 }}>🔄 {status?.commits_behind} update{(status?.commits_behind ?? 0) === 1 ? '' : 's'} available</p>
-            <p className="sv-muted">
-              Current: <code>{status?.current_version}</code>{'  →  '}Latest: <code>{status?.latest_version}</code>
+            <p style={{ fontWeight: 700, fontSize: 16 }}>
+              🔄 Update available: v{status?.current_version} → v{status?.latest_version}
             </p>
-            {status?.changes && status.changes.length > 0 && (
+            {changelogBody(status?.changelog) && (
               <div style={{ margin: '12px 0' }}>
-                <strong>Changes:</strong>
-                <ul style={{ margin: '6px 0 0', paddingLeft: 20 }}>
-                  {status.changes.map((c, i) => (
-                    <li key={i} style={{ marginBottom: 2 }}>{changeSubject(c)}</li>
-                  ))}
-                </ul>
+                <strong>What&apos;s new in v{status?.latest_version}:</strong>
+                <div style={{
+                  marginTop: 6, maxHeight: 200, overflowY: 'auto',
+                  border: '1px solid var(--sv-border, #e2e8f0)', borderRadius: 8,
+                  padding: '10px 14px', background: 'var(--bg-primary, #f4f6f9)',
+                  fontSize: 13, lineHeight: 1.5, whiteSpace: 'pre-wrap',
+                }}>
+                  {changelogBody(status?.changelog)}
+                </div>
               </div>
             )}
+            {status?.release_date && (
+              <p className="sv-muted" style={{ fontSize: 13 }}>
+                Released: {fmtReleaseDate(status.release_date)}
+              </p>
+            )}
             <p style={{ color: 'var(--sv-warn, #d97706)', fontWeight: 600 }}>
-              ⚠ Services will restart during update. You may lose connection briefly (30-60 seconds).
+              ⚠ Services will restart (30-60 seconds)
             </p>
             <div className="sv-toolbar">
               <button

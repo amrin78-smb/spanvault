@@ -23,7 +23,6 @@ const NAV = [
   { href: '/settings', label: 'Settings', Icon: IconSettings, requires: 'settings' as const },
 ];
 
-const APP_VERSION = 'v1.0';
 const COLLAPSE_KEY = 'sv-sidebar-collapsed';
 
 export default function Sidebar() {
@@ -31,9 +30,23 @@ export default function Sidebar() {
   const { canManageAgents, canManageSettings } = useRbac();
   // Manual collapse toggle, persisted to localStorage so it survives refresh.
   const [collapsed, setCollapsed] = useState(false);
+  // App version fetched from the API health endpoint on mount.
+  const [version, setVersion] = useState<string | null>(null);
 
   useEffect(() => {
     try { setCollapsed(localStorage.getItem(COLLAPSE_KEY) === 'true'); } catch { /* ignore */ }
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/health');
+        const j = await res.json();
+        if (!cancelled) setVersion(j.version);
+      } catch { /* ignore */ }
+    })();
+    return () => { cancelled = true; };
   }, []);
 
   function toggle() {
@@ -74,7 +87,7 @@ export default function Sidebar() {
         <span>Collapse</span>
       </button>
 
-      <div className="sv-version">SpanVault {APP_VERSION}</div>
+      <div className="sv-version">SpanVault{version ? ` v${version}` : ''}</div>
     </aside>
   );
 }
