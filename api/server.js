@@ -585,6 +585,77 @@ app.get('/api/devices', wrap(async (req, res) => {
   res.json(rows.rows);
 }));
 
+// Mini sensor sparklines for the device list — last 24h aggregated into 24
+// hourly buckets per device. Registered BEFORE /api/devices/:id so Express does
+// not treat "sparklines" as an :id. response_ms: 0 = down, null = no data.
+// GET /api/devices/sparklines?device_ids=1,2,3
+app.get('/api/devices/sparklines', wrap(async (req, res) => {
+  const ids = String(req.query.device_ids || '')
+    .split(',')
+    .map((s) => parseInt(s, 10))
+    .filter((n) => Number.isInteger(n) && n > 0);
+  if (!ids.length) return res.json({});
+
+  // 24 aligned hourly buckets × the requested devices.
+  const buckets = `
+    hours AS (
+      SELECT generate_series(
+        date_trunc('hour', NOW()) - INTERVAL '23 hours',
+        date_trunc('hour', NOW()),
+        INTERVAL '1 hour'
+      ) AS h
+    ),
+    dev AS (SELECT unnest($1::int[]) AS device_id)
+  `;
+
+  const pingRows = await sv.query(`
+    WITH ${buckets}
+    SELECT d.device_id, h.h AS bucket,
+      CASE
+        WHEN COUNT(p.id) = 0 THEN NULL
+        WHEN SUM(CASE WHEN p.status = 'up' THEN 1 ELSE 0 END) = 0 THEN 0
+        ELSE ROUND(AVG(p.response_ms) FILTER (WHERE p.status = 'up')::numeric, 1)
+      END AS response_ms
+    FROM dev d
+    CROSS JOIN hours h
+    LEFT JOIN ping_results p
+      ON p.device_id = d.device_id AND date_trunc('hour', p.ts) = h.h
+    GROUP BY d.device_id, h.h
+    ORDER BY d.device_id, h.h
+  `, [ids]);
+
+  const snmpRows = await sv.query(`
+    WITH ${buckets}
+    SELECT d.device_id, h.h AS bucket,
+      ROUND(AVG(s.value) FILTER (WHERE s.metric_name = 'cpu_pct')::numeric, 1) AS cpu_pct,
+      ROUND(AVG(s.value) FILTER (WHERE s.metric_name = 'mem_pct')::numeric, 1) AS mem_pct
+    FROM dev d
+    CROSS JOIN hours h
+    LEFT JOIN snmp_results s
+      ON s.device_id = d.device_id AND date_trunc('hour', s.ts) = h.h
+     AND s.metric_name IN ('cpu_pct', 'mem_pct')
+    GROUP BY d.device_id, h.h
+    ORDER BY d.device_id, h.h
+  `, [ids]);
+
+  const out = {};
+  for (const id of ids) out[id] = { response_ms: [], cpu_pct: [], mem_pct: [] };
+  for (const r of pingRows.rows) {
+    out[r.device_id].response_ms.push(r.response_ms === null ? null : Number(r.response_ms));
+  }
+  for (const r of snmpRows.rows) {
+    out[r.device_id].cpu_pct.push(r.cpu_pct === null ? null : Number(r.cpu_pct));
+    out[r.device_id].mem_pct.push(r.mem_pct === null ? null : Number(r.mem_pct));
+  }
+  // Collapse CPU/Mem to null when the device produced no SNMP data at all.
+  for (const id of ids) {
+    const e = out[id];
+    if (e.cpu_pct.every((v) => v === null)) e.cpu_pct = null;
+    if (e.mem_pct.every((v) => v === null)) e.mem_pct = null;
+  }
+  res.json(out);
+}));
+
 app.get('/api/devices/:id', wrap(async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const r = await sv.query(`SELECT * FROM monitored_devices WHERE id = $1`, [id]);

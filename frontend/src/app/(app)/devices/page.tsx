@@ -1,14 +1,27 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, createContext, useContext } from 'react';
 import Link from 'next/link';
 import { useApi, apiSend } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
 import { ErrorBox, fmtRel, PageHeader, TableSkeleton, EmptyState, useRefreshKey } from '@/components/ui';
 import { StatusDot } from '@/components/StatusDot';
+import { Sparkline } from '@/components/Sparkline';
 import SiteScopeBanner from '@/components/SiteScopeBanner';
 import { IconDevices } from '@/components/icons';
 import { DeviceForm, ImportModal } from '@/components/DeviceModals';
+
+// 24h hourly mini-sparkline series for the device list (see GET
+// /api/devices/sparklines). cpu_pct / mem_pct are null when the device has no
+// SNMP data. Provided to rows via context to avoid prop-drilling through the
+// agent/site grouping layers.
+type SparkSeries = {
+  response_ms: (number | null)[];
+  cpu_pct: (number | null)[] | null;
+  mem_pct: (number | null)[] | null;
+};
+type SparkMap = Record<string, SparkSeries>;
+const SparkContext = createContext<SparkMap>({});
 
 type SparkDay = { day: string; uptime: number | null };
 type Device = {
@@ -171,7 +184,16 @@ export default function DevicesPage() {
   const hasAgents = agentGroups.some((g) => g.agentId !== null);
   const flatGroups = groupBySite(visible);
 
+  // Fetch 24h mini-sparklines once for all visible devices (cached 5 min). The
+  // sorted-id list keeps the URL stable so it isn't refetched on every render.
+  const visibleIds = visible.map((d) => d.id).sort((a, b) => a - b);
+  const sparklines = useApi<SparkMap>(
+    `/api/devices/sparklines?device_ids=${visibleIds.join(',')}`,
+    5 * 60 * 1000
+  );
+
   return (
+    <SparkContext.Provider value={sparklines.data || {}}>
     <div>
       <PageHeader title="Devices" subtitle="Devices currently monitored by SpanVault, grouped by site.">
         {canEdit && (
@@ -260,6 +282,7 @@ export default function DevicesPage() {
         />
       )}
     </div>
+    </SparkContext.Provider>
   );
 }
 
@@ -412,8 +435,9 @@ function DeviceRow({
         {fmtMs(device.last_response_ms)}
         <div className="sv-muted">{fmtRel(device.last_seen_at)}</div>
       </div>
-      <Sparkline spark={device.spark} />
+      <UptimeSparkline spark={device.spark} />
       <MonitorBadges device={device} />
+      <DeviceTrends deviceId={device.id} snmpEnabled={device.snmp_enabled} />
       {canEdit && (
         <div className="sv-dev-actions">
           <button className="sv-btn ghost sm" onClick={() => onEdit(device)}>Edit</button>{' '}
@@ -427,7 +451,7 @@ function DeviceRow({
 // ── 7-day uptime sparkline (top-level component) ───────────────
 // The API returns ascending daily-uptime entries (only days with data). We take
 // the most recent 7 and left-pad with "no data" — no client date math.
-function Sparkline({ spark }: { spark: SparkDay[] | null }) {
+function UptimeSparkline({ spark }: { spark: SparkDay[] | null }) {
   const recent = (spark || []).slice(-7);
   const ups: (number | null)[] = recent.map((s) => (s.uptime == null ? null : Number(s.uptime)));
   while (ups.length < 7) ups.unshift(null);
@@ -438,6 +462,48 @@ function Sparkline({ spark }: { spark: SparkDay[] | null }) {
         const h = up == null ? 35 : Math.max(20, Math.min(100, up));
         return <span key={i} className={`bar ${cls}`} style={{ height: `${h}%` }} />;
       })}
+    </div>
+  );
+}
+
+// ── 24h trend sparklines (top-level component) ─────────────────
+// Pulls this device's 24h series from SparkContext. Response is always shown
+// (green = up, red = down, grey = no data); CPU/Mem render only when the device
+// reports SNMP data. Bars are pure SVG via the shared <Sparkline>.
+const TREND_RESPONSE_UP = '#16a34a';
+const TREND_RESPONSE_DOWN = '#dc2626';
+const TREND_CPU = '#2563eb';
+const TREND_MEM = '#7c3aed';
+
+function DeviceTrends({ deviceId, snmpEnabled }: { deviceId: number; snmpEnabled: boolean }) {
+  const map = useContext(SparkContext);
+  const series = map[String(deviceId)];
+  if (!series) return null;
+  const cpu = series.cpu_pct;
+  const mem = series.mem_pct;
+  return (
+    <div className="sv-trends" title="Last 24h">
+      <span className="sv-trends-lbl">TRENDS</span>
+      <span className="sv-trend">
+        <Sparkline
+          data={series.response_ms}
+          color={TREND_RESPONSE_UP}
+          zeroColor={TREND_RESPONSE_DOWN}
+          title="24h response time"
+        />
+      </span>
+      {snmpEnabled && Array.isArray(cpu) && (
+        <span className="sv-trend">
+          <span className="t-lbl">CPU</span>
+          <Sparkline data={cpu} color={TREND_CPU} max={100} title="24h CPU %" />
+        </span>
+      )}
+      {snmpEnabled && Array.isArray(mem) && (
+        <span className="sv-trend">
+          <span className="t-lbl">Mem</span>
+          <Sparkline data={mem} color={TREND_MEM} max={100} title="24h memory %" />
+        </span>
+      )}
     </div>
   );
 }

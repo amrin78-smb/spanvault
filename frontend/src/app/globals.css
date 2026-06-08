@@ -1164,6 +1164,16 @@ body.sv-noc .sv-status-dot { transform: scale(1.5); }
 [data-theme="dark"] .sv-mon.snmp { border-color: rgba(37,99,235,0.3); background: rgba(37,99,235,0.12); color: #93c5fd; }
 [data-theme="dark"] .sv-mon.snmp .m { color: #cbd5e1; }
 
+/* 24h trend mini-sparklines on the device row */
+.sv-trends { display: flex; align-items: center; gap: 10px; flex: none; }
+.sv-trends-lbl {
+  text-transform: uppercase; letter-spacing: 0.5px; font-size: 9.5px; font-weight: 700;
+  color: var(--text-muted);
+}
+.sv-trend { display: inline-flex; align-items: center; gap: 4px; }
+.sv-trend .t-lbl { font-size: 10px; font-weight: 600; color: var(--text-muted); }
+.sv-sparkline { display: block; }
+
 /* ══ Dashboard overhaul ══════════════════════════════════ */
 /* Row 1 — clickable stat cards with trend arrow */
 .sv-dash-stats { display: grid; grid-template-columns: repeat(6, 1fr); gap: 14px; margin-bottom: 18px; }
