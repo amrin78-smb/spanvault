@@ -18,6 +18,13 @@ RELEASE PROCESS:
 ### What's New
 - Test version bump
 
+## v1.0.1 — 2026-06-08
+### What's New
+- Fix: require 3 consecutive healthy responses before update reload
+- Fix: interface panel shows summary only by default
+- feat: app versioning with semver
+- feat: update notification banner
+
 ## v1.0.0 â€” 2026-06-08
 ### Initial Release
 - Multi-vendor network monitoring (ICMP + SNMP)
@@ -40,4 +47,5 @@ RELEASE PROCESS:
 - 24h sparkline trends on device list
 - Additional sensors: Fortinet HA/VPN, Palo Alto sessions,
   Cisco BGP
+
 
