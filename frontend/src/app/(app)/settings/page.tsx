@@ -623,6 +623,21 @@ function changelogBody(md?: string): string {
   if (!md) return '';
   return md.replace(/^##\s+.*$/m, '').trim();
 }
+// Turn the raw markdown changelog into plain readable text — strip heading
+// markers and convert "- " list items to bullets. No renderer library needed;
+// displayed with white-space: pre-line so line breaks survive.
+function formatChangelog(raw: string): string {
+  return raw
+    .split('\n')
+    .map((line) => {
+      if (line.startsWith('### ')) return line.replace('### ', '');
+      if (line.startsWith('## ')) return line.replace('## ', '');
+      if (line.startsWith('- ')) return '• ' + line.slice(2);
+      return line;
+    })
+    .join('\n')
+    .trim();
+}
 
 const UPDATE_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes
 
@@ -739,9 +754,9 @@ function SystemUpdates() {
                   marginTop: 6, maxHeight: 200, overflowY: 'auto',
                   border: '1px solid var(--sv-border, #e2e8f0)', borderRadius: 8,
                   padding: '10px 14px', background: 'var(--bg-primary, #f4f6f9)',
-                  fontSize: 13, lineHeight: 1.5, whiteSpace: 'pre-wrap',
+                  fontSize: 13, lineHeight: 1.5, whiteSpace: 'pre-line',
                 }}>
-                  {changelogBody(status?.changelog)}
+                  {formatChangelog(changelogBody(status?.changelog))}
                 </div>
               </div>
             )}
