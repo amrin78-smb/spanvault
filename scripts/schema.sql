@@ -200,6 +200,7 @@ INSERT INTO app_settings (key, value) VALUES
   ('ping_failures_before_down','3'),
   ('cpu_threshold_pct','80'),
   ('mem_threshold_pct','85'),
+  ('session_util_threshold_pct','90'),
   ('netvault_sync_minutes','30'),
   ('email_alerts_enabled','false'),
   ('smtp_host',''), ('smtp_port','587'), ('smtp_user',''),

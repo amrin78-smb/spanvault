@@ -467,6 +467,44 @@ async function evaluateSnmpAlerts(device, samples) {
     }
   }
 
+  // ── Vendor sensor thresholds (Fortinet HA, firewall session table, BGP) ──
+  // Fortinet HA sync lost: ha_sync_status reported and equal to 0.
+  if (latest.ha_sync_status !== undefined) {
+    if (Number(latest.ha_sync_status) === 0) {
+      await raiseAlert(device, 'ha_sync_lost', 'critical',
+        `Fortinet HA sync lost on ${device.name}`, latest.ha_sync_status);
+    } else {
+      await resolveAlert(device.id, 'ha_sync_lost');
+    }
+  }
+
+  // Session table near capacity: firewall session utilization over threshold.
+  const sessThresh = settingInt('session_util_threshold_pct', 90);
+  const sessUtil = latest.session_table_util_pct !== undefined
+    ? latest.session_table_util_pct
+    : latest.session_util_pct;
+  if (sessUtil !== undefined && sessUtil !== null) {
+    if (Number(sessUtil) > sessThresh) {
+      await raiseAlert(device, 'session_table_high', 'warning',
+        `Session table near capacity on ${device.name} (${Number(sessUtil).toFixed(0)}% > ${sessThresh}%)`,
+        sessUtil);
+    } else {
+      await resolveAlert(device.id, 'session_table_high');
+    }
+  }
+
+  // BGP peer down: established peers fell below the total discovered peers.
+  if (latest.bgp_peers_established !== undefined && latest.bgp_peers_total !== undefined) {
+    const est = Number(latest.bgp_peers_established);
+    const total = Number(latest.bgp_peers_total);
+    if (total > 0 && est < total) {
+      await raiseAlert(device, 'bgp_peer_down', 'warning',
+        `BGP peer down on ${device.name} (${est}/${total} established)`, est);
+    } else {
+      await resolveAlert(device.id, 'bgp_peer_down');
+    }
+  }
+
   // SNMP-context user rules (cpu_pct / mem_pct / interface_down / snmp_no_data).
   let interfaceDown = 0;
   for (const s of samples) {

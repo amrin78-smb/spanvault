@@ -95,6 +95,13 @@ const VENDOR_LABELS = {
   wireless_clients: 'Wireless Clients', pppoe_sessions: 'PPPoE Sessions',
   queue_bytes_in: 'Queue Bytes In', queue_bytes_out: 'Queue Bytes Out',
   uptime_seconds: 'Uptime', ssid_bytes: 'SSID Traffic',
+  // Additional vendor sensors (Fortinet / Palo Alto / Cisco).
+  vpn_tunnels_active: 'VPN Tunnels Active', ha_sync_status: 'HA Sync Status',
+  av_signature_version: 'AV Signature Version',
+  session_table_util_pct: 'Session Table Utilization %',
+  threats_blocked: 'Threats Blocked (24h)', disk_usage_pct: 'Disk Usage %',
+  gp_gateway_util_pct: 'GlobalProtect Gateway Utilization %',
+  qos_drop_rate: 'QoS Drop Rate',
 };
 function humanize(key) {
   if (VENDOR_LABELS[key]) return VENDOR_LABELS[key];

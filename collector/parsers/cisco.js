@@ -22,6 +22,10 @@ const MEM_FREE = '1.3.6.1.4.1.9.9.48.1.1.1.6';
 const IF_IN_ERR  = '1.3.6.1.2.1.2.2.1.14';
 const IF_OUT_ERR = '1.3.6.1.2.1.2.2.1.20';
 const IF_DESCR   = '1.3.6.1.2.1.2.2.1.2';
+// CISCO-BGP4-MIB cbgpPeer2State (6 = established).
+const CBGP_PEER2_STATE = '1.3.6.1.4.1.9.9.187.1.2.5.1.3';
+// CISCO-CLASS-BASED-QOS-MIB cbQosCMDropBitRate.
+const CBQOS_DROP_BITRATE = '1.3.6.1.4.1.9.9.166.1.15.1.1.9';
 
 const metrics = [
   { name: 'cpu5min',     oid: CPM_CPU_5MIN,     kind: 'table', desc: 'cpmCPUTotal5minRev (%)' },
@@ -31,6 +35,8 @@ const metrics = [
   { name: 'if_in_err',   oid: IF_IN_ERR,        kind: 'table', desc: 'ifInErrors' },
   { name: 'if_out_err',  oid: IF_OUT_ERR,       kind: 'table', desc: 'ifOutErrors' },
   { name: 'if_descr',    oid: IF_DESCR,         kind: 'table', desc: 'ifDescr' },
+  { name: 'bgp_state',   oid: CBGP_PEER2_STATE, kind: 'table', desc: 'cbgpPeer2State (6=established)' },
+  { name: 'qos_drop',    oid: CBQOS_DROP_BITRATE, kind: 'table', desc: 'cbQosCMDropBitRate' },
 ];
 
 function parse(raw) {
@@ -58,6 +64,19 @@ function parse(raw) {
     const idx = U.lastIndex(r.oid);
     const v = U.num(r.value);
     if (v !== null) out.push(U.sample('if_out_errors', v, IF_OUT_ERR, idx, descrByIdx.get(idx) || `if${idx}`));
+  }
+
+  // BGP peers — count sessions in the established state (6).
+  if (raw.bgp_state && raw.bgp_state.length) {
+    const established = U.countWhere(raw.bgp_state, (n) => n === 6);
+    out.push(U.sample('bgp_peers_established', established, CBGP_PEER2_STATE));
+    out.push(U.sample('bgp_peers_total', raw.bgp_state.length, CBGP_PEER2_STATE));
+  }
+
+  // QoS — aggregate drop bit-rate across all class-map entries.
+  if (raw.qos_drop && raw.qos_drop.length) {
+    const total = U.sum(raw.qos_drop);
+    if (total !== null) out.push(U.sample('qos_drop_rate', total, CBQOS_DROP_BITRATE));
   }
 
   return out;

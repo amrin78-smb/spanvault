@@ -357,7 +357,13 @@ export default function SensorManager({
                               <span className="nm">{it.base_name || it.name}</span>
                               {it.meta && <span className="meta">{it.meta}</span>}
                             </span>
-                            {it.current_value !== undefined && <span className="val">{it.current_value}</span>}
+                            {it.current_value !== undefined && (
+                              it.metric_name === 'ha_sync_status'
+                                ? <span className={`val ${String(it.current_value) === '1' ? 'ok' : 'bad'}`}>
+                                    {String(it.current_value) === '1' ? 'Synced' : 'Not synced'}
+                                  </span>
+                                : <span className="val">{it.current_value}</span>
+                            )}
                           </label>
                         ))}
                   </div>
@@ -389,7 +395,13 @@ export default function SensorManager({
                               <span className="nm">{it.base_name || it.name}</span>
                               {it.meta && <span className="meta">{it.meta}</span>}
                             </span>
-                            {it.current_value !== undefined && <span className="val">{it.current_value}</span>}
+                            {it.current_value !== undefined && (
+                              it.metric_name === 'ha_sync_status'
+                                ? <span className={`val ${String(it.current_value) === '1' ? 'ok' : 'bad'}`}>
+                                    {String(it.current_value) === '1' ? 'Synced' : 'Not synced'}
+                                  </span>
+                                : <span className="val">{it.current_value}</span>
+                            )}
                             <button className="sv-btn ghost sm" onClick={() => toggle(it.key)}>Remove</button>
                           </div>
                         ))}
