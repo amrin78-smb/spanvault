@@ -601,6 +601,8 @@ function Maintenance() {
 type UpdateStatus = {
   current_version?: string;
   latest_version?: string;
+  current_commit?: string;
+  latest_commit?: string;
   up_to_date?: boolean;
   update_available?: boolean;
   changelog?: string;
@@ -745,8 +747,19 @@ function SystemUpdates() {
         ) : updatesAvailable ? (
           <div style={{ marginTop: 8 }}>
             <p style={{ fontWeight: 700, fontSize: 16 }}>
-              🔄 Update available: v{status?.current_version} → v{status?.latest_version}
+              {status?.current_version === status?.latest_version
+                ? <>🔄 Patches available since v{status?.current_version}</>
+                : <>🔄 Update available: v{status?.current_version} → v{status?.latest_version}</>}
             </p>
+            {(status?.current_commit || status?.latest_commit) && (
+              <p className="sv-muted" style={{ fontSize: 13 }}>
+                Current: v{status?.current_version}
+                {status?.current_commit && <> (<code>{status.current_commit}</code>)</>}
+                {'  →  '}
+                Latest: v{status?.latest_version}
+                {status?.latest_commit && <> (<code>{status.latest_commit}</code>)</>}
+              </p>
+            )}
             {changelogBody(status?.changelog) && (
               <div style={{ margin: '12px 0' }}>
                 <strong>What&apos;s new in v{status?.latest_version}:</strong>

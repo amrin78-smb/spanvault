@@ -236,6 +236,20 @@ function isNewer(remote, local) {
   return rp > lp;
 }
 
+// App's own repo root (one level up from api/). Used for git hash lookup.
+const APP_ROOT = path.join(__dirname, '..');
+
+// Local short git commit hash for the deployed checkout, or null if git is
+// unavailable (e.g. a non-git deploy). Update detection degrades gracefully.
+function localCommitHash() {
+  try {
+    return execSync('git rev-parse HEAD', { cwd: APP_ROOT })
+      .toString().trim().slice(0, 7);
+  } catch {
+    return null;
+  }
+}
+
 // Pull the latest version's section out of CHANGELOG.md — everything from the
 // first "## " header up to the next one. HTML comments (the release-process
 // block, which itself contains indented "## v..." example lines) are stripped
@@ -253,21 +267,29 @@ function extractLatestChangelog(md) {
   return { changelog: section, release_date: date ? date[1] : null };
 }
 
-// Compares the local package.json version against the version published on
-// GitHub's main branch. Never 500s the Settings page — a fetch failure degrades
-// to "up to date" with an error string.
+// Compares the local git commit hash against the latest commit on GitHub's main
+// branch. ANY differing commit counts as an update available — package.json
+// version is for display only. Never 500s the Settings page — a fetch failure
+// degrades to "up to date" with an error string.
 app.get('/api/system/update-status', wrap(async (_req, res) => {
-  const local = version;
+  const localVersion = version;
+  const localHash = localCommitHash();
   try {
     // Cache-bust so GitHub's raw CDN can't return a stale copy — the Settings
-    // "Re-check" button must reflect a freshly pushed version immediately.
+    // "Re-check" button must reflect a freshly pushed commit immediately.
     const bust = Date.now();
-    const [pkgRes, clRes] = await Promise.all([
+    const [commitRes, pkgRes, clRes] = await Promise.all([
+      fetch('https://api.github.com/repos/amrin78-smb/spanvault/commits/main', {
+        headers: { 'Accept': 'application/vnd.github.v3+json' },
+        cache: 'no-store',
+      }),
       fetch(`${GH_RAW}/package.json?cb=${bust}`, { cache: 'no-store' }),
       fetch(`${GH_RAW}/CHANGELOG.md?cb=${bust}`, { cache: 'no-store' }),
     ]);
+    const commit = await commitRes.json();
+    const remoteHash = commit && commit.sha ? String(commit.sha).slice(0, 7) : null;
     const remotePkg = await pkgRes.json();
-    const remote = remotePkg.version;
+    const remoteVersion = remotePkg.version;
 
     let changelog = '';
     let release_date = null;
@@ -277,10 +299,15 @@ app.get('/api/system/update-status', wrap(async (_req, res) => {
       release_date = parsed.release_date;
     } catch (_e) { /* changelog is best-effort */ }
 
-    const updateAvail = isNewer(remote, local);
+    // Any differing commit = update available. If either hash is missing
+    // (e.g. git unavailable or API error), treat as up to date to avoid
+    // false alarms.
+    const updateAvail = !!remoteHash && !!localHash && remoteHash !== localHash;
     res.json({
-      current_version: local,
-      latest_version: remote,
+      current_version: localVersion,
+      latest_version: remoteVersion,
+      current_commit: localHash,
+      latest_commit: remoteHash,
       up_to_date: !updateAvail,
       update_available: updateAvail,
       changelog,
@@ -298,10 +325,21 @@ let updateAvailable = null; // { current, latest } when an update exists, else n
 
 async function checkForUpdates() {
   try {
-    const res = await fetch(`${GH_RAW}/package.json?cb=${Date.now()}`, { cache: 'no-store' });
-    const remote = await res.json();
-    updateAvailable = isNewer(remote.version, version)
-      ? { current: version, latest: remote.version }
+    const localHash = localCommitHash();
+    const [commitRes, pkgRes] = await Promise.all([
+      fetch('https://api.github.com/repos/amrin78-smb/spanvault/commits/main', {
+        headers: { 'Accept': 'application/vnd.github.v3+json' },
+        cache: 'no-store',
+      }),
+      fetch(`${GH_RAW}/package.json?cb=${Date.now()}`, { cache: 'no-store' }),
+    ]);
+    const commit = await commitRes.json();
+    const remoteHash = commit && commit.sha ? String(commit.sha).slice(0, 7) : null;
+    const remotePkg = await pkgRes.json();
+    const remoteVersion = remotePkg.version;
+
+    updateAvailable = (localHash && remoteHash && remoteHash !== localHash)
+      ? { current: version, latest: remoteVersion }
       : null;
   } catch {
     // never block on network failure — keep the last known state
