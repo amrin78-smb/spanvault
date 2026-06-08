@@ -264,6 +264,25 @@ app.post('/api/system/update', wrap(async (_req, res) => {
       error: 'SERVER_IP not configured in .env.local — add SERVER_IP=your_server_ip to .env.local',
     });
   }
+
+  // License enforcement — only active and trial licenses may pull updates.
+  const license = await getLicense();
+  const state   = getLicenseState(license);
+
+  if (state.disabled) {
+    return res.status(402).json({
+      error: 'License expired — renew your NocVault license to receive updates.',
+      license_status: license ? license.status : undefined,
+    });
+  }
+
+  if (state.mode === 'grace') {
+    return res.status(402).json({
+      error: 'License expired — you are in the grace period. Renew to get updates.',
+      license_status: license ? license.status : undefined,
+      days_remaining: license ? license.daysRemaining : undefined,
+    });
+  }
   const scriptPath = path.join(__dirname, '..', 'installer', 'Update-SpanVault.ps1').replace(/\//g, '\\');
   try {
     // Remove any leftover task from a previous run (ignore "not found").

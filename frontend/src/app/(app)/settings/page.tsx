@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useApi, apiSend } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
 import { Loading, ErrorBox, Empty, fmtTime, PageHeader, TableSkeleton } from '@/components/ui';
+import { useLicense } from '@/components/LicenseGuard';
 
 const TABS = [
   { key: 'general', label: 'General' },
@@ -590,6 +591,11 @@ function SystemUpdates() {
   const [checkErr, setCheckErr] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [updating, setUpdating] = useState(false);
+  const { state: licenseState } = useLicense();
+  const [updateErr, setUpdateErr] = useState<string | null>(null);
+
+  const hubUrl = process.env.NEXT_PUBLIC_NOCVAULT_HUB_URL || 'http://localhost:3000';
+  const updatesBlocked = licenseState.mode === 'grace' || licenseState.mode === 'disabled';
 
   async function check() {
     setChecking(true);
@@ -609,12 +615,24 @@ function SystemUpdates() {
 
   async function startUpdate() {
     setConfirming(false);
+    setUpdateErr(null);
     setUpdating(true);
     try {
-      await apiSend('/api/system/update', 'POST', {});
+      const res = await fetch('/api/system/update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      if (res.status === 402) {
+        const j = await res.json().catch(() => ({} as any));
+        setUpdating(false);
+        setUpdateErr(j?.error || 'License expired — updates are disabled.');
+        return;
+      }
+      // Any other response (including one cut off by a fast service restart)
+      // falls through to the updating overlay so health polling detects recovery.
     } catch (e: any) {
-      // Even if the response is cut off by a fast restart, proceed to the
-      // updating overlay so health polling can detect recovery.
+      // Response cut off by a fast restart — keep the overlay; health polling recovers.
     }
   }
 
@@ -666,9 +684,42 @@ function SystemUpdates() {
               ⚠ Services will restart during update. You may lose connection briefly (30-60 seconds).
             </p>
             <div className="sv-toolbar">
-              <button className="sv-btn" onClick={() => setConfirming(true)}>Update Now</button>
+              <button
+                className="sv-btn"
+                onClick={() => setConfirming(true)}
+                disabled={updatesBlocked}
+                style={updatesBlocked ? { opacity: 0.5, cursor: 'not-allowed' } : undefined}
+              >
+                Update Now
+              </button>
               <button className="sv-btn ghost" onClick={check}>Re-check</button>
             </div>
+            {licenseState.mode === 'grace' && (
+              <p style={{ marginTop: 10, color: 'var(--sv-warn, #d97706)', fontWeight: 600 }}>
+                ⚠ License expired — updates disabled. Renew your license to receive updates.{' '}
+                <a href={`${hubUrl}/settings/license`} target="_blank" rel="noopener noreferrer"
+                  style={{ color: 'var(--sv-warn, #d97706)', textDecoration: 'underline' }}>
+                  Manage License →
+                </a>
+              </p>
+            )}
+            {licenseState.mode === 'disabled' && (
+              <p style={{ marginTop: 10, color: 'var(--sv-down, #C8102E)', fontWeight: 600 }}>
+                🔒 License expired — please renew to get updates.{' '}
+                <a href={`${hubUrl}/settings/license`} target="_blank" rel="noopener noreferrer"
+                  style={{ color: 'var(--sv-down, #C8102E)', textDecoration: 'underline' }}>
+                  Manage License →
+                </a>
+              </p>
+            )}
+            {licenseState.mode === 'trial' && (
+              <p className="sv-muted" style={{ marginTop: 10, fontSize: 13 }}>
+                Trial license — updates enabled
+              </p>
+            )}
+            {updateErr && (
+              <p style={{ marginTop: 10, color: 'var(--sv-down, #C8102E)', fontWeight: 600 }}>{updateErr}</p>
+            )}
           </div>
         ) : (
           <div style={{ marginTop: 8 }}>
