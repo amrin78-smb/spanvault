@@ -355,7 +355,52 @@ async function snmpPollDevice(device) {
     written += 1;
   }
 
+  // Custom user-defined OID sensors are polled separately — arbitrary OIDs that
+  // aren't part of the standard/vendor candidate set.
+  written += await pollCustomSensors(device);
+
   await evaluateSnmpAlerts(device, samples);
+  return written;
+}
+
+// Poll a device's custom OID sensors (one SNMP GET each) and store the numeric
+// result in snmp_results under the sensor's name. Separate from the standard
+// candidate path so any OID can be graphed.
+async function pollCustomSensors(device) {
+  let custom;
+  try {
+    custom = await sv.query(
+      `SELECT id, oid, sensor_name, custom_unit
+         FROM device_sensors
+        WHERE device_id = $1 AND is_custom = TRUE AND enabled = TRUE`,
+      [device.id]
+    );
+  } catch (err) {
+    console.error('[snmp] custom sensor load failed:', err.message);
+    return 0;
+  }
+  if (!custom.rows.length) return 0;
+
+  const session = createSession(device);
+  let written = 0;
+  try {
+    for (const s of custom.rows) {
+      if (!s.oid) continue;
+      const res = await get(session, [s.oid]);
+      if (!res.length) continue;
+      const raw = res[0].value;
+      const value = Number(Buffer.isBuffer(raw) ? raw.toString() : raw);
+      if (!isFinite(value)) continue;
+      await sv.query(
+        `INSERT INTO snmp_results (device_id, oid, metric_name, value, if_index, if_name)
+         VALUES ($1,$2,$3,$4,NULL,NULL)`,
+        [device.id, s.oid, s.sensor_name, value]
+      );
+      written += 1;
+    }
+  } finally {
+    try { session.close(); } catch (_e) { /* ignore */ }
+  }
   return written;
 }
 

@@ -753,6 +753,15 @@ label.sv-field .sv-input, label.sv-field .sv-select { font-weight: 400; }
 .sv-sensor-head { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
 .sv-sensor-head h2 { margin: 0; }
 .sv-sensor-cols { display: grid; grid-template-columns: 1.4fr 1fr; gap: 16px; flex: 1; min-height: 0; }
+
+/* Custom OID sensor section (below the discovery checklist) */
+.sv-custom-oid { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 14px; }
+.sv-custom-oid h3 { margin: 0 0 10px; font-size: 14px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.4px; }
+.sv-custom-form { display: grid; grid-template-columns: 1fr; gap: 8px; max-width: 540px; }
+.sv-custom-form label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; font-weight: 600; color: var(--text-muted); }
+.sv-custom-form label .sv-input { font-weight: 400; }
+.sv-custom-form > button { justify-self: end; }
+.sv-custom-list { margin-top: 14px; max-width: 540px; }
 .sv-sensor-panel {
   border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 14px 16px;
   overflow-y: auto; background: var(--bg-card);

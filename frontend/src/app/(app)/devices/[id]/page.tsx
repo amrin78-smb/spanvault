@@ -30,6 +30,7 @@ type Alert = {
 type Sensor = {
   id: number; sensor_key: string; sensor_name: string; category: string;
   metric_name: string; oid: string | null; enabled: boolean;
+  is_custom?: boolean; custom_label?: string | null; custom_unit?: string | null;
 };
 type TestResult = {
   success: boolean; vendor?: string; sysDescr?: string; sysName?: string; message: string;
@@ -88,6 +89,9 @@ export default function DeviceDetailPage() {
   const d = device.data;
   const snmpOn = d.snmp_enabled;
   const enabledSensors = (sensors.data || []).filter((s) => s.enabled);
+  // Custom OID sensors get their own graph section (custom_label / custom_unit).
+  const customSensors = enabledSensors.filter((s) => s.is_custom);
+  const standardSensors = enabledSensors.filter((s) => !s.is_custom);
   const sensorsLoading = sensors.loading && !sensors.data;
 
   return (
@@ -173,10 +177,21 @@ export default function DeviceDetailPage() {
             loading={ping.loading} color="#C8102E" unit="%"
           />
         </div>
-        {snmpOn && !sensorsLoading && enabledSensors.length > 0 && (
-          <SensorGraphs deviceId={d.id} sensors={enabledSensors} range={range} />
+        {snmpOn && !sensorsLoading && standardSensors.length > 0 && (
+          <SensorGraphs deviceId={d.id} sensors={standardSensors} range={range} />
         )}
       </div>
+
+      {snmpOn && !sensorsLoading && customSensors.length > 0 && (
+        <>
+          <h2 style={{ margin: '20px 0 12px', fontSize: 16 }}>Custom Sensors</h2>
+          <div className="sv-sensor-grid">
+            {customSensors.map((s) => (
+              <CustomSensorChart key={s.id} deviceId={d.id} sensor={s} range={range} />
+            ))}
+          </div>
+        </>
+      )}
 
       {snmpOn && sensorsLoading && <div className="sv-panel"><Loading /></div>}
       {snmpOn && !sensorsLoading && enabledSensors.length === 0 && (
@@ -484,6 +499,47 @@ function SensorChart({ deviceId, sensor, range }: { deviceId: number; sensor: Se
             />
             <Tooltip labelFormatter={tickLabel} formatter={(v: any) => [fmtVal(Number(v)), sensor.sensor_name]} />
             <Line type="monotone" dataKey="value" stroke={color} strokeWidth={2} dot={false} connectNulls />
+          </LineChart>
+        </ResponsiveContainer>
+      )}
+    </div>
+  );
+}
+
+// Custom OID sensor chart: titled by custom_label with custom_unit on the
+// Y-axis. Values are raw numbers (no metric_name-based unit inference).
+function CustomSensorChart({ deviceId, sensor, range }: { deviceId: number; sensor: Sensor; range: string }) {
+  const hist = useApi<SnmpPoint[]>(
+    `/api/devices/${deviceId}/snmp-history?metric=${encodeURIComponent(sensor.metric_name)}&range=${range}`,
+    0
+  );
+  const title = sensor.custom_label || sensor.sensor_name;
+  const unit = (sensor.custom_unit || '').trim();
+  const data = (hist.data || []).map((p) => ({ bucket: p.bucket, value: p.avg_value != null ? Number(p.avg_value) : null }));
+  const suffix = unit ? ` (${unit})` : '';
+
+  return (
+    <div className="sv-sensor-cell">
+      <h2 title={`${title}${suffix}`}>{title}{suffix}</h2>
+      {hist.loading && !hist.data ? (
+        <Loading />
+      ) : !data.length ? (
+        <Empty message="No data yet for this sensor." />
+      ) : (
+        <ResponsiveContainer width="100%" height={160}>
+          <LineChart data={data} margin={{ top: 5, right: 16, bottom: 5, left: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#eef0f3" />
+            <XAxis dataKey="bucket" tickFormatter={tickLabel} fontSize={10} minTickGap={40} />
+            <YAxis
+              fontSize={10}
+              width={48}
+              label={unit ? { value: unit, angle: -90, position: 'insideLeft', fontSize: 10 } : undefined}
+            />
+            <Tooltip
+              labelFormatter={tickLabel}
+              formatter={(v: any) => [`${Number(v)}${unit ? ` ${unit}` : ''}`, title]}
+            />
+            <Line type="monotone" dataKey="value" stroke="#7c3aed" strokeWidth={2} dot={false} connectNulls />
           </LineChart>
         </ResponsiveContainer>
       )}

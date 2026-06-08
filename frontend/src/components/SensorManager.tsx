@@ -13,6 +13,11 @@ type DiscoverSensor = {
 type SavedSensor = {
   id: number; sensor_key: string; sensor_name: string; category: string;
   metric_name: string; oid: string | null; enabled: boolean;
+  is_custom?: boolean; custom_label?: string | null; custom_unit?: string | null;
+};
+type CustomSensor = {
+  id: number; oid: string | null; sensor_name: string;
+  custom_label: string | null; custom_unit: string | null;
 };
 // Unified entry for an available/known sensor (merge of saved + discovered).
 type Avail = {
@@ -141,6 +146,12 @@ export default function SensorManager({
   const [saving, setSaving] = useState(false);
   const [vendor, setVendor] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  // Custom OID sensors are managed independently of the discovery checklist.
+  const [customSensors, setCustomSensors] = useState<CustomSensor[]>([]);
+  const [customOid, setCustomOid] = useState('');
+  const [customLabel, setCustomLabel] = useState('');
+  const [customUnit, setCustomUnit] = useState('');
+  const [addingCustom, setAddingCustom] = useState(false);
 
   // Load the already-saved sensor selection on open.
   useEffect(() => {
@@ -151,7 +162,16 @@ export default function SensorManager({
         if (cancelled) return;
         const m = new Map<string, Avail>();
         const sel = new Set<string>();
+        const customs: CustomSensor[] = [];
         for (const r of rows) {
+          // Custom sensors are surfaced in their own section, not the checklist.
+          if (r.is_custom) {
+            customs.push({
+              id: r.id, oid: r.oid, sensor_name: r.sensor_name,
+              custom_label: r.custom_label ?? r.sensor_name, custom_unit: r.custom_unit ?? null,
+            });
+            continue;
+          }
           m.set(r.sensor_key, {
             key: r.sensor_key, name: r.sensor_name, category: r.category,
             metric_name: r.metric_name, oid: r.oid,
@@ -160,6 +180,7 @@ export default function SensorManager({
         }
         setAvail(m);
         setSelected(sel);
+        setCustomSensors(customs);
       } catch (e: any) {
         if (!cancelled) setErr(e?.message || 'Failed to load sensors');
       } finally {
@@ -238,6 +259,43 @@ export default function SensorManager({
     }
   }
 
+  async function addCustom() {
+    const oid = customOid.trim();
+    const label = customLabel.trim();
+    if (!/^1(\.\d+)+$/.test(oid)) { setErr('Enter a valid OID (must start with "1.")'); return; }
+    if (!label) { setErr('Enter a label for the custom sensor'); return; }
+    setAddingCustom(true);
+    setErr(null);
+    try {
+      const created = await apiSend<SavedSensor>(
+        `/api/devices/${deviceId}/sensors/custom`, 'POST',
+        { oid, label, unit: customUnit.trim() }
+      );
+      setCustomSensors((prev) => [
+        ...prev.filter((c) => c.id !== created.id),
+        {
+          id: created.id, oid: created.oid, sensor_name: created.sensor_name,
+          custom_label: created.custom_label ?? label, custom_unit: created.custom_unit ?? null,
+        },
+      ]);
+      setCustomOid(''); setCustomLabel(''); setCustomUnit('');
+    } catch (e: any) {
+      setErr(e?.message || 'Failed to add custom sensor');
+    } finally {
+      setAddingCustom(false);
+    }
+  }
+
+  async function removeCustom(id: number) {
+    setErr(null);
+    try {
+      await apiSend(`/api/devices/${deviceId}/sensors/custom/${id}`, 'DELETE');
+      setCustomSensors((prev) => prev.filter((c) => c.id !== id));
+    } catch (e: any) {
+      setErr(e?.message || 'Failed to remove custom sensor');
+    }
+  }
+
   const items = Array.from(avail.values());
   const enabledItems = items.filter((i) => selected.has(i.key));
   const leftGroups = groupByCat(items);
@@ -261,6 +319,7 @@ export default function SensorManager({
         {loading ? (
           <Loading />
         ) : (
+          <>
           <div className="sv-sensor-cols">
             <div className="sv-sensor-panel">
               <h3>Available Sensors</h3>
@@ -339,6 +398,59 @@ export default function SensorManager({
               )}
             </div>
           </div>
+
+          <div className="sv-custom-oid">
+            <h3>Custom OID Sensors</h3>
+            <div className="sv-custom-form">
+              <label>OID
+                <input
+                  className="sv-input"
+                  placeholder="1.3.6.1.2.1.25.3.3.1.2.1"
+                  value={customOid}
+                  onChange={(e) => setCustomOid(e.target.value)}
+                />
+              </label>
+              <label>Label
+                <input
+                  className="sv-input"
+                  placeholder="CPU Core 1"
+                  value={customLabel}
+                  onChange={(e) => setCustomLabel(e.target.value)}
+                />
+              </label>
+              <label>Unit
+                <input
+                  className="sv-input"
+                  placeholder="%"
+                  value={customUnit}
+                  onChange={(e) => setCustomUnit(e.target.value)}
+                />
+              </label>
+              <button className="sv-btn" onClick={addCustom} disabled={addingCustom}>
+                {addingCustom ? 'Adding…' : 'Add Sensor'}
+              </button>
+            </div>
+
+            <div className="sv-custom-list">
+              <div className="sv-sensor-group-title">Existing custom sensors</div>
+              {customSensors.length === 0 ? (
+                <div className="sv-empty">No custom sensors yet.</div>
+              ) : (
+                customSensors.map((c) => (
+                  <div key={c.id} className="sv-sensor-item enabled">
+                    <span className="sv-sensor-info">
+                      <span className="nm">
+                        {c.custom_label || c.sensor_name}{c.custom_unit ? ` (${c.custom_unit})` : ''}
+                      </span>
+                      <span className="meta">{c.oid}</span>
+                    </span>
+                    <button className="sv-btn ghost sm" onClick={() => removeCustom(c.id)}>Remove</button>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+          </>
         )}
 
         <div className="sv-modal-actions">

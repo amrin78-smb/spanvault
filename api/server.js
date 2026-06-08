@@ -1063,7 +1063,8 @@ app.post('/api/devices/:id/snmp-discover', wrap(async (req, res) => {
 app.get('/api/devices/:id/sensors', wrap(async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const r = await sv.query(
-    `SELECT id, sensor_key, sensor_name, category, metric_name, oid, enabled, created_at
+    `SELECT id, sensor_key, sensor_name, category, metric_name, oid, enabled,
+            is_custom, custom_label, custom_unit, created_at
        FROM device_sensors WHERE device_id = $1
        ORDER BY category, sensor_name`,
     [id]
@@ -1104,6 +1105,57 @@ app.put('/api/devices/:id/sensors', wrap(async (req, res) => {
     [id]
   );
   res.json(saved.rows);
+}));
+
+// Create a custom user-defined OID sensor for a device. The OID is polled with
+// a single SNMP GET by the collector and graphed under custom_label.
+app.post('/api/devices/:id/sensors/custom', wrap(async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const b = req.body || {};
+  const oid = String(b.oid || '').trim();
+  const label = String(b.label || '').trim();
+  const unit = b.unit != null ? String(b.unit).trim() : '';
+  if (!/^1(\.\d+)+$/.test(oid)) {
+    return res.status(400).json({ error: 'A valid OID is required (must start with "1.")' });
+  }
+  if (!label) return res.status(400).json({ error: 'label is required' });
+
+  const dev = await sv.query(`SELECT id FROM monitored_devices WHERE id = $1`, [id]);
+  if (!dev.rows[0]) return res.status(404).json({ error: 'Device not found' });
+
+  // metric_name == sensor_name == label so collector writes and graph reads line up.
+  const sensorKey = `custom_${oid.replace(/\./g, '_')}`;
+  const r = await sv.query(`
+    INSERT INTO device_sensors
+      (device_id, sensor_key, sensor_name, category, metric_name, oid, enabled,
+       is_custom, custom_label, custom_unit)
+    VALUES ($1,$2,$3,'custom',$4,$5,TRUE,TRUE,$6,$7)
+    ON CONFLICT (device_id, sensor_key) DO UPDATE
+      SET sensor_name  = EXCLUDED.sensor_name,
+          metric_name  = EXCLUDED.metric_name,
+          oid          = EXCLUDED.oid,
+          enabled      = TRUE,
+          is_custom    = TRUE,
+          custom_label = EXCLUDED.custom_label,
+          custom_unit  = EXCLUDED.custom_unit
+    RETURNING id, sensor_key, sensor_name, category, metric_name, oid, enabled,
+              is_custom, custom_label, custom_unit, created_at
+  `, [id, sensorKey, label, label, oid, label, unit || null]);
+  res.status(201).json(r.rows[0]);
+}));
+
+// Delete a custom sensor (only custom sensors can be removed this way).
+app.delete('/api/devices/:id/sensors/custom/:sensor_id', wrap(async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const sensorId = parseInt(req.params.sensor_id, 10);
+  const r = await sv.query(
+    `DELETE FROM device_sensors
+       WHERE id = $1 AND device_id = $2 AND is_custom = TRUE
+       RETURNING id`,
+    [sensorId, id]
+  );
+  if (!r.rows[0]) return res.status(404).json({ error: 'Custom sensor not found' });
+  res.json({ ok: true });
 }));
 
 // Test SNMP reachability for a saved device using its stored credentials.

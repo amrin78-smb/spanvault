@@ -73,6 +73,12 @@ CREATE TABLE IF NOT EXISTS device_sensors (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_device_sensors_key
   ON device_sensors(device_id, sensor_key);
 
+-- Custom user-defined OID sensors. is_custom marks rows created by hand via the
+-- API (arbitrary OID); custom_label/custom_unit drive the device-detail graph.
+ALTER TABLE device_sensors ADD COLUMN IF NOT EXISTS is_custom    BOOLEAN DEFAULT FALSE;
+ALTER TABLE device_sensors ADD COLUMN IF NOT EXISTS custom_label TEXT;
+ALTER TABLE device_sensors ADD COLUMN IF NOT EXISTS custom_unit  TEXT;
+
 CREATE TABLE IF NOT EXISTS alerts (
   id              SERIAL PRIMARY KEY,
   device_id       INTEGER REFERENCES monitored_devices(id) ON DELETE CASCADE,
