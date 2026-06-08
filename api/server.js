@@ -23,6 +23,11 @@ const intelligence = require('./intelligence');
 const { getLicense, getLicenseState } = require('./licenseCheck');
 const reportScheduler = require('./reportScheduler');
 
+// App version — single source of truth is the root package.json.
+const { version } = require('../package.json');
+// Raw GitHub base for remote version/changelog checks (no auth, public repo).
+const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
+
 const IS_WIN = process.platform === 'win32';
 
 // ── Crash resilience ──────────────────────────────────────────
@@ -216,35 +221,71 @@ app.get('/api/agent/package.json', (req, res) => {
 // ══════════════════════════════════════════════════════════════
 app.get('/api/health', wrap(async (_req, res) => {
   await sv.query('SELECT 1');
-  res.json({ status: 'ok', service: 'spanvault-api', time: new Date().toISOString() });
+  res.json({ status: 'ok', service: 'spanvault-api', version, time: new Date().toISOString() });
 }));
 
 // ══════════════════════════════════════════════════════════════
 // System updates (Check for Updates)
 // ══════════════════════════════════════════════════════════════
-// Compares the local checkout against origin/main via git. All git commands run
-// in the repo root. Wrapped so a git failure degrades to "up to date" instead of
-// 500ing the Settings page.
+// Semver compare: is `remote` newer than `local` ("1.2.0" style strings)?
+function isNewer(remote, local) {
+  const [rM, rm, rp] = String(remote).split('.').map(Number);
+  const [lM, lm, lp] = String(local).split('.').map(Number);
+  if (rM !== lM) return rM > lM;
+  if (rm !== lm) return rm > lm;
+  return rp > lp;
+}
+
+// Pull the latest version's section out of CHANGELOG.md — everything from the
+// first "## " header up to the next one. HTML comments (the release-process
+// block, which itself contains indented "## v..." example lines) are stripped
+// first so they cannot be mistaken for the first real section header.
+function extractLatestChangelog(md) {
+  const clean = String(md).replace(/<!--[\s\S]*?-->/g, '');
+  const header = clean.match(/^##\s+.*$/m);
+  if (!header) return { changelog: '', release_date: null };
+  const start = header.index;
+  const afterHeader = start + header[0].length;
+  const nextRel = clean.slice(afterHeader).search(/^##\s+/m);
+  const end = nextRel === -1 ? clean.length : afterHeader + nextRel;
+  const section = clean.slice(start, end).trim();
+  const date = header[0].match(/(\d{4}-\d{2}-\d{2})/);
+  return { changelog: section, release_date: date ? date[1] : null };
+}
+
+// Compares the local package.json version against the version published on
+// GitHub's main branch. Never 500s the Settings page — a fetch failure degrades
+// to "up to date" with an error string.
 app.get('/api/system/update-status', wrap(async (_req, res) => {
-  const repoRoot = path.join(__dirname, '..');
-  const git = (cmd) => execSync(cmd, { cwd: repoRoot, encoding: 'utf8', timeout: 30000 }).trim();
+  const local = version;
   try {
-    git('git fetch origin main');
-    const current = git('git rev-parse HEAD').slice(0, 7);
-    const latest  = git('git rev-parse origin/main').slice(0, 7);
-    const behind  = parseInt(git('git rev-list HEAD..origin/main --count'), 10) || 0;
-    const log     = git('git log HEAD..origin/main --pretty=format:"%h %s"');
-    const changes = log ? log.split('\n').map((l) => l.trim()).filter(Boolean) : [];
+    const [pkgRes, clRes] = await Promise.all([
+      fetch(`${GH_RAW}/package.json`, { cache: 'no-store' }),
+      fetch(`${GH_RAW}/CHANGELOG.md`, { cache: 'no-store' }),
+    ]);
+    const remotePkg = await pkgRes.json();
+    const remote = remotePkg.version;
+
+    let changelog = '';
+    let release_date = null;
+    try {
+      const parsed = extractLatestChangelog(await clRes.text());
+      changelog = parsed.changelog;
+      release_date = parsed.release_date;
+    } catch (_e) { /* changelog is best-effort */ }
+
+    const updateAvail = isNewer(remote, local);
     res.json({
-      current_version: current,
-      latest_version: latest,
-      commits_behind: behind,
-      up_to_date: behind === 0,
-      changes,
+      current_version: local,
+      latest_version: remote,
+      up_to_date: !updateAvail,
+      update_available: updateAvail,
+      changelog,
+      release_date,
     });
   } catch (e) {
-    console.error('[update-status] git check failed:', e.message);
-    res.json({ error: 'Could not check for updates', up_to_date: true });
+    console.error('[update-status] version check failed:', e.message);
+    res.json({ up_to_date: true, error: 'Could not check for updates' });
   }
 }));
 
