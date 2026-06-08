@@ -259,9 +259,12 @@ function extractLatestChangelog(md) {
 app.get('/api/system/update-status', wrap(async (_req, res) => {
   const local = version;
   try {
+    // Cache-bust so GitHub's raw CDN can't return a stale copy — the Settings
+    // "Re-check" button must reflect a freshly pushed version immediately.
+    const bust = Date.now();
     const [pkgRes, clRes] = await Promise.all([
-      fetch(`${GH_RAW}/package.json`, { cache: 'no-store' }),
-      fetch(`${GH_RAW}/CHANGELOG.md`, { cache: 'no-store' }),
+      fetch(`${GH_RAW}/package.json?cb=${bust}`, { cache: 'no-store' }),
+      fetch(`${GH_RAW}/CHANGELOG.md?cb=${bust}`, { cache: 'no-store' }),
     ]);
     const remotePkg = await pkgRes.json();
     const remote = remotePkg.version;
@@ -295,7 +298,7 @@ let updateAvailable = null; // { current, latest } when an update exists, else n
 
 async function checkForUpdates() {
   try {
-    const res = await fetch(`${GH_RAW}/package.json`, { cache: 'no-store' });
+    const res = await fetch(`${GH_RAW}/package.json?cb=${Date.now()}`, { cache: 'no-store' });
     const remote = await res.json();
     updateAvailable = isNewer(remote.version, version)
       ? { current: version, latest: remote.version }
