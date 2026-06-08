@@ -626,9 +626,27 @@ function changelogBody(md?: string): string {
 
 const UPDATE_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes
 
+// Broadcast so the cross-app update banner (UpdateNotifier) re-fetches its own
+// availability endpoint after a manual re-check — no page reload needed.
+// Kept in sync with the same constant in components/UpdateNotifier.tsx. (Page
+// files may not export arbitrary values, so this is a local constant.)
+const UPDATE_STATUS_REFRESHED_EVENT = 'sv:update-status-refreshed';
+
+// Re-check / check-for-updates button with an inline loading state.
+function CheckButton({ busy, onClick, label, ghost }: {
+  busy: boolean; onClick: () => void; label: string; ghost?: boolean;
+}) {
+  return (
+    <button className={`sv-btn${ghost ? ' ghost' : ''}`} onClick={onClick} disabled={busy}>
+      {busy ? (<><span className="sv-spinner-sm" /> Checking…</>) : label}
+    </button>
+  );
+}
+
 function SystemUpdates() {
   const [status, setStatus] = useState<UpdateStatus | null>(null);
-  const [checking, setChecking] = useState(false);
+  const [checking, setChecking] = useState(false);     // initial full-panel load
+  const [rechecking, setRechecking] = useState(false); // button-triggered re-check
   const [checkErr, setCheckErr] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [updating, setUpdating] = useState(false);
@@ -638,16 +656,20 @@ function SystemUpdates() {
   const hubUrl = process.env.NEXT_PUBLIC_NOCVAULT_HUB_URL || 'http://localhost:3000';
   const updatesBlocked = licenseState.mode === 'grace' || licenseState.mode === 'disabled';
 
-  async function check() {
-    setChecking(true);
+  // isRecheck=true keeps the current panel visible and only shows the button
+  // spinner; the initial mount load uses the full-panel "Checking…" view.
+  async function check(isRecheck = false) {
+    if (isRecheck) setRechecking(true); else setChecking(true);
     setCheckErr(null);
     try {
       const s = await apiSend<UpdateStatus>('/api/system/update-status', 'GET' as any);
       setStatus(s);
+      // Let the notification banner refresh from its own endpoint.
+      window.dispatchEvent(new Event(UPDATE_STATUS_REFRESHED_EVENT));
     } catch (e: any) {
       setCheckErr(e?.message || 'Could not check for updates');
     } finally {
-      setChecking(false);
+      if (isRecheck) setRechecking(false); else setChecking(false);
     }
   }
 
@@ -695,14 +717,14 @@ function SystemUpdates() {
             {status?.current_version && (
               <p className="sv-muted">Version: <code>v{status.current_version}</code></p>
             )}
-            <button className="sv-btn" onClick={check}>Check for Updates</button>
+            <CheckButton busy={rechecking} onClick={() => check(true)} label="Check for Updates" />
           </div>
         ) : upToDate ? (
           <div style={{ marginTop: 8 }}>
             <p style={{ color: 'var(--sv-up, #16a34a)', fontWeight: 600 }}>✓ SpanVault is up to date</p>
             <div className="sv-toolbar">
               <span className="sv-muted">Version: <code>v{status?.current_version}</code></span>
-              <button className="sv-btn ghost" onClick={check}>Re-check</button>
+              <CheckButton busy={rechecking} onClick={() => check(true)} label="Re-check" ghost />
             </div>
           </div>
         ) : updatesAvailable ? (
@@ -740,7 +762,7 @@ function SystemUpdates() {
               >
                 Update Now
               </button>
-              <button className="sv-btn ghost" onClick={check}>Re-check</button>
+              <CheckButton busy={rechecking} onClick={() => check(true)} label="Re-check" ghost />
             </div>
             {licenseState.mode === 'grace' && (
               <p style={{ marginTop: 10, color: 'var(--sv-warn, #d97706)', fontWeight: 600 }}>
@@ -771,7 +793,7 @@ function SystemUpdates() {
           </div>
         ) : (
           <div style={{ marginTop: 8 }}>
-            <button className="sv-btn" onClick={check}>Check for Updates</button>
+            <CheckButton busy={rechecking} onClick={() => check(true)} label="Check for Updates" />
           </div>
         )}
       </div>

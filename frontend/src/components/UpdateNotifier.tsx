@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
 
 interface UpdateInfo {
@@ -10,41 +10,47 @@ interface UpdateInfo {
 }
 
 const DISMISS_KEY_PREFIX = 'sv-update-dismissed-';
+// Kept in sync with settings/page.tsx — fired after a manual "Re-check" so the
+// banner refreshes its status without a page reload.
+const UPDATE_STATUS_REFRESHED_EVENT = 'sv:update-status-refreshed';
 
 export default function UpdateNotifier() {
   const [info, setInfo] = useState<UpdateInfo | null>(null);
   const [dismissed, setDismissed] = useState(false);
+  const mounted = useRef(true);
+
+  const check = useCallback(async () => {
+    try {
+      const res = await fetch('/api/system/update-available');
+      const data: UpdateInfo = await res.json();
+      if (!mounted.current) return;
+      setInfo(data);
+      if (data.available && data.latest) {
+        try {
+          const wasDismissed = sessionStorage.getItem(DISMISS_KEY_PREFIX + data.latest);
+          setDismissed(!!wasDismissed);
+        } catch {
+          setDismissed(false);
+        }
+      }
+    } catch {
+      if (mounted.current) setInfo(null);
+    }
+  }, []);
 
   useEffect(() => {
-    let cancelled = false;
-
-    const check = async () => {
-      try {
-        const res = await fetch('/api/system/update-available');
-        const data: UpdateInfo = await res.json();
-        if (cancelled) return;
-        setInfo(data);
-        if (data.available && data.latest) {
-          try {
-            const wasDismissed = sessionStorage.getItem(DISMISS_KEY_PREFIX + data.latest);
-            setDismissed(!!wasDismissed);
-          } catch {
-            setDismissed(false);
-          }
-        }
-      } catch {
-        if (!cancelled) setInfo(null);
-      }
-    };
-
+    mounted.current = true;
     check();
     const interval = setInterval(check, 6 * 60 * 60 * 1000);
+    // Refresh immediately when a re-check completes elsewhere in the app.
+    window.addEventListener(UPDATE_STATUS_REFRESHED_EVENT, check);
 
     return () => {
-      cancelled = true;
+      mounted.current = false;
       clearInterval(interval);
+      window.removeEventListener(UPDATE_STATUS_REFRESHED_EVENT, check);
     };
-  }, []);
+  }, [check]);
 
   const handleDismiss = () => {
     if (info?.latest) {
