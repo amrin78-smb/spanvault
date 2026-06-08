@@ -14,6 +14,10 @@ RELEASE PROCESS:
 
 # SpanVault Changelog
 
+## v1.0.1 — 2026-06-08
+### What's New
+- Test version bump
+
 ## v1.0.0 â€” 2026-06-08
 ### Initial Release
 - Multi-vendor network monitoring (ICMP + SNMP)
@@ -36,3 +40,4 @@ RELEASE PROCESS:
 - 24h sparkline trends on device list
 - Additional sensors: Fortinet HA/VPN, Palo Alto sessions,
   Cisco BGP
+
