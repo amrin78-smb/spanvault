@@ -811,6 +811,7 @@ function UpdateConfirmModal({ onCancel, onConfirm }: { onCancel: () => void; onC
 function UpdatingOverlay() {
   const [phase, setPhase] = useState<'starting' | 'down' | 'back_up' | 'timeout'>('starting');
   const wentDown = useRef(false);
+  const consecutiveUp = useRef(0);
 
   useEffect(() => {
     let active = true;
@@ -848,7 +849,10 @@ function UpdatingOverlay() {
       if (!active) return;
 
       if (!ok) {
-        // Fetch failed or non-200 → API is down (restarting).
+        // Fetch failed or non-200 → API is down (restarting). Reset the
+        // consecutive-success counter: during startup the API can answer one
+        // probe then drop again, so any failure restarts the stability window.
+        consecutiveUp.current = 0;
         wentDown.current = true;
         setPhase('down');
         return;
@@ -856,11 +860,18 @@ function UpdatingOverlay() {
 
       // Healthy response. Only a recovery if we previously saw it go down.
       if (wentDown.current) {
-        setPhase('back_up');
-        stopPolling();
-        // Land on the dashboard with a success banner instead of reloading the
-        // settings page in place.
-        reloadId = setTimeout(() => { window.location.href = '/?updated=true'; }, 2000);
+        // Require 3 consecutive healthy probes (≈6s at the 2s cadence) before
+        // declaring the API stably back up. A single success after going down
+        // isn't enough — services may respond once then briefly drop again
+        // mid-startup, which would trigger a premature reload.
+        consecutiveUp.current += 1;
+        if (consecutiveUp.current >= 3) {
+          setPhase('back_up');
+          stopPolling();
+          // Land on the dashboard with a success banner instead of reloading the
+          // settings page in place.
+          reloadId = setTimeout(() => { window.location.href = '/?updated=true'; }, 2000);
+        }
       }
       // else: still the pre-restart API — keep waiting for it to go down.
     };
