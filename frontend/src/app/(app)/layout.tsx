@@ -1,6 +1,7 @@
 import Sidebar from '@/components/Sidebar';
 import TopBar from '@/components/TopBar';
 import AlertBanner from '@/components/AlertBanner';
+import UpdateNotifier from '@/components/UpdateNotifier';
 import GlobalSearch from '@/components/GlobalSearch';
 import IdleTimeout from '@/components/IdleTimeout';
 import KeyboardShortcuts from '@/components/KeyboardShortcuts';
@@ -15,6 +16,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         <TopBar />
         <AlertBanner />
         <LicenseBanner />
+        <UpdateNotifier />
         <div className="sv-body">
           <Sidebar />
           <main className="sv-content">{children}</main>

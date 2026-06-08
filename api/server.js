@@ -100,7 +100,7 @@ async function enforceLicense(req, res, next) {
   }
 
   // Block all access if disabled
-  const exemptPaths = ['/api/health', '/api/license-status'];
+  const exemptPaths = ['/api/health', '/api/license-status', '/api/system/update-available'];
   if (state.disabled && !exemptPaths.some(p => req.path.startsWith(p))) {
     return res.status(402).json({
       error: 'License has expired. Please renew your NocVault license.',
@@ -288,6 +288,31 @@ app.get('/api/system/update-status', wrap(async (_req, res) => {
     res.json({ up_to_date: true, error: 'Could not check for updates' });
   }
 }));
+
+// Background update check: cached so the cross-app notifier banner can poll
+// cheaply without each page hitting GitHub. Refreshed on startup + every 24h.
+let updateAvailable = null; // { current, latest } when an update exists, else null
+
+async function checkForUpdates() {
+  try {
+    const res = await fetch(`${GH_RAW}/package.json`, { cache: 'no-store' });
+    const remote = await res.json();
+    updateAvailable = isNewer(remote.version, version)
+      ? { current: version, latest: remote.version }
+      : null;
+  } catch {
+    // never block on network failure — keep the last known state
+  }
+}
+
+// Cached update availability for the notifier banner (no auth required).
+app.get('/api/system/update-available', (_req, res) => {
+  if (updateAvailable) {
+    res.json({ available: true, current: updateAvailable.current, latest: updateAvailable.latest });
+  } else {
+    res.json({ available: false });
+  }
+});
 
 // Launches the update via a one-time Windows Scheduled Task running as SYSTEM.
 // Why a scheduled task and not a spawned child: this API runs as a limited
@@ -3579,6 +3604,10 @@ getLicense(true).then((lic) => {
   console.log(`[License] Status: ${lic?.status || 'unreachable'}, mode: ${state.mode}`);
 });
 setInterval(() => getLicense(true), 24 * 60 * 60 * 1000);
+
+// ── Update check: on startup + every 24h (cached for the notifier banner) ─────
+checkForUpdates();
+setInterval(checkForUpdates, 24 * 60 * 60 * 1000);
 
 app.listen(PORT, '127.0.0.1', () => {
   console.log(`SpanVault API listening on 127.0.0.1:${PORT}`);

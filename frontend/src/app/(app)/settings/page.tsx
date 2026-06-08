@@ -18,6 +18,9 @@ export default function SettingsPage() {
   const { canManageSettings } = useRbac();
   const router = useRouter();
   const [tab, setTab] = useState('general');
+  // Highlight the Updates tab with a red dot when a new version is available.
+  const updates = useApi<{ available?: boolean }>('/api/system/update-available');
+  const updateAvail = !!updates.data?.available;
 
   // Deep-link support: /settings?tab=updates opens the Updates tab (used by the
   // update-notifier banner).
@@ -45,6 +48,15 @@ export default function SettingsPage() {
         {TABS.map((t) => (
           <button key={t.key} className={`sv-tab ${tab === t.key ? 'active' : ''}`} onClick={() => setTab(t.key)}>
             {t.label}
+            {t.key === 'updates' && updateAvail && (
+              <span
+                title="Update available"
+                style={{
+                  display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
+                  background: '#dc2626', marginLeft: 6, verticalAlign: 'middle',
+                }}
+              />
+            )}
           </button>
         ))}
       </div>
