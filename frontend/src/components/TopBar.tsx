@@ -65,7 +65,7 @@ export default function TopBar() {
   return (
     <header className="sv-topbar">
       <div className="sv-topbar-brand">
-        <img className="sv-logo" src="/spanvault-logo-white.png" alt="SpanVault" />
+        <img className="sv-logo" src="/spanvault-logo.svg" alt="SpanVault" />
         <span className="sv-topbar-divider" />
         <span className="sv-topbar-subtitle">Network Monitoring</span>
       </div>
