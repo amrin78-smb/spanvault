@@ -517,7 +517,7 @@ a { color: inherit; text-decoration: none; }
   box-shadow: 0 1px 0 rgba(255,255,255,0.06), 0 2px 8px rgba(0,0,0,0.2);
 }
 .sv-topbar-brand { display: flex; align-items: center; gap: 16px; flex: none; }
-.sv-topbar-brand .sv-logo { width: 260px; height: auto; max-width: 260px; object-fit: contain; object-position: left center; display: block; }
+.sv-topbar-brand .sv-logo { width: auto; height: 36px; max-width: 260px; object-fit: contain; object-position: left center; display: block; }
 .sv-topbar-divider { width: 1px; height: 34px; background: rgba(255,255,255,0.16); }
 .sv-topbar-subtitle {
   font-size: 11px; font-weight: 700; letter-spacing: 0.14em;
