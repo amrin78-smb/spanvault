@@ -439,6 +439,11 @@ async function debugWalk(pool, controller) {
     aruba_radio_table:   '1.3.6.1.4.1.14823.2.2.1.5.2.1.5',  // wlsxWlanRadioTable
     aruba_instant_ap:    '1.3.6.1.4.1.14823.2.3.3.1.2.1',    // aiAccessPointTable (Instant)
     aruba_instant_ssid:  '1.3.6.1.4.1.14823.2.3.3.1.1.7.1',  // aiWlanSSIDTable (Instant)
+    // Client/station table candidates (for verifying the wireless_clients source).
+    aruba_station_table: '1.3.6.1.4.1.14823.2.2.1.5.2.2.1',  // wlsxWlanStationTable (primary)
+    aruba_user_table:    '1.3.6.1.4.1.14823.2.2.1.4.1.2',    // wlsxUserTable (IP + AP name)
+    aruba_station_mgmt:  '1.3.6.1.4.1.14823.2.2.1.1.2.2',    // wlsxSwitchStationMgmtTable
+    aruba_instant_client: '1.3.6.1.4.1.14823.2.3.3.1.2.4',   // aiClientTable (Instant)
   };
 
   // Candidate ESSID/SSID source tables — each is walked and counted so the
@@ -518,7 +523,10 @@ async function pollClients(pool, controller, apList) {
   } finally {
     try { session.close(); } catch (_e) { /* ignore */ }
   }
-  if (clients.length === 0) return;
+  if (clients.length === 0) {
+    log(`[clients] ${controller.name} (${controller.vendor}): 0 clients (no rows from the client table OID)`);
+    return;
+  }
 
   // Previous snapshot for roaming/leave detection.
   const prev = await pool.query(

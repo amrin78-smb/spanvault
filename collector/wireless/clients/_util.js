@@ -23,6 +23,23 @@ function macFromTail(idx, n = 6) {
   return hex.join(':');
 }
 
+// Convert the FIRST `n` dotted-decimal components of an OID index into a MAC.
+// Used for tables whose index is MAC followed by more sub-identifiers (e.g.
+// Aruba's user table index is station-MAC(6) + IPv4(4)).
+function macFromHead(idx, n = 6) {
+  if (idx === null || idx === undefined) return null;
+  const parts = String(idx).split('.').filter((p) => p !== '');
+  if (parts.length < n) return null;
+  const head = parts.slice(0, n);
+  const hex = [];
+  for (const p of head) {
+    const v = parseInt(p, 10);
+    if (!Number.isFinite(v) || v < 0 || v > 255) return null;
+    hex.push(v.toString(16).padStart(2, '0'));
+  }
+  return hex.join(':');
+}
+
 // Normalize a MAC value (6-byte Buffer, or a hex/colon/dash string) to
 // colon-separated lowercase hex. Returns null if it can't be parsed.
 function hexMac(v) {
@@ -84,6 +101,6 @@ function connectedSinceFromSeconds(sec) {
 }
 
 module.exports = {
-  num, str, macFromTail, hexMac, bandFromCode, bandFromChannelNum,
+  num, str, macFromTail, macFromHead, hexMac, bandFromCode, bandFromChannelNum,
   emptyClient, connectedSinceFromSeconds,
 };
