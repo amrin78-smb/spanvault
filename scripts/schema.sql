@@ -638,6 +638,59 @@ CREATE TABLE IF NOT EXISTS wireless_ap_intelligence (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_wifi_ap_intel_ap
   ON wireless_ap_intelligence(ap_id);
 
+-- ══ Wireless client-level troubleshooting (Tier 1) ═══════════════════════════
+-- Current client snapshot, upserted every client poll. Clients not seen for
+-- 15 minutes are pruned by the collector (only active clients are kept).
+CREATE TABLE IF NOT EXISTS wireless_clients (
+  id               SERIAL PRIMARY KEY,
+  mac_address      TEXT NOT NULL,
+  ip_address       TEXT,
+  hostname         TEXT,
+  controller_id    INTEGER NOT NULL REFERENCES wireless_controllers(id) ON DELETE CASCADE,
+  ap_id            INTEGER REFERENCES wireless_aps(id) ON DELETE SET NULL,
+  ap_name          TEXT,
+  ssid_name        TEXT,
+  band             TEXT,           -- '2.4GHz' / '5GHz' / '6GHz'
+  channel          INTEGER,
+  rssi_dbm         INTEGER,        -- signal strength, negative
+  tx_rate_mbps     NUMERIC,
+  rx_rate_mbps     NUMERIC,
+  connected_since  TIMESTAMPTZ,
+  last_seen_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  auth_type        TEXT,
+  is_problem       BOOLEAN DEFAULT FALSE,   -- TRUE if rssi < -75 or roaming_count > 5
+  roaming_count    INTEGER DEFAULT 0,       -- times roamed in last hour
+  vendor           TEXT NOT NULL            -- aruba/cisco/ruckus/mikrotik/hpe
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_wclient_ctrl_mac
+  ON wireless_clients(controller_id, mac_address);
+CREATE INDEX IF NOT EXISTS idx_wclient_ap ON wireless_clients(ap_id);
+CREATE INDEX IF NOT EXISTS idx_wclient_rssi ON wireless_clients(rssi_dbm);
+CREATE INDEX IF NOT EXISTS idx_wclient_problem
+  ON wireless_clients(is_problem) WHERE is_problem = TRUE;
+
+-- Roaming and auth event history (join/roam/leave/auth_fail/low_signal).
+-- Purged after 7 days by the collector.
+CREATE TABLE IF NOT EXISTS wireless_client_events (
+  id           BIGSERIAL PRIMARY KEY,
+  mac_address  TEXT NOT NULL,
+  controller_id INTEGER NOT NULL REFERENCES wireless_controllers(id) ON DELETE CASCADE,
+  event_type   TEXT NOT NULL,   -- join/roam/leave/auth_fail/low_signal
+  from_ap_id   INTEGER REFERENCES wireless_aps(id) ON DELETE SET NULL,
+  from_ap_name TEXT,
+  to_ap_id     INTEGER REFERENCES wireless_aps(id) ON DELETE SET NULL,
+  to_ap_name   TEXT,
+  rssi_dbm     INTEGER,
+  ssid_name    TEXT,
+  ts           TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_wclient_event_mac
+  ON wireless_client_events(mac_address, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_wclient_event_ctrl
+  ON wireless_client_events(controller_id, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_wclient_event_ts
+  ON wireless_client_events(ts DESC);
+
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO spanvault_user;
 GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO spanvault_user;
 
