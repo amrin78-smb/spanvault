@@ -14,26 +14,30 @@ async function computeWirelessIntelligence(pool, controllerId) {
   const channels2g = apList.map(a => a.radio_2g_channel).filter(Boolean);
   const channels5g = apList.map(a => a.radio_5g_channel).filter(Boolean);
 
-  function countCoChannelPairs(channels) {
+  // Count APs that have at least one co-channel neighbor (i.e. share a channel
+  // with another AP). This measures how many APs are AFFECTED by co-channel
+  // interference — far more meaningful than total pairwise combinations, which
+  // explode quadratically (e.g. 111 APs on channels 1/6/11 → thousands of pairs).
+  function countAffectedByCoChannel(channels) {
     const freq = {};
     channels.forEach(ch => freq[ch] = (freq[ch] || 0) + 1);
-    let pairs = 0;
+    let affected = 0;
     Object.values(freq).forEach(count => {
-      if (count > 1) pairs += (count * (count-1)) / 2;
+      if (count > 1) affected += count;
     });
-    return pairs;
+    return affected;
   }
 
-  const coPairs2g = countCoChannelPairs(channels2g);
-  const coPairs5g = countCoChannelPairs(channels5g);
-  const totalCoPairs = coPairs2g + coPairs5g;
+  const coAffected2g = countAffectedByCoChannel(channels2g);
+  const coAffected5g = countAffectedByCoChannel(channels5g);
+  const totalCoAffected = coAffected2g + coAffected5g;
 
   const badChannels2g = channels2g.filter(
     ch => ![1,6,11].includes(ch)
   ).length;
 
   const interferenceScore = Math.min(100,
-    (totalCoPairs / apList.length) * 30 +
+    (totalCoAffected / apList.length) * 30 +
     (badChannels2g / apList.length) * 20
   );
 
@@ -118,12 +122,12 @@ async function computeWirelessIntelligence(pool, controllerId) {
       .map(a => a.name)
   });
 
-  if (coPairs2g > 2) recommendations.push({
+  if (coAffected2g > 2) recommendations.push({
     priority: 'high',
     category: 'RF Planning',
-    issue: `${coPairs2g} co-channel AP pairs on 2.4GHz`,
+    issue: `${coAffected2g} APs affected by co-channel interference on 2.4GHz`,
     action: 'Enable ARM/RRM auto channel assignment or manually distribute channels 1, 6, 11',
-    affected_count: coPairs2g
+    affected_count: coAffected2g
   });
 
   if (overloadedAps > 0) recommendations.push({
@@ -319,7 +323,7 @@ async function computeWirelessIntelligence(pool, controllerId) {
       overall_grade=EXCLUDED.overall_grade,
       recommendations=EXCLUDED.recommendations,
       computed_at=NOW()
-  `, [controllerId, totalCoPairs, interferenceScore,
+  `, [controllerId, totalCoAffected, interferenceScore,
       loadBalanceScore, overloadedAps, underloadedAps,
       avgClients, maxClients, pct2g, pct5g, bandScore,
       highUtilAps, criticalUtilAps, capacityScore,
@@ -327,7 +331,7 @@ async function computeWirelessIntelligence(pool, controllerId) {
 
   console.log(
     `[WirelessIntel] ${controllerId}: score=${overallScore} ` +
-    `grade=${grade} co-ch=${totalCoPairs} ` +
+    `grade=${grade} co-ch-affected=${totalCoAffected} ` +
     `overloaded=${overloadedAps} band5g=${Math.round(pct5g)}%`
   );
 }

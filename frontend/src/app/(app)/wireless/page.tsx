@@ -1653,7 +1653,7 @@ function ControllerIntelCard({ row, aps }: { row: IntelRow; aps: AccessPoint[] }
             <span style={{ color: 'var(--red)' }}> ← below target</span>
           )}
         </div>
-        <div>Co-channel pairs: {row.co_channel_pairs}</div>
+        <div>Co-channel affected APs: {row.co_channel_pairs}</div>
       </div>
     </div>
   );
