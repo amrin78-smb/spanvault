@@ -16,6 +16,7 @@
 
 const { createSession, walk } = require('./snmp-session');
 const { getWirelessParser, wirelessVendorFor } = require('./wireless');
+const { getClientParser } = require('./wireless/clients');
 const { runWirelessIntelligence } = require('./wirelessIntelligence');
 
 // Vendor SNMP metric support matrix (what each parser actually returns):
@@ -494,6 +495,172 @@ async function debugWalk(pool, controller) {
   return out;
 }
 
+// ── Client-level troubleshooting (Tier 1) ─────────────────────
+// Poll a controller's associated clients (SNMP), detect roam/join/leave/
+// low-signal events vs the previous snapshot, upsert the current client set,
+// and prune stale clients + old events. Never throws; a client-poll failure is
+// isolated and never affects AP polling.
+async function pollClients(pool, controller, apList) {
+  const parser = getClientParser(controller.vendor);
+  if (!parser || !controller.snmp_device_id) return; // unsupported vendor or no SNMP device
+
+  const apByName = new Map(apList.map((a) => [a.name, a]));
+  const apByMac = new Map(apList.filter((a) => a.mac_address).map((a) => [a.mac_address, a]));
+
+  const dq = await pool.query('SELECT * FROM monitored_devices WHERE id = $1', [controller.snmp_device_id]);
+  const device = dq.rows[0];
+  if (!device) return;
+
+  const session = createSession(device, 10000);
+  let clients = [];
+  try {
+    clients = (await parser.parseClients(session, { byName: apByName, byMac: apByMac })) || [];
+  } finally {
+    try { session.close(); } catch (_e) { /* ignore */ }
+  }
+  if (clients.length === 0) return;
+
+  // Previous snapshot for roaming/leave detection.
+  const prev = await pool.query(
+    `SELECT mac_address, ap_id, ap_name, rssi_dbm FROM wireless_clients WHERE controller_id = $1`,
+    [controller.id]);
+  const prevMap = new Map(prev.rows.map((c) => [c.mac_address, c]));
+
+  const now = new Date();
+  const oneHourAgo = new Date(now.getTime() - 3600000);
+  const events = [];
+  const seen = new Set();
+
+  for (const client of clients) {
+    if (!client.mac_address) continue;
+    seen.add(client.mac_address);
+    const p = prevMap.get(client.mac_address);
+    if (p) {
+      if (p.ap_id && client.ap_id && p.ap_id !== client.ap_id) {
+        events.push({
+          mac_address: client.mac_address, controller_id: controller.id, event_type: 'roam',
+          from_ap_id: p.ap_id, from_ap_name: p.ap_name, to_ap_id: client.ap_id, to_ap_name: client.ap_name,
+          rssi_dbm: client.rssi_dbm, ssid_name: client.ssid_name, ts: now,
+        });
+      }
+    } else {
+      events.push({
+        mac_address: client.mac_address, controller_id: controller.id, event_type: 'join',
+        to_ap_id: client.ap_id, to_ap_name: client.ap_name,
+        rssi_dbm: client.rssi_dbm, ssid_name: client.ssid_name, ts: now,
+      });
+    }
+    if (client.rssi_dbm !== null && client.rssi_dbm !== undefined && client.rssi_dbm < -75) {
+      events.push({
+        mac_address: client.mac_address, controller_id: controller.id, event_type: 'low_signal',
+        to_ap_id: client.ap_id, to_ap_name: client.ap_name,
+        rssi_dbm: client.rssi_dbm, ssid_name: client.ssid_name, ts: now,
+      });
+    }
+  }
+
+  // Clients that left (in previous snapshot, not in current).
+  for (const [mac, p] of prevMap) {
+    if (!seen.has(mac)) {
+      events.push({
+        mac_address: mac, controller_id: controller.id, event_type: 'leave',
+        from_ap_id: p.ap_id, from_ap_name: p.ap_name, ts: now,
+      });
+    }
+  }
+
+  // Upsert current clients (roaming_count from the last hour of roam events).
+  for (const client of clients) {
+    if (!client.mac_address) continue;
+    const rc = await pool.query(
+      `SELECT COUNT(*)::int AS cnt FROM wireless_client_events
+       WHERE mac_address = $1 AND controller_id = $2 AND event_type = 'roam' AND ts >= $3`,
+      [client.mac_address, controller.id, oneHourAgo]);
+    const roamCount = rc.rows[0] ? rc.rows[0].cnt : 0;
+    const isProblem = (client.rssi_dbm !== null && client.rssi_dbm !== undefined && client.rssi_dbm < -75) || roamCount > 5;
+
+    await pool.query(`
+      INSERT INTO wireless_clients
+        (mac_address, ip_address, hostname, controller_id, ap_id, ap_name, ssid_name, band, channel,
+         rssi_dbm, tx_rate_mbps, rx_rate_mbps, connected_since, last_seen_at, auth_type,
+         is_problem, roaming_count, vendor)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+      ON CONFLICT (controller_id, mac_address) DO UPDATE SET
+        ip_address    = EXCLUDED.ip_address,
+        hostname      = COALESCE(EXCLUDED.hostname, wireless_clients.hostname),
+        ap_id         = EXCLUDED.ap_id,
+        ap_name       = EXCLUDED.ap_name,
+        ssid_name     = EXCLUDED.ssid_name,
+        band          = EXCLUDED.band,
+        channel       = EXCLUDED.channel,
+        rssi_dbm      = EXCLUDED.rssi_dbm,
+        tx_rate_mbps  = EXCLUDED.tx_rate_mbps,
+        rx_rate_mbps  = EXCLUDED.rx_rate_mbps,
+        connected_since = COALESCE(EXCLUDED.connected_since, wireless_clients.connected_since),
+        last_seen_at  = EXCLUDED.last_seen_at,
+        auth_type     = EXCLUDED.auth_type,
+        is_problem    = EXCLUDED.is_problem,
+        roaming_count = EXCLUDED.roaming_count
+    `, [
+      client.mac_address, client.ip_address || null, client.hostname || null, controller.id,
+      client.ap_id || null, client.ap_name || null, client.ssid_name || null, client.band || null,
+      intOrNull(client.channel), intOrNull(client.rssi_dbm),
+      numOrNull(client.tx_rate_mbps), numOrNull(client.rx_rate_mbps), client.connected_since || null,
+      now, client.auth_type || null, isProblem, roamCount, controller.vendor,
+    ]);
+  }
+
+  // Insert detected events.
+  for (const e of events) {
+    await pool.query(`
+      INSERT INTO wireless_client_events
+        (mac_address, controller_id, event_type, from_ap_id, from_ap_name, to_ap_id, to_ap_name,
+         rssi_dbm, ssid_name, ts)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+    `, [
+      e.mac_address, e.controller_id, e.event_type, e.from_ap_id || null, e.from_ap_name || null,
+      e.to_ap_id || null, e.to_ap_name || null, intOrNull(e.rssi_dbm), e.ssid_name || null, e.ts,
+    ]);
+  }
+
+  // Prune clients not seen in 15 minutes; purge events older than 7 days.
+  await pool.query(
+    `DELETE FROM wireless_clients WHERE controller_id = $1 AND last_seen_at < NOW() - INTERVAL '15 minutes'`,
+    [controller.id]);
+  await pool.query(`DELETE FROM wireless_client_events WHERE ts < NOW() - INTERVAL '7 days'`);
+
+  log(`[clients] ${controller.name}: ${clients.length} client(s), ${events.length} event(s)`);
+}
+
+// Client poll cycle — separate (slower) cadence than the AP poll.
+let clientsBusy = false;
+async function pollAllClients(pool) {
+  if (clientsBusy) return;
+  clientsBusy = true;
+  try {
+    const r = await pool.query(`SELECT * FROM wireless_controllers WHERE active = TRUE`);
+    for (const c of r.rows) {
+      if (!c.snmp_device_id) continue;
+      try {
+        const apq = await pool.query(
+          `SELECT id, name, mac_address FROM wireless_aps WHERE controller_id = $1`, [c.id]);
+        await pollClients(pool, c, apq.rows);
+      } catch (e) {
+        // Client polling never affects AP polling — isolate per-controller failures.
+        console.error(`[wireless] client poll failed on ${c.name}:`, e.message);
+      }
+    }
+  } catch (err) {
+    console.error('[wireless] client poll cycle failed:', err.message);
+  } finally {
+    clientsBusy = false;
+  }
+}
+
+// Clients are polled on a slower cadence than APs to reduce SNMP load on the
+// controllers (note 2): every 15 minutes, with a first pass 30s after startup.
+const CLIENT_POLL_INTERVAL = 15 * 60 * 1000;
+
 // Start the wireless collector on a 5-minute cadence (first pass after 20s so
 // the initial NetVault sync + vendor detection has a chance to populate).
 function startWirelessCollector(pool) {
@@ -501,10 +668,14 @@ function startWirelessCollector(pool) {
   cleanupBadAutoControllers(pool).catch((e) => console.error('[wireless] startup cleanup:', e.message));
   setTimeout(() => pollAll(pool), 20 * 1000);
   setInterval(() => pollAll(pool), 5 * 60 * 1000);
-  log('wireless collector started (every 5 min)');
+  // Client polling on its own (slower) schedule, separate from the AP poll.
+  setTimeout(() => pollAllClients(pool), 30 * 1000);
+  setInterval(() => pollAllClients(pool), CLIENT_POLL_INTERVAL);
+  log('wireless collector started (APs every 5 min, clients every 15 min)');
 }
 
 module.exports = {
   startWirelessCollector, pollAll, pollController, upsertAp, upsertSsid,
   autoDetectControllers, cleanupBadAutoControllers, testController, debugWalk,
+  pollClients, pollAllClients,
 };
