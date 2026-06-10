@@ -119,6 +119,9 @@ function safeInt(val, def, max) {
   if (isNaN(n) || n <= 0) return def;
   return (max && n > max) ? max : n;
 }
+function scoreGrade(s) {
+  return s >= 90 ? 'A' : s >= 80 ? 'B' : s >= 70 ? 'C' : s >= 60 ? 'D' : 'F';
+}
 function rangeToInterval(range) {
   switch (range) {
     case '7d':  return '7 days';
@@ -2527,6 +2530,103 @@ app.get('/api/wireless/debug/walk', wrap(async (req, res) => {
   const controller = r.rows[0];
   if (!controller) return res.status(404).json({ error: 'Controller not found' });
   res.json(await wireless.debugWalk(sv, controller));
+}));
+
+// ── Wireless intelligence ─────────────────────────────────────
+// Route order matters: register the static /summary route BEFORE the
+// /:controller_id param route so Express doesn't match "summary" as an id.
+app.get('/api/wireless/intelligence', wrap(async (req, res) => {
+  const params = [];
+  const sc = siteFilterClause(getSiteFilter(req), params, 'c.site_id');
+  const r = await sv.query(`
+    SELECT wi.*, c.name AS controller_name, c.vendor
+    FROM wireless_intelligence wi
+    JOIN wireless_controllers c ON c.id = wi.controller_id
+    ${sc ? `WHERE ${sc}` : ''}
+    ORDER BY c.name
+  `, params);
+  res.json(r.rows);
+}));
+
+app.get('/api/wireless/intelligence/summary', wrap(async (req, res) => {
+  const filter = getSiteFilter(req);
+  const p1 = [];
+  const sc1 = siteFilterClause(filter, p1, 'c.site_id');
+  const rows = await sv.query(`
+    SELECT wi.*, c.name AS controller_name,
+           (SELECT COUNT(*)::int FROM wireless_aps a WHERE a.controller_id = wi.controller_id) AS ap_count
+    FROM wireless_intelligence wi
+    JOIN wireless_controllers c ON c.id = wi.controller_id
+    ${sc1 ? `WHERE ${sc1}` : ''}
+  `, p1);
+
+  let totW = 0, wScore = 0, bandSum = 0, totalRecs = 0, critical = 0, high = 0;
+  const allRecs = [];
+  const controllers = [];
+  for (const r of rows.rows) {
+    const w = r.ap_count || 0;
+    totW += w; wScore += Number(r.overall_score) * w;
+    bandSum += Number(r.band_steering_score);
+    const recs = Array.isArray(r.recommendations) ? r.recommendations : [];
+    totalRecs += recs.length;
+    for (const rec of recs) {
+      if (rec.priority === 'critical') critical++;
+      else if (rec.priority === 'high') high++;
+      allRecs.push({ ...rec, controller_id: r.controller_id, controller_name: r.controller_name });
+    }
+    controllers.push({
+      id: r.controller_id, name: r.controller_name,
+      overall_score: Number(r.overall_score), grade: r.overall_grade,
+      overloaded_aps: r.overloaded_aps, co_channel_pairs: r.co_channel_pairs,
+    });
+  }
+  const overall_score = totW ? Math.round(wScore / totW) : 0;
+  const prio = { critical: 0, high: 1, medium: 2, low: 3 };
+  allRecs.sort((a, b) => (prio[a.priority] ?? 9) - (prio[b.priority] ?? 9));
+
+  const p2 = [];
+  const sc2 = siteFilterClause(filter, p2, 'a.site_id');
+  const worst = await sv.query(`
+    SELECT ai.ap_id, a.name AS ap_name, a.controller_id, a.site_name,
+           ai.health_score, ai.health_grade, ai.load_status, ai.issues
+    FROM wireless_ap_intelligence ai
+    JOIN wireless_aps a ON a.id = ai.ap_id
+    ${sc2 ? `WHERE ${sc2}` : ''}
+    ORDER BY ai.health_score ASC LIMIT 5
+  `, p2);
+
+  res.json({
+    overall_score,
+    overall_grade: scoreGrade(overall_score),
+    total_recommendations: totalRecs,
+    critical_count: critical,
+    high_count: high,
+    top_issues: allRecs.slice(0, 5),
+    worst_aps: worst.rows,
+    band_steering_avg: rows.rows.length ? Math.round(bandSum / rows.rows.length) : 0,
+    controllers,
+  });
+}));
+
+app.get('/api/wireless/intelligence/:controller_id', wrap(async (req, res) => {
+  const id = parseInt(req.params.controller_id, 10);
+  const ctrl = await sv.query(`
+    SELECT wi.*, c.name AS controller_name, c.vendor
+    FROM wireless_intelligence wi
+    JOIN wireless_controllers c ON c.id = wi.controller_id
+    WHERE wi.controller_id = $1
+  `, [id]);
+  if (!ctrl.rows[0]) return res.status(404).json({ error: 'No intelligence for this controller yet' });
+  const aps = await sv.query(`
+    SELECT ai.*, a.name AS ap_name, a.site_name, a.clients_total,
+           a.clients_2g, a.clients_5g, a.radio_2g_channel, a.radio_5g_channel,
+           a.radio_2g_util_pct, a.radio_5g_util_pct
+    FROM wireless_ap_intelligence ai
+    JOIN wireless_aps a ON a.id = ai.ap_id
+    WHERE a.controller_id = $1
+    ORDER BY ai.health_score ASC
+  `, [id]);
+  res.json({ ...ctrl.rows[0], aps: aps.rows });
 }));
 
 // ══════════════════════════════════════════════════════════════
