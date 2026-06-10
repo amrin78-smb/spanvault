@@ -2512,6 +2512,23 @@ app.get('/api/wireless/debug', wrap(async (req, res) => {
   });
 }));
 
+// Admin-only LIVE raw SNMP walk of a controller — returns what the parser's
+// declared OIDs currently return plus broad Aruba parent-subtree dumps, so OIDs
+// can be validated against the real device instead of guessed.
+// Usage: GET /api/wireless/debug/walk?controller_id=N
+app.get('/api/wireless/debug/walk', wrap(async (req, res) => {
+  const role = req.headers['x-user-role'];
+  if (role !== 'admin' && role !== 'super_admin') {
+    return res.status(403).json({ error: 'Admin only' });
+  }
+  const id = parseInt(req.query.controller_id, 10);
+  if (!id) return res.status(400).json({ error: 'controller_id is required' });
+  const r = await sv.query('SELECT * FROM wireless_controllers WHERE id = $1', [id]);
+  const controller = r.rows[0];
+  if (!controller) return res.status(404).json({ error: 'Controller not found' });
+  res.json(await wireless.debugWalk(sv, controller));
+}));
+
 // ══════════════════════════════════════════════════════════════
 // Reports (?format=csv supported)
 // ══════════════════════════════════════════════════════════════

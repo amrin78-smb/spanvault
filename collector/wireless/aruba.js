@@ -1,50 +1,46 @@
 'use strict';
 
-// Aruba (controller-based) wireless parser.
-// OIDs from WLSX-WLAN-MIB / ARUBA-MIB, corrected against real ArubaOS hardware.
+// Aruba mobility controller (ArubaOS 6/8) wireless parser.
+// OIDs verified against WLSX-WLAN-MIB (LibreNMS MIB source + oidref.com).
 //
-// Two correlated tables drive an AP's metrics:
-//   • wlsxWlanAPTable      — one row per AP   (name, ip, status, total clients)
-//   • wlsxWlanRadioStatsTable — one row per AP+radio (channel, util, clients,
-//     noise, retry); index is "<apIndex>.<radioIndex>", radioIndex 0=2.4G,1=5G.
-//   • wlsxWlanESSIDStatsTable — one row per SSID (name, clients, bytes, auth).
+// Tables (all under the Aruba enterprise prefix 1.3.6.1.4.1.14823):
+//   • wlsxWlanAPTable     ...5.2.1.4.1  — one row per AP, indexed by AP MAC
+//     (6-octet PhysAddress → 6 dotted sub-identifiers).
+//   • wlsxWlanRadioTable  ...5.2.1.5.1  — one row per AP+radio, indexed by
+//     AP MAC + radioNumber (7 sub-identifiers). Holds channel, utilization,
+//     and per-radio associated clients. The radio NUMBER (1/2) is NOT a fixed
+//     band, so band is derived from the reported channel number.
+//   • wlsxWlanESSIDTable  ...5.2.1.8.1  — one row per SSID, indexed by the
+//     (string-encoded) SSID name. Holds the SSID name + station count.
+//
+// NOT available on a mobility controller (left null, never faked):
+//   • per-radio noise floor / frame-retry rate (no such columns here)
+//   • per-SSID byte counters and auth success/failure counters
 
 const {
-  num, str, columnMap, emptyAp, splitRadioIndex, bandForRadioIndex,
+  num, str, columnMap, bandForChannel, emptyAp, splitRadioIndex,
 } = require('./_util');
 
-// Scalars
-const wlsxSysExtNumActiveClients = '1.3.6.1.4.1.14823.2.2.1.1.1.39.0';
-const wlsxNumMonitoredAP = '1.3.6.1.4.1.14823.2.2.1.1.1.4.0';
-
-// ── AP table (wlsxWlanAPTable) — base 1.3.6.1.4.1.14823.2.2.1.5.2.1.4.1 ───────
+// ── AP table (wlsxWlanAPTable) — base ...5.2.1.4.1, index = AP MAC (6 octets) ─
 const AP_BASE = '1.3.6.1.4.1.14823.2.2.1.5.2.1.4.1';
-const apName = AP_BASE + '.3';        // wlsxWlanAPName
-const apIpAddress = AP_BASE + '.2';   // wlsxWlanAPIpAddress
-const apModel = AP_BASE + '.5';       // wlsxWlanAPModel
-const apStatus = AP_BASE + '.19';     // wlsxWlanAPStatus (1=up, 2=down)
-const apNumClients = AP_BASE + '.37'; // wlsxWlanAPNumClients (total associated clients)
-const apUpTime = AP_BASE + '.18';     // wlsxWlanAPUpTime (seconds) — best-effort
-const apSerialNum = AP_BASE + '.7';   // wlsxWlanAPSerialNumber — best-effort
+const wlanAPIpAddress = AP_BASE + '.2';  // wlanAPIpAddress
+const wlanAPName = AP_BASE + '.3';        // wlanAPName
+const wlanAPUpTime = AP_BASE + '.12';     // wlanAPUpTime (seconds)
+const wlanAPModelName = AP_BASE + '.13';  // wlanAPModelName (readable model string)
+const wlanAPStatus = AP_BASE + '.19';     // wlanAPStatus: up(1) / down(2)
 
-// ── Radio stats table (wlsxWlanRadioStatsTable) — base ...5.2.1.7.1 ──────────
-// Index = "<apIndex>.<radioIndex>" (radioIndex 0=2.4GHz, 1=5GHz). apIndex
-// matches the AP-table row index, so radios correlate back to their AP.
-const RADIO_BASE = '1.3.6.1.4.1.14823.2.2.1.5.2.1.7.1';
-const radioChannel = RADIO_BASE + '.4';      // wlsxWlanRadioChannel
-const radioUtil = RADIO_BASE + '.22';        // wlsxWlanRadioChannelUtilization (%)
-const radioClients = RADIO_BASE + '.26';     // wlsxWlanRadioNumAssociatedClients
-const radioNoiseFloor = RADIO_BASE + '.27';  // wlsxWlanRadioNoiseFloor (dBm, negative)
-const radioRetryRate = RADIO_BASE + '.23';   // wlsxWlanRadioFrameRetryRate (%)
+// ── Radio table (wlsxWlanRadioTable) — base ...5.2.1.5.1 ─────────────────────
+// Index = AP MAC (6 octets) + radioNumber. Band is derived from the channel.
+const RADIO_BASE = '1.3.6.1.4.1.14823.2.2.1.5.2.1.5.1';
+const wlanAPRadioChannel = RADIO_BASE + '.3';               // wlanAPRadioChannel
+const wlanAPRadioUtilization = RADIO_BASE + '.6';           // wlanAPRadioUtilization (%)
+const wlanAPRadioNumAssociatedClients = RADIO_BASE + '.7';  // wlanAPRadioNumAssociatedClients
 
-// ── Per-SSID stats table (wlsxWlanESSIDStatsTable) — base ...1.7.1.2.1 ───────
-const ESSID_BASE = '1.3.6.1.4.1.14823.2.2.1.1.7.1.2.1';
-const essidName = ESSID_BASE + '.2';      // wlsxWlanESSID (SSID name)
-const essidNumClients = ESSID_BASE + '.3'; // wlsxWlanESSIDNumStations (clients)
-const essidTxBytes = ESSID_BASE + '.6';   // wlsxWlanESSIDTxBytes
-const essidRxBytes = ESSID_BASE + '.7';   // wlsxWlanESSIDRxBytes
-const essidAuthOk = ESSID_BASE + '.8';    // wlsxWlanESSIDNumAuthSuccesses
-const essidAuthFail = ESSID_BASE + '.9';  // wlsxWlanESSIDNumAuthFailures
+// ── ESSID table (wlsxWlanESSIDTable) — base ...5.2.1.8.1 ─────────────────────
+// Index = the (length-prefixed) SSID name. wlanESSID's value is the name string.
+const ESSID_BASE = '1.3.6.1.4.1.14823.2.2.1.5.2.1.8.1';
+const wlanESSID = ESSID_BASE + '.1';            // wlanESSID (name; also the index)
+const wlanESSIDNumStations = ESSID_BASE + '.2'; // wlanESSIDNumStations (client count)
 
 function mapStatus(v) {
   const n = num(v);
@@ -59,34 +55,18 @@ function mapStatus(v) {
   return 'unknown';
 }
 
-// Assign a per-radio metric to the matching AP's 2.4 / 5 GHz field.
-function assignByBand(byIndex, colMap, set2g, set5g) {
-  for (const ridx of Object.keys(colMap)) {
-    const { apKey, radioKey } = splitRadioIndex(ridx);
-    const ap = byIndex.get(apKey);
-    if (!ap) continue;
-    const v = num(colMap[ridx]);
-    if (v === null) continue;
-    const band = bandForRadioIndex(radioKey);
-    if (band === '2g') set2g(ap, v);
-    else if (band === '5g') set5g(ap, v);
-  }
-}
-
 function parseApTable(walked) {
   const out = [];
   try {
     walked = walked || {};
-    const names = columnMap(walked.apName, apName);
-    const ips = columnMap(walked.apIp, apIpAddress);
-    const models = columnMap(walked.apModel, apModel);
-    const statuses = columnMap(walked.apStatus, apStatus);
-    const apClients = columnMap(walked.apClients, apNumClients);
-    const uptimes = columnMap(walked.apUptime, apUpTime);
-    const serials = columnMap(walked.apSerial, apSerialNum);
+    const ips = columnMap(walked.apIp, wlanAPIpAddress);
+    const names = columnMap(walked.apName, wlanAPName);
+    const uptimes = columnMap(walked.apUptime, wlanAPUpTime);
+    const models = columnMap(walked.apModel, wlanAPModelName);
+    const statuses = columnMap(walked.apStatus, wlanAPStatus);
 
     const indexes = new Set();
-    [names, ips, models, statuses, apClients].forEach((m) => {
+    [ips, names, uptimes, models, statuses].forEach((m) => {
       Object.keys(m).forEach((k) => indexes.add(k));
     });
 
@@ -98,34 +78,52 @@ function parseApTable(walked) {
       ap.ip_address = str(ips[idx]);
       ap.model = str(models[idx]);
       ap.status = mapStatus(statuses[idx]);
-      // Total client count straight from the AP table (.37). Kept as-is (may be
-      // null); a per-radio fallback is applied after the radio table is parsed.
-      ap.clients_total = num(apClients[idx]);
       const up = num(uptimes[idx]);
       if (up !== null) ap.uptime_seconds = up;
-      const sn = str(serials[idx]);
-      if (sn !== null) ap.serial_number = sn;
       out.push(ap);
       byIndex.set(idx, ap);
     }
 
-    // ── Correlate per-radio metrics, mapping radioIndex 0→2.4G, 1→5G. ──
-    assignByBand(byIndex, columnMap(walked.radioChannel, radioChannel),
-      (ap, v) => { ap.radio_2g_channel = v; }, (ap, v) => { ap.radio_5g_channel = v; });
-    assignByBand(byIndex, columnMap(walked.radioUtil, radioUtil),
-      (ap, v) => { ap.radio_2g_util_pct = v; }, (ap, v) => { ap.radio_5g_util_pct = v; });
-    assignByBand(byIndex, columnMap(walked.radioClients, radioClients),
-      (ap, v) => { ap.clients_2g = v; }, (ap, v) => { ap.clients_5g = v; });
-    assignByBand(byIndex, columnMap(walked.radioNoise, radioNoiseFloor),
-      (ap, v) => { ap.noise_floor_2g = v; }, (ap, v) => { ap.noise_floor_5g = v; });
-    assignByBand(byIndex, columnMap(walked.radioRetry, radioRetryRate),
-      (ap, v) => { ap.retry_rate_2g = v; }, (ap, v) => { ap.retry_rate_5g = v; });
+    // ── Correlate per-radio metrics. The radio index is "<apMAC>.<radioNum>",
+    //    so the apKey (everything before the last dot) matches the AP-table
+    //    index. Band comes from the reported channel (≤14 = 2.4G, else 5/6G) —
+    //    radioNum (1/2) is not a reliable band on its own.
+    const radioChan = columnMap(walked.radioChannel, wlanAPRadioChannel);
+    const radioUtil = columnMap(walked.radioUtil, wlanAPRadioUtilization);
+    const radioClients = columnMap(walked.radioClients, wlanAPRadioNumAssociatedClients);
 
-    // Finalize total clients: if the AP table didn't report it, sum the radios.
-    for (const ap of out) {
-      if (ap.clients_total === null) {
-        ap.clients_total = (ap.clients_2g || 0) + (ap.clients_5g || 0);
+    const radioIdxs = new Set([
+      ...Object.keys(radioChan), ...Object.keys(radioUtil), ...Object.keys(radioClients),
+    ]);
+    for (const ridx of radioIdxs) {
+      const { apKey } = splitRadioIndex(ridx);
+      const ap = byIndex.get(apKey);
+      if (!ap) continue;
+
+      const ch = num(radioChan[ridx]);
+      const band = bandForChannel(ch);
+      if (!band) continue; // can't place this radio without a channel → skip
+
+      if (ch !== null) {
+        if (band === '2g') ap.radio_2g_channel = ch;
+        else if (band === '5g') ap.radio_5g_channel = ch;
+        else if (band === '6g') ap.radio_6g_channel = ch;
       }
+      const util = num(radioUtil[ridx]);
+      if (util !== null) {
+        if (band === '2g') ap.radio_2g_util_pct = util;
+        else if (band === '5g') ap.radio_5g_util_pct = util;
+      }
+      const cl = num(radioClients[ridx]);
+      if (cl !== null) {
+        if (band === '2g') ap.clients_2g = cl;
+        else if (band === '5g') ap.clients_5g = cl;
+      }
+    }
+
+    // No per-AP total-clients OID on the controller → sum the radios.
+    for (const ap of out) {
+      ap.clients_total = (ap.clients_2g || 0) + (ap.clients_5g || 0);
     }
   } catch (e) {
     // never throw
@@ -134,49 +132,35 @@ function parseApTable(walked) {
 }
 
 function parseClientCounts(walked) {
-  const out = [];
+  // Derived from the AP table (per-radio client sum), keyed by AP index.
   try {
-    walked = walked || {};
-    const clients = columnMap(walked.apClients, apNumClients);
-    for (const idx of Object.keys(clients)) {
-      const c = num(clients[idx]);
-      out.push({ apKey: idx, clients: c === null ? 0 : c });
-    }
+    return parseApTable(walked).map((ap) => ({ apKey: ap._index, clients: ap.clients_total }));
   } catch (e) {
-    // never throw
+    return [];
   }
-  return out;
 }
 
-// Parse the per-SSID table (wlsxWlanESSIDStatsTable) into a list of SSID rows.
+// Parse wlsxWlanESSIDTable into per-SSID rows. The controller exposes only the
+// SSID name and its station count — byte/auth counters do not exist here.
 function parseSsids(walked) {
   const out = [];
   try {
     walked = walked || {};
-    const names = columnMap(walked.essidName, essidName);
-    const clients = columnMap(walked.essidClients, essidNumClients);
-    const txBytes = columnMap(walked.essidTx, essidTxBytes);
-    const rxBytes = columnMap(walked.essidRx, essidRxBytes);
-    const authOk = columnMap(walked.essidAuthOk, essidAuthOk);
-    const authFail = columnMap(walked.essidAuthFail, essidAuthFail);
+    const names = columnMap(walked.essidName, wlanESSID);
+    const stations = columnMap(walked.essidStations, wlanESSIDNumStations);
 
-    const indexes = new Set();
-    [names, clients, txBytes, rxBytes, authOk, authFail].forEach((m) => {
-      Object.keys(m).forEach((k) => indexes.add(k));
-    });
-
+    const indexes = new Set([...Object.keys(names), ...Object.keys(stations)]);
     for (const idx of indexes) {
       const ssid_name = str(names[idx]);
-      if (ssid_name === null) continue; // skip rows with no name
-
+      if (!ssid_name) continue; // skip rows with no name
       out.push({
         ssid_name,
         status: 'up',
-        clients_total: num(clients[idx]) || 0,
-        bytes_in: num(rxBytes[idx]),  // rx = received = in
-        bytes_out: num(txBytes[idx]),
-        auth_successes: num(authOk[idx]) || 0,
-        auth_failures: num(authFail[idx]) || 0,
+        clients_total: num(stations[idx]) || 0,
+        bytes_in: null,   // not exposed by WLSX-WLAN-MIB
+        bytes_out: null,
+        auth_successes: 0,
+        auth_failures: 0,
       });
     }
   } catch (e) {
@@ -188,29 +172,19 @@ function parseSsids(walked) {
 module.exports = {
   name: 'aruba',
   snmpOids: {
-    sysActiveClients: wlsxSysExtNumActiveClients,
-    numMonitoredAp: wlsxNumMonitoredAP,
-    // AP table
-    apName: apName,
-    apIp: apIpAddress,
-    apModel: apModel,
-    apStatus: apStatus,
-    apClients: apNumClients,
-    apUptime: apUpTime,
-    apSerial: apSerialNum,
-    // Radio stats table
-    radioChannel: radioChannel,
-    radioUtil: radioUtil,
-    radioClients: radioClients,
-    radioNoise: radioNoiseFloor,
-    radioRetry: radioRetryRate,
-    // ESSID stats table
-    essidName: essidName,
-    essidClients: essidNumClients,
-    essidTx: essidTxBytes,
-    essidRx: essidRxBytes,
-    essidAuthOk: essidAuthOk,
-    essidAuthFail: essidAuthFail,
+    // AP table (index = AP MAC)
+    apIp: wlanAPIpAddress,
+    apName: wlanAPName,
+    apUptime: wlanAPUpTime,
+    apModel: wlanAPModelName,
+    apStatus: wlanAPStatus,
+    // Radio table (index = AP MAC + radioNumber)
+    radioChannel: wlanAPRadioChannel,
+    radioUtil: wlanAPRadioUtilization,
+    radioClients: wlanAPRadioNumAssociatedClients,
+    // ESSID table (index = SSID name)
+    essidName: wlanESSID,
+    essidStations: wlanESSIDNumStations,
   },
   parseApTable,
   parseClientCounts,

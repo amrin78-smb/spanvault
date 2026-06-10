@@ -403,6 +403,75 @@ async function testController(pool, controller) {
   }
 }
 
+// Decode a raw SNMP value for human-readable diagnostics: buffers are shown as
+// both hex (for MACs / binary) and printable ASCII; everything else verbatim.
+function decodeSnmpVal(v) {
+  if (Buffer.isBuffer(v)) {
+    return { hex: v.toString('hex'), ascii: v.toString('latin1').replace(/[^\x20-\x7e]/g, '.') };
+  }
+  return v;
+}
+
+// Live raw-SNMP-walk diagnostic for a controller. Walks both the parser's own
+// declared OIDs (to show what the CURRENT parser actually receives) and the
+// broad Aruba AP/radio/BSSID/ESSID parent subtrees + the Aruba Instant AP table
+// (to reveal the real table structure and index format on the device). No DB
+// writes. Returns capped raw {oid, value} samples so OIDs can be validated
+// against ground truth instead of guessed. SNMP-based controllers only.
+async function debugWalk(pool, controller) {
+  if (!controller.snmp_device_id) {
+    return { ok: false, message: 'Controller is API-based (no SNMP device to walk)' };
+  }
+  const dq = await pool.query('SELECT * FROM monitored_devices WHERE id = $1', [controller.snmp_device_id]);
+  const device = dq.rows[0];
+  if (!device) return { ok: false, message: 'Linked SNMP device not found' };
+
+  const PER_TREE_CAP = 60;
+  const parser = getWirelessParser(controller.vendor)
+    || (device.device_vendor ? getWirelessParser(wirelessVendorFor(device.device_vendor)) : null);
+
+  // Broad Aruba parent subtrees that expose the real structure + index format.
+  const subtrees = {
+    aruba_ap_table:      '1.3.6.1.4.1.14823.2.2.1.5.2.1.4',  // wlsxWlanAPTable
+    aruba_radio_table:   '1.3.6.1.4.1.14823.2.2.1.5.2.1.5',  // wlsxWlanRadioTable
+    aruba_bssid_table:   '1.3.6.1.4.1.14823.2.2.1.5.2.1.7',  // wlsxWlanAPBssidTable
+    aruba_essid_table:   '1.3.6.1.4.1.14823.2.2.1.5.2.1.8',  // wlsxWlanESSIDTable
+    aruba_instant_ap:    '1.3.6.1.4.1.14823.2.3.3.1.2.1',    // aiAccessPointTable (Instant)
+  };
+
+  const session = createSession(device, 12000);
+  const out = { ok: true, vendor: controller.vendor, device_ip: device.ip_address, parser_oids: {}, subtrees: {} };
+  try {
+    // 1) What the current parser's declared OIDs return right now.
+    if (parser && parser.snmpOids) {
+      for (const [key, oid] of Object.entries(parser.snmpOids)) {
+        const rows = await walk(session, oid);
+        out.parser_oids[key] = {
+          oid,
+          count: rows.length,
+          sample: rows.slice(0, 5).map((r) => ({ oid: r.oid, value: decodeSnmpVal(r.value) })),
+        };
+      }
+    }
+    // 2) Ground-truth discovery walks of the broad parent subtrees.
+    for (const [key, base] of Object.entries(subtrees)) {
+      const rows = await walk(session, base);
+      out.subtrees[key] = {
+        base,
+        count: rows.length,
+        truncated: rows.length > PER_TREE_CAP,
+        sample: rows.slice(0, PER_TREE_CAP).map((r) => ({ oid: r.oid, value: decodeSnmpVal(r.value) })),
+      };
+    }
+  } catch (e) {
+    out.ok = false;
+    out.error = e.message;
+  } finally {
+    try { session.close(); } catch (_e) { /* ignore */ }
+  }
+  return out;
+}
+
 // Start the wireless collector on a 5-minute cadence (first pass after 20s so
 // the initial NetVault sync + vendor detection has a chance to populate).
 function startWirelessCollector(pool) {
@@ -415,5 +484,5 @@ function startWirelessCollector(pool) {
 
 module.exports = {
   startWirelessCollector, pollAll, pollController, upsertAp, upsertSsid,
-  autoDetectControllers, cleanupBadAutoControllers, testController,
+  autoDetectControllers, cleanupBadAutoControllers, testController, debugWalk,
 };
