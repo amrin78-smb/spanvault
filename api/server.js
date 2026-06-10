@@ -2363,12 +2363,16 @@ app.get('/api/wireless/summary', wrap(async (req, res) => {
     GROUP BY 1, 2 ORDER BY site_name
   `, params);
 
+  const cParams = [];
+  const cSc = siteFilterClause(getSiteFilter(req), cParams, 'c.site_id');
   const byController = await sv.query(`
     SELECT c.id, c.name, c.vendor,
            (SELECT COUNT(*)::int FROM wireless_aps a WHERE a.controller_id = c.id) AS aps,
            (SELECT COALESCE(SUM(a.clients_total),0)::int FROM wireless_aps a WHERE a.controller_id = c.id) AS clients
-    FROM wireless_controllers c ORDER BY c.name
-  `);
+    FROM wireless_controllers c
+    ${cSc ? `WHERE ${cSc}` : ''}
+    ORDER BY c.name
+  `, cParams);
 
   const highUtil = await sv.query(`
     SELECT a.id, a.name, a.site_name,
@@ -2587,7 +2591,14 @@ app.get('/api/wireless/intelligence/summary', wrap(async (req, res) => {
       overloaded_aps: r.overloaded_aps, co_channel_pairs: r.co_channel_pairs,
     });
   }
-  const overall_score = totW ? Math.round(wScore / totW) : 0;
+  // AP-count-weighted average; fall back to an unweighted mean if every
+  // controller reports 0 APs (e.g. APs deleted but intelligence row lingered),
+  // so the score doesn't collapse to 0/F when real per-controller scores exist.
+  const overall_score = totW
+    ? Math.round(wScore / totW)
+    : (rows.rows.length
+      ? Math.round(rows.rows.reduce((s, r) => s + Number(r.overall_score), 0) / rows.rows.length)
+      : 0);
   const prio = { critical: 0, high: 1, medium: 2, low: 3 };
   allRecs.sort((a, b) => (prio[a.priority] ?? 9) - (prio[b.priority] ?? 9));
 

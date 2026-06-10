@@ -202,7 +202,10 @@ export function Breadcrumb({ items }: { items: Crumb[] }) {
 
 // ── Inline utilization bar ────────────────────────────────────
 export function UtilBar({ pct, showLabel = true, width }: { pct: number; showLabel?: boolean; width?: number }) {
-  const p = isNaN(pct) ? 0 : pct;
+  // Coerce defensively: pg NUMERIC columns arrive as strings, and a string here
+  // would throw on .toFixed(). Number() handles both number and string inputs.
+  const n = Number(pct);
+  const p = Number.isFinite(n) ? n : 0;
   const color = pctColor(p);
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, width }}>

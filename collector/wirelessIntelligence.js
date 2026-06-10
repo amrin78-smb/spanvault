@@ -65,7 +65,9 @@ async function computeWirelessIntelligence(pool, controllerId) {
   const pct5g = totalBandClients > 0 ?
     (total5g / totalBandClients) * 100 : 0;
 
-  const bandScore = Math.min(100, (pct5g / 60) * 100);
+  // An idle controller (no associated clients) has no band-steering signal —
+  // treat it as neutral (100) rather than penalizing it down to 0.
+  const bandScore = totalBandClients === 0 ? 100 : Math.min(100, (pct5g / 60) * 100);
 
   // ── ALGORITHM 4: CAPACITY ANALYSIS ──────────────────────────
   const utilValues = apList
@@ -203,7 +205,7 @@ async function computeWirelessIntelligence(pool, controllerId) {
     }
 
     let loadStatus = 'normal';
-    const loadPct = (clients / MAX_CLIENTS_PER_AP) * 100;
+    const loadPct = Math.min(100, (clients / MAX_CLIENTS_PER_AP) * 100);
     if (clients > 40) {
       loadStatus = 'critical';
       apIssues.push(`Overloaded: ${clients} clients`);
@@ -262,26 +264,32 @@ async function computeWirelessIntelligence(pool, controllerId) {
     const channelRec = freeCh5g && freeCh5g !== ch5g ?
       `Consider channel ${freeCh5g}` : null;
 
-    await pool.query(`
-      INSERT INTO wireless_ap_intelligence
-        (ap_id, health_score, health_grade, co_channel_neighbors,
-         channel_recommendation, load_status, load_pct,
-         band_ratio_healthy, issues, recommendations)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-      ON CONFLICT (ap_id) DO UPDATE SET
-        health_score=EXCLUDED.health_score,
-        health_grade=EXCLUDED.health_grade,
-        co_channel_neighbors=EXCLUDED.co_channel_neighbors,
-        channel_recommendation=EXCLUDED.channel_recommendation,
-        load_status=EXCLUDED.load_status,
-        load_pct=EXCLUDED.load_pct,
-        band_ratio_healthy=EXCLUDED.band_ratio_healthy,
-        issues=EXCLUDED.issues,
-        recommendations=EXCLUDED.recommendations,
-        computed_at=NOW()
-    `, [ap.id, apScore, apGrade, coNeighbors2g + coNeighbors5g,
-        channelRec, loadStatus, loadPct, bandHealthy,
-        JSON.stringify(apIssues), JSON.stringify(apRecs)]);
+    // Isolate per-AP failures so one bad row can't abort the whole controller's
+    // intelligence (which would also skip the controller-level summary below).
+    try {
+      await pool.query(`
+        INSERT INTO wireless_ap_intelligence
+          (ap_id, health_score, health_grade, co_channel_neighbors,
+           channel_recommendation, load_status, load_pct,
+           band_ratio_healthy, issues, recommendations)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+        ON CONFLICT (ap_id) DO UPDATE SET
+          health_score=EXCLUDED.health_score,
+          health_grade=EXCLUDED.health_grade,
+          co_channel_neighbors=EXCLUDED.co_channel_neighbors,
+          channel_recommendation=EXCLUDED.channel_recommendation,
+          load_status=EXCLUDED.load_status,
+          load_pct=EXCLUDED.load_pct,
+          band_ratio_healthy=EXCLUDED.band_ratio_healthy,
+          issues=EXCLUDED.issues,
+          recommendations=EXCLUDED.recommendations,
+          computed_at=NOW()
+      `, [ap.id, apScore, apGrade, coNeighbors2g + coNeighbors5g,
+          channelRec, loadStatus, loadPct, bandHealthy,
+          JSON.stringify(apIssues), JSON.stringify(apRecs)]);
+    } catch (e) {
+      console.error(`[WirelessIntel] AP ${ap.id} intelligence upsert failed:`, e.message);
+    }
   }
 
   await pool.query(`

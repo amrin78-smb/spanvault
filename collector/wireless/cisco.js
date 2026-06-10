@@ -196,7 +196,7 @@ function parseApTable(walked) {
 
     // Total clients: fall back to the per-radio sum when the AP table omitted it.
     for (const ap of out) {
-      if (ap.clients_total === null) ap.clients_total = (ap.clients_2g || 0) + (ap.clients_5g || 0);
+      if (ap.clients_total === null) ap.clients_total = (ap.clients_2g || 0) + (ap.clients_5g || 0) + (ap.clients_6g || 0);
     }
 
     // rx_errors_*, tx_errors_*, rx_bytes, tx_bytes are NOT available per-AP on

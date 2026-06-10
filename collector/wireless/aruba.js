@@ -134,7 +134,7 @@ function parseApTable(walked) {
 
     // No per-AP total-clients OID on the controller → sum the radios.
     for (const ap of out) {
-      ap.clients_total = (ap.clients_2g || 0) + (ap.clients_5g || 0);
+      ap.clients_total = (ap.clients_2g || 0) + (ap.clients_5g || 0) + (ap.clients_6g || 0);
     }
   } catch (e) {
     // never throw

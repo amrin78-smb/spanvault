@@ -22,9 +22,10 @@ const cRx = TABLE + '.8';    // Rx rate (Kbps)
 const cChan = TABLE + '.9';  // channel
 const cRadio = TABLE + '.10'; // radio type (1=11b/g,2=11a,3=11n,4=11ac,5=11ax)
 
-// Radio type -> band. 11n (3) is dual-band, so it's omitted here and derived
-// from the channel number instead.
-const RUCKUS_BAND = { 1: '2.4GHz', 2: '5GHz', 4: '5GHz', 5: '6GHz' };
+// Radio type -> band. 11n (3) and 11ax (5, Wi-Fi 6 — runs on 2.4 OR 5 GHz, NOT
+// 6 GHz) are dual-band, so they're omitted here and derived from the channel
+// number instead. Only the unambiguous types are mapped directly.
+const RUCKUS_BAND = { 1: '2.4GHz', 2: '5GHz', 4: '5GHz' };
 
 async function parseClients(session, apMap) {
   const out = [];

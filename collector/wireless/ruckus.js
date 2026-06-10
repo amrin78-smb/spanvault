@@ -195,7 +195,7 @@ function parseApTable(walked) {
 
     // Total clients: fall back to the per-radio sum when the AP table omitted it.
     for (const ap of out) {
-      if (ap.clients_total === null) ap.clients_total = (ap.clients_2g || 0) + (ap.clients_5g || 0);
+      if (ap.clients_total === null) ap.clients_total = (ap.clients_2g || 0) + (ap.clients_5g || 0) + (ap.clients_6g || 0);
     }
   } catch (e) {
     // never throw
