@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend,
+  BarChart, Bar, ReferenceLine,
 } from 'recharts';
 import { useApi, apiSend, apiGet } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
@@ -185,7 +186,74 @@ interface ControllerForm {
   site_name: string | null;
 }
 
-type TabKey = 'overview' | 'aps' | 'ssids' | 'controllers';
+type TabKey = 'overview' | 'aps' | 'ssids' | 'intelligence' | 'controllers';
+
+// ── Wireless Intelligence contracts ───────────────────────────
+interface Recommendation {
+  priority: 'critical' | 'high' | 'medium' | 'low';
+  category: string;
+  issue: string;
+  action: string;
+  affected_aps?: string[];
+  affected_count?: number;
+  metric?: string;
+  controller_id?: number;
+  controller_name?: string;
+}
+
+interface WorstAp {
+  ap_id: number;
+  ap_name: string;
+  controller_id: number;
+  site_name: string | null;
+  health_score: number;
+  health_grade: string;
+  load_status: string;
+  issues: string[];
+}
+
+interface IntelSummary {
+  overall_score: number;
+  overall_grade: string;
+  total_recommendations: number;
+  critical_count: number;
+  high_count: number;
+  top_issues: Recommendation[];
+  worst_aps: WorstAp[];
+  band_steering_avg: number;
+  controllers: {
+    id: number;
+    name: string;
+    overall_score: number;
+    grade: string;
+    overloaded_aps: number;
+    co_channel_pairs: number;
+  }[];
+}
+
+interface IntelRow {
+  id: number;
+  controller_id: number;
+  controller_name: string;
+  vendor: string;
+  computed_at: string;
+  co_channel_pairs: number;
+  interference_score: number;
+  load_balance_score: number;
+  overloaded_aps: number;
+  underloaded_aps: number;
+  avg_clients_per_ap: number;
+  max_clients_per_ap: number;
+  band_2g_pct: number;
+  band_5g_pct: number;
+  band_steering_score: number;
+  high_util_ap_count: number;
+  critical_util_count: number;
+  capacity_score: number;
+  overall_score: number;
+  overall_grade: string;
+  recommendations: Recommendation[];
+}
 
 // ── Formatting / RF helpers (top-level) ───────────────────────
 function fmtBytes(n: number | null): string {
@@ -275,6 +343,10 @@ export default function WirelessPage() {
           onClick={() => setTab('ssids')}
         >SSIDs</button>
         <button
+          className={`sv-tab ${tab === 'intelligence' ? 'active' : ''}`}
+          onClick={() => setTab('intelligence')}
+        >Intelligence</button>
+        <button
           className={`sv-tab ${tab === 'controllers' ? 'active' : ''}`}
           onClick={() => setTab('controllers')}
         >Controllers</button>
@@ -291,6 +363,7 @@ export default function WirelessPage() {
         />
       )}
       {tab === 'ssids' && <SsidsTab />}
+      {tab === 'intelligence' && <IntelligenceTab />}
       {tab === 'controllers' && <ControllersTab />}
     </div>
   );
@@ -1198,7 +1271,450 @@ function SsidsTab() {
 }
 
 // ════════════════════════════════════════════════════════════
-// TAB 4 — Controllers
+// TAB 4 — Wireless Intelligence
+// ════════════════════════════════════════════════════════════
+
+// ── Intelligence helpers (top-level) ──────────────────────────
+function scoreColor(s: number): string {
+  if (s >= 80) return 'var(--green)';
+  if (s >= 60) return 'var(--yellow)';
+  return 'var(--red)';
+}
+
+function gradeColor(g: string): string {
+  const c = (g || '').trim().toUpperCase().charAt(0);
+  if (c === 'A' || c === 'B') return 'var(--green)';
+  if (c === 'C' || c === 'D') return 'var(--yellow)';
+  return 'var(--red)';
+}
+
+function prioMeta(p: string): { color: string; dot: string; label: string } {
+  switch (p) {
+    case 'critical': return { color: 'var(--red)', dot: '🔴', label: 'Critical' };
+    case 'high': return { color: 'var(--yellow)', dot: '🟡', label: 'High' };
+    case 'medium': return { color: 'var(--yellow)', dot: '🟡', label: 'Medium' };
+    case 'low': return { color: 'var(--green)', dot: '🟢', label: 'Low' };
+    default: return { color: 'var(--text-muted)', dot: '⚪', label: p || '—' };
+  }
+}
+
+const PRIO_RANK: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
+
+function recKey(rec: Recommendation): string {
+  return `${rec.controller_id ?? 0}:${rec.category}:${rec.issue}`;
+}
+
+const DISMISS_LS_KEY = 'sv-wifi-rec-dismissed';
+
+function readDismissed(): Record<string, number> {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = window.localStorage.getItem(DISMISS_LS_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch { return {}; }
+}
+
+function dismissRec(rec: Recommendation): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const map = readDismissed();
+    map[recKey(rec)] = Date.now() + 24 * 60 * 60 * 1000;
+    window.localStorage.setItem(DISMISS_LS_KEY, JSON.stringify(map));
+  } catch { /* ignore */ }
+}
+
+function isDismissed(rec: Recommendation, dismissed: Record<string, number>): boolean {
+  const exp = dismissed[recKey(rec)];
+  return exp != null && Date.now() < exp;
+}
+
+// ── Score bar (top-level component) ───────────────────────────
+function ScoreBar({ label, value }: { label: string; value: number }) {
+  const v = Math.max(0, Math.min(100, Math.round(value)));
+  return (
+    <div style={{ marginBottom: 8 }}>
+      <div style={{
+        display: 'flex', justifyContent: 'space-between', fontSize: 12,
+        color: 'var(--text-muted)', marginBottom: 3,
+      }}>
+        <span>{label}</span>
+        <span style={{ color: scoreColor(v), fontWeight: 600 }}>{v}/100</span>
+      </div>
+      <div style={{
+        height: 8, borderRadius: 4, background: 'var(--bg-primary)',
+        border: '1px solid var(--border)', overflow: 'hidden',
+      }}>
+        <div style={{ width: `${v}%`, height: '100%', background: scoreColor(v) }} />
+      </div>
+    </div>
+  );
+}
+
+// ── Recommendation card (top-level component) ─────────────────
+function RecommendationCard({
+  rec, onDismiss,
+}: {
+  rec: Recommendation;
+  onDismiss: (rec: Recommendation) => void;
+}) {
+  const meta = prioMeta(rec.priority);
+  const aps = rec.affected_aps || [];
+  return (
+    <div
+      className="sv-panel"
+      style={{ borderLeft: `4px solid ${meta.color}`, marginBottom: 10 }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <span
+          className="sv-badge"
+          style={{ color: meta.color, borderColor: meta.color, fontWeight: 700 }}
+        >{meta.dot} {meta.label}</span>
+        <span className="sv-badge">{rec.category}</span>
+        {rec.controller_name && (
+          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{rec.controller_name}</span>
+        )}
+        <span style={{ flex: 1 }} />
+        <button className="sv-btn ghost sm" onClick={() => onDismiss(rec)}>Dismiss</button>
+      </div>
+      <div style={{ fontWeight: 700, marginTop: 8 }}>{rec.issue}</div>
+      <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 4 }}>{rec.action}</div>
+      {aps.length > 0 && (
+        <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 6 }}>
+          Affected: {aps.slice(0, 3).join(', ')}
+          {aps.length > 3 ? ` +${aps.length - 3} more` : ''}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Per-controller intelligence card (top-level component) ────
+function ControllerIntelCard({ row, aps }: { row: IntelRow; aps: AccessPoint[] }) {
+  const score = Number(row.overall_score);
+  const band5 = Number(row.band_5g_pct);
+  const band2 = Number(row.band_2g_pct);
+  const ctrlAps = aps.filter((a) => a.controller_id === row.controller_id);
+  const apCount = ctrlAps.length;
+  const clients = ctrlAps.reduce((s, a) => s + (a.clients_total || 0), 0);
+
+  return (
+    <div className="sv-panel" style={{ flex: '1 1 320px', minWidth: 300 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div style={{ fontWeight: 700, fontSize: 15, flex: 1 }}>{row.controller_name}</div>
+        <span style={{ color: scoreColor(score), fontWeight: 700 }}>
+          Overall: {Math.round(score)}/100
+        </span>
+        <span className="sv-badge" style={{ color: gradeColor(row.overall_grade), borderColor: gradeColor(row.overall_grade) }}>
+          {row.overall_grade}
+        </span>
+      </div>
+      <div style={{ marginTop: 12 }}>
+        <ScoreBar label="Load Balance" value={Number(row.load_balance_score)} />
+        <ScoreBar label="Band Steering" value={Number(row.band_steering_score)} />
+        <ScoreBar label="Capacity" value={Number(row.capacity_score)} />
+        <ScoreBar label="RF Planning" value={100 - Number(row.interference_score)} />
+      </div>
+      <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 10, lineHeight: 1.7 }}>
+        <div>
+          {apCount} APs · {clients} clients · Avg {Number(row.avg_clients_per_ap).toFixed(1)} clients/AP
+        </div>
+        <div>
+          Overloaded: {row.overloaded_aps} | Idle: {row.underloaded_aps}
+        </div>
+        <div>
+          2.4GHz: {Math.round(band2)}% | 5GHz: {Math.round(band5)}%
+          {band5 < 60 && (
+            <span style={{ color: 'var(--red)' }}> ← below target</span>
+          )}
+        </div>
+        <div>Co-channel pairs: {row.co_channel_pairs}</div>
+      </div>
+    </div>
+  );
+}
+
+// ── Channel map row (top-level component) ─────────────────────
+function ChannelMapRow({
+  band, counts, flagNonStandard,
+}: {
+  band: string;
+  counts: { ch: number; count: number }[];
+  flagNonStandard: boolean;
+}) {
+  const max = counts.reduce((m, c) => Math.max(m, c.count), 1);
+  const scale = 200 / max;
+  const std = new Set([1, 6, 11]);
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <div style={{ fontWeight: 700, marginBottom: 8 }}>{band}</div>
+      {counts.length ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {counts.map((c) => {
+            const bad = flagNonStandard && !std.has(c.ch);
+            return (
+              <div key={c.ch} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <span style={{
+                  width: 70, fontSize: 13, color: bad ? 'var(--red)' : 'var(--text-secondary)',
+                }}>
+                  {bad ? '⚠ ' : ''}Ch {c.ch}
+                </span>
+                <div style={{
+                  width: Math.max(c.count * scale, 4), height: 16, borderRadius: 3,
+                  background: bad ? 'var(--red)' : 'var(--primary)',
+                  opacity: bad ? 0.65 : 1,
+                }} />
+                <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{c.count}</span>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>No channel data.</div>
+      )}
+    </div>
+  );
+}
+
+// ── Worst-AP drawer loader (top-level component) ──────────────
+function IntelApDrawer({ apId, onClose }: { apId: number; onClose: () => void }) {
+  const [ap, setAp] = useState<AccessPoint | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setAp(null);
+    setErr(null);
+    apiGet<AccessPoint>(`/api/wireless/aps/${apId}`)
+      .then((a) => { if (!cancelled) setAp(a); })
+      .catch((e: any) => { if (!cancelled) setErr(e?.message || 'Failed to load AP'); })
+      .finally(() => { /* noop */ });
+    return () => { cancelled = true; };
+  }, [apId]);
+
+  if (err) {
+    return (
+      <div className="sv-modal-backdrop" onMouseDown={onClose}>
+        <div
+          onMouseDown={(e) => e.stopPropagation()}
+          style={{
+            position: 'fixed', top: 0, right: 0, bottom: 0, width: 'min(520px, 96vw)',
+            background: 'var(--bg-card)', borderLeft: '1px solid var(--border)',
+            padding: '20px 22px', zIndex: 60, overflowY: 'auto',
+          }}
+        >
+          <button className="sv-btn ghost sm" onClick={onClose}>Close</button>
+          <ErrorBox message={err} />
+        </div>
+      </div>
+    );
+  }
+  if (!ap) return null;
+  return (
+    <ApDetailDrawer ap={ap} onClose={onClose} onFilterController={() => {}} />
+  );
+}
+
+function IntelligenceTab() {
+  const summaryApi = useApi<IntelSummary>('/api/wireless/intelligence/summary', 30000);
+  const rowsApi = useApi<IntelRow[]>('/api/wireless/intelligence', 30000);
+  const apsApi = useApi<AccessPoint[]>('/api/wireless/aps', 30000);
+  const [dismissTick, setDismissTick] = useState(0);
+  const [drawerApId, setDrawerApId] = useState<number | null>(null);
+
+  const summary = summaryApi.data;
+  const rows = useMemo(() => rowsApi.data || [], [rowsApi.data]);
+  const aps = useMemo(() => apsApi.data || [], [apsApi.data]);
+
+  function handleDismiss(rec: Recommendation) {
+    dismissRec(rec);
+    setDismissTick((t) => t + 1);
+  }
+
+  // Flattened, sorted, undismissed recommendations.
+  const recommendations = useMemo(() => {
+    const dismissed = readDismissed();
+    const all: Recommendation[] = [];
+    rows.forEach((r) => {
+      (r.recommendations || []).forEach((rec) => {
+        all.push({
+          ...rec,
+          controller_id: rec.controller_id ?? r.controller_id,
+          controller_name: rec.controller_name ?? r.controller_name,
+        });
+      });
+    });
+    return all
+      .filter((rec) => !isDismissed(rec, dismissed))
+      .sort((a, b) => (PRIO_RANK[a.priority] ?? 9) - (PRIO_RANK[b.priority] ?? 9));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows, dismissTick]);
+
+  // Section 6 — channel maps from the AP list.
+  const channelMaps = useMemo(() => {
+    const c2 = new Map<number, number>();
+    const c5 = new Map<number, number>();
+    aps.forEach((ap) => {
+      if (ap.radio_2g_channel != null) c2.set(ap.radio_2g_channel, (c2.get(ap.radio_2g_channel) || 0) + 1);
+      if (ap.radio_5g_channel != null) c5.set(ap.radio_5g_channel, (c5.get(ap.radio_5g_channel) || 0) + 1);
+    });
+    const toSorted = (m: Map<number, number>) =>
+      Array.from(m.entries())
+        .map(([ch, count]) => ({ ch, count }))
+        .sort((a, b) => a.ch - b.ch);
+    return { g2: toSorted(c2), g5: toSorted(c5) };
+  }, [aps]);
+
+  const bandChartData = useMemo(() => rows.map((r) => ({
+    name: r.controller_name,
+    g2: Number(r.band_2g_pct),
+    g5: Number(r.band_5g_pct),
+  })), [rows]);
+
+  if (summaryApi.loading && !summary) {
+    return <div className="sv-panel"><Loading /></div>;
+  }
+  if (summaryApi.error) return <ErrorBox message={summaryApi.error} />;
+  if (!summary || !summary.controllers || summary.controllers.length === 0) {
+    return <Empty message="No intelligence yet — run a wireless poll cycle first." />;
+  }
+
+  const overall = Number(summary.overall_score);
+  const bandSteer = Number(summary.band_steering_avg);
+  const capacityAvg = rows.length
+    ? rows.reduce((s, r) => s + Number(r.capacity_score), 0) / rows.length
+    : 0;
+  const rfAvg = rows.length
+    ? rows.reduce((s, r) => s + (100 - Number(r.interference_score)), 0) / rows.length
+    : 0;
+
+  return (
+    <div>
+      {/* SECTION 1 — Health overview */}
+      <div className="sv-cards">
+        <div className="sv-card" style={{ borderLeftColor: scoreColor(overall) }}>
+          <div className="num" style={{ color: scoreColor(overall) }}>
+            {Math.round(overall)}<span style={{ fontSize: 16, color: 'var(--text-muted)' }}>/100</span>
+            {' '}<span style={{ color: gradeColor(summary.overall_grade) }}>{summary.overall_grade}</span>
+          </div>
+          <div className="label">Wireless Health</div>
+        </div>
+        <div className="sv-card">
+          <div className="num" style={{ color: scoreColor(bandSteer) }}>
+            {Math.round(bandSteer)}<span style={{ fontSize: 16, color: 'var(--text-muted)' }}>/100</span>
+          </div>
+          <div className="label">Band Steering</div>
+        </div>
+        <div className="sv-card">
+          <div className="num" style={{ color: scoreColor(capacityAvg) }}>
+            {Math.round(capacityAvg)}<span style={{ fontSize: 16, color: 'var(--text-muted)' }}>/100</span>
+          </div>
+          <div className="label">Capacity Score</div>
+        </div>
+        <div className="sv-card">
+          <div className="num" style={{ color: scoreColor(rfAvg) }}>
+            {Math.round(rfAvg)}<span style={{ fontSize: 16, color: 'var(--text-muted)' }}>/100</span>
+          </div>
+          <div className="label">RF Planning</div>
+        </div>
+      </div>
+
+      {/* SECTION 2 — Recommendations */}
+      <div style={{ marginTop: 20 }}>
+        <h3 style={{ marginBottom: 12 }}>Recommendations</h3>
+        {recommendations.length ? (
+          recommendations.map((rec, i) => (
+            <RecommendationCard key={`${recKey(rec)}-${i}`} rec={rec} onDismiss={handleDismiss} />
+          ))
+        ) : (
+          <div style={{ color: 'var(--green)', fontWeight: 600 }}>
+            ✓ No issues detected — wireless looks healthy.
+          </div>
+        )}
+      </div>
+
+      {/* SECTION 3 — Per-controller breakdown */}
+      <div style={{ marginTop: 20 }}>
+        <h3 style={{ marginBottom: 12 }}>Per-Controller Breakdown</h3>
+        <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+          {rows.map((r) => (
+            <ControllerIntelCard key={r.controller_id} row={r} aps={aps} />
+          ))}
+        </div>
+      </div>
+
+      {/* SECTION 4 — APs Needing Attention */}
+      <div className="sv-panel" style={{ marginTop: 20 }}>
+        <h3 style={{ marginTop: 0 }}>APs Needing Attention</h3>
+        {summary.worst_aps && summary.worst_aps.length ? (
+          <table className="sv-table">
+            <thead>
+              <tr>
+                <th>AP Name</th><th>Score</th><th>Grade</th><th>Load</th><th>Issues</th>
+              </tr>
+            </thead>
+            <tbody>
+              {summary.worst_aps.map((ap: WorstAp) => {
+                const sc = Number(ap.health_score);
+                const issues = ap.issues || [];
+                return (
+                  <tr
+                    key={ap.ap_id}
+                    style={{ cursor: 'pointer' }}
+                    onClick={() => setDrawerApId(ap.ap_id)}
+                  >
+                    <td style={{ fontWeight: 600 }}>{ap.ap_name}</td>
+                    <td style={{ color: scoreColor(sc), fontWeight: 600 }}>{Math.round(sc)}</td>
+                    <td style={{ color: gradeColor(ap.health_grade), fontWeight: 600 }}>{ap.health_grade}</td>
+                    <td>{ap.load_status}</td>
+                    <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                      {issues.slice(0, 2).join(', ')}
+                      {issues.length > 2 ? ` +${issues.length - 2}` : ''}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        ) : <Empty message="No AP health data yet." />}
+      </div>
+
+      {/* SECTION 5 — Band distribution */}
+      <div className="sv-panel" style={{ marginTop: 20 }}>
+        <h3 style={{ marginTop: 0 }}>2.4GHz vs 5GHz Client Distribution</h3>
+        {bandChartData.length ? (
+          <ResponsiveContainer width="100%" height={260}>
+            <BarChart data={bandChartData}>
+              <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+              <XAxis dataKey="name" fontSize={11} />
+              <YAxis domain={[0, 100]} fontSize={11} />
+              <Tooltip />
+              <Legend />
+              <ReferenceLine y={60} stroke="var(--red)" strokeDasharray="4 4" label="5GHz target" />
+              <Bar dataKey="g2" name="2.4GHz %" fill="#94a3b8" />
+              <Bar dataKey="g5" name="5GHz %" fill="#0ea5e9" />
+            </BarChart>
+          </ResponsiveContainer>
+        ) : <Empty message="No band distribution data." />}
+      </div>
+
+      {/* SECTION 6 — Channel map */}
+      <div className="sv-panel" style={{ marginTop: 20 }}>
+        <h3 style={{ marginTop: 0 }}>Channel Map</h3>
+        <ChannelMapRow band="2.4 GHz" counts={channelMaps.g2} flagNonStandard />
+        <ChannelMapRow band="5 GHz" counts={channelMaps.g5} flagNonStandard={false} />
+      </div>
+
+      {drawerApId != null && (
+        <IntelApDrawer apId={drawerApId} onClose={() => setDrawerApId(null)} />
+      )}
+    </div>
+  );
+}
+
+// ════════════════════════════════════════════════════════════
+// TAB 5 — Controllers
 // ════════════════════════════════════════════════════════════
 
 function ControllersTab() {
