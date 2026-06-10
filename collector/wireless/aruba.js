@@ -169,7 +169,7 @@ function parseEssidSummary(walked) {
   const out = [];
   const names = columnMap(walked.essidName, wlanESSID);
   const stations = columnMap(walked.essidStations, wlanESSIDNumStations);
-  console.log('[Aruba] ESSID summary walk results:', Object.keys(names).length);
+  console.log('[Aruba] ESSID walk:', Object.keys(names).length, 'raw OIDs (wlsxWlanESSIDTable ...5.2.1.8)');
   const indexes = new Set([...Object.keys(names), ...Object.keys(stations)]);
   for (const idx of indexes) {
     const ssid_name = str(names[idx]);
@@ -185,7 +185,7 @@ function parseEssidSummary(walked) {
 function parseBssidAggregated(walked) {
   const names = columnMap(walked.bssidEssid, wlanAPESSID);
   const stations = columnMap(walked.bssidStations, wlanAPBssidNumAssociatedStations);
-  console.log('[Aruba] BSSID table walk results:', Object.keys(names).length);
+  console.log('[Aruba] ESSID walk:', Object.keys(names).length, 'raw OIDs (wlsxWlanAPBssidTable ...5.2.1.7)');
   const agg = new Map(); // ssid_name -> summed clients
   for (const idx of Object.keys(names)) {
     const ssid_name = str(names[idx]);
@@ -197,13 +197,15 @@ function parseBssidAggregated(walked) {
   return out;
 }
 
-// Per-SSID stats: prefer the controller ESSID summary table; when that comes
-// back empty (it is on some ArubaOS builds), aggregate the per-BSSID table.
+// Per-SSID stats: try each known SSID source in order, use the first that
+// returns rows. The controller ESSID summary (...5.2.1.8) is empty on some
+// ArubaOS builds, so we fall back to aggregating the per-BSSID table (...5.2.1.7),
+// which lives in the same AP-info tree that already returns AP/radio data.
 function parseSsids(walked) {
   try {
     walked = walked || {};
-    let rows = parseEssidSummary(walked);
-    if (rows.length === 0) rows = parseBssidAggregated(walked);
+    let rows = parseEssidSummary(walked);   // 1.3.6.1.4.1.14823.2.2.1.5.2.1.8
+    if (rows.length === 0) rows = parseBssidAggregated(walked); // ...5.2.1.7 fallback
     console.log('[Aruba] SSIDs parsed:', rows.length);
     return rows;
   } catch (e) {

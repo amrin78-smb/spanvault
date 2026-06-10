@@ -504,6 +504,178 @@ function OverviewTab({ onSelectSite }: { onSelectSite: (siteId: number | null) =
 // TAB 2 — Access Points
 // ════════════════════════════════════════════════════════════
 
+// ── Per-controller collapse state, persisted in localStorage ──────────────────
+// Key per the spec: sv-wireless-ctrl-{id}-collapsed. Shared across the APs and
+// SSIDs tabs so a controller's collapse state is consistent.
+function readCollapsed(id: number, fallback: boolean): boolean {
+  if (typeof window === 'undefined') return fallback;
+  try {
+    const v = window.localStorage.getItem(`sv-wireless-ctrl-${id}-collapsed`);
+    if (v === '1') return true;
+    if (v === '0') return false;
+  } catch { /* ignore */ }
+  return fallback;
+}
+function writeCollapsed(id: number, collapsed: boolean) {
+  try { window.localStorage.setItem(`sv-wireless-ctrl-${id}-collapsed`, collapsed ? '1' : '0'); } catch { /* ignore */ }
+}
+
+// A controller is treated as "online" when its last poll succeeded.
+function controllerOnline(c: { status: string | null }): boolean {
+  return c.status === 'ok';
+}
+
+// Build a minimal Controller object for APs/SSIDs whose controller isn't in the
+// controllers list (orphans / unassigned).
+function makeStubController(id: number, name: string, vendor: string | null): Controller {
+  return {
+    id, name, vendor: vendor || 'unknown', controller_url: null, api_username: null,
+    snmp_device_id: null, site_id: null, site_name: null, active: true,
+    last_polled_at: null, status: 'ok', ap_count: 0, client_count: 0,
+  };
+}
+
+// ── Collapsible controller header (shared by AP + SSID groups) ────────────────
+function ControllerGroupHeader({
+  controller, online, summary, collapsed, onToggle,
+}: {
+  controller: Controller;
+  online: boolean;
+  summary: string;
+  collapsed: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <div
+      onClick={onToggle}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer',
+        padding: '10px 14px', background: 'var(--bg-primary)',
+        border: '1px solid var(--border)', borderRadius: 8,
+      }}
+    >
+      <span style={{ fontSize: 11, color: 'var(--text-muted)', width: 12, textAlign: 'center' }}>
+        {collapsed ? '▶' : '▼'}
+      </span>
+      <StatusDot status={online ? 'up' : 'down'} />
+      <span style={{ fontWeight: 700 }}>{controller.name}</span>
+      <span className="sv-badge">{controller.vendor}</span>
+      <span style={{ flex: 1 }} />
+      <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{summary}</span>
+      <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+        {online ? `polled ${fmtRel(controller.last_polled_at)}` : `last seen ${fmtRel(controller.last_polled_at)}`}
+      </span>
+    </div>
+  );
+}
+
+// ── One controller's collapsible AP group (own search + collapse state) ───────
+function ApControllerGroup({
+  controller, aps, onSelectAp,
+}: {
+  controller: Controller;
+  aps: AccessPoint[];
+  onSelectAp: (ap: AccessPoint) => void;
+}) {
+  const online = controllerOnline(controller);
+  const [collapsed, setCollapsed] = useState<boolean>(!online);
+  const [search, setSearch] = useState('');
+
+  useEffect(() => { setCollapsed(readCollapsed(controller.id, !online)); }, [controller.id, online]);
+
+  function toggle() {
+    setCollapsed((c) => { const n = !c; writeCollapsed(controller.id, n); return n; });
+  }
+
+  const clients = aps.reduce((s, a) => s + (a.clients_total || 0), 0);
+  const summary = `${aps.length} AP${aps.length === 1 ? '' : 's'} · ${clients} client${clients === 1 ? '' : 's'}`;
+
+  const shown = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return aps;
+    return aps.filter((a) => a.name.toLowerCase().includes(q) || (a.ip_address || '').toLowerCase().includes(q));
+  }, [aps, search]);
+
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <ControllerGroupHeader
+        controller={controller} online={online} summary={summary}
+        collapsed={collapsed} onToggle={toggle}
+      />
+      {!collapsed && (
+        <div className="sv-panel" style={{ padding: 0, marginTop: 8 }}>
+          <div style={{ padding: '10px 12px' }}>
+            <input
+              className="sv-input"
+              style={{ maxWidth: 240 }}
+              placeholder="Search AP name or IP…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </div>
+          {shown.length ? (
+            <table className="sv-table">
+              <thead>
+                <tr>
+                  <th>AP Name</th><th>Site</th><th>Status</th><th>Clients</th>
+                  <th>2.4GHz</th><th>5GHz</th><th>Channel Util</th><th>Uptime</th><th>Last Seen</th>
+                </tr>
+              </thead>
+              <tbody>
+                {shown.map((ap: AccessPoint) => (
+                  <tr key={ap.id} style={{ cursor: 'pointer' }} onClick={() => onSelectAp(ap)}>
+                    <td style={{ fontWeight: 600 }}>{ap.name}</td>
+                    <td>{ap.site_name || '—'}</td>
+                    <td>
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                        <StatusDot status={statusToDot(ap.status)} />
+                        {ap.status}
+                      </span>
+                    </td>
+                    <td title={`${ap.clients_2g} on 2.4GHz, ${ap.clients_5g} on 5GHz`}>{ap.clients_total}</td>
+                    <td>{ap.radio_2g_channel != null ? `Ch ${ap.radio_2g_channel}` : '—'}</td>
+                    <td>{ap.radio_5g_channel != null ? `Ch ${ap.radio_5g_channel}` : '—'}</td>
+                    <td style={{ minWidth: 140 }}>
+                      <UtilBar pct={Math.max(ap.radio_2g_util_pct || 0, ap.radio_5g_util_pct || 0)} />
+                    </td>
+                    <td>{ap.uptime_formatted || '—'}</td>
+                    <td>{fmtRel(ap.last_seen_at)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <Empty message="No access points match this search." />
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Group APs/SSIDs by controller_id, attaching controller metadata. Rows whose
+// controller is missing from the controllers list fall under a stub group.
+function groupByController<T extends { controller_id: number | null; controller_name?: string | null; vendor?: string | null }>(
+  rows: T[], controllers: Controller[],
+): { controller: Controller; rows: T[] }[] {
+  const ctrlMap = new Map<number, Controller>();
+  controllers.forEach((c) => ctrlMap.set(c.id, c));
+  const byCtrl = new Map<number, T[]>();
+  for (const r of rows) {
+    const cid = r.controller_id ?? 0;
+    if (!byCtrl.has(cid)) byCtrl.set(cid, []);
+    byCtrl.get(cid)!.push(r);
+  }
+  const out: { controller: Controller; rows: T[] }[] = [];
+  for (const [cid, list] of byCtrl.entries()) {
+    const controller = ctrlMap.get(cid)
+      || makeStubController(cid, list[0]?.controller_name || 'Unassigned', list[0]?.vendor ?? null);
+    out.push({ controller, rows: list });
+  }
+  out.sort((a, b) => a.controller.name.localeCompare(b.controller.name));
+  return out;
+}
+
 function AccessPointsTab({
   siteFilter, setSiteFilter, controllerFilter, setControllerFilter, onFilterController,
 }: {
@@ -513,10 +685,11 @@ function AccessPointsTab({
   setControllerFilter: (v: number | null) => void;
   onFilterController: (controllerId: number | null) => void;
 }) {
-  const [search, setSearch] = useState('');
   const [status, setStatus] = useState('');
   const [vendor, setVendor] = useState('');
   const [selectedAp, setSelectedAp] = useState<AccessPoint | null>(null);
+
+  const controllers = useApi<Controller[]>('/api/wireless/controllers', 30000);
 
   const qs = useMemo(() => {
     const params: string[] = [];
@@ -527,7 +700,6 @@ function AccessPointsTab({
   }, [controllerFilter, siteFilter, status]);
 
   const aps = useApi<AccessPoint[]>(`/api/wireless/aps${qs}`, 30000);
-
   const allAps = aps.data || [];
 
   const siteOptions = useMemo(() => {
@@ -544,17 +716,10 @@ function AccessPointsTab({
     return Array.from(set).sort();
   }, [allAps]);
 
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return allAps.filter((ap: AccessPoint) => {
-      if (vendor && ap.vendor !== vendor) return false;
-      if (!q) return true;
-      return (
-        ap.name.toLowerCase().includes(q) ||
-        (ap.ip_address || '').toLowerCase().includes(q)
-      );
-    });
-  }, [allAps, search, vendor]);
+  const groups = useMemo(() => {
+    const vendorFiltered = vendor ? allAps.filter((ap) => ap.vendor === vendor) : allAps;
+    return groupByController(vendorFiltered, controllers.data || []);
+  }, [allAps, vendor, controllers.data]);
 
   const hasActiveLifted = siteFilter != null || controllerFilter != null;
 
@@ -563,13 +728,6 @@ function AccessPointsTab({
       <div style={{
         display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 14,
       }}>
-        <input
-          className="sv-input"
-          style={{ maxWidth: 240 }}
-          placeholder="Search name or IP…"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-        />
         <select
           className="sv-select"
           style={{ maxWidth: 200 }}
@@ -613,52 +771,22 @@ function AccessPointsTab({
 
       {aps.error && <ErrorBox message={aps.error} />}
 
-      <div className="sv-panel" style={{ padding: 0 }}>
-        {aps.loading && !aps.data ? (
-          <Loading />
-        ) : filtered.length ? (
-          <table className="sv-table">
-            <thead>
-              <tr>
-                <th>AP Name</th><th>Controller</th><th>Site</th><th>Status</th>
-                <th>Clients</th><th>2.4GHz</th><th>5GHz</th><th>Channel Util</th>
-                <th>Uptime</th><th>Last Seen</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((ap: AccessPoint) => (
-                <tr
-                  key={ap.id}
-                  style={{ cursor: 'pointer' }}
-                  onClick={() => setSelectedAp(ap)}
-                >
-                  <td style={{ fontWeight: 600 }}>{ap.name}</td>
-                  <td>{ap.controller_name || '—'}</td>
-                  <td>{ap.site_name || '—'}</td>
-                  <td>
-                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                      <StatusDot status={statusToDot(ap.status)} />
-                      {ap.status}
-                    </span>
-                  </td>
-                  <td title={`${ap.clients_2g} on 2.4GHz, ${ap.clients_5g} on 5GHz`}>
-                    {ap.clients_total}
-                  </td>
-                  <td>{ap.radio_2g_channel != null ? `Ch ${ap.radio_2g_channel}` : '—'}</td>
-                  <td>{ap.radio_5g_channel != null ? `Ch ${ap.radio_5g_channel}` : '—'}</td>
-                  <td style={{ minWidth: 140 }}>
-                    <UtilBar pct={Math.max(ap.radio_2g_util_pct || 0, ap.radio_5g_util_pct || 0)} />
-                  </td>
-                  <td>{ap.uptime_formatted || '—'}</td>
-                  <td>{fmtRel(ap.last_seen_at)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        ) : (
+      {aps.loading && !aps.data ? (
+        <div className="sv-panel"><Loading /></div>
+      ) : groups.length ? (
+        groups.map(({ controller, rows }) => (
+          <ApControllerGroup
+            key={controller.id}
+            controller={controller}
+            aps={rows}
+            onSelectAp={setSelectedAp}
+          />
+        ))
+      ) : (
+        <div className="sv-panel" style={{ padding: 0 }}>
           <Empty message="No access points match the current filters." />
-        )}
-      </div>
+        </div>
+      )}
 
       {selectedAp && (
         <ApDetailDrawer
@@ -919,11 +1047,95 @@ function fmtBucket(ts: string): string {
 // TAB 3 — SSIDs
 // ════════════════════════════════════════════════════════════
 
+// ── One controller's collapsible SSID group (own search + collapse state) ─────
+function SsidControllerGroup({
+  controller, ssids,
+}: {
+  controller: Controller;
+  ssids: Ssid[];
+}) {
+  const online = controllerOnline(controller);
+  const [collapsed, setCollapsed] = useState<boolean>(!online);
+  const [search, setSearch] = useState('');
+
+  useEffect(() => { setCollapsed(readCollapsed(controller.id, !online)); }, [controller.id, online]);
+
+  function toggle() {
+    setCollapsed((c) => { const n = !c; writeCollapsed(controller.id, n); return n; });
+  }
+
+  const clients = ssids.reduce((s, r) => s + (r.clients_total || 0), 0);
+  const summary = `${ssids.length} SSID${ssids.length === 1 ? '' : 's'} · ${clients} client${clients === 1 ? '' : 's'}`;
+
+  const shown = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return ssids;
+    return ssids.filter((r) => r.ssid_name.toLowerCase().includes(q));
+  }, [ssids, search]);
+
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <ControllerGroupHeader
+        controller={controller} online={online} summary={summary}
+        collapsed={collapsed} onToggle={toggle}
+      />
+      {!collapsed && (
+        <div className="sv-panel" style={{ padding: 0, marginTop: 8 }}>
+          <div style={{ padding: '10px 12px' }}>
+            <input
+              className="sv-input"
+              style={{ maxWidth: 240 }}
+              placeholder="Search SSID name…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </div>
+          {shown.length ? (
+            <table className="sv-table">
+              <thead>
+                <tr>
+                  <th>SSID Name</th><th>Site</th><th>Status</th><th>Clients</th>
+                  <th>Traffic In</th><th>Traffic Out</th><th>Auth Fail</th><th>Failure Rate</th>
+                </tr>
+              </thead>
+              <tbody>
+                {shown.map((r: Ssid) => {
+                  const rate = failureRate(r.auth_successes, r.auth_failures);
+                  return (
+                    <tr key={r.id}>
+                      <td style={{ fontWeight: 600 }}>{r.ssid_name}</td>
+                      <td>{r.site_name || '—'}</td>
+                      <td>
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                          <StatusDot status={r.status === 'up' ? 'up' : 'down'} />
+                          {r.status}
+                        </span>
+                      </td>
+                      <td>{r.clients_total}</td>
+                      <td>{fmtBytes(r.bytes_in)}</td>
+                      <td>{fmtBytes(r.bytes_out)}</td>
+                      <td>{r.auth_failures}</td>
+                      <td style={{ color: failureRateColor(rate), fontWeight: 600 }}>
+                        {rate.toFixed(1)}%
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          ) : (
+            <Empty message="No SSIDs match this search." />
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SsidsTab() {
-  const controllers = useApi<Controller[]>('/api/wireless/controllers', 0);
+  const controllers = useApi<Controller[]>('/api/wireless/controllers', 30000);
   const [controllerFilter, setControllerFilter] = useState<number | null>(null);
   const [siteFilter, setSiteFilter] = useState<number | null>(null);
-  const [search, setSearch] = useState('');
 
   const qs = useMemo(() => {
     const params: string[] = [];
@@ -933,7 +1145,6 @@ function SsidsTab() {
   }, [controllerFilter, siteFilter]);
 
   const ssids = useApi<Ssid[]>(`/api/wireless/ssids${qs}`, 30000);
-
   const allRows = ssids.data || [];
 
   const siteOptions = useMemo(() => {
@@ -944,24 +1155,16 @@ function SsidsTab() {
     return Array.from(map.entries()).map(([id, name]) => ({ id, name }));
   }, [allRows]);
 
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (!q) return allRows;
-    return allRows.filter((r: Ssid) => r.ssid_name.toLowerCase().includes(q));
-  }, [allRows, search]);
+  const groups = useMemo(
+    () => groupByController(allRows, controllers.data || []),
+    [allRows, controllers.data],
+  );
 
   return (
     <div>
       <div style={{
         display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 14,
       }}>
-        <input
-          className="sv-input"
-          style={{ maxWidth: 240 }}
-          placeholder="Search SSID name…"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-        />
         <select
           className="sv-select"
           style={{ maxWidth: 220 }}
@@ -988,49 +1191,17 @@ function SsidsTab() {
 
       {ssids.error && <ErrorBox message={ssids.error} />}
 
-      <div className="sv-panel" style={{ padding: 0 }}>
-        {ssids.loading && !ssids.data ? (
-          <Loading />
-        ) : filtered.length ? (
-          <table className="sv-table">
-            <thead>
-              <tr>
-                <th>SSID Name</th><th>Controller</th><th>Site</th><th>Status</th>
-                <th>Clients</th><th>Traffic In</th><th>Traffic Out</th>
-                <th>Auth OK</th><th>Auth Fail</th><th>Failure Rate</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((r: Ssid) => {
-                const rate = failureRate(r.auth_successes, r.auth_failures);
-                return (
-                  <tr key={r.id}>
-                    <td style={{ fontWeight: 600 }}>{r.ssid_name}</td>
-                    <td>{r.controller_name || '—'}</td>
-                    <td>{r.site_name || '—'}</td>
-                    <td>
-                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                        <StatusDot status={r.status === 'up' ? 'up' : 'down'} />
-                        {r.status}
-                      </span>
-                    </td>
-                    <td>{r.clients_total}</td>
-                    <td>{fmtBytes(r.bytes_in)}</td>
-                    <td>{fmtBytes(r.bytes_out)}</td>
-                    <td>{r.auth_successes}</td>
-                    <td>{r.auth_failures}</td>
-                    <td style={{ color: failureRateColor(rate), fontWeight: 600 }}>
-                      {rate.toFixed(1)}%
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        ) : (
+      {ssids.loading && !ssids.data ? (
+        <div className="sv-panel"><Loading /></div>
+      ) : groups.length ? (
+        groups.map(({ controller, rows }) => (
+          <SsidControllerGroup key={controller.id} controller={controller} ssids={rows} />
+        ))
+      ) : (
+        <div className="sv-panel" style={{ padding: 0 }}>
           <Empty message="No SSID data yet — run wireless polling first" />
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 }

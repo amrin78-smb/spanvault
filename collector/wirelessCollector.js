@@ -434,16 +434,24 @@ async function debugWalk(pool, controller) {
   const subtrees = {
     aruba_ap_table:      '1.3.6.1.4.1.14823.2.2.1.5.2.1.4',  // wlsxWlanAPTable
     aruba_radio_table:   '1.3.6.1.4.1.14823.2.2.1.5.2.1.5',  // wlsxWlanRadioTable
-    aruba_bssid_table:   '1.3.6.1.4.1.14823.2.2.1.5.2.1.7',  // wlsxWlanAPBssidTable (SSID per BSSID)
-    aruba_essid_table:   '1.3.6.1.4.1.14823.2.2.1.5.2.1.8',  // wlsxWlanESSIDTable (summary)
-    aruba_essid_alt:     '1.3.6.1.4.1.14823.2.2.1.1.7.1',    // alt ESSID table candidate
-    aruba_ap_stats:      '1.3.6.1.4.1.14823.2.2.1.5.3.1.1',  // wlsxWlanAPStatsTable candidate
     aruba_instant_ap:    '1.3.6.1.4.1.14823.2.3.3.1.2.1',    // aiAccessPointTable (Instant)
     aruba_instant_ssid:  '1.3.6.1.4.1.14823.2.3.3.1.1.7.1',  // aiWlanSSIDTable (Instant)
   };
 
+  // Candidate ESSID/SSID source tables — each is walked and counted so the
+  // populated SSID source is obvious from one call.
+  const essidCandidates = {
+    'wlsxWlanESSIDTable (...5.2.1.8)':    '1.3.6.1.4.1.14823.2.2.1.5.2.1.8',
+    'alt (...1.7.1)':                     '1.3.6.1.4.1.14823.2.2.1.1.7.1',
+    'wlsxWlanAPStatsTable (...5.3.1.1)':  '1.3.6.1.4.1.14823.2.2.1.5.3.1.1',
+    'wlsxWlanAPBssidTable (...5.2.1.7)':  '1.3.6.1.4.1.14823.2.2.1.5.2.1.7',
+  };
+
   const session = createSession(device, 12000);
-  const out = { ok: true, vendor: controller.vendor, device_ip: device.ip_address, parser_oids: {}, subtrees: {} };
+  const out = {
+    ok: true, vendor: controller.vendor, device_ip: device.ip_address,
+    parser_oids: {}, subtrees: {}, essid_table: {},
+  };
   try {
     // 1) What the current parser's declared OIDs return right now.
     if (parser && parser.snmpOids) {
@@ -464,6 +472,15 @@ async function debugWalk(pool, controller) {
         count: rows.length,
         truncated: rows.length > PER_TREE_CAP,
         sample: rows.slice(0, PER_TREE_CAP).map((r) => ({ oid: r.oid, value: decodeSnmpVal(r.value) })),
+      };
+    }
+    // 3) Per-OID ESSID candidate comparison — raw row count from each attempt.
+    for (const [label, base] of Object.entries(essidCandidates)) {
+      const rows = await walk(session, base);
+      out.essid_table[label] = {
+        base,
+        count: rows.length,
+        sample: rows.slice(0, 12).map((r) => ({ oid: r.oid, value: decodeSnmpVal(r.value) })),
       };
     }
   } catch (e) {
