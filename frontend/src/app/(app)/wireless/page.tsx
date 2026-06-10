@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend,
-  BarChart, Bar, ReferenceLine, Cell,
+  BarChart, Bar, ReferenceLine, Cell, PieChart, Pie,
 } from 'recharts';
 import { useApi, apiSend, apiGet } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
@@ -158,6 +158,59 @@ interface Controller {
   status: string | null;
   ap_count: number;
   client_count: number;
+  model?: string | null;
+  firmware_version?: string | null;
+  licensed_aps?: number | null;
+  ha_mode?: string | null;
+  ha_peer_ip?: string | null;
+  ha_sync_status?: string | null;
+  ap_disconnects_24h?: number | null;
+}
+
+// ── Enhanced controllers overview/events contracts ────────────
+interface OverviewController {
+  id: number;
+  name: string;
+  vendor: string;
+  site_name: string | null;
+  model: string | null;
+  firmware_version: string | null;
+  status: string | null;
+  ap_count: number;
+  client_count: number;
+  cpu_pct: number | null;
+  mem_pct: number | null;
+  uptime_seconds: number | null;
+  licensed_aps: number | null;
+  ap_capacity_pct: number | null;
+  ha_mode: string | null;
+  ha_peer_ip: string | null;
+  ha_sync_status: string | null;
+  ap_disconnects_24h: number | null;
+  last_polled_at: string | null;
+}
+
+interface ControllerOverview {
+  total_controllers: number;
+  online_controllers: number;
+  total_aps: number;
+  total_clients: number;
+  avg_cpu_pct: number | null;
+  avg_mem_pct: number | null;
+  ha_healthy_count: number;
+  ha_total_count: number;
+  ap_capacity_pct: number | null;
+  controllers: OverviewController[];
+}
+
+interface ControllerEvent {
+  ts: string;
+  controller_name: string | null;
+  site_name: string | null;
+  event_type: 'join' | 'leave' | 'low_signal' | 'alert' | string;
+  description: string;
+  severity: string | null;
+  ap_name: string | null;
 }
 
 interface DeviceRow {
@@ -471,7 +524,7 @@ export default function WirelessPage() {
           setProblemOnly={setClientProblemOnly}
         />
       )}
-      {tab === 'controllers' && <ControllersTab />}
+      {tab === 'controllers' && <ControllersTab onViewEvents={() => setTab('clients')} />}
     </div>
   );
 }
@@ -2383,9 +2436,396 @@ function ClientDetailPanel({ mac, onClose }: { mac: string; onClose: () => void 
 // TAB 5 — Controllers
 // ════════════════════════════════════════════════════════════
 
-function ControllersTab() {
+// ── Controllers helpers (top-level) ───────────────────────────
+function fmtUptimeShort(s: number | null | undefined): string {
+  const n = Number(s);
+  if (s == null || !Number.isFinite(n) || n <= 0) return '—';
+  const days = Math.floor(n / 86400);
+  const hours = Math.floor((n % 86400) / 3600);
+  const mins = Math.floor((n % 3600) / 60);
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${mins}m`;
+  return `${mins}m`;
+}
+
+function fmtInt(n: number | null | undefined): string {
+  const v = Number(n);
+  if (n == null || !Number.isFinite(v)) return '0';
+  return v.toLocaleString();
+}
+
+function fmtPct(n: number | null | undefined): string {
+  const v = Number(n);
+  if (n == null || !Number.isFinite(v)) return 'N/A';
+  return `${Math.round(v)}%`;
+}
+
+function ctlStatusColor(status: string | null | undefined): string {
+  if (status === 'ok') return 'var(--green)';
+  if (status === 'error') return 'var(--red)';
+  return 'var(--text-muted)';
+}
+
+const EVENT_META: Record<string, { icon: string; color: string }> = {
+  join: { icon: '↑', color: 'var(--green)' },
+  leave: { icon: '↓', color: 'var(--text-muted)' },
+  low_signal: { icon: '⚠', color: 'var(--orange)' },
+  alert: { icon: '●', color: 'var(--red)' },
+};
+
+// ── Mini inline progress bar (top-level) ──────────────────────
+function MiniBar({ pct, color }: { pct: number | null | undefined; color?: string }) {
+  const v = Number(pct);
+  const p = Number.isFinite(v) ? Math.max(0, Math.min(100, v)) : 0;
+  const c = color || pctColor(p);
+  return (
+    <div style={{
+      width: 56, height: 6, borderRadius: 4, background: 'var(--border)',
+      overflow: 'hidden', display: 'inline-block', verticalAlign: 'middle',
+    }}>
+      <div style={{ width: `${p}%`, height: '100%', background: c }} />
+    </div>
+  );
+}
+
+// ── Aggregate stat card (top-level) ───────────────────────────
+function CtlStatCard({ num, sub, label, color }: {
+  num: React.ReactNode;
+  sub?: React.ReactNode;
+  label: string;
+  color?: string;
+}) {
+  return (
+    <div className="sv-card" style={color ? { borderLeftColor: color } : undefined}>
+      <div className="num" style={color ? { color } : undefined}>{num}</div>
+      {sub != null && <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>{sub}</div>}
+      <div className="label">{label}</div>
+    </div>
+  );
+}
+
+// ── Compact controller card (top-level) ───────────────────────
+function ControllerCard({
+  controller, canEdit, onEdit, onTest, onDelete,
+}: {
+  controller: Controller;
+  canEdit: boolean;
+  onEdit: () => void;
+  onTest: () => void;
+  onDelete: () => void;
+}) {
+  const statusColor = ctlStatusColor(controller.status);
+  return (
+    <div className="sv-card" style={{ borderLeftColor: statusColor, padding: 14 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <StatusDot status={controller.status === 'ok' ? 'up' : controller.status === 'error' ? 'down' : 'unknown'} />
+        <div style={{ fontWeight: 700, fontSize: 14, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {controller.name}
+        </div>
+        <span className="sv-badge">{controller.vendor}</span>
+      </div>
+      {controller.model && (
+        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>{controller.model}</div>
+      )}
+      <div style={{ display: 'flex', gap: 18, marginTop: 8 }}>
+        <div>
+          <div style={{ fontSize: 16, fontWeight: 800 }}>{fmtInt(controller.ap_count)}</div>
+          <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>APs</div>
+        </div>
+        <div>
+          <div style={{ fontSize: 16, fontWeight: 800 }}>{fmtInt(controller.client_count)}</div>
+          <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>Clients</div>
+        </div>
+      </div>
+      {canEdit && (
+        <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+          <button className="sv-btn ghost sm" onClick={onEdit}>Edit</button>
+          <button className="sv-btn ghost sm" onClick={onTest}>Test</button>
+          <div style={{ flex: 1 }} />
+          <button className="sv-btn ghost sm" onClick={onDelete}>Delete</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Controller inventory table (top-level) ────────────────────
+function ControllerInventoryTable({ controllers }: { controllers: OverviewController[] }) {
+  return (
+    <div className="sv-panel" style={{ overflowX: 'auto' }}>
+      <h3 style={{ marginTop: 0 }}>Controller Inventory</h3>
+      <table className="sv-table">
+        <thead>
+          <tr>
+            <th>Controller</th><th>Site</th><th>Vendor</th><th>Model</th>
+            <th>APs</th><th>Cap%</th><th>Clients</th><th>CPU</th><th>Mem</th><th>HA</th><th>Uptime</th>
+          </tr>
+        </thead>
+        <tbody>
+          {controllers.map((c) => {
+            const hasLic = c.licensed_aps != null && Number(c.licensed_aps) > 0;
+            const cap = c.ap_capacity_pct;
+            const haMode = c.ha_mode && c.ha_mode !== 'disabled' ? c.ha_mode : null;
+            const synced = c.ha_sync_status ? /sync/i.test(c.ha_sync_status) && !/not/i.test(c.ha_sync_status) : null;
+            return (
+              <tr key={c.id}>
+                <td>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                    <StatusDot status={c.status === 'ok' ? 'up' : c.status === 'error' ? 'down' : 'unknown'} />
+                    <span style={{ fontWeight: 600 }}>{c.name}</span>
+                  </span>
+                </td>
+                <td>{c.site_name || '—'}</td>
+                <td>{c.vendor}</td>
+                <td>
+                  {c.model ? (
+                    <>
+                      <div style={{ fontWeight: 600 }}>{c.model}</div>
+                      {c.firmware_version && (
+                        <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{c.firmware_version}</div>
+                      )}
+                    </>
+                  ) : c.vendor}
+                </td>
+                <td>{fmtInt(c.ap_count)}</td>
+                <td>
+                  {hasLic ? (
+                    <div>
+                      <div style={{ fontSize: 12 }}>
+                        {fmtInt(c.ap_count)}/{fmtInt(c.licensed_aps)}
+                        {cap != null && <span style={{ color: 'var(--text-muted)' }}> ({Math.round(Number(cap))}%)</span>}
+                      </div>
+                      <MiniBar pct={cap} />
+                    </div>
+                  ) : (
+                    <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>{fmtInt(c.ap_count)} APs</span>
+                  )}
+                </td>
+                <td>{fmtInt(c.client_count)}</td>
+                <td>{c.cpu_pct != null ? `${Math.round(Number(c.cpu_pct))}%` : '—'}</td>
+                <td>{c.mem_pct != null ? `${Math.round(Number(c.mem_pct))}%` : '—'}</td>
+                <td>
+                  {haMode ? (
+                    <span style={{ display: 'inline-flex', flexDirection: 'column', gap: 2 }}>
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                        <span style={{ color: haMode === 'active' ? 'var(--green)' : 'var(--text-muted)' }}>●</span>
+                        {haMode === 'active' ? 'Active' : haMode === 'standby' ? 'Standby' : haMode}
+                      </span>
+                      {synced != null && (
+                        <span style={{ fontSize: 11, color: synced ? 'var(--green)' : 'var(--orange)' }}>
+                          {synced ? '✓ Synced' : '⚠ Not synced'}
+                        </span>
+                      )}
+                    </span>
+                  ) : <span style={{ color: 'var(--text-muted)' }}>N/A</span>}
+                </td>
+                <td>{fmtUptimeShort(c.uptime_seconds)}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ── AP capacity overview chart (top-level) ────────────────────
+const CAP_COLORS = ['var(--green)', 'var(--border)'];
+function ApCapacityOverview({ controllers }: { controllers: OverviewController[] }) {
+  const withLic = controllers.filter((c) => c.licensed_aps != null && Number(c.licensed_aps) > 0);
+  if (withLic.length) {
+    const usedTotal = withLic.reduce((s, c) => s + Number(c.ap_count || 0), 0);
+    const licTotal = withLic.reduce((s, c) => s + Number(c.licensed_aps || 0), 0);
+    const available = Math.max(0, licTotal - usedTotal);
+    const data = [
+      { name: 'Used APs', value: usedTotal },
+      { name: 'Available', value: available },
+    ];
+    return (
+      <div className="sv-panel">
+        <h3 style={{ marginTop: 0 }}>AP Capacity Overview</h3>
+        <ResponsiveContainer width="100%" height={240}>
+          <PieChart>
+            <Pie data={data} dataKey="value" nameKey="name" innerRadius={55} outerRadius={85} paddingAngle={2}>
+              {data.map((_, i) => <Cell key={i} fill={CAP_COLORS[i % CAP_COLORS.length]} />)}
+            </Pie>
+            <Tooltip />
+            <Legend />
+          </PieChart>
+        </ResponsiveContainer>
+        <div style={{ textAlign: 'center', fontSize: 14, fontWeight: 700, marginTop: -8 }}>
+          {fmtInt(usedTotal)} / {fmtInt(licTotal)} licensed
+        </div>
+        <div style={{ fontSize: 11, color: 'var(--text-muted)', textAlign: 'center', marginTop: 6 }}>
+          Licensed count available for Aruba/Cisco only
+        </div>
+      </div>
+    );
+  }
+  const barData = controllers.map((c) => ({ name: c.name, aps: Number(c.ap_count || 0) }));
+  return (
+    <div className="sv-panel">
+      <h3 style={{ marginTop: 0 }}>AP Count by Controller</h3>
+      {barData.length ? (
+        <ResponsiveContainer width="100%" height={240}>
+          <BarChart data={barData} layout="vertical" margin={{ left: 8 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+            <XAxis type="number" fontSize={11} />
+            <YAxis type="category" dataKey="name" width={110} fontSize={11} />
+            <Tooltip />
+            <Bar dataKey="aps" fill="var(--green)" name="APs" />
+          </BarChart>
+        </ResponsiveContainer>
+      ) : <Empty message="No AP data." />}
+    </div>
+  );
+}
+
+// ── Controller health table (top-level) ───────────────────────
+function ControllerHealthTable({ controllers }: { controllers: OverviewController[] }) {
+  return (
+    <div className="sv-panel" style={{ overflowX: 'auto' }}>
+      <h3 style={{ marginTop: 0 }}>Controller Health</h3>
+      <table className="sv-table">
+        <thead>
+          <tr>
+            <th>Controller</th><th>Uptime</th><th>CPU</th><th>Mem</th><th>AP Disc (24h)</th><th>Last Polled</th>
+          </tr>
+        </thead>
+        <tbody>
+          {controllers.map((c) => {
+            const disc = Number(c.ap_disconnects_24h || 0);
+            return (
+              <tr key={c.id}>
+                <td>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                    <StatusDot status={c.status === 'ok' ? 'up' : c.status === 'error' ? 'down' : 'unknown'} />
+                    <span style={{ fontWeight: 600 }}>{c.name}</span>
+                  </span>
+                </td>
+                <td>{fmtUptimeShort(c.uptime_seconds)}</td>
+                <td>
+                  {c.cpu_pct != null ? (
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                      <MiniBar pct={c.cpu_pct} /> {Math.round(Number(c.cpu_pct))}%
+                    </span>
+                  ) : '—'}
+                </td>
+                <td>
+                  {c.mem_pct != null ? (
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                      <MiniBar pct={c.mem_pct} /> {Math.round(Number(c.mem_pct))}%
+                    </span>
+                  ) : '—'}
+                </td>
+                <td>
+                  {disc > 10 ? (
+                    <span className="sv-badge" style={{ background: 'var(--red)', color: '#fff' }}>{disc}</span>
+                  ) : (c.ap_disconnects_24h != null ? disc : '—')}
+                </td>
+                <td>{fmtRel(c.last_polled_at)}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ── HA / redundancy status table (top-level) ──────────────────
+function HaStatusTable({ controllers }: { controllers: OverviewController[] }) {
+  const haCtls = controllers.filter((c) => c.ha_mode && c.ha_mode !== 'disabled');
+  return (
+    <div className="sv-panel" style={{ overflowX: 'auto' }}>
+      <h3 style={{ marginTop: 0 }}>HA / Redundancy Status</h3>
+      {haCtls.length ? (
+        <table className="sv-table">
+          <thead>
+            <tr><th>Controller</th><th>Peer</th><th>Mode</th><th>Sync</th><th>Status</th></tr>
+          </thead>
+          <tbody>
+            {haCtls.map((c) => {
+              const synced = c.ha_sync_status ? /sync/i.test(c.ha_sync_status) && !/not/i.test(c.ha_sync_status) : null;
+              const ready = c.status === 'ok';
+              return (
+                <tr key={c.id}>
+                  <td style={{ fontWeight: 600 }}>{c.name}</td>
+                  <td>{c.ha_peer_ip || '—'}</td>
+                  <td>
+                    <span style={{ color: c.ha_mode === 'active' ? 'var(--green)' : 'var(--text-muted)' }}>● </span>
+                    {c.ha_mode === 'active' ? 'Active' : c.ha_mode === 'standby' ? 'Standby' : c.ha_mode}
+                  </td>
+                  <td>
+                    {synced == null ? '—' : (
+                      <span style={{ color: synced ? 'var(--green)' : 'var(--orange)' }}>
+                        {synced ? '✓ Synced' : '⚠ Not synced'}
+                      </span>
+                    )}
+                  </td>
+                  <td>
+                    <span style={{ color: ready ? 'var(--green)' : 'var(--red)' }}>● {ready ? 'Ready' : 'Down'}</span>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      ) : <Empty message="No HA configured" />}
+    </div>
+  );
+}
+
+// ── Recent controller events timeline (top-level) ─────────────
+function ControllerEventsTimeline({ events, onViewEvents }: {
+  events: ControllerEvent[];
+  onViewEvents?: () => void;
+}) {
+  return (
+    <div className="sv-panel">
+      <div style={{ display: 'flex', alignItems: 'center' }}>
+        <h3 style={{ marginTop: 0, marginBottom: 0, flex: 1 }}>Recent Controller Events</h3>
+        {onViewEvents && (
+          <button className="sv-btn ghost sm" onClick={onViewEvents}>View all events →</button>
+        )}
+      </div>
+      {events.length ? (
+        <div style={{ marginTop: 12 }}>
+          {events.map((e, i) => {
+            const meta = EVENT_META[e.event_type] || { icon: '•', color: 'var(--text-muted)' };
+            return (
+              <div key={i} style={{
+                display: 'flex', alignItems: 'center', gap: 10,
+                padding: '8px 0', borderBottom: '1px solid var(--border-light)',
+              }}>
+                <span style={{ width: 110, fontSize: 12, color: 'var(--text-muted)', flexShrink: 0 }}>
+                  {fmtTime(e.ts)}
+                </span>
+                <span style={{ color: meta.color, fontWeight: 700, width: 16, textAlign: 'center', flexShrink: 0 }}>
+                  {meta.icon}
+                </span>
+                <span style={{ flex: 1, fontSize: 13 }}>
+                  {e.description}
+                  {e.ap_name && <span style={{ color: 'var(--text-muted)' }}> · {e.ap_name}</span>}
+                </span>
+                <span style={{ fontSize: 12, color: 'var(--text-muted)', flexShrink: 0 }}>
+                  {e.site_name || ''}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      ) : <Empty message="No recent controller events." />}
+    </div>
+  );
+}
+
+// ── Controllers tab (top-level) ───────────────────────────────
+function ControllersTab({ onViewEvents }: { onViewEvents?: () => void }) {
   const { canEdit } = useRbac();
   const controllers = useApi<Controller[]>('/api/wireless/controllers', 0);
+  const overview = useApi<ControllerOverview>('/api/wireless/controllers/overview', 30000);
+  const events = useApi<ControllerEvent[]>('/api/wireless/controllers/events', 30000);
   const [showModal, setShowModal] = useState(false);
   const [editing, setEditing] = useState<Controller | null>(null);
   const [toast, setToast] = useState<string | null>(null);
@@ -2406,10 +2846,19 @@ function ControllersTab() {
     if (!confirm(`Delete controller "${c.name}"? This cannot be undone.`)) return;
     await apiSend(`/api/wireless/controllers/${c.id}`, 'DELETE');
     controllers.reload();
+    overview.reload();
   }
+
+  const ov = overview.data;
+  const ovCtls: OverviewController[] = ov?.controllers || [];
+  const siteCount = new Set(ovCtls.map((c) => c.site_name).filter(Boolean)).size;
+  const haTotal = ov?.ha_total_count ?? 0;
+  const haHealthy = ov?.ha_healthy_count ?? 0;
+  const evList: ControllerEvent[] = events.data || [];
 
   return (
     <div>
+      {/* Add controller bar */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14 }}>
         <div style={{ flex: 1 }} />
         {canEdit && (
@@ -2422,16 +2871,15 @@ function ControllersTab() {
       {toast && <div className="sv-toast ok" onClick={() => setToast(null)}>{toast}</div>}
       {controllers.error && <ErrorBox message={controllers.error} />}
 
+      {/* SECTION 0 — Compact controller cards */}
       {controllers.loading && !controllers.data ? (
         <div className="sv-panel"><Loading /></div>
       ) : controllers.data && controllers.data.length ? (
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))',
-            gap: 16,
-          }}
-        >
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))',
+          gap: 12,
+        }}>
           {controllers.data.map((c: Controller) => (
             <ControllerCard
               key={c.id}
@@ -2449,68 +2897,70 @@ function ControllersTab() {
         </div>
       )}
 
+      {/* SECTION 1 — Aggregate stat cards */}
+      {overview.error && <ErrorBox message={overview.error} />}
+      {ov && (
+        <div className="sv-cards" style={{ marginTop: 20 }}>
+          <CtlStatCard
+            num={fmtInt(ov.total_controllers)}
+            sub={ov.online_controllers === ov.total_controllers ? 'All Online' : `${fmtInt(ov.online_controllers)} online`}
+            label="Controllers"
+            color={ov.online_controllers === ov.total_controllers ? 'var(--green)' : 'var(--yellow)'}
+          />
+          <CtlStatCard num={fmtInt(ov.total_aps)} sub={`${siteCount} Sites`} label="APs Total" />
+          <CtlStatCard num={fmtInt(ov.total_clients)} label="Clients" />
+          <CtlStatCard num={fmtPct(ov.avg_cpu_pct)} label="Avg CPU" />
+          <CtlStatCard num={fmtPct(ov.ap_capacity_pct)} label="AP Capacity" />
+          <CtlStatCard
+            num={haTotal === 0 ? 'N/A' : (haHealthy === haTotal ? 'Healthy' : `${haHealthy}/${haTotal} Ready`)}
+            label="HA Status"
+            color={haTotal === 0 ? undefined : (haHealthy === haTotal ? 'var(--green)' : 'var(--yellow)')}
+          />
+        </div>
+      )}
+
+      {overview.loading && !ov ? (
+        <div className="sv-panel" style={{ marginTop: 20 }}><Loading /></div>
+      ) : ov && ovCtls.length ? (
+        <>
+          {/* SECTION 2 — Inventory + capacity */}
+          <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginTop: 20, alignItems: 'flex-start' }}>
+            <div style={{ flex: '1 1 60%', minWidth: 360 }}>
+              <ControllerInventoryTable controllers={ovCtls} />
+            </div>
+            <div style={{ flex: '1 1 32%', minWidth: 280 }}>
+              <ApCapacityOverview controllers={ovCtls} />
+            </div>
+          </div>
+
+          {/* SECTION 3 — Health + HA */}
+          <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginTop: 20, alignItems: 'flex-start' }}>
+            <div style={{ flex: '1 1 60%', minWidth: 360 }}>
+              <ControllerHealthTable controllers={ovCtls} />
+            </div>
+            <div style={{ flex: '1 1 32%', minWidth: 280 }}>
+              <HaStatusTable controllers={ovCtls} />
+            </div>
+          </div>
+        </>
+      ) : null}
+
+      {/* SECTION 4 — Recent controller events */}
+      <div style={{ marginTop: 20 }}>
+        {events.error && <ErrorBox message={events.error} />}
+        {events.loading && !events.data ? (
+          <div className="sv-panel"><Loading /></div>
+        ) : (
+          <ControllerEventsTimeline events={evList} onViewEvents={onViewEvents} />
+        )}
+      </div>
+
       {showModal && (
         <ControllerModal
           existing={editing}
           onClose={() => setShowModal(false)}
-          onSaved={() => { setShowModal(false); controllers.reload(); }}
+          onSaved={() => { setShowModal(false); controllers.reload(); overview.reload(); }}
         />
-      )}
-    </div>
-  );
-}
-
-// ── Controller card (top-level component) ─────────────────────
-function ControllerCard({
-  controller, canEdit, onEdit, onTest, onDelete,
-}: {
-  controller: Controller;
-  canEdit: boolean;
-  onEdit: () => void;
-  onTest: () => void;
-  onDelete: () => void;
-}) {
-  const connType = controller.snmp_device_id != null ? 'SNMP' : 'API';
-  const statusColor = controller.status === 'ok'
-    ? 'var(--green)'
-    : controller.status === 'error'
-      ? 'var(--red)'
-      : 'var(--text-muted)';
-  const statusLabel = controller.status === 'ok'
-    ? 'Polling OK'
-    : controller.status === 'error'
-      ? 'Error'
-      : '—';
-
-  return (
-    <div className="sv-card" style={{ borderLeftColor: statusColor }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <div style={{ fontWeight: 700, fontSize: 15, flex: 1 }}>{controller.name}</div>
-        <span className="sv-badge">{controller.vendor}</span>
-      </div>
-      <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 6 }}>
-        {connType} · <span style={{ color: statusColor, fontWeight: 600 }}>{statusLabel}</span>
-      </div>
-      <div style={{ display: 'flex', gap: 16, marginTop: 10 }}>
-        <div>
-          <div style={{ fontSize: 18, fontWeight: 800 }}>{controller.ap_count}</div>
-          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>APs</div>
-        </div>
-        <div>
-          <div style={{ fontSize: 18, fontWeight: 800 }}>{controller.client_count}</div>
-          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Clients</div>
-        </div>
-      </div>
-      <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 8 }}>
-        {controller.site_name ? `${controller.site_name} · ` : ''}polled {fmtRel(controller.last_polled_at)}
-      </div>
-      {canEdit && (
-        <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-          <button className="sv-btn ghost sm" onClick={onEdit}>Edit</button>
-          <button className="sv-btn ghost sm" onClick={onTest}>Test</button>
-          <div style={{ flex: 1 }} />
-          <button className="sv-btn ghost sm" onClick={onDelete}>Delete</button>
-        </div>
       )}
     </div>
   );
