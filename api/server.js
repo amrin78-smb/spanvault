@@ -122,6 +122,13 @@ function safeInt(val, def, max) {
 function scoreGrade(s) {
   return s >= 90 ? 'A' : s >= 80 ? 'B' : s >= 70 ? 'C' : s >= 60 ? 'D' : 'F';
 }
+function signalQuality(rssi) {
+  if (rssi === null || rssi === undefined) return 'Unknown';
+  if (rssi >= -60) return 'Excellent';
+  if (rssi >= -70) return 'Good';
+  if (rssi >= -80) return 'Fair';
+  return 'Poor';
+}
 function rangeToInterval(range) {
   switch (range) {
     case '7d':  return '7 days';
@@ -2627,6 +2634,117 @@ app.get('/api/wireless/intelligence/:controller_id', wrap(async (req, res) => {
     ORDER BY ai.health_score ASC
   `, [id]);
   res.json({ ...ctrl.rows[0], aps: aps.rows });
+}));
+
+// ── Wireless clients ──────────────────────────────────────────
+// Route order matters: register the literal /clients and /clients/summary
+// (and /aps/:id/clients) routes BEFORE the /clients/:mac param route so
+// Express doesn't match "summary" as a mac address.
+app.get('/api/wireless/clients', wrap(async (req, res) => {
+  const where = [];
+  const params = [];
+  if (req.query.search) { params.push(`%${String(req.query.search)}%`); where.push(`(cl.mac_address ILIKE $${params.length} OR cl.ip_address ILIKE $${params.length})`); }
+  if (req.query.ap_id) { params.push(parseInt(req.query.ap_id, 10)); where.push(`cl.ap_id = $${params.length}`); }
+  if (req.query.controller_id) { params.push(parseInt(req.query.controller_id, 10)); where.push(`cl.controller_id = $${params.length}`); }
+  if (String(req.query.problem) === 'true') where.push('cl.is_problem = TRUE');
+  const sc = siteFilterClause(getSiteFilter(req), params, 'c.site_id');
+  if (sc) where.push(sc);
+  const limit = Math.min(500, Math.max(1, parseInt(req.query.limit, 10) || 50));
+  const r = await sv.query(`
+    SELECT cl.*, c.name AS controller_name, c.site_name
+    FROM wireless_clients cl
+    JOIN wireless_controllers c ON c.id = cl.controller_id
+    ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+    ORDER BY cl.is_problem DESC, cl.rssi_dbm ASC NULLS LAST
+    LIMIT ${limit}
+  `, params);
+  res.json(r.rows.map((row) => ({ ...row, signal_quality: signalQuality(row.rssi_dbm) })));
+}));
+
+app.get('/api/wireless/clients/summary', wrap(async (req, res) => {
+  const params = [];
+  const sc = siteFilterClause(getSiteFilter(req), params, 'c.site_id');
+  const rows = await sv.query(`
+    SELECT cl.band, cl.rssi_dbm, cl.is_problem, cl.roaming_count, cl.ap_name, c.name AS controller_name
+    FROM wireless_clients cl JOIN wireless_controllers c ON c.id = cl.controller_id
+    ${sc ? 'WHERE ' + sc : ''}
+  `, params);
+
+  const byBand = { '2.4GHz': 0, '5GHz': 0, '6GHz': 0 };
+  const byController = {};
+  const byAp = {};
+  let problemClients = 0, lowSignalClients = 0, frequentRoamers = 0;
+  for (const row of rows.rows) {
+    if (Object.prototype.hasOwnProperty.call(byBand, row.band)) byBand[row.band]++;
+    if (row.controller_name) byController[row.controller_name] = (byController[row.controller_name] || 0) + 1;
+    if (row.ap_name) byAp[row.ap_name] = (byAp[row.ap_name] || 0) + 1;
+    if (row.is_problem) problemClients++;
+    if (row.rssi_dbm !== null && row.rssi_dbm !== undefined && row.rssi_dbm < -75) lowSignalClients++;
+    if ((row.roaming_count || 0) > 5) frequentRoamers++;
+  }
+  const byControllerArr = Object.entries(byController)
+    .map(([name, count]) => ({ name, count }))
+    .sort((a, b) => b.count - a.count);
+  const topApsByClients = Object.entries(byAp)
+    .map(([ap_name, count]) => ({ ap_name, count }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 5);
+
+  res.json({
+    total_clients: rows.rows.length,
+    by_band: byBand,
+    by_controller: byControllerArr,
+    problem_clients: problemClients,
+    low_signal_clients: lowSignalClients,
+    frequent_roamers: frequentRoamers,
+    top_aps_by_clients: topApsByClients,
+  });
+}));
+
+app.get('/api/wireless/aps/:id/clients', wrap(async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const r = await sv.query(`
+    SELECT cl.*, c.name AS controller_name
+    FROM wireless_clients cl JOIN wireless_controllers c ON c.id = cl.controller_id
+    WHERE cl.ap_id = $1
+    ORDER BY cl.rssi_dbm ASC NULLS LAST
+  `, [id]);
+  res.json(r.rows.map((row) => ({ ...row, signal_quality: signalQuality(row.rssi_dbm) })));
+}));
+
+app.get('/api/wireless/clients/:mac', wrap(async (req, res) => {
+  const mac = decodeURIComponent(req.params.mac);
+  const cr = await sv.query(`
+    SELECT cl.*, c.name AS controller_name, c.site_name
+    FROM wireless_clients cl JOIN wireless_controllers c ON c.id = cl.controller_id
+    WHERE cl.mac_address = $1
+    ORDER BY cl.last_seen_at DESC LIMIT 1
+  `, [mac]);
+  if (!cr.rows[0]) return res.status(404).json({ error: 'Client not found' });
+  const client = { ...cr.rows[0], signal_quality: signalQuality(cr.rows[0].rssi_dbm) };
+  const ev = await sv.query(`
+    SELECT event_type, from_ap_name, to_ap_name, rssi_dbm, ssid_name, ts
+    FROM wireless_client_events WHERE mac_address = $1
+    ORDER BY ts DESC LIMIT 50
+  `, [mac]);
+  const stats = await sv.query(`
+    SELECT
+      COUNT(*) FILTER (WHERE event_type = 'roam')::int AS total_roams_24h,
+      ROUND(AVG(rssi_dbm) FILTER (WHERE rssi_dbm IS NOT NULL))::int AS avg_rssi_24h,
+      ARRAY_REMOVE(ARRAY_AGG(DISTINCT ssid_name), NULL) AS ssids_used
+    FROM wireless_client_events
+    WHERE mac_address = $1 AND ts >= NOW() - INTERVAL '24 hours'
+  `, [mac]);
+  res.json({
+    client,
+    events: ev.rows,
+    stats: {
+      total_roams_24h: stats.rows[0]?.total_roams_24h || 0,
+      avg_rssi_24h: stats.rows[0]?.avg_rssi_24h ?? null,
+      time_connected_today: client.connected_since,
+      ssids_used: stats.rows[0]?.ssids_used || [],
+    },
+  });
 }));
 
 // ══════════════════════════════════════════════════════════════
