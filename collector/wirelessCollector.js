@@ -725,6 +725,49 @@ async function debugWalk(pool, controller) {
   return out;
 }
 
+// Operator-driven generic SNMP walk: walk ANY OID on a controller's linked SNMP
+// device so the correct OID for any metric can be discovered against live
+// hardware (instead of relying on hardcoded per-vendor metadata OIDs). Falls
+// back to a scalar GET when the subtree walk is empty (e.g. a ...x.0 scalar).
+// No DB writes. Never throws — failures are returned as { ok: false, message }.
+// Credentials are never returned (only device_ip is exposed).
+async function walkOid(pool, controller, oid) {
+  if (!controller.snmp_device_id) {
+    return { ok: false, message: 'Controller is API-based (no SNMP device to walk)' };
+  }
+  if (typeof oid !== 'string' || !/^\.?\d+(\.\d+)+$/.test(oid)) {
+    return { ok: false, message: 'Invalid OID (expected numeric dotted form like 1.3.6.1.2.1.1)' };
+  }
+  oid = oid.replace(/^\./, '');
+
+  const dq = await pool.query('SELECT * FROM monitored_devices WHERE id = $1', [controller.snmp_device_id]);
+  const device = dq.rows[0];
+  if (!device) return { ok: false, message: 'Linked SNMP device not found' };
+
+  const CAP = 500;
+  const session = createSession(device, 12000);
+  try {
+    let rows = await walk(session, oid);
+    if (rows.length === 0) {
+      const g = await get(session, [oid]);
+      if (g.length) rows = g;
+    }
+    return {
+      ok: true,
+      oid,
+      vendor: controller.vendor,
+      device_ip: device.ip_address,
+      count: rows.length,
+      truncated: rows.length > CAP,
+      rows: rows.slice(0, CAP).map((r) => ({ oid: r.oid, value: decodeSnmpVal(r.value) })),
+    };
+  } catch (e) {
+    return { ok: false, message: e.message };
+  } finally {
+    try { session.close(); } catch (_e) { /* ignore */ }
+  }
+}
+
 // ── Client-level troubleshooting (Tier 1) ─────────────────────
 // Poll a controller's associated clients (SNMP), detect roam/join/leave/
 // low-signal events vs the previous snapshot, upsert the current client set,
@@ -910,5 +953,5 @@ function startWirelessCollector(pool) {
 module.exports = {
   startWirelessCollector, pollAll, pollController, upsertAp, upsertSsid,
   autoDetectControllers, cleanupBadAutoControllers, testController, debugWalk,
-  pollClients, pollAllClients,
+  walkOid, pollClients, pollAllClients,
 };
