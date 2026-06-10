@@ -186,7 +186,63 @@ interface ControllerForm {
   site_name: string | null;
 }
 
-type TabKey = 'overview' | 'aps' | 'ssids' | 'intelligence' | 'controllers';
+type TabKey = 'overview' | 'aps' | 'ssids' | 'intelligence' | 'clients' | 'controllers';
+
+// ── Wireless client contracts ─────────────────────────────────
+interface WirelessClient {
+  id: number;
+  mac_address: string;
+  ip_address: string | null;
+  hostname: string | null;
+  controller_id: number;
+  ap_id: number | null;
+  ap_name: string | null;
+  ssid_name: string | null;
+  band: string | null;
+  channel: number | null;
+  rssi_dbm: number | null;
+  tx_rate_mbps: number | null;
+  rx_rate_mbps: number | null;
+  connected_since: string | null;
+  last_seen_at: string | null;
+  auth_type: string | null;
+  is_problem: boolean;
+  roaming_count: number;
+  vendor: string;
+  signal_quality: string;
+  controller_name: string | null;
+  site_name: string | null;
+}
+
+interface ClientEvent {
+  event_type: string;
+  from_ap_name: string | null;
+  to_ap_name: string | null;
+  rssi_dbm: number | null;
+  ssid_name: string | null;
+  ts: string;
+}
+
+interface ClientDetail {
+  client: WirelessClient;
+  events: ClientEvent[];
+  stats: {
+    total_roams_24h: number;
+    avg_rssi_24h: number | null;
+    time_connected_today: string | null;
+    ssids_used: string[];
+  };
+}
+
+interface ClientSummary {
+  total_clients: number;
+  by_band: Record<string, number>;
+  by_controller: { name: string; count: number }[];
+  problem_clients: number;
+  low_signal_clients: number;
+  frequent_roamers: number;
+  top_aps_by_clients: { ap_name: string; count: number }[];
+}
 
 // ── Wireless Intelligence contracts ───────────────────────────
 interface Recommendation {
@@ -292,6 +348,27 @@ function failureRateColor(pct: number): string {
   return 'var(--red)';
 }
 
+// ── Wireless client signal helpers (top-level) ────────────────
+function signalColor(rssi: number | null): string {
+  if (rssi == null || isNaN(rssi)) return 'var(--text-muted)';
+  if (rssi >= -70) return 'var(--green)';
+  if (rssi >= -80) return 'var(--yellow)';
+  return 'var(--red)';
+}
+
+function signalLabel(rssi: number | null): string {
+  if (rssi == null || isNaN(rssi)) return 'Unknown';
+  if (rssi >= -60) return 'Excellent';
+  if (rssi >= -70) return 'Good';
+  if (rssi >= -80) return 'Fair';
+  return 'Poor';
+}
+
+function fmtRate(mbps: number | null): string {
+  if (mbps == null || isNaN(Number(mbps))) return '—';
+  return `${Math.round(Number(mbps))} Mbps`;
+}
+
 const VENDOR_OPTIONS = [
   'aruba', 'cisco', 'fortinet', 'ruckus', 'mikrotik',
   'hpe', 'grandstream', 'ubiquiti', 'omada',
@@ -311,6 +388,8 @@ export default function WirelessPage() {
   const [tab, setTab] = useState<TabKey>('overview');
   const [siteFilter, setSiteFilter] = useState<number | null>(null);
   const [controllerFilter, setControllerFilter] = useState<number | null>(null);
+  const [clientApFilter, setClientApFilter] = useState<number | null>(null);
+  const [clientProblemOnly, setClientProblemOnly] = useState(false);
 
   function gotoApsForSite(siteId: number | null) {
     setSiteFilter(siteId);
@@ -326,6 +405,18 @@ export default function WirelessPage() {
 
   function gotoIntelligence() {
     setTab('intelligence');
+  }
+
+  function gotoClientsForAp(apId: number | null) {
+    setClientApFilter(apId);
+    setClientProblemOnly(false);
+    setTab('clients');
+  }
+
+  function gotoProblemClients() {
+    setClientProblemOnly(true);
+    setClientApFilter(null);
+    setTab('clients');
   }
 
   return (
@@ -351,12 +442,16 @@ export default function WirelessPage() {
           onClick={() => setTab('intelligence')}
         >Intelligence</button>
         <button
+          className={`sv-tab ${tab === 'clients' ? 'active' : ''}`}
+          onClick={() => setTab('clients')}
+        >Clients</button>
+        <button
           className={`sv-tab ${tab === 'controllers' ? 'active' : ''}`}
           onClick={() => setTab('controllers')}
         >Controllers</button>
       </div>
 
-      {tab === 'overview' && <OverviewTab onSelectSite={gotoApsForSite} onViewIntelligence={gotoIntelligence} />}
+      {tab === 'overview' && <OverviewTab onSelectSite={gotoApsForSite} onViewIntelligence={gotoIntelligence} onViewProblemClients={gotoProblemClients} />}
       {tab === 'aps' && (
         <AccessPointsTab
           siteFilter={siteFilter}
@@ -367,7 +462,15 @@ export default function WirelessPage() {
         />
       )}
       {tab === 'ssids' && <SsidsTab />}
-      {tab === 'intelligence' && <IntelligenceTab />}
+      {tab === 'intelligence' && <IntelligenceTab onViewApClients={gotoClientsForAp} />}
+      {tab === 'clients' && (
+        <ClientsTab
+          apFilter={clientApFilter}
+          setApFilter={setClientApFilter}
+          problemOnly={clientProblemOnly}
+          setProblemOnly={setClientProblemOnly}
+        />
+      )}
       {tab === 'controllers' && <ControllersTab />}
     </div>
   );
@@ -424,14 +527,16 @@ function WirelessIntelCard({ onView }: { onView: () => void }) {
 }
 
 function OverviewTab({
-  onSelectSite, onViewIntelligence,
+  onSelectSite, onViewIntelligence, onViewProblemClients,
 }: {
   onSelectSite: (siteId: number | null) => void;
   onViewIntelligence: () => void;
+  onViewProblemClients: () => void;
 }) {
   const summary = useApi<WirelessSummary>('/api/wireless/summary', 30000);
   const offline = useApi<AccessPoint[]>('/api/wireless/aps?status=offline', 30000);
   const ssidSummary = useApi<SsidSummary>('/api/wireless/ssids/summary', 30000);
+  const clientSummary = useApi<ClientSummary>('/api/wireless/clients/summary', 30000);
 
   if (summary.loading && !summary.data) {
     return <div className="sv-panel"><Loading /></div>;
@@ -440,9 +545,25 @@ function OverviewTab({
   if (!summary.data) return <Empty message="No wireless data available." />;
 
   const s = summary.data;
+  const problemClients = clientSummary.data ? Number(clientSummary.data.problem_clients) : 0;
 
   return (
     <div>
+      {problemClients > 0 && (
+        <div
+          style={{
+            display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
+            marginBottom: 16, padding: '12px 16px', borderRadius: 8,
+            border: '1px solid var(--red)',
+            background: 'color-mix(in srgb, var(--red) 10%, transparent)',
+            color: 'var(--red)', fontWeight: 600,
+          }}
+        >
+          <span>⚠ {problemClients} client{problemClients === 1 ? '' : 's'} with poor signal or frequent roaming</span>
+          <span style={{ flex: 1 }} />
+          <button className="sv-btn ghost sm" onClick={onViewProblemClients}>View problem clients →</button>
+        </div>
+      )}
       <WirelessIntelCard onView={onViewIntelligence} />
       <div className="sv-cards">
         <div className="sv-card total">
@@ -945,6 +1066,7 @@ function ApDetailDrawer({
   const [history, setHistory] = useState<ApHistoryRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
+  const [apClients, setApClients] = useState<WirelessClient[]>([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -954,6 +1076,15 @@ function ApDetailDrawer({
       .then((rows) => { if (!cancelled) setHistory(rows); })
       .catch((e: any) => { if (!cancelled) setErr(e?.message || 'Failed to load history'); })
       .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [ap.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setApClients([]);
+    apiGet<WirelessClient[]>(`/api/wireless/aps/${ap.id}/clients`)
+      .then((rows) => { if (!cancelled) setApClients(rows || []); })
+      .catch(() => { if (!cancelled) setApClients([]); });
     return () => { cancelled = true; };
   }, [ap.id]);
 
@@ -1072,6 +1203,43 @@ function ApDetailDrawer({
             <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Out</div>
           </div>
         </div>
+
+        <h3 style={{ marginBottom: 6 }}>Connected Clients ({apClients.length})</h3>
+        {apClients.length ? (
+          <div style={{ marginBottom: 12 }}>
+            {apClients.slice(0, 10).map((c: WirelessClient) => (
+              <div
+                key={c.id}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 10,
+                  padding: '6px 0', borderBottom: '1px solid var(--border-light)', fontSize: 13,
+                }}
+              >
+                <span style={{ flex: 1, minWidth: 0, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {c.mac_address || c.ip_address || '—'}
+                </span>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, width: 90 }}>
+                  <span style={{
+                    width: 8, height: 8, borderRadius: '50%',
+                    background: signalColor(c.rssi_dbm), display: 'inline-block',
+                  }} />
+                  {c.rssi_dbm != null ? `${c.rssi_dbm} dBm` : '—'}
+                </span>
+                <span style={{ width: 80, color: 'var(--text-secondary)' }}>{fmtRate(c.tx_rate_mbps)}</span>
+                <span style={{ color: 'var(--text-muted)' }}>{fmtRel(c.connected_since)}</span>
+              </div>
+            ))}
+            {apClients.length > 10 && (
+              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 6 }}>
+                View all {apClients.length} clients
+              </div>
+            )}
+          </div>
+        ) : (
+          <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 12 }}>
+            No clients connected
+          </div>
+        )}
 
         {err && <ErrorBox message={err} />}
         {loading ? (
@@ -1572,7 +1740,7 @@ function IntelApDrawer({ apId, onClose }: { apId: number; onClose: () => void })
   );
 }
 
-function IntelligenceTab() {
+function IntelligenceTab({ onViewApClients }: { onViewApClients?: (apId: number) => void }) {
   const summaryApi = useApi<IntelSummary>('/api/wireless/intelligence/summary', 30000);
   const rowsApi = useApi<IntelRow[]>('/api/wireless/intelligence', 30000);
   const apsApi = useApi<AccessPoint[]>('/api/wireless/aps', 30000);
@@ -1707,13 +1875,14 @@ function IntelligenceTab() {
           <table className="sv-table">
             <thead>
               <tr>
-                <th>AP Name</th><th>Score</th><th>Grade</th><th>Load</th><th>Issues</th>
+                <th>AP Name</th><th>Score</th><th>Grade</th><th>Load</th><th>Clients</th><th>Issues</th>
               </tr>
             </thead>
             <tbody>
               {summary.worst_aps.map((ap: WorstAp) => {
                 const sc = Number(ap.health_score);
                 const issues = ap.issues || [];
+                const apRow = aps.find((a) => a.id === ap.ap_id);
                 return (
                   <tr
                     key={ap.ap_id}
@@ -1724,6 +1893,16 @@ function IntelligenceTab() {
                     <td style={{ color: scoreColor(sc), fontWeight: 600 }}>{Math.round(sc)}</td>
                     <td style={{ color: gradeColor(ap.health_grade), fontWeight: 600 }}>{ap.health_grade}</td>
                     <td>{ap.load_status}</td>
+                    <td>
+                      {apRow ? apRow.clients_total : '—'}
+                      {onViewApClients && (
+                        <button
+                          className="sv-btn ghost sm"
+                          style={{ marginLeft: 8 }}
+                          onClick={(e) => { e.stopPropagation(); onViewApClients(ap.ap_id); }}
+                        >View clients</button>
+                      )}
+                    </td>
                     <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>
                       {issues.slice(0, 2).join(', ')}
                       {issues.length > 2 ? ` +${issues.length - 2}` : ''}
@@ -1765,6 +1944,397 @@ function IntelligenceTab() {
       {drawerApId != null && (
         <IntelApDrawer apId={drawerApId} onClose={() => setDrawerApId(null)} />
       )}
+    </div>
+  );
+}
+
+// ════════════════════════════════════════════════════════════
+// TAB — Clients (wireless client troubleshooting)
+// ════════════════════════════════════════════════════════════
+
+// ── Client status badge (top-level component) ─────────────────
+function ClientStatusBadge({ client }: { client: WirelessClient }) {
+  const rssi = client.rssi_dbm;
+  if (rssi != null && rssi < -75) {
+    return (
+      <span className="sv-badge" style={{ color: 'var(--red)', borderColor: 'var(--red)' }}>
+        🔴 Low Signal
+      </span>
+    );
+  }
+  if (Number(client.roaming_count) > 5) {
+    return (
+      <span className="sv-badge" style={{ color: 'var(--yellow)', borderColor: 'var(--yellow)' }}>
+        🔄 Frequent Roamer
+      </span>
+    );
+  }
+  return (
+    <span className="sv-badge" style={{ color: 'var(--green)', borderColor: 'var(--green)' }}>
+      ✓ Normal
+    </span>
+  );
+}
+
+// ── Signal cell (dot + dBm + label) (top-level component) ─────
+function SignalCell({ rssi }: { rssi: number | null }) {
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+      <span style={{
+        width: 9, height: 9, borderRadius: '50%',
+        background: signalColor(rssi), display: 'inline-block',
+      }} />
+      <span>{rssi != null ? `${rssi} dBm` : '—'}</span>
+      <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{signalLabel(rssi)}</span>
+    </span>
+  );
+}
+
+function ClientsTab({
+  apFilter, setApFilter, problemOnly, setProblemOnly,
+}: {
+  apFilter: number | null;
+  setApFilter: (v: number | null) => void;
+  problemOnly: boolean;
+  setProblemOnly: (v: boolean) => void;
+}) {
+  const [search, setSearch] = useState('');
+  const [controllerFilter, setControllerFilter] = useState('');
+  const [ssidFilter, setSsidFilter] = useState('');
+  const [bandFilter, setBandFilter] = useState('');
+  const [selectedMac, setSelectedMac] = useState<string | null>(null);
+
+  const summary = useApi<ClientSummary>('/api/wireless/clients/summary', 30000);
+  const controllers = useApi<Controller[]>('/api/wireless/controllers', 30000);
+
+  const qs = useMemo(() => {
+    const params: string[] = [];
+    if (search.trim()) params.push(`search=${encodeURIComponent(search.trim())}`);
+    if (apFilter != null) params.push(`ap_id=${apFilter}`);
+    if (problemOnly) params.push('problem=true');
+    params.push('limit=200');
+    return `?${params.join('&')}`;
+  }, [search, apFilter, problemOnly]);
+
+  const clientsApi = useApi<WirelessClient[]>(`/api/wireless/clients${qs}`, 30000);
+  const allClients = useMemo(() => clientsApi.data || [], [clientsApi.data]);
+
+  const ssidOptions = useMemo(() => {
+    const set = new Set<string>();
+    allClients.forEach((c) => { if (c.ssid_name) set.add(c.ssid_name); });
+    return Array.from(set).sort();
+  }, [allClients]);
+
+  const controllerOptions = useMemo(() => {
+    const set = new Set<string>();
+    (controllers.data || []).forEach((c) => set.add(c.name));
+    allClients.forEach((c) => { if (c.controller_name) set.add(c.controller_name); });
+    return Array.from(set).sort();
+  }, [controllers.data, allClients]);
+
+  const shown = useMemo(() => {
+    return allClients.filter((c) => {
+      if (controllerFilter && c.controller_name !== controllerFilter) return false;
+      if (ssidFilter && c.ssid_name !== ssidFilter) return false;
+      if (bandFilter && c.band !== bandFilter) return false;
+      return true;
+    });
+  }, [allClients, controllerFilter, ssidFilter, bandFilter]);
+
+  return (
+    <div>
+      <input
+        className="sv-input"
+        style={{ width: '100%', marginBottom: 16 }}
+        placeholder="Search by MAC address or IP… e.g. 00:11:22:33:44:55 or 192.168.1.50"
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+      />
+
+      <div className="sv-cards">
+        <div className="sv-card">
+          <div className="num">{summary.data ? Number(summary.data.total_clients) : '—'}</div>
+          <div className="label">Total Clients</div>
+        </div>
+        <div className="sv-card" style={{ borderLeftColor: 'var(--red)' }}>
+          <div className="num" style={{ color: 'var(--red)' }}>
+            {summary.data ? Number(summary.data.problem_clients) : '—'}
+          </div>
+          <div className="label">Problem Clients</div>
+        </div>
+        <div className="sv-card" style={{ borderLeftColor: 'var(--yellow)' }}>
+          <div className="num" style={{ color: 'var(--yellow)' }}>
+            {summary.data ? Number(summary.data.low_signal_clients) : '—'}
+          </div>
+          <div className="label">Low Signal</div>
+        </div>
+        <div className="sv-card">
+          <div className="num">{summary.data ? Number(summary.data.frequent_roamers) : '—'}</div>
+          <div className="label">Frequent Roamers</div>
+        </div>
+      </div>
+
+      <div style={{
+        display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', margin: '14px 0',
+      }}>
+        <select
+          className="sv-select"
+          style={{ maxWidth: 200 }}
+          value={controllerFilter}
+          onChange={(e) => setControllerFilter(e.target.value)}
+        >
+          <option value="">All controllers</option>
+          {controllerOptions.map((c) => <option key={c} value={c}>{c}</option>)}
+        </select>
+        <select
+          className="sv-select"
+          style={{ maxWidth: 200 }}
+          value={ssidFilter}
+          onChange={(e) => setSsidFilter(e.target.value)}
+        >
+          <option value="">All SSIDs</option>
+          {ssidOptions.map((s) => <option key={s} value={s}>{s}</option>)}
+        </select>
+        <select
+          className="sv-select"
+          style={{ maxWidth: 140 }}
+          value={bandFilter}
+          onChange={(e) => setBandFilter(e.target.value)}
+        >
+          <option value="">All bands</option>
+          <option value="2.4GHz">2.4GHz</option>
+          <option value="5GHz">5GHz</option>
+          <option value="6GHz">6GHz</option>
+        </select>
+        <button
+          className="sv-btn ghost sm"
+          style={problemOnly ? { color: 'var(--red)', borderColor: 'var(--red)' } : undefined}
+          onClick={() => setProblemOnly(!problemOnly)}
+        >⚠ Problem clients only</button>
+        {apFilter != null && (
+          <span
+            className="sv-badge"
+            style={{ cursor: 'pointer', color: 'var(--primary)', borderColor: 'var(--primary)' }}
+            onClick={() => setApFilter(null)}
+          >AP filter active ✕</span>
+        )}
+      </div>
+
+      {clientsApi.error && <ErrorBox message={clientsApi.error} />}
+
+      {clientsApi.loading && !clientsApi.data ? (
+        <div className="sv-panel"><Loading /></div>
+      ) : shown.length ? (
+        <div className="sv-panel" style={{ padding: 0 }}>
+          <table className="sv-table">
+            <thead>
+              <tr>
+                <th>MAC</th><th>IP</th><th>AP</th><th>SSID</th><th>Band</th>
+                <th>Signal</th><th>Rate</th><th>Connected</th><th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {shown.map((c: WirelessClient) => (
+                <tr key={c.id} style={{ cursor: 'pointer' }} onClick={() => setSelectedMac(c.mac_address)}>
+                  <td style={{ fontWeight: 600 }}>{c.mac_address}</td>
+                  <td>{c.ip_address || '—'}</td>
+                  <td>{c.ap_name || '—'}</td>
+                  <td>{c.ssid_name || '—'}</td>
+                  <td>{c.band || '—'}</td>
+                  <td><SignalCell rssi={c.rssi_dbm} /></td>
+                  <td title={c.rx_rate_mbps != null ? `↓ ${fmtRate(c.rx_rate_mbps)}` : undefined}>
+                    {fmtRate(c.tx_rate_mbps)}
+                  </td>
+                  <td>{fmtRel(c.connected_since)}</td>
+                  <td><ClientStatusBadge client={c} /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <Empty message="No clients found." />
+      )}
+
+      {selectedMac && (
+        <ClientDetailPanel mac={selectedMac} onClose={() => setSelectedMac(null)} />
+      )}
+    </div>
+  );
+}
+
+// ── Signal quality visual bar (top-level component) ───────────
+function SignalQualityBar({ rssi }: { rssi: number | null }) {
+  // Map [-80, -50] → [0%, 100%], clamped.
+  const pct = rssi == null
+    ? 0
+    : Math.max(0, Math.min(100, ((rssi - -80) / (-50 - -80)) * 100));
+  return (
+    <div>
+      <div style={{
+        position: 'relative', height: 12, borderRadius: 6,
+        background: 'linear-gradient(to right, var(--red), var(--yellow), var(--green))',
+        border: '1px solid var(--border)',
+      }}>
+        {rssi != null && (
+          <div style={{
+            position: 'absolute', top: -3, left: `calc(${pct}% - 4px)`,
+            width: 10, height: 16, borderRadius: 3,
+            background: signalColor(rssi), border: '2px solid var(--bg-card)',
+            boxShadow: '0 0 0 1px var(--border)',
+          }} />
+        )}
+      </div>
+      <div style={{
+        display: 'flex', justifyContent: 'space-between', fontSize: 11,
+        color: 'var(--text-muted)', marginTop: 3,
+      }}>
+        <span>Poor</span><span>Excellent</span>
+      </div>
+    </div>
+  );
+}
+
+// ── Client event row icon/label (top-level helper) ────────────
+function clientEventMeta(ev: ClientEvent): { color: string; text: string } {
+  switch (ev.event_type) {
+    case 'join':
+      return { color: 'var(--green)', text: `→ joined ${ev.to_ap_name || '—'}` };
+    case 'roam':
+      return { color: '#0ea5e9', text: `↔ roamed to ${ev.to_ap_name || '—'}` };
+    case 'leave':
+      return { color: 'var(--text-muted)', text: `← left ${ev.from_ap_name || '—'}` };
+    case 'low_signal':
+      return { color: 'var(--yellow)', text: '⚠ low signal' };
+    default:
+      return { color: 'var(--text-secondary)', text: ev.event_type || '—' };
+  }
+}
+
+// ── Client detail slide-in panel (top-level component) ────────
+function ClientDetailPanel({ mac, onClose }: { mac: string; onClose: () => void }) {
+  const [detail, setDetail] = useState<ClientDetail | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setErr(null);
+    setDetail(null);
+    apiGet<ClientDetail>(`/api/wireless/clients/${encodeURIComponent(mac)}`)
+      .then((d) => { if (!cancelled) setDetail(d); })
+      .catch((e: any) => { if (!cancelled) setErr(e?.message || 'Failed to load client'); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [mac]);
+
+  const c = detail?.client;
+  const events = detail?.events || [];
+  const stats = detail?.stats;
+
+  return (
+    <div className="sv-modal-backdrop" onMouseDown={onClose}>
+      <div
+        onMouseDown={(e) => e.stopPropagation()}
+        style={{
+          position: 'fixed', top: 0, right: 0, bottom: 0, width: 'min(520px, 96vw)',
+          background: 'var(--bg-card)', borderLeft: '1px solid var(--border)',
+          boxShadow: '-8px 0 24px rgba(0,0,0,0.18)', overflowY: 'auto',
+          padding: '20px 22px', zIndex: 60,
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <h2 style={{ margin: 0, wordBreak: 'break-all' }}>{mac}</h2>
+            {c && (
+              <div style={{ color: 'var(--text-muted)', fontSize: 13, marginTop: 4 }}>
+                {c.ip_address || '—'}{c.hostname ? ` · ${c.hostname}` : ''}
+              </div>
+            )}
+          </div>
+          <button className="sv-btn ghost sm" onClick={onClose}>Close</button>
+        </div>
+
+        {err && <ErrorBox message={err} />}
+        {loading && !detail ? (
+          <Loading />
+        ) : c ? (
+          <>
+            <h3 style={{ marginBottom: 6 }}>Current Connection</h3>
+            <table className="sv-table">
+              <tbody>
+                <tr><td style={{ color: 'var(--text-muted)' }}>AP</td><td>{c.ap_name || '—'}</td></tr>
+                <tr><td style={{ color: 'var(--text-muted)' }}>SSID</td><td>{c.ssid_name || '—'}</td></tr>
+                <tr>
+                  <td style={{ color: 'var(--text-muted)' }}>Band</td>
+                  <td>{c.band || '—'}{c.channel != null ? ` (Ch ${c.channel})` : ''}</td>
+                </tr>
+                <tr>
+                  <td style={{ color: 'var(--text-muted)' }}>Signal</td>
+                  <td><SignalCell rssi={c.rssi_dbm} /></td>
+                </tr>
+                <tr>
+                  <td style={{ color: 'var(--text-muted)' }}>Rate</td>
+                  <td>Tx {fmtRate(c.tx_rate_mbps)} · Rx {fmtRate(c.rx_rate_mbps)}</td>
+                </tr>
+                <tr><td style={{ color: 'var(--text-muted)' }}>Auth</td><td>{c.auth_type || '—'}</td></tr>
+                <tr>
+                  <td style={{ color: 'var(--text-muted)' }}>Connected</td>
+                  <td>{fmtRel(c.connected_since)}</td>
+                </tr>
+              </tbody>
+            </table>
+
+            <h3 style={{ marginBottom: 6 }}>Signal Quality</h3>
+            <div style={{ marginBottom: 12 }}>
+              <SignalQualityBar rssi={c.rssi_dbm} />
+            </div>
+
+            <h3 style={{ marginBottom: 6 }}>Roaming History (24h)</h3>
+            {events.length ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 0, marginBottom: 12 }}>
+                {events.map((ev: ClientEvent, i: number) => {
+                  const meta = clientEventMeta(ev);
+                  return (
+                    <div
+                      key={`${ev.ts}-${i}`}
+                      style={{
+                        display: 'flex', alignItems: 'baseline', gap: 10,
+                        padding: '6px 0', borderBottom: '1px solid var(--border-light)', fontSize: 13,
+                      }}
+                    >
+                      <span style={{ color: 'var(--text-muted)', width: 64, flexShrink: 0 }}>
+                        {fmtTime(ev.ts)}
+                      </span>
+                      <span style={{ color: meta.color, flex: 1 }}>
+                        {meta.text}
+                        {ev.rssi_dbm != null ? (
+                          <span style={{ color: 'var(--text-muted)' }}> ({ev.rssi_dbm} dBm)</span>
+                        ) : null}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 12 }}>
+                No events in last 24h
+              </div>
+            )}
+
+            {stats && (
+              <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginTop: 4 }}>
+                Roams (24h): {Number(stats.total_roams_24h)} |{' '}
+                Avg Signal: {stats.avg_rssi_24h != null ? Number(stats.avg_rssi_24h) : '—'} dBm |{' '}
+                SSIDs used: {(stats.ssids_used || []).length}
+              </div>
+            )}
+          </>
+        ) : !err ? (
+          <Empty message="No client data." />
+        ) : null}
+      </div>
     </div>
   );
 }
