@@ -748,15 +748,34 @@ label.sv-field .sv-input, label.sv-field .sv-select { font-weight: 400; }
 
 /* ── Full-screen sensor manager ────────────────────────── */
 .sv-modal.full {
-  max-width: 1100px; width: 100%; height: 85vh; display: flex; flex-direction: column;
+  max-width: 1100px; width: 100%; height: 85vh; min-height: 500px;
+  display: flex; flex-direction: column;
 }
 .sv-sensor-head { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
 .sv-sensor-head h2 { margin: 0; }
-.sv-sensor-cols { display: grid; grid-template-columns: 1.4fr 1fr; gap: 16px; flex: 1; min-height: 0; }
+/* The two sensor columns own all the flexible height; the available-sensors
+   panel (left) scrolls internally and fills the modal. */
+.sv-sensor-cols { display: grid; grid-template-columns: 1.4fr 1fr; gap: 16px; flex: 1 1 auto; min-height: 0; }
 
-/* Custom OID sensor section (below the discovery checklist) */
-.sv-custom-oid { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 14px; }
-.sv-custom-oid h3 { margin: 0 0 10px; font-size: 14px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.4px; }
+/* Custom OID sensors — a collapsible section pinned at the bottom of the modal.
+   flex: 0 0 auto so it never steals height from the sensor columns above. */
+.sv-custom-oid { flex: 0 0 auto; margin-top: 14px; border-top: 1px solid var(--border); padding-top: 12px; }
+.sv-custom-toggle {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  background: none; border: none; cursor: pointer; padding: 4px 2px;
+  font-size: 13px; font-weight: 700; color: var(--text-secondary);
+  text-transform: uppercase; letter-spacing: 0.4px;
+}
+.sv-custom-toggle:hover { color: var(--text-primary); }
+.sv-custom-toggle .caret { font-size: 10px; color: var(--text-muted); }
+.sv-custom-count {
+  margin-left: 6px; background: var(--bg-primary); border: 1px solid var(--border);
+  border-radius: 999px; padding: 1px 8px; font-size: 11px; font-weight: 700; color: var(--text-secondary);
+  text-transform: none; letter-spacing: 0;
+}
+/* Expanded content is capped and scrolls internally so opening it never blows
+   out the modal height. */
+.sv-custom-body { margin-top: 10px; max-height: 240px; overflow-y: auto; }
 .sv-custom-form { display: grid; grid-template-columns: 1fr; gap: 8px; max-width: 540px; }
 .sv-custom-form label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; font-weight: 600; color: var(--text-muted); }
 .sv-custom-form label .sv-input { font-weight: 400; }

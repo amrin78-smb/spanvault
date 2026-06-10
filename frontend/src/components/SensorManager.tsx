@@ -152,6 +152,9 @@ export default function SensorManager({
   const [customLabel, setCustomLabel] = useState('');
   const [customUnit, setCustomUnit] = useState('');
   const [addingCustom, setAddingCustom] = useState(false);
+  // Custom OID section is collapsed by default so it never crowds the sensor
+  // list — it only takes vertical space once the user opens it.
+  const [customOpen, setCustomOpen] = useState(false);
 
   // Load the already-saved sensor selection on open.
   useEffect(() => {
@@ -412,55 +415,71 @@ export default function SensorManager({
           </div>
 
           <div className="sv-custom-oid">
-            <h3>Custom OID Sensors</h3>
-            <div className="sv-custom-form">
-              <label>OID
-                <input
-                  className="sv-input"
-                  placeholder="1.3.6.1.2.1.25.3.3.1.2.1"
-                  value={customOid}
-                  onChange={(e) => setCustomOid(e.target.value)}
-                />
-              </label>
-              <label>Label
-                <input
-                  className="sv-input"
-                  placeholder="CPU Core 1"
-                  value={customLabel}
-                  onChange={(e) => setCustomLabel(e.target.value)}
-                />
-              </label>
-              <label>Unit
-                <input
-                  className="sv-input"
-                  placeholder="%"
-                  value={customUnit}
-                  onChange={(e) => setCustomUnit(e.target.value)}
-                />
-              </label>
-              <button className="sv-btn" onClick={addCustom} disabled={addingCustom}>
-                {addingCustom ? 'Adding…' : 'Add Sensor'}
-              </button>
-            </div>
-
-            <div className="sv-custom-list">
-              <div className="sv-sensor-group-title">Existing custom sensors</div>
-              {customSensors.length === 0 ? (
-                <div className="sv-empty">No custom sensors yet.</div>
-              ) : (
-                customSensors.map((c) => (
-                  <div key={c.id} className="sv-sensor-item enabled">
-                    <span className="sv-sensor-info">
-                      <span className="nm">
-                        {c.custom_label || c.sensor_name}{c.custom_unit ? ` (${c.custom_unit})` : ''}
-                      </span>
-                      <span className="meta">{c.oid}</span>
-                    </span>
-                    <button className="sv-btn ghost sm" onClick={() => removeCustom(c.id)}>Remove</button>
-                  </div>
-                ))
+            <button
+              type="button"
+              className="sv-custom-toggle"
+              aria-expanded={customOpen}
+              onClick={() => setCustomOpen((o) => !o)}
+            >
+              <span className="caret">{customOpen ? '▼' : '▶'}</span>
+              + Add Custom OID Sensor
+              {customSensors.length > 0 && (
+                <span className="sv-custom-count">{customSensors.length}</span>
               )}
-            </div>
+            </button>
+
+            {customOpen && (
+              <div className="sv-custom-body">
+                <div className="sv-custom-form">
+                  <label>OID
+                    <input
+                      className="sv-input"
+                      placeholder="1.3.6.1.2.1.25.3.3.1.2.1"
+                      value={customOid}
+                      onChange={(e) => setCustomOid(e.target.value)}
+                    />
+                  </label>
+                  <label>Label
+                    <input
+                      className="sv-input"
+                      placeholder="CPU Core 1"
+                      value={customLabel}
+                      onChange={(e) => setCustomLabel(e.target.value)}
+                    />
+                  </label>
+                  <label>Unit
+                    <input
+                      className="sv-input"
+                      placeholder="%"
+                      value={customUnit}
+                      onChange={(e) => setCustomUnit(e.target.value)}
+                    />
+                  </label>
+                  <button className="sv-btn" onClick={addCustom} disabled={addingCustom}>
+                    {addingCustom ? 'Adding…' : 'Add Sensor'}
+                  </button>
+                </div>
+
+                <div className="sv-custom-list">
+                  <div className="sv-sensor-group-title">Existing custom sensors</div>
+                  {customSensors.length === 0 ? (
+                    <div className="sv-empty">No custom sensors yet.</div>
+                  ) : (
+                    customSensors.map((c) => (
+                      <div key={c.id} className="sv-sensor-item enabled">
+                        <span className="sv-sensor-info">
+                          <span className="nm">
+                            {c.custom_label || c.sensor_name}{c.custom_unit ? ` (${c.custom_unit})` : ''}
+                          </span>
+                          <span className="meta">{c.oid}</span>
+                        </span>
+                        <button className="sv-btn ghost sm" onClick={() => removeCustom(c.id)}>Remove</button>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            )}
           </div>
           </>
         )}
