@@ -39,6 +39,23 @@ interface HighUtilAp {
   clients_total: number;
 }
 
+interface RfBySite {
+  site_id: number;
+  site_name: string;
+  aps: number;
+  avg_noise_floor: number | null;
+  high_util_aps: number;
+  avg_retry_rate: number | null;
+  auth_failures: number;
+}
+
+interface HighNoiseAp {
+  id: number;
+  name: string;
+  site_name: string | null;
+  noise_floor: number | null;
+}
+
 interface WirelessSummary {
   total_aps: number;
   online_aps: number;
@@ -47,6 +64,34 @@ interface WirelessSummary {
   by_site: SummarySite[];
   by_controller: SummaryController[];
   high_utilization: HighUtilAp[];
+  auth_failures_total: number;
+  avg_noise_floor: number | null;
+  high_noise_aps: HighNoiseAp[];
+  rf_by_site: RfBySite[];
+}
+
+interface Ssid {
+  id: number;
+  controller_id: number;
+  controller_name: string | null;
+  vendor: string | null;
+  ssid_name: string;
+  site_id: number | null;
+  site_name: string | null;
+  status: string;
+  clients_total: number;
+  bytes_in: number | null;
+  bytes_out: number | null;
+  auth_successes: number;
+  auth_failures: number;
+  updated_at: string;
+}
+
+interface SsidSummary {
+  total_ssids: number;
+  active_ssids: number;
+  top_ssids: Ssid[];
+  most_failures: Ssid[];
 }
 
 interface AccessPoint {
@@ -75,6 +120,18 @@ interface AccessPoint {
   uptime_seconds: number | null;
   uptime_formatted: string | null;
   last_seen_at: string | null;
+  noise_floor_2g: number | null;
+  noise_floor_5g: number | null;
+  retry_rate_2g: number | null;
+  retry_rate_5g: number | null;
+  rx_errors_2g: number | null;
+  tx_errors_2g: number | null;
+  rx_errors_5g: number | null;
+  tx_errors_5g: number | null;
+  throughput_in_bps: number | null;
+  throughput_out_bps: number | null;
+  serial_number: string | null;
+  auth_failures: number | null;
 }
 
 interface ApHistoryRow {
@@ -128,7 +185,44 @@ interface ControllerForm {
   site_name: string | null;
 }
 
-type TabKey = 'overview' | 'aps' | 'controllers';
+type TabKey = 'overview' | 'aps' | 'ssids' | 'controllers';
+
+// ── Formatting / RF helpers (top-level) ───────────────────────
+function fmtBytes(n: number | null): string {
+  if (n == null || isNaN(n)) return '—';
+  if (n === 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const neg = n < 0;
+  let v = Math.abs(n);
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i += 1; }
+  return `${neg ? '-' : ''}${v.toFixed(1)} ${units[i]}`;
+}
+
+function fmtBps(n: number | null): string {
+  if (n == null || isNaN(n)) return '—';
+  if (Math.abs(n) < 1e6) return `${(n / 1e3).toFixed(1)} Kbps`;
+  return `${(n / 1e6).toFixed(1)} Mbps`;
+}
+
+function noiseBadge(dbm: number | null): { label: string; color: string } {
+  if (dbm == null || isNaN(dbm)) return { label: '—', color: 'var(--text-muted)' };
+  if (dbm <= -85) return { label: 'Excellent', color: 'var(--green)' };
+  if (dbm <= -75) return { label: 'Fair', color: 'var(--yellow)' };
+  return { label: 'Poor', color: 'var(--red)' };
+}
+
+function failureRate(ok: number, fail: number): number {
+  const denom = ok + fail;
+  if (denom <= 0) return 0;
+  return (fail / denom) * 100;
+}
+
+function failureRateColor(pct: number): string {
+  if (pct < 1) return 'var(--green)';
+  if (pct <= 5) return 'var(--yellow)';
+  return 'var(--red)';
+}
 
 const VENDOR_OPTIONS = [
   'aruba', 'cisco', 'fortinet', 'ruckus', 'mikrotik',
@@ -177,6 +271,10 @@ export default function WirelessPage() {
           onClick={() => setTab('aps')}
         >Access Points</button>
         <button
+          className={`sv-tab ${tab === 'ssids' ? 'active' : ''}`}
+          onClick={() => setTab('ssids')}
+        >SSIDs</button>
+        <button
           className={`sv-tab ${tab === 'controllers' ? 'active' : ''}`}
           onClick={() => setTab('controllers')}
         >Controllers</button>
@@ -192,6 +290,7 @@ export default function WirelessPage() {
           onFilterController={gotoApsForController}
         />
       )}
+      {tab === 'ssids' && <SsidsTab />}
       {tab === 'controllers' && <ControllersTab />}
     </div>
   );
@@ -204,6 +303,7 @@ export default function WirelessPage() {
 function OverviewTab({ onSelectSite }: { onSelectSite: (siteId: number | null) => void }) {
   const summary = useApi<WirelessSummary>('/api/wireless/summary', 30000);
   const offline = useApi<AccessPoint[]>('/api/wireless/aps?status=offline', 30000);
+  const ssidSummary = useApi<SsidSummary>('/api/wireless/ssids/summary', 30000);
 
   if (summary.loading && !summary.data) {
     return <div className="sv-panel"><Loading /></div>;
@@ -231,6 +331,19 @@ function OverviewTab({ onSelectSite }: { onSelectSite: (siteId: number | null) =
         <div className="sv-card">
           <div className="num">{s.total_clients}</div>
           <div className="label">Clients</div>
+        </div>
+        <div className="sv-card">
+          <div
+            className="num"
+            style={{ color: s.auth_failures_total > 0 ? 'var(--red)' : undefined }}
+          >{s.auth_failures_total}</div>
+          <div className="label">Auth Failures</div>
+        </div>
+        <div className="sv-card">
+          <div className="num" style={{ color: noiseBadge(s.avg_noise_floor).color }}>
+            {s.avg_noise_floor ?? '—'} dBm
+          </div>
+          <div className="label">Avg Noise Floor</div>
         </div>
       </div>
 
@@ -322,6 +435,67 @@ function OverviewTab({ onSelectSite }: { onSelectSite: (siteId: number | null) =
           </div>
         </div>
       )}
+
+      <div className="sv-panel" style={{ marginTop: 20 }}>
+        <h3 style={{ marginTop: 0 }}>RF Health by Site</h3>
+        {s.rf_by_site && s.rf_by_site.length ? (
+          <table className="sv-table">
+            <thead>
+              <tr>
+                <th>Site</th><th>APs</th><th>Avg Noise Floor</th>
+                <th>High Util APs</th><th>Avg Retry Rate</th><th>Auth Failures</th>
+              </tr>
+            </thead>
+            <tbody>
+              {s.rf_by_site.map((row: RfBySite) => (
+                <tr key={row.site_id}>
+                  <td>{row.site_name}</td>
+                  <td>{row.aps}</td>
+                  <td style={{ color: noiseBadge(row.avg_noise_floor).color, fontWeight: 600 }}>
+                    {row.avg_noise_floor ?? '—'} dBm
+                  </td>
+                  <td>{row.high_util_aps}</td>
+                  <td>{row.avg_retry_rate ?? '—'}%</td>
+                  <td style={{ color: row.auth_failures > 0 ? 'var(--red)' : undefined }}>
+                    {row.auth_failures}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : <Empty message="No RF site data yet." />}
+      </div>
+
+      <div className="sv-panel" style={{ marginTop: 20 }}>
+        <h3 style={{ marginTop: 0 }}>Top SSIDs by Clients</h3>
+        {ssidSummary.loading && !ssidSummary.data ? (
+          <Loading />
+        ) : ssidSummary.data && ssidSummary.data.top_ssids.length ? (
+          <table className="sv-table">
+            <thead>
+              <tr>
+                <th>SSID</th><th>Clients</th><th>Traffic</th><th>Auth Failure Rate</th>
+              </tr>
+            </thead>
+            <tbody>
+              {ssidSummary.data.top_ssids.slice(0, 5).map((row: Ssid) => {
+                const rate = failureRate(row.auth_successes, row.auth_failures);
+                const traffic = (row.bytes_in ?? 0) + (row.bytes_out ?? 0);
+                return (
+                  <tr key={row.id}>
+                    <td style={{ fontWeight: 600 }}>{row.ssid_name}</td>
+                    <td>{row.clients_total}</td>
+                    <td>{fmtBytes(traffic)}</td>
+                    <td style={{ color: failureRateColor(rate), fontWeight: 600 }}>
+                      {rate.toFixed(1)}%
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        ) : <Empty message="No SSID data yet." />}
+      </div>
     </div>
   );
 }
@@ -553,7 +727,9 @@ function ApDetailDrawer({
             <tr><td style={{ color: 'var(--text-muted)' }}>MAC</td><td>{ap.mac_address || '—'}</td></tr>
             <tr><td style={{ color: 'var(--text-muted)' }}>IP</td><td>{ap.ip_address || '—'}</td></tr>
             <tr><td style={{ color: 'var(--text-muted)' }}>Firmware</td><td>{ap.firmware_version || '—'}</td></tr>
+            <tr><td style={{ color: 'var(--text-muted)' }}>Serial Number</td><td>{ap.serial_number || '—'}</td></tr>
             <tr><td style={{ color: 'var(--text-muted)' }}>Uptime</td><td>{ap.uptime_formatted || '—'}</td></tr>
+            <tr><td style={{ color: 'var(--text-muted)' }}>Auth Failures</td><td>{ap.auth_failures ?? '—'}</td></tr>
             <tr><td style={{ color: 'var(--text-muted)' }}>Last seen</td><td>{fmtTime(ap.last_seen_at)}</td></tr>
             <tr>
               <td style={{ color: 'var(--text-muted)' }}>Controller</td>
@@ -608,6 +784,38 @@ function ApDetailDrawer({
           <UtilBar pct={ap.radio_5g_util_pct || 0} />
         </div>
 
+        <h3 style={{ marginBottom: 6 }}>Radio Performance</h3>
+        <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 12 }}>
+          <RadioBandStats
+            band="2.4 GHz"
+            noiseFloor={ap.noise_floor_2g}
+            utilPct={ap.radio_2g_util_pct}
+            retryRate={ap.retry_rate_2g}
+            rxErrors={ap.rx_errors_2g}
+            txErrors={ap.tx_errors_2g}
+          />
+          <RadioBandStats
+            band="5 GHz"
+            noiseFloor={ap.noise_floor_5g}
+            utilPct={ap.radio_5g_util_pct}
+            retryRate={ap.retry_rate_5g}
+            rxErrors={ap.rx_errors_5g}
+            txErrors={ap.tx_errors_5g}
+          />
+        </div>
+
+        <h3 style={{ marginBottom: 6 }}>Throughput</h3>
+        <div style={{ display: 'flex', gap: 16, marginBottom: 12 }}>
+          <div>
+            <div style={{ fontSize: 18, fontWeight: 800 }}>{fmtBps(ap.throughput_in_bps)}</div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>In</div>
+          </div>
+          <div>
+            <div style={{ fontSize: 18, fontWeight: 800 }}>{fmtBps(ap.throughput_out_bps)}</div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Out</div>
+          </div>
+        </div>
+
         {err && <ErrorBox message={err} />}
         {loading ? (
           <Loading />
@@ -646,6 +854,61 @@ function ApDetailDrawer({
   );
 }
 
+// ── Radio band stats block (top-level component) ──────────────
+function RadioBandStats({
+  band, noiseFloor, utilPct, retryRate, rxErrors, txErrors,
+}: {
+  band: string;
+  noiseFloor: number | null;
+  utilPct: number | null;
+  retryRate: number | null;
+  rxErrors: number | null;
+  txErrors: number | null;
+}) {
+  const nb = noiseBadge(noiseFloor);
+  return (
+    <div style={{
+      flex: '1 1 200px', minWidth: 180,
+      border: '1px solid var(--border)', borderRadius: 8, padding: '10px 12px',
+    }}>
+      <div style={{ fontWeight: 700, marginBottom: 8 }}>{band}</div>
+      <div style={{
+        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+        padding: '3px 0', fontSize: 13,
+      }}>
+        <span style={{ color: 'var(--text-muted)' }}>Noise Floor</span>
+        <span>
+          {noiseFloor ?? '—'} dBm{' '}
+          <span className="sv-badge" style={{ color: nb.color, borderColor: nb.color }}>
+            {nb.label}
+          </span>
+        </span>
+      </div>
+      <div style={{
+        display: 'flex', justifyContent: 'space-between',
+        padding: '3px 0', fontSize: 13,
+      }}>
+        <span style={{ color: 'var(--text-muted)' }}>Channel Utilization</span>
+        <span>{utilPct ?? '—'}%</span>
+      </div>
+      <div style={{
+        display: 'flex', justifyContent: 'space-between',
+        padding: '3px 0', fontSize: 13,
+      }}>
+        <span style={{ color: 'var(--text-muted)' }}>Retry Rate</span>
+        <span>{retryRate ?? '—'}%</span>
+      </div>
+      <div style={{
+        display: 'flex', justifyContent: 'space-between',
+        padding: '3px 0', fontSize: 13,
+      }}>
+        <span style={{ color: 'var(--text-muted)' }}>Errors</span>
+        <span>{rxErrors ?? '—'} RX / {txErrors ?? '—'} TX</span>
+      </div>
+    </div>
+  );
+}
+
 function fmtBucket(ts: string): string {
   const d = new Date(ts);
   if (isNaN(d.getTime())) return String(ts);
@@ -653,7 +916,127 @@ function fmtBucket(ts: string): string {
 }
 
 // ════════════════════════════════════════════════════════════
-// TAB 3 — Controllers
+// TAB 3 — SSIDs
+// ════════════════════════════════════════════════════════════
+
+function SsidsTab() {
+  const controllers = useApi<Controller[]>('/api/wireless/controllers', 0);
+  const [controllerFilter, setControllerFilter] = useState<number | null>(null);
+  const [siteFilter, setSiteFilter] = useState<number | null>(null);
+  const [search, setSearch] = useState('');
+
+  const qs = useMemo(() => {
+    const params: string[] = [];
+    if (controllerFilter != null) params.push(`controller_id=${controllerFilter}`);
+    if (siteFilter != null) params.push(`site_id=${siteFilter}`);
+    return params.length ? `?${params.join('&')}` : '';
+  }, [controllerFilter, siteFilter]);
+
+  const ssids = useApi<Ssid[]>(`/api/wireless/ssids${qs}`, 30000);
+
+  const allRows = ssids.data || [];
+
+  const siteOptions = useMemo(() => {
+    const map = new Map<number, string>();
+    allRows.forEach((r: Ssid) => {
+      if (r.site_id != null) map.set(r.site_id, r.site_name || `Site ${r.site_id}`);
+    });
+    return Array.from(map.entries()).map(([id, name]) => ({ id, name }));
+  }, [allRows]);
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return allRows;
+    return allRows.filter((r: Ssid) => r.ssid_name.toLowerCase().includes(q));
+  }, [allRows, search]);
+
+  return (
+    <div>
+      <div style={{
+        display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 14,
+      }}>
+        <input
+          className="sv-input"
+          style={{ maxWidth: 240 }}
+          placeholder="Search SSID name…"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
+        <select
+          className="sv-select"
+          style={{ maxWidth: 220 }}
+          value={controllerFilter ?? ''}
+          onChange={(e) => setControllerFilter(e.target.value ? Number(e.target.value) : null)}
+        >
+          <option value="">All controllers</option>
+          {controllers.data?.map((c: Controller) => (
+            <option key={c.id} value={c.id}>{c.name}</option>
+          ))}
+        </select>
+        <select
+          className="sv-select"
+          style={{ maxWidth: 200 }}
+          value={siteFilter ?? ''}
+          onChange={(e) => setSiteFilter(e.target.value ? Number(e.target.value) : null)}
+        >
+          <option value="">All sites</option>
+          {siteOptions.map((s: { id: number; name: string }) => (
+            <option key={s.id} value={s.id}>{s.name}</option>
+          ))}
+        </select>
+      </div>
+
+      {ssids.error && <ErrorBox message={ssids.error} />}
+
+      <div className="sv-panel" style={{ padding: 0 }}>
+        {ssids.loading && !ssids.data ? (
+          <Loading />
+        ) : filtered.length ? (
+          <table className="sv-table">
+            <thead>
+              <tr>
+                <th>SSID Name</th><th>Controller</th><th>Site</th><th>Status</th>
+                <th>Clients</th><th>Traffic In</th><th>Traffic Out</th>
+                <th>Auth OK</th><th>Auth Fail</th><th>Failure Rate</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((r: Ssid) => {
+                const rate = failureRate(r.auth_successes, r.auth_failures);
+                return (
+                  <tr key={r.id}>
+                    <td style={{ fontWeight: 600 }}>{r.ssid_name}</td>
+                    <td>{r.controller_name || '—'}</td>
+                    <td>{r.site_name || '—'}</td>
+                    <td>
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                        <StatusDot status={r.status === 'up' ? 'up' : 'down'} />
+                        {r.status}
+                      </span>
+                    </td>
+                    <td>{r.clients_total}</td>
+                    <td>{fmtBytes(r.bytes_in)}</td>
+                    <td>{fmtBytes(r.bytes_out)}</td>
+                    <td>{r.auth_successes}</td>
+                    <td>{r.auth_failures}</td>
+                    <td style={{ color: failureRateColor(rate), fontWeight: 600 }}>
+                      {rate.toFixed(1)}%
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        ) : (
+          <Empty message="No SSID data yet — run wireless polling first" />
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ════════════════════════════════════════════════════════════
+// TAB 4 — Controllers
 // ════════════════════════════════════════════════════════════
 
 function ControllersTab() {

@@ -356,19 +356,26 @@ function HealthScoreStat({ data }: { data: Overview | null }) {
 // ── Wireless stat card (top-level component) ───────────────────
 // Self-contained: fetches the wireless summary and links to /wireless. Hidden
 // until at least one AP exists, and pulses when any AP is offline.
-type WirelessSummaryLite = { total_aps: number; online_aps: number; offline_aps: number };
+type WirelessSummaryLite = { total_aps: number; online_aps: number; offline_aps: number; total_clients: number };
+type WirelessSsidLite = { total_ssids: number; active_ssids: number };
 
 function WirelessStat() {
   const wifi = useApi<WirelessSummaryLite>('/api/wireless/summary', REFRESH_MS);
+  const ssids = useApi<WirelessSsidLite>('/api/wireless/ssids/summary', REFRESH_MS);
   const w = wifi.data;
   if (!w || !w.total_aps) return null;
   const c = w.offline_aps > 0 ? 'var(--sv-down)' : 'var(--sv-up)';
+  const clients = w.total_clients || 0;
+  const ssidCount = ssids.data?.active_ssids ?? ssids.data?.total_ssids ?? 0;
   return (
     <Link href="/wireless" className={`sv-stat${w.offline_aps > 0 ? ' pulse' : ''}`} style={{ borderLeftColor: c }}>
       <div className="sv-stat-top">
         <span className="num">{w.online_aps}/{w.total_aps}</span>
       </div>
       <div className="label">Wireless APs Online</div>
+      <div className="label" style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
+        {clients} client{clients === 1 ? '' : 's'} · {ssidCount} SSID{ssidCount === 1 ? '' : 's'}
+      </div>
     </Link>
   );
 }
