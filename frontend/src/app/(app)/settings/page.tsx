@@ -642,6 +642,10 @@ function formatChangelog(raw: string): string {
 }
 
 const UPDATE_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes
+// After the API is confirmed stably back up, wait this long before reloading so
+// the Next.js frontend (which starts AFTER the API) has time to finish booting —
+// otherwise the reload lands on "page cannot be reached" for 20-30 seconds.
+const RELOAD_COUNTDOWN_SECONDS = 15;
 
 // Broadcast so the cross-app update banner (UpdateNotifier) re-fetches its own
 // availability endpoint after a manual re-check — no page reload needed.
@@ -860,14 +864,18 @@ function UpdateConfirmModal({ onCancel, onConfirm }: { onCancel: () => void; onC
 // "complete" against the still-running pre-restart service.
 function UpdatingOverlay() {
   const [phase, setPhase] = useState<'starting' | 'down' | 'back_up' | 'timeout'>('starting');
+  const [countdown, setCountdown] = useState(RELOAD_COUNTDOWN_SECONDS);
   const wentDown = useRef(false);
   const consecutiveUp = useRef(0);
+
+  // Navigate to the dashboard with a success banner. Used by both the countdown
+  // and the "Reload Now" button (which skips the remaining countdown).
+  const reloadToDashboard = () => { window.location.href = '/?updated=true'; };
 
   useEffect(() => {
     let active = true;
     const startedAt = Date.now();
     let pollId: ReturnType<typeof setInterval> | null = null;
-    let reloadId: ReturnType<typeof setTimeout> | null = null;
 
     function stopPolling() {
       if (pollId !== null) { clearInterval(pollId); pollId = null; }
@@ -918,9 +926,8 @@ function UpdatingOverlay() {
         if (consecutiveUp.current >= 3) {
           setPhase('back_up');
           stopPolling();
-          // Land on the dashboard with a success banner instead of reloading the
-          // settings page in place.
-          reloadId = setTimeout(() => { window.location.href = '/?updated=true'; }, 2000);
+          // The reload itself is driven by the countdown effect below — the API
+          // is up, but Next.js needs a little longer before it can serve pages.
         }
       }
       // else: still the pre-restart API — keep waiting for it to go down.
@@ -932,14 +939,23 @@ function UpdatingOverlay() {
     return () => {
       active = false;
       stopPolling();
-      if (reloadId !== null) clearTimeout(reloadId);
     };
   }, []);
 
+  // Once the API is confirmed stably back up, count down (15…14…13…) before
+  // reloading so the Next.js frontend has time to finish starting after the API.
+  useEffect(() => {
+    if (phase !== 'back_up') return;
+    if (countdown <= 0) { reloadToDashboard(); return; }
+    const id = setTimeout(() => setCountdown((c) => c - 1), 1000);
+    return () => clearTimeout(id);
+  }, [phase, countdown]);
+
   let statusLine = 'Starting update…';
   if (phase === 'down') statusLine = 'Services restarting… ⟳';
-  else if (phase === 'back_up') statusLine = '✓ Update complete! Reloading…';
-  else if (phase === 'timeout') statusLine = 'Update is taking longer than expected. Try refreshing the page manually.';
+  else if (phase === 'back_up') {
+    statusLine = `✓ Services are back online. Reloading in ${countdown} second${countdown === 1 ? '' : 's'}…`;
+  } else if (phase === 'timeout') statusLine = 'Update is taking longer than expected. Try refreshing the page manually.';
 
   return (
     <div style={{
@@ -956,8 +972,19 @@ function UpdatingOverlay() {
         <h2 style={{ marginTop: 14 }}>Updating SpanVault…</h2>
         <p className="sv-muted">Pulling latest code and restarting services. Do not close this window.</p>
         <p style={{ fontWeight: 600, margin: '14px 0' }}>{statusLine}</p>
-        <p className="sv-muted" style={{ fontSize: 12 }}>(This usually takes 30-60 seconds)</p>
-        <button className="sv-btn" style={{ marginTop: 10 }} onClick={() => window.location.reload()}>
+        {phase === 'back_up' && (
+          <div style={{ fontSize: 40, fontWeight: 800, lineHeight: 1, margin: '4px 0 10px', color: 'var(--primary)' }}>
+            {countdown}
+          </div>
+        )}
+        {phase !== 'back_up' && (
+          <p className="sv-muted" style={{ fontSize: 12 }}>(This usually takes 30-60 seconds)</p>
+        )}
+        <button
+          className="sv-btn"
+          style={{ marginTop: 10 }}
+          onClick={phase === 'back_up' ? reloadToDashboard : () => window.location.reload()}
+        >
           Reload Now
         </button>
       </div>
