@@ -2206,12 +2206,182 @@ app.get('/api/wireless/controllers', wrap(async (_req, res) => {
   const r = await sv.query(`
     SELECT c.id, c.name, c.vendor, c.controller_url, c.api_username, c.snmp_device_id,
            c.site_id, c.site_name, c.active, c.last_polled_at, c.status,
+           c.model, c.firmware_version, c.licensed_aps, c.ha_mode, c.ha_peer_ip,
+           c.ha_sync_status, c.ap_disconnects_24h,
            (SELECT COUNT(*)::int FROM wireless_aps a WHERE a.controller_id = c.id) AS ap_count,
            (SELECT COALESCE(SUM(a.clients_total), 0)::int FROM wireless_aps a WHERE a.controller_id = c.id) AS client_count
     FROM wireless_controllers c
     ORDER BY c.name
   `);
   res.json(r.rows);
+}));
+
+// ── Aggregate overview across all controllers ─────────────────
+// Registered before any /:id route so "overview" is never treated as an :id.
+app.get('/api/wireless/controllers/overview', wrap(async (_req, res) => {
+  const r = await sv.query(`
+    SELECT c.id, c.name, c.vendor, c.site_name, c.model, c.firmware_version,
+           c.status, c.licensed_aps, c.ha_mode, c.ha_peer_ip, c.ha_sync_status,
+           c.ap_disconnects_24h, c.last_polled_at,
+           (SELECT COUNT(*)::int FROM wireless_aps a WHERE a.controller_id = c.id) AS ap_count,
+           (SELECT COALESCE(SUM(a.clients_total), 0)::int FROM wireless_aps a WHERE a.controller_id = c.id) AS client_count,
+           cpu.value AS cpu_pct, mem.value AS mem_pct, up.value AS uptime_seconds
+    FROM wireless_controllers c
+    LEFT JOIN LATERAL (
+      SELECT value FROM snmp_results
+      WHERE device_id = c.snmp_device_id AND metric_name = 'cpu_pct'
+      ORDER BY ts DESC LIMIT 1
+    ) cpu ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT value FROM snmp_results
+      WHERE device_id = c.snmp_device_id AND metric_name = 'mem_pct'
+      ORDER BY ts DESC LIMIT 1
+    ) mem ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT value FROM snmp_results
+      WHERE device_id = c.snmp_device_id AND metric_name = 'uptime_seconds'
+      ORDER BY ts DESC LIMIT 1
+    ) up ON TRUE
+    ORDER BY c.name
+  `);
+
+  let totalAps = 0;
+  let totalClients = 0;
+  let onlineControllers = 0;
+  let cpuSum = 0;
+  let cpuCount = 0;
+  let memSum = 0;
+  let memCount = 0;
+  let haHealthy = 0;
+  let haTotal = 0;
+  let licensedTotal = 0;
+  let hasLicensed = false;
+
+  const controllers = r.rows.map((row) => {
+    const apCount = Number(row.ap_count) || 0;
+    const clientCount = Number(row.client_count) || 0;
+    totalAps += apCount;
+    totalClients += clientCount;
+    if (row.status === 'ok') onlineControllers += 1;
+
+    const cpu = row.cpu_pct == null ? null : Number(row.cpu_pct);
+    const mem = row.mem_pct == null ? null : Number(row.mem_pct);
+    if (cpu != null && Number.isFinite(cpu)) { cpuSum += cpu; cpuCount += 1; }
+    if (mem != null && Number.isFinite(mem)) { memSum += mem; memCount += 1; }
+
+    if (row.ha_sync_status === 'synced') haHealthy += 1;
+    if (row.ha_mode != null && row.ha_mode !== 'disabled') haTotal += 1;
+
+    const licensed = row.licensed_aps == null ? null : Number(row.licensed_aps);
+    let perCap = null;
+    if (licensed != null && Number.isFinite(licensed) && licensed > 0) {
+      perCap = Math.round((apCount / licensed) * 100);
+      licensedTotal += licensed;
+      hasLicensed = true;
+    }
+
+    return {
+      id: row.id,
+      name: row.name,
+      vendor: row.vendor,
+      site_name: row.site_name,
+      model: row.model,
+      firmware_version: row.firmware_version,
+      status: row.status,
+      ap_count: apCount,
+      client_count: clientCount,
+      cpu_pct: cpu,
+      mem_pct: mem,
+      uptime_seconds: row.uptime_seconds == null ? null : Number(row.uptime_seconds),
+      licensed_aps: licensed,
+      ap_capacity_pct: perCap,
+      ha_mode: row.ha_mode,
+      ha_peer_ip: row.ha_peer_ip,
+      ha_sync_status: row.ha_sync_status,
+      ap_disconnects_24h: row.ap_disconnects_24h == null ? null : Number(row.ap_disconnects_24h),
+      last_polled_at: row.last_polled_at,
+    };
+  });
+
+  res.json({
+    total_controllers: controllers.length,
+    online_controllers: onlineControllers,
+    total_aps: totalAps,
+    total_clients: totalClients,
+    avg_cpu_pct: cpuCount ? Math.round((cpuSum / cpuCount) * 10) / 10 : null,
+    avg_mem_pct: memCount ? Math.round((memSum / memCount) * 10) / 10 : null,
+    ha_healthy_count: haHealthy,
+    ha_total_count: haTotal,
+    ap_capacity_pct: hasLicensed && licensedTotal > 0
+      ? Math.round((totalAps / licensedTotal) * 100)
+      : null,
+    controllers,
+  });
+}));
+
+// ── Recent events across all controllers (client events + alerts) ──
+app.get('/api/wireless/controllers/events', wrap(async (_req, res) => {
+  const clientEvents = await sv.query(`
+    SELECT e.ts,
+           c.name AS controller_name,
+           c.site_name AS site_name,
+           e.event_type,
+           COALESCE(e.to_ap_name, e.from_ap_name) AS ap_name
+    FROM wireless_client_events e
+    JOIN wireless_controllers c ON c.id = e.controller_id
+    WHERE e.event_type IN ('join', 'leave', 'low_signal', 'roam')
+    ORDER BY e.ts DESC
+    LIMIT 20
+  `);
+
+  const alertEvents = await sv.query(`
+    SELECT al.triggered_at AS ts,
+           c.name AS controller_name,
+           c.site_name AS site_name,
+           al.severity,
+           al.message
+    FROM alerts al
+    JOIN wireless_controllers c ON c.snmp_device_id = al.device_id
+    ORDER BY al.triggered_at DESC
+    LIMIT 20
+  `);
+
+  const events = [];
+
+  for (const e of clientEvents.rows) {
+    const ap = e.ap_name || 'unknown AP';
+    let description;
+    let severity = null;
+    if (e.event_type === 'join') description = `AP ${ap} client joined`;
+    else if (e.event_type === 'leave') description = `AP ${ap} client disconnected`;
+    else if (e.event_type === 'low_signal') { description = `Low signal alert on ${ap}`; severity = 'warning'; }
+    else if (e.event_type === 'roam') description = `AP ${ap} client roamed`;
+    else description = `AP ${ap} ${e.event_type}`;
+    events.push({
+      ts: e.ts,
+      controller_name: e.controller_name,
+      site_name: e.site_name,
+      event_type: e.event_type,
+      description,
+      severity,
+      ap_name: e.ap_name || null,
+    });
+  }
+
+  for (const a of alertEvents.rows) {
+    events.push({
+      ts: a.ts,
+      controller_name: a.controller_name,
+      site_name: a.site_name,
+      event_type: 'alert',
+      description: a.message || 'Alert',
+      severity: a.severity || null,
+      ap_name: null,
+    });
+  }
+
+  events.sort((x, y) => new Date(y.ts).getTime() - new Date(x.ts).getTime());
+  res.json(events.slice(0, 20));
 }));
 
 app.post('/api/wireless/controllers', wrap(async (req, res) => {
