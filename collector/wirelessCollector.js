@@ -16,6 +16,7 @@
 
 const { createSession, walk } = require('./snmp-session');
 const { getWirelessParser, wirelessVendorFor } = require('./wireless');
+const { runWirelessIntelligence } = require('./wirelessIntelligence');
 
 // Vendor SNMP metric support matrix (what each parser actually returns):
 //   Aruba:        radio channel/util/clients/noise/retry + per-SSID stats
@@ -375,6 +376,7 @@ async function pollAll(pool) {
     for (const c of r.rows) {
       await pollController(pool, c);
     }
+    await runWirelessIntelligence(pool);
   } catch (err) {
     console.error('[wireless] poll cycle failed:', err.message);
   } finally {

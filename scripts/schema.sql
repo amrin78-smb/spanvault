@@ -594,6 +594,50 @@ ALTER TABLE wireless_history ADD COLUMN IF NOT EXISTS throughput_in_bps BIGINT;
 ALTER TABLE wireless_history ADD COLUMN IF NOT EXISTS throughput_out_bps BIGINT;
 ALTER TABLE wireless_history ADD COLUMN IF NOT EXISTS auth_failures     INTEGER;
 
+-- ══ Wireless intelligence (computed analytics per poll cycle) ═════════════════
+CREATE TABLE IF NOT EXISTS wireless_intelligence (
+  id              SERIAL PRIMARY KEY,
+  controller_id   INTEGER NOT NULL REFERENCES wireless_controllers(id) ON DELETE CASCADE,
+  computed_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  co_channel_pairs    INTEGER DEFAULT 0,
+  interference_score  NUMERIC DEFAULT 0,
+  load_balance_score  NUMERIC DEFAULT 0,
+  overloaded_aps      INTEGER DEFAULT 0,
+  underloaded_aps     INTEGER DEFAULT 0,
+  avg_clients_per_ap  NUMERIC DEFAULT 0,
+  max_clients_per_ap  INTEGER DEFAULT 0,
+  band_2g_pct         NUMERIC DEFAULT 0,
+  band_5g_pct         NUMERIC DEFAULT 0,
+  band_steering_score NUMERIC DEFAULT 0,
+  high_util_ap_count  INTEGER DEFAULT 0,
+  critical_util_count INTEGER DEFAULT 0,
+  capacity_score      NUMERIC DEFAULT 0,
+  overall_score       NUMERIC DEFAULT 0,
+  overall_grade       TEXT DEFAULT 'A',
+  recommendations     JSONB DEFAULT '[]'
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_wifi_intel_ctrl
+  ON wireless_intelligence(controller_id);
+CREATE INDEX IF NOT EXISTS idx_wifi_intel_computed
+  ON wireless_intelligence(computed_at DESC);
+
+CREATE TABLE IF NOT EXISTS wireless_ap_intelligence (
+  id              SERIAL PRIMARY KEY,
+  ap_id           INTEGER NOT NULL REFERENCES wireless_aps(id) ON DELETE CASCADE,
+  computed_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  health_score    NUMERIC DEFAULT 100,
+  health_grade    TEXT DEFAULT 'A',
+  co_channel_neighbors  INTEGER DEFAULT 0,
+  channel_recommendation TEXT,
+  load_status     TEXT DEFAULT 'normal',
+  load_pct        NUMERIC DEFAULT 0,
+  band_ratio_healthy BOOLEAN DEFAULT TRUE,
+  issues          JSONB DEFAULT '[]',
+  recommendations JSONB DEFAULT '[]'
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_wifi_ap_intel_ap
+  ON wireless_ap_intelligence(ap_id);
+
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO spanvault_user;
 GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO spanvault_user;
 
