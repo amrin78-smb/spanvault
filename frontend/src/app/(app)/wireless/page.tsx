@@ -1990,6 +1990,67 @@ function SignalCell({ rssi }: { rssi: number | null }) {
   );
 }
 
+// ── One controller's collapsible client group (collapse state shared with ──────
+// the APs/SSIDs tabs via the sv-wireless-ctrl-{id}-collapsed localStorage key) ─
+function ClientControllerGroup({
+  controller, clients, onSelectMac,
+}: {
+  controller: Controller;
+  clients: WirelessClient[];
+  onSelectMac: (mac: string) => void;
+}) {
+  const online = controllerOnline(controller);
+  const [collapsed, setCollapsed] = useState<boolean>(false);
+
+  useEffect(() => { setCollapsed(readCollapsed(controller.id, false)); }, [controller.id]);
+
+  function toggle() {
+    setCollapsed((c) => { const n = !c; writeCollapsed(controller.id, n); return n; });
+  }
+
+  const problems = clients.reduce((s, c) => s + (c.is_problem ? 1 : 0), 0);
+  const summary = `${clients.length} client${clients.length === 1 ? '' : 's'}`
+    + (problems > 0 ? ` · ${problems} problem${problems === 1 ? '' : 's'}` : '');
+
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <ControllerGroupHeader
+        controller={controller} online={online} summary={summary}
+        collapsed={collapsed} onToggle={toggle}
+      />
+      {!collapsed && (
+        <div className="sv-panel" style={{ padding: 0, marginTop: 8 }}>
+          <table className="sv-table">
+            <thead>
+              <tr>
+                <th>MAC</th><th>IP</th><th>AP</th><th>SSID</th><th>Band</th>
+                <th>Signal</th><th>Rate</th><th>Connected</th><th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {clients.map((c: WirelessClient) => (
+                <tr key={c.id} style={{ cursor: 'pointer' }} onClick={() => onSelectMac(c.mac_address)}>
+                  <td style={{ fontWeight: 600 }}>{c.mac_address}</td>
+                  <td>{c.ip_address || '—'}</td>
+                  <td>{c.ap_name || '—'}</td>
+                  <td>{c.ssid_name || '—'}</td>
+                  <td>{c.band || '—'}</td>
+                  <td><SignalCell rssi={c.rssi_dbm} /></td>
+                  <td title={c.rx_rate_mbps != null ? `↓ ${fmtRate(c.rx_rate_mbps)}` : undefined}>
+                    {fmtRate(c.tx_rate_mbps)}
+                  </td>
+                  <td>{fmtRel(c.connected_since)}</td>
+                  <td><ClientStatusBadge client={c} /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ClientsTab({
   apFilter, setApFilter, problemOnly, setProblemOnly,
 }: {
@@ -2040,6 +2101,13 @@ function ClientsTab({
       return true;
     });
   }, [allClients, controllerFilter, ssidFilter, bandFilter]);
+
+  // Group the (filtered) clients into collapsible per-controller sections,
+  // preserving the API's problem-first / weakest-signal ordering within each.
+  const clientGroups = useMemo(
+    () => groupByController(shown, controllers.data || []),
+    [shown, controllers.data],
+  );
 
   return (
     <div>
@@ -2124,34 +2192,15 @@ function ClientsTab({
 
       {clientsApi.loading && !clientsApi.data ? (
         <div className="sv-panel"><Loading /></div>
-      ) : shown.length ? (
-        <div className="sv-panel" style={{ padding: 0 }}>
-          <table className="sv-table">
-            <thead>
-              <tr>
-                <th>MAC</th><th>IP</th><th>AP</th><th>SSID</th><th>Band</th>
-                <th>Signal</th><th>Rate</th><th>Connected</th><th>Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {shown.map((c: WirelessClient) => (
-                <tr key={c.id} style={{ cursor: 'pointer' }} onClick={() => setSelectedMac(c.mac_address)}>
-                  <td style={{ fontWeight: 600 }}>{c.mac_address}</td>
-                  <td>{c.ip_address || '—'}</td>
-                  <td>{c.ap_name || '—'}</td>
-                  <td>{c.ssid_name || '—'}</td>
-                  <td>{c.band || '—'}</td>
-                  <td><SignalCell rssi={c.rssi_dbm} /></td>
-                  <td title={c.rx_rate_mbps != null ? `↓ ${fmtRate(c.rx_rate_mbps)}` : undefined}>
-                    {fmtRate(c.tx_rate_mbps)}
-                  </td>
-                  <td>{fmtRel(c.connected_since)}</td>
-                  <td><ClientStatusBadge client={c} /></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+      ) : clientGroups.length ? (
+        clientGroups.map(({ controller, rows }) => (
+          <ClientControllerGroup
+            key={controller.id}
+            controller={controller}
+            clients={rows}
+            onSelectMac={setSelectedMac}
+          />
+        ))
       ) : (
         <Empty message="No clients found." />
       )}
