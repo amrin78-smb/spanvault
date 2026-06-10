@@ -496,6 +496,13 @@ CREATE TABLE IF NOT EXISTS wireless_controllers (
 -- Last poll outcome ('ok' / 'error') + error detail, surfaced in the UI.
 ALTER TABLE wireless_controllers ADD COLUMN IF NOT EXISTS status     TEXT;
 ALTER TABLE wireless_controllers ADD COLUMN IF NOT EXISTS last_error TEXT;
+ALTER TABLE wireless_controllers ADD COLUMN IF NOT EXISTS model TEXT;
+ALTER TABLE wireless_controllers ADD COLUMN IF NOT EXISTS firmware_version TEXT;
+ALTER TABLE wireless_controllers ADD COLUMN IF NOT EXISTS licensed_aps INTEGER;
+ALTER TABLE wireless_controllers ADD COLUMN IF NOT EXISTS ha_mode TEXT;          -- disabled/active/standby/unknown
+ALTER TABLE wireless_controllers ADD COLUMN IF NOT EXISTS ha_peer_ip TEXT;
+ALTER TABLE wireless_controllers ADD COLUMN IF NOT EXISTS ha_sync_status TEXT;   -- synced/not-synced/unknown/n-a
+ALTER TABLE wireless_controllers ADD COLUMN IF NOT EXISTS ap_disconnects_24h INTEGER;  -- from wireless_client_events
 -- Auto-created SNMP controllers are keyed on their device so they aren't dup'd.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_wctl_snmp_device
   ON wireless_controllers(snmp_device_id) WHERE snmp_device_id IS NOT NULL;

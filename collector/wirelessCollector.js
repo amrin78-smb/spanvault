@@ -14,7 +14,7 @@
  * Credentials (snmp_community, api_*) are never logged.
  */
 
-const { createSession, walk } = require('./snmp-session');
+const { snmp, createSession, walk, get } = require('./snmp-session');
 const { getWirelessParser, wirelessVendorFor } = require('./wireless');
 const { getClientParser } = require('./wireless/clients');
 const { runWirelessIntelligence } = require('./wirelessIntelligence');
@@ -34,6 +34,126 @@ const apiClients = {
 };
 
 const log = (...a) => console.log(`[${new Date().toISOString()}] [wireless]`, ...a);
+
+// ── Controller metadata probing (scalar OIDs) ─────────────────
+// Probe a single scalar OID, logging the result. Never throws; resolves null on
+// any error / missing varbind so a missing OID never crashes a poll (and never
+// returns a false 0).
+async function probeOid(session, oid, label) {
+  return new Promise((resolve) => {
+    session.get([oid], (err, varbinds) => {
+      if (err || !varbinds[0] || snmp.isVarbindError(varbinds[0])) {
+        console.log(`[OID Probe] ${label} (${oid}) → no data`);
+        resolve(null);
+        return;
+      }
+      const val = varbinds[0].value;
+      console.log(`[OID Probe] ${label} (${oid}) → ${val}`);
+      resolve(val);
+    });
+  });
+}
+
+// Coerce a raw SNMP value to text (Buffers → ascii via .toString()); null-safe.
+function asStr(val) {
+  return val == null ? null : String(val);
+}
+
+// Format an SNMP IP value as a dotted quad. A 4-byte Buffer is the canonical
+// IpAddress encoding; otherwise fall back to the string form.
+function asIp(val) {
+  if (val == null) return null;
+  if (Buffer.isBuffer(val) && val.length === 4) {
+    return `${val[0]}.${val[1]}.${val[2]}.${val[3]}`;
+  }
+  return String(val);
+}
+
+// Probe per-vendor controller metadata via scalar SNMP OIDs. Always returns the
+// full object shape; every field is null when unavailable. Best-effort — every
+// OID goes through probeOid() and never crashes the caller.
+async function pollControllerMetadata(session, vendor) {
+  const md = {
+    model: null,
+    firmware_version: null,
+    licensed_aps: null,
+    ha_mode: null,
+    ha_peer_ip: null,
+    ha_sync_status: null,
+  };
+
+  // sysDescr is parsed for model/firmware on every vendor.
+  const sysDescrRaw = await probeOid(session, '1.3.6.1.2.1.1.1.0', 'sysDescr');
+  const sysDescr = asStr(sysDescrRaw);
+
+  if (vendor === 'aruba') {
+    // AP license limit.
+    const lic = await probeOid(session, '1.3.6.1.4.1.14823.2.2.1.1.1.40', 'wlsxSysExtLicenseApLimit');
+    if (lic != null) {
+      const n = Number(lic);
+      md.licensed_aps = Number.isFinite(n) ? n : null;
+    }
+    // Model/firmware from sysDescr: "ArubaOS (MODEL) VERSION".
+    if (sysDescr) {
+      const m = sysDescr.match(/ArubaOS\s*\(([^)]+)\)\s*([\d.]+)/);
+      if (m) { md.model = m[1]; md.firmware_version = m[2]; }
+    }
+    // HA state: 1=disabled,2=active,3=standby,4=candidate.
+    const haState = await probeOid(session, '1.3.6.1.4.1.14823.2.2.1.2.1.19.0', 'wlsxHAState');
+    if (haState != null) {
+      const code = Number(haState);
+      const stateMap = { 1: 'disabled', 2: 'active', 3: 'standby', 4: 'candidate' };
+      md.ha_mode = stateMap[code] || 'unknown';
+    }
+    // HA peer IP (4-byte buffer → dotted quad).
+    const peer = await probeOid(session, '1.3.6.1.4.1.14823.2.2.1.2.1.20.0', 'wlsxHAPeerIp');
+    md.ha_peer_ip = asIp(peer);
+    // HA sync: 0=not-synced, 1=synced.
+    const sync = await probeOid(session, '1.3.6.1.4.1.14823.2.2.1.2.1.21.0', 'wlsxHASyncStatus');
+    if (sync != null) {
+      md.ha_sync_status = Number(sync) === 1 ? 'synced' : 'not-synced';
+    }
+  } else if (vendor === 'cisco') {
+    // Max concurrent associations as the license/AP cap.
+    const lic = await probeOid(session, '1.3.6.1.4.1.14179.1.1.1.18', 'bsnMaximumNumberOfConcurrentAssociations');
+    if (lic != null) {
+      const n = Number(lic);
+      md.licensed_aps = Number.isFinite(n) ? n : null;
+    }
+    // Model/firmware from sysDescr: "Cisco Controller VERSION (MODEL)".
+    if (sysDescr) {
+      const m = sysDescr.match(/Cisco Controller\s+([\d.]+)\s*\(([^)]+)\)/);
+      if (m) { md.firmware_version = m[1]; md.model = m[2]; }
+    }
+    // Redundancy: 1=active, 2=standby-hot.
+    const red = await probeOid(session, '1.3.6.1.4.1.14179.2.6.3.34.0', 'cLWlanRedundancyState');
+    if (red != null) {
+      const code = Number(red);
+      if (code === 1) { md.ha_mode = 'active'; md.ha_sync_status = 'synced'; }
+      else if (code === 2) { md.ha_mode = 'standby'; md.ha_sync_status = 'synced'; }
+      else { md.ha_mode = 'unknown'; }
+    }
+    // ha_peer_ip not available via SNMP on Cisco WLC.
+  } else if (vendor === 'ruckus') {
+    // ZoneDirector max supported AP count.
+    const lic = await probeOid(session, '1.3.6.1.4.1.25053.1.2.2.1.1.1.1.16.0', 'ruckusZDSystemMaxSupportedAP');
+    if (lic != null) {
+      const n = Number(lic);
+      md.licensed_aps = Number.isFinite(n) ? n : null;
+    }
+    // Model/firmware best-effort from sysDescr (left null if unsure).
+    // HA not supported via SNMP.
+  } else if (vendor === 'mikrotik') {
+    // No license / HA concept; model best-effort from sysDescr.
+    if (sysDescr) md.model = sysDescr;
+  } else if (vendor === 'hpe') {
+    // No license / HA concept; model best-effort from sysDescr.
+    if (sysDescr) md.model = sysDescr;
+  }
+  // Other vendors (grandstream/ubiquiti/omada/unknown) are API-based: all-null.
+
+  return md;
+}
 
 // ── SNMP polling ──────────────────────────────────────────────
 // Walk every OID a parser declares and group varbinds by the parser's logical
@@ -68,7 +188,10 @@ async function pollSnmpController(pool, controller) {
     if (typeof parser.parseSsids === 'function') {
       try { ssids = parser.parseSsids(walked) || []; } catch (_e) { ssids = []; }
     }
-    return { aps, ssids };
+    let metadata = {};
+    try { metadata = await pollControllerMetadata(session, controller.vendor); }
+    catch (_e) { metadata = {}; }
+    return { aps, ssids, metadata };
   } finally {
     try { session.close(); } catch (_e) { /* ignore */ }
   }
@@ -329,8 +452,9 @@ async function pollController(pool, controller) {
   try {
     let aps = [];
     let ssids = [];
+    let metadata = {};
     if (controller.snmp_device_id) {
-      ({ aps, ssids } = await pollSnmpController(pool, controller));
+      ({ aps, ssids, metadata = {} } = await pollSnmpController(pool, controller));
     } else if (controller.controller_url) {
       ({ aps, ssids } = await pollApiController(controller));
     } else {
@@ -347,9 +471,33 @@ async function pollController(pool, controller) {
       catch (e) { console.error(`[wireless] SSID upsert failed on ${controller.name}:`, e.message); }
     }
 
+    // AP disconnects in the last 24h = distinct clients that 'leave' on this
+    // controller (sourced from wireless_client_events).
+    let apDisc = 0;
+    try {
+      const discq = await pool.query(
+        `SELECT COUNT(DISTINCT mac_address)::int AS n FROM wireless_client_events
+         WHERE controller_id = $1 AND event_type = 'leave' AND ts >= NOW() - INTERVAL '24 hours'`,
+        [controller.id]);
+      apDisc = discq.rows[0] ? discq.rows[0].n : 0;
+    } catch (_e) { apDisc = 0; }
+
+    const md = metadata || {};
     await pool.query(
-      `UPDATE wireless_controllers SET last_polled_at = NOW(), status = 'ok', last_error = NULL WHERE id = $1`,
-      [controller.id]);
+      `UPDATE wireless_controllers SET last_polled_at = NOW(), status = 'ok', last_error = NULL,
+         model = $2, firmware_version = $3, licensed_aps = $4,
+         ha_mode = $5, ha_peer_ip = $6, ha_sync_status = $7, ap_disconnects_24h = $8
+       WHERE id = $1`,
+      [
+        controller.id,
+        md.model ?? null,
+        md.firmware_version ?? null,
+        md.licensed_aps ?? null,
+        md.ha_mode ?? null,
+        md.ha_peer_ip ?? null,
+        md.ha_sync_status ?? null,
+        apDisc,
+      ]);
     const s0 = aps[0];
     const sample = s0
       ? ` — e.g. ${s0.name}: clients=${s0.clients_total} ch=${s0.radio_2g_channel ?? '-'} /${s0.radio_5g_channel ?? '-'} util=${s0.radio_2g_util_pct ?? '-'}%/${s0.radio_5g_util_pct ?? '-'}%`
@@ -455,12 +603,37 @@ async function debugWalk(pool, controller) {
     'wlsxWlanAPBssidTable (...5.2.1.7)':  '1.3.6.1.4.1.14823.2.2.1.5.2.1.7',
   };
 
+  // Controller-metadata scalar OIDs per vendor (validated against real hardware).
+  // sysDescr is always included; vendor-specific license/HA OIDs follow.
+  const metadataOids = { common_sysDescr: '1.3.6.1.2.1.1.1.0' };
+  if (controller.vendor === 'aruba') {
+    metadataOids.aruba_licensed_aps = '1.3.6.1.4.1.14823.2.2.1.1.1.40';
+    metadataOids.aruba_ha_state     = '1.3.6.1.4.1.14823.2.2.1.2.1.19.0';
+    metadataOids.aruba_ha_peer_ip   = '1.3.6.1.4.1.14823.2.2.1.2.1.20.0';
+    metadataOids.aruba_ha_sync      = '1.3.6.1.4.1.14823.2.2.1.2.1.21.0';
+  } else if (controller.vendor === 'cisco') {
+    metadataOids.cisco_max_assoc    = '1.3.6.1.4.1.14179.1.1.1.18';
+    metadataOids.cisco_redundancy   = '1.3.6.1.4.1.14179.2.6.3.34.0';
+  } else if (controller.vendor === 'ruckus') {
+    metadataOids.ruckus_max_aps     = '1.3.6.1.4.1.25053.1.2.2.1.1.1.1.16.0';
+  }
+
   const session = createSession(device, 12000);
   const out = {
     ok: true, vendor: controller.vendor, device_ip: device.ip_address,
-    parser_oids: {}, subtrees: {}, essid_table: {},
+    parser_oids: {}, subtrees: {}, essid_table: {}, metadata_probe: {},
   };
   try {
+    // 0) Controller-metadata scalar probes (best-effort; capped to the small map).
+    for (const [label, oid] of Object.entries(metadataOids)) {
+      try {
+        const rows = await get(session, [oid]);
+        const v = rows[0] ? rows[0].value : null;
+        out.metadata_probe[label] = { oid, value: v == null ? null : decodeSnmpVal(v) };
+      } catch (_e) {
+        out.metadata_probe[label] = { oid, value: null };
+      }
+    }
     // 1) What the current parser's declared OIDs return right now.
     if (parser && parser.snmpOids) {
       for (const [key, oid] of Object.entries(parser.snmpOids)) {
