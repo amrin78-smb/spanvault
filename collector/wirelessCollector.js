@@ -434,9 +434,12 @@ async function debugWalk(pool, controller) {
   const subtrees = {
     aruba_ap_table:      '1.3.6.1.4.1.14823.2.2.1.5.2.1.4',  // wlsxWlanAPTable
     aruba_radio_table:   '1.3.6.1.4.1.14823.2.2.1.5.2.1.5',  // wlsxWlanRadioTable
-    aruba_bssid_table:   '1.3.6.1.4.1.14823.2.2.1.5.2.1.7',  // wlsxWlanAPBssidTable
-    aruba_essid_table:   '1.3.6.1.4.1.14823.2.2.1.5.2.1.8',  // wlsxWlanESSIDTable
+    aruba_bssid_table:   '1.3.6.1.4.1.14823.2.2.1.5.2.1.7',  // wlsxWlanAPBssidTable (SSID per BSSID)
+    aruba_essid_table:   '1.3.6.1.4.1.14823.2.2.1.5.2.1.8',  // wlsxWlanESSIDTable (summary)
+    aruba_essid_alt:     '1.3.6.1.4.1.14823.2.2.1.1.7.1',    // alt ESSID table candidate
+    aruba_ap_stats:      '1.3.6.1.4.1.14823.2.2.1.5.3.1.1',  // wlsxWlanAPStatsTable candidate
     aruba_instant_ap:    '1.3.6.1.4.1.14823.2.3.3.1.2.1',    // aiAccessPointTable (Instant)
+    aruba_instant_ssid:  '1.3.6.1.4.1.14823.2.3.3.1.1.7.1',  // aiWlanSSIDTable (Instant)
   };
 
   const session = createSession(device, 12000);

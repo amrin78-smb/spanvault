@@ -36,11 +36,22 @@ const wlanAPRadioChannel = RADIO_BASE + '.3';               // wlanAPRadioChanne
 const wlanAPRadioUtilization = RADIO_BASE + '.6';           // wlanAPRadioUtilization (%)
 const wlanAPRadioNumAssociatedClients = RADIO_BASE + '.7';  // wlanAPRadioNumAssociatedClients
 
-// ── ESSID table (wlsxWlanESSIDTable) — base ...5.2.1.8.1 ─────────────────────
+// ── ESSID summary table (wlsxWlanESSIDTable) — base ...5.2.1.8.1 ─────────────
 // Index = the (length-prefixed) SSID name. wlanESSID's value is the name string.
+// On some ArubaOS builds this controller-level summary is empty even when SSIDs
+// are active, so parseSsids() falls back to the per-BSSID table below.
 const ESSID_BASE = '1.3.6.1.4.1.14823.2.2.1.5.2.1.8.1';
 const wlanESSID = ESSID_BASE + '.1';            // wlanESSID (name; also the index)
 const wlanESSIDNumStations = ESSID_BASE + '.2'; // wlanESSIDNumStations (client count)
+
+// ── Per-BSSID table (wlsxWlanAPBssidTable) — base ...5.2.1.7.1 ───────────────
+// One row per broadcast BSSID (AP MAC + radio + BSSID). Each row carries its
+// ESSID name and associated-station count, so SSIDs can be aggregated by name.
+// This is the reliable SSID source: it lives in the same ...5.2.1 AP-info tree
+// that already returns AP/radio data.
+const BSSID_BASE = '1.3.6.1.4.1.14823.2.2.1.5.2.1.7.1';
+const wlanAPESSID = BSSID_BASE + '.2';                       // wlanAPESSID (SSID name)
+const wlanAPBssidNumAssociatedStations = BSSID_BASE + '.12'; // wlanAPBssidNumAssociatedStations
 
 function mapStatus(v) {
   const n = num(v);
@@ -140,33 +151,64 @@ function parseClientCounts(walked) {
   }
 }
 
-// Parse wlsxWlanESSIDTable into per-SSID rows. The controller exposes only the
-// SSID name and its station count — byte/auth counters do not exist here.
-function parseSsids(walked) {
-  const out = [];
-  try {
-    walked = walked || {};
-    const names = columnMap(walked.essidName, wlanESSID);
-    const stations = columnMap(walked.essidStations, wlanESSIDNumStations);
+// Build an SSID row with the controller-unavailable counters nulled out.
+function ssidRow(ssid_name, clients_total) {
+  return {
+    ssid_name,
+    status: 'up',
+    clients_total: clients_total || 0,
+    bytes_in: null,   // per-SSID byte/auth counters are not in WLSX-WLAN-MIB
+    bytes_out: null,
+    auth_successes: 0,
+    auth_failures: 0,
+  };
+}
 
-    const indexes = new Set([...Object.keys(names), ...Object.keys(stations)]);
-    for (const idx of indexes) {
-      const ssid_name = str(names[idx]);
-      if (!ssid_name) continue; // skip rows with no name
-      out.push({
-        ssid_name,
-        status: 'up',
-        clients_total: num(stations[idx]) || 0,
-        bytes_in: null,   // not exposed by WLSX-WLAN-MIB
-        bytes_out: null,
-        auth_successes: 0,
-        auth_failures: 0,
-      });
-    }
-  } catch (e) {
-    // never throw
+// SSIDs from the controller ESSID summary table (...5.2.1.8): one row per SSID.
+function parseEssidSummary(walked) {
+  const out = [];
+  const names = columnMap(walked.essidName, wlanESSID);
+  const stations = columnMap(walked.essidStations, wlanESSIDNumStations);
+  console.log('[Aruba] ESSID summary walk results:', Object.keys(names).length);
+  const indexes = new Set([...Object.keys(names), ...Object.keys(stations)]);
+  for (const idx of indexes) {
+    const ssid_name = str(names[idx]);
+    if (!ssid_name) continue;
+    out.push(ssidRow(ssid_name, num(stations[idx])));
   }
   return out;
+}
+
+// SSIDs aggregated from the per-BSSID table (...5.2.1.7): every AP radio
+// broadcasts a BSSID per SSID, so sum the station counts across all BSSIDs that
+// share an SSID name to get the per-SSID client total.
+function parseBssidAggregated(walked) {
+  const names = columnMap(walked.bssidEssid, wlanAPESSID);
+  const stations = columnMap(walked.bssidStations, wlanAPBssidNumAssociatedStations);
+  console.log('[Aruba] BSSID table walk results:', Object.keys(names).length);
+  const agg = new Map(); // ssid_name -> summed clients
+  for (const idx of Object.keys(names)) {
+    const ssid_name = str(names[idx]);
+    if (!ssid_name) continue;
+    agg.set(ssid_name, (agg.get(ssid_name) || 0) + (num(stations[idx]) || 0));
+  }
+  const out = [];
+  for (const [ssid_name, clients] of agg.entries()) out.push(ssidRow(ssid_name, clients));
+  return out;
+}
+
+// Per-SSID stats: prefer the controller ESSID summary table; when that comes
+// back empty (it is on some ArubaOS builds), aggregate the per-BSSID table.
+function parseSsids(walked) {
+  try {
+    walked = walked || {};
+    let rows = parseEssidSummary(walked);
+    if (rows.length === 0) rows = parseBssidAggregated(walked);
+    console.log('[Aruba] SSIDs parsed:', rows.length);
+    return rows;
+  } catch (e) {
+    return [];
+  }
 }
 
 module.exports = {
@@ -182,9 +224,12 @@ module.exports = {
     radioChannel: wlanAPRadioChannel,
     radioUtil: wlanAPRadioUtilization,
     radioClients: wlanAPRadioNumAssociatedClients,
-    // ESSID table (index = SSID name)
+    // ESSID summary table (index = SSID name)
     essidName: wlanESSID,
     essidStations: wlanESSIDNumStations,
+    // Per-BSSID table fallback (index = AP MAC + radio + BSSID)
+    bssidEssid: wlanAPESSID,
+    bssidStations: wlanAPBssidNumAssociatedStations,
   },
   parseApTable,
   parseClientCounts,
