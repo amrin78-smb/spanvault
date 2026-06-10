@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend,
-  BarChart, Bar, ReferenceLine,
+  BarChart, Bar, ReferenceLine, Cell,
 } from 'recharts';
 import { useApi, apiSend, apiGet } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
@@ -1659,48 +1659,6 @@ function ControllerIntelCard({ row, aps }: { row: IntelRow; aps: AccessPoint[] }
   );
 }
 
-// ── Channel map row (top-level component) ─────────────────────
-function ChannelMapRow({
-  band, counts, flagNonStandard,
-}: {
-  band: string;
-  counts: { ch: number; count: number }[];
-  flagNonStandard: boolean;
-}) {
-  const max = counts.reduce((m, c) => Math.max(m, c.count), 1);
-  const scale = 200 / max;
-  const std = new Set([1, 6, 11]);
-  return (
-    <div style={{ marginBottom: 16 }}>
-      <div style={{ fontWeight: 700, marginBottom: 8 }}>{band}</div>
-      {counts.length ? (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          {counts.map((c) => {
-            const bad = flagNonStandard && !std.has(c.ch);
-            return (
-              <div key={c.ch} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <span style={{
-                  width: 70, fontSize: 13, color: bad ? 'var(--red)' : 'var(--text-secondary)',
-                }}>
-                  {bad ? '⚠ ' : ''}Ch {c.ch}
-                </span>
-                <div style={{
-                  width: Math.max(c.count * scale, 4), height: 16, borderRadius: 3,
-                  background: bad ? 'var(--red)' : 'var(--primary)',
-                  opacity: bad ? 0.65 : 1,
-                }} />
-                <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{c.count}</span>
-              </div>
-            );
-          })}
-        </div>
-      ) : (
-        <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>No channel data.</div>
-      )}
-    </div>
-  );
-}
-
 // ── Worst-AP drawer loader (top-level component) ──────────────
 function IntelApDrawer({ apId, onClose }: { apId: number; onClose: () => void }) {
   const [ap, setAp] = useState<AccessPoint | null>(null);
@@ -1789,6 +1747,19 @@ function IntelligenceTab({ onViewApClients }: { onViewApClients?: (apId: number)
         .sort((a, b) => a.ch - b.ch);
     return { g2: toSorted(c2), g5: toSorted(c5) };
   }, [aps]);
+
+  // Combined channel histogram for the vertical bar chart. 2.4GHz channels
+  // (ch ≤ 14) outside the standard {1,6,11} are flagged non-standard so they
+  // render in orange; everything else (incl. all 5GHz channels) is "standard".
+  const channelChartData = useMemo(() => {
+    return [...channelMaps.g2, ...channelMaps.g5]
+      .sort((a, b) => a.ch - b.ch)
+      .map((c) => {
+        const is24 = c.ch <= 14;
+        const standard = !is24 || c.ch === 1 || c.ch === 6 || c.ch === 11;
+        return { ...c, name: `Ch ${c.ch}`, standard };
+      });
+  }, [channelMaps]);
 
   const bandChartData = useMemo(() => rows.map((r) => ({
     name: r.controller_name,
@@ -1915,30 +1886,50 @@ function IntelligenceTab({ onViewApClients }: { onViewApClients?: (apId: number)
         ) : <Empty message="No AP health data yet." />}
       </div>
 
-      {/* SECTION 5 — Band distribution */}
-      <div className="sv-panel" style={{ marginTop: 20 }}>
-        <h3 style={{ marginTop: 0 }}>2.4GHz vs 5GHz Client Distribution</h3>
-        {bandChartData.length ? (
-          <ResponsiveContainer width="100%" height={260}>
-            <BarChart data={bandChartData}>
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-              <XAxis dataKey="name" fontSize={11} />
-              <YAxis domain={[0, 100]} fontSize={11} />
-              <Tooltip />
-              <Legend />
-              <ReferenceLine y={60} stroke="var(--red)" strokeDasharray="4 4" label="5GHz target" />
-              <Bar dataKey="g2" name="2.4GHz %" fill="#94a3b8" />
-              <Bar dataKey="g5" name="5GHz %" fill="#0ea5e9" />
-            </BarChart>
-          </ResponsiveContainer>
-        ) : <Empty message="No band distribution data." />}
-      </div>
+      {/* SECTIONS 5 & 6 — Band distribution + Channel map, side by side */}
+      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginTop: 20 }}>
+        <div className="sv-panel" style={{ flex: 1, minWidth: 320 }}>
+          <h3 style={{ marginTop: 0 }}>2.4GHz vs 5GHz Client Distribution</h3>
+          {bandChartData.length ? (
+            <ResponsiveContainer width="100%" height={250}>
+              <BarChart data={bandChartData}>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                <XAxis dataKey="name" fontSize={11} />
+                <YAxis domain={[0, 100]} fontSize={11} />
+                <Tooltip />
+                <Legend />
+                <ReferenceLine y={60} stroke="var(--red)" strokeDasharray="4 4" label="5GHz target" />
+                <Bar dataKey="g2" name="2.4GHz %" fill="#94a3b8" />
+                <Bar dataKey="g5" name="5GHz %" fill="#0ea5e9" />
+              </BarChart>
+            </ResponsiveContainer>
+          ) : <Empty message="No band distribution data." />}
+        </div>
 
-      {/* SECTION 6 — Channel map */}
-      <div className="sv-panel" style={{ marginTop: 20 }}>
-        <h3 style={{ marginTop: 0 }}>Channel Map</h3>
-        <ChannelMapRow band="2.4 GHz" counts={channelMaps.g2} flagNonStandard />
-        <ChannelMapRow band="5 GHz" counts={channelMaps.g5} flagNonStandard={false} />
+        <div className="sv-panel" style={{ flex: 1, minWidth: 320 }}>
+          <h3 style={{ marginTop: 0 }}>Channel Map</h3>
+          {channelChartData.length ? (
+            <>
+              <ResponsiveContainer width="100%" height={250}>
+                <BarChart data={channelChartData}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                  <XAxis dataKey="name" fontSize={11} />
+                  <YAxis fontSize={11} allowDecimals={false} />
+                  <Tooltip />
+                  <Bar dataKey="count" name="APs">
+                    {channelChartData.map((c) => (
+                      <Cell key={c.ch} fill={c.standard ? 'var(--green)' : '#f97316'} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 6 }}>
+                <span style={{ color: 'var(--green)' }}>■</span> Standard channel ·{' '}
+                <span style={{ color: '#f97316' }}>■</span> Non-standard 2.4GHz (not 1/6/11)
+              </div>
+            </>
+          ) : <Empty message="No channel data." />}
+        </div>
       </div>
 
       {drawerApId != null && (
