@@ -2425,7 +2425,13 @@ function ControllersTab() {
       {controllers.loading && !controllers.data ? (
         <div className="sv-panel"><Loading /></div>
       ) : controllers.data && controllers.data.length ? (
-        <div className="sv-cards">
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))',
+            gap: 16,
+          }}
+        >
           {controllers.data.map((c: Controller) => (
             <ControllerCard
               key={c.id}
