@@ -2274,7 +2274,10 @@ app.get('/api/wireless/aps', wrap(async (req, res) => {
            a.radio_2g_channel, a.radio_5g_channel, a.radio_6g_channel,
            a.radio_2g_util_pct, a.radio_5g_util_pct,
            a.ip_address, a.mac_address, a.model, a.firmware_version,
-           a.tx_power_2g, a.tx_power_5g, a.uptime_seconds, a.last_seen_at
+           a.tx_power_2g, a.tx_power_5g, a.uptime_seconds, a.last_seen_at,
+           a.noise_floor_2g, a.noise_floor_5g, a.retry_rate_2g, a.retry_rate_5g,
+           a.rx_errors_2g, a.tx_errors_2g, a.rx_errors_5g, a.tx_errors_5g,
+           a.throughput_in_bps, a.throughput_out_bps, a.serial_number, a.auth_failures
     FROM wireless_aps a
     LEFT JOIN wireless_controllers c ON c.id = a.controller_id
     ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
@@ -2367,15 +2370,117 @@ app.get('/api/wireless/summary', wrap(async (req, res) => {
     ORDER BY util_pct DESC LIMIT 20
   `, params);
 
+  // RF totals: auth failures across all APs + average noise floor across every
+  // radio (a radio contributes its 2.4 and 5 GHz noise floors independently).
+  const rf = await sv.query(`
+    SELECT COALESCE(SUM(a.auth_failures), 0)::int AS auth_failures_total,
+           ROUND(((COALESCE(SUM(a.noise_floor_2g),0) + COALESCE(SUM(a.noise_floor_5g),0))::numeric
+                  / NULLIF(COUNT(a.noise_floor_2g) + COUNT(a.noise_floor_5g), 0)), 1) AS avg_noise_floor
+    FROM wireless_aps a${scWhere}
+  `, params);
+
+  // APs whose noise floor is worse than -75 dBm on either radio (poor RF).
+  const highNoise = await sv.query(`
+    SELECT a.id, a.name, a.site_name,
+           GREATEST(COALESCE(a.noise_floor_2g, -999), COALESCE(a.noise_floor_5g, -999)) AS noise_floor
+    FROM wireless_aps a
+    WHERE (a.noise_floor_2g > -75 OR a.noise_floor_5g > -75)${sc ? ` AND ${sc}` : ''}
+    ORDER BY noise_floor DESC LIMIT 20
+  `, params);
+
+  // RF health rolled up per site (for the overview RF Health table).
+  const rfBySite = await sv.query(`
+    SELECT COALESCE(a.site_id, 0) AS site_id,
+           COALESCE(a.site_name, 'Unassigned') AS site_name,
+           COUNT(*)::int AS aps,
+           ROUND(((COALESCE(SUM(a.noise_floor_2g),0) + COALESCE(SUM(a.noise_floor_5g),0))::numeric
+                  / NULLIF(COUNT(a.noise_floor_2g) + COUNT(a.noise_floor_5g), 0)), 1) AS avg_noise_floor,
+           COUNT(*) FILTER (WHERE GREATEST(COALESCE(a.radio_2g_util_pct,0), COALESCE(a.radio_5g_util_pct,0)) > 80)::int AS high_util_aps,
+           ROUND(((COALESCE(SUM(a.retry_rate_2g),0) + COALESCE(SUM(a.retry_rate_5g),0))::numeric
+                  / NULLIF(COUNT(a.retry_rate_2g) + COUNT(a.retry_rate_5g), 0)), 1) AS avg_retry_rate,
+           COALESCE(SUM(a.auth_failures), 0)::int AS auth_failures
+    FROM wireless_aps a${scWhere}
+    GROUP BY 1, 2 ORDER BY site_name
+  `, params);
+
+  const numOrNull = (v) => (v === null || v === undefined ? null : Number(v));
   const t = totals.rows[0] || {};
+  const rfRow = rf.rows[0] || {};
   res.json({
     total_aps: t.total_aps || 0,
     online_aps: t.online_aps || 0,
     offline_aps: t.offline_aps || 0,
     total_clients: t.total_clients || 0,
+    auth_failures_total: rfRow.auth_failures_total || 0,
+    avg_noise_floor: numOrNull(rfRow.avg_noise_floor),
     by_site: bySite.rows.map((s) => ({ ...s, avg_util: s.avg_util === null ? null : Number(s.avg_util) })),
     by_controller: byController.rows,
     high_utilization: highUtil.rows.map((h) => ({ ...h, util_pct: Number(h.util_pct), channel: h.channel === null ? null : Number(h.channel) })),
+    high_noise_aps: highNoise.rows.map((h) => ({ ...h, noise_floor: numOrNull(h.noise_floor) })),
+    rf_by_site: rfBySite.rows.map((s) => ({
+      ...s,
+      avg_noise_floor: numOrNull(s.avg_noise_floor),
+      avg_retry_rate: numOrNull(s.avg_retry_rate),
+    })),
+  });
+}));
+
+// ── Per-SSID statistics ───────────────────────────────────────
+app.get('/api/wireless/ssids', wrap(async (req, res) => {
+  const where = [];
+  const params = [];
+  if (req.query.controller_id) { params.push(parseInt(req.query.controller_id, 10)); where.push(`s.controller_id = $${params.length}`); }
+  if (req.query.site_id)       { params.push(parseInt(req.query.site_id, 10));       where.push(`s.site_id = $${params.length}`); }
+  const sc = siteFilterClause(getSiteFilter(req), params, 's.site_id');
+  if (sc) where.push(sc);
+  const r = await sv.query(`
+    SELECT s.id, s.controller_id, c.name AS controller_name, c.vendor,
+           s.ssid_name, s.site_id, s.site_name, s.status,
+           s.clients_total, s.bytes_in, s.bytes_out,
+           s.auth_successes, s.auth_failures, s.updated_at
+    FROM wireless_ssids s
+    LEFT JOIN wireless_controllers c ON c.id = s.controller_id
+    ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+    ORDER BY s.clients_total DESC, s.ssid_name
+  `, params);
+  res.json(r.rows);
+}));
+
+app.get('/api/wireless/ssids/summary', wrap(async (req, res) => {
+  const params = [];
+  const sc = siteFilterClause(getSiteFilter(req), params, 's.site_id');
+  const scWhere = sc ? ` WHERE ${sc}` : '';
+
+  const totals = await sv.query(`
+    SELECT COUNT(*)::int AS total_ssids,
+           COUNT(*) FILTER (WHERE status = 'up')::int AS active_ssids
+    FROM wireless_ssids s${scWhere}
+  `, params);
+
+  const topSsids = await sv.query(`
+    SELECT s.id, s.ssid_name, c.name AS controller_name, s.site_name,
+           s.clients_total, s.bytes_in, s.bytes_out, s.auth_successes, s.auth_failures
+    FROM wireless_ssids s
+    LEFT JOIN wireless_controllers c ON c.id = s.controller_id
+    ${scWhere}
+    ORDER BY s.clients_total DESC LIMIT 5
+  `, params);
+
+  const mostFailures = await sv.query(`
+    SELECT s.id, s.ssid_name, c.name AS controller_name, s.site_name,
+           s.auth_successes, s.auth_failures
+    FROM wireless_ssids s
+    LEFT JOIN wireless_controllers c ON c.id = s.controller_id
+    ${sc ? ` WHERE ${sc} AND` : ' WHERE'} s.auth_failures > 0
+    ORDER BY s.auth_failures DESC LIMIT 3
+  `, params);
+
+  const t = totals.rows[0] || {};
+  res.json({
+    total_ssids: t.total_ssids || 0,
+    active_ssids: t.active_ssids || 0,
+    top_ssids: topSsids.rows,
+    most_failures: mostFailures.rows,
   });
 }));
 
