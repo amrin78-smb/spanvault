@@ -95,8 +95,8 @@ function parseApTable(walked) {
       else if (band === '5g') ap.radio_5g_channel = ch;
       else if (band === '6g') ap.radio_6g_channel = ch;
 
-      const c = num(clients[idx]);
-      ap.clients_total = c === null ? 0 : c;
+      // Total clients from the AP table; nullable so a per-radio fallback applies.
+      ap.clients_total = num(clients[idx]);
 
       byIndex.set(idx, ap);
       out.push(ap);
@@ -134,6 +134,20 @@ function parseApTable(walked) {
       if (v === null) continue;
       if (band === '2g') ap.radio_2g_util_pct = v;
       else if (band === '5g') ap.radio_5g_util_pct = v;
+    }
+
+    // Per-radio clients (ruckusZDWLANAPRadioNumSta) → clients_2g / clients_5g
+    const radioNumStas = columnMap(walked.radioNumSta, ruckusZDWLANAPRadioNumSta);
+    for (const ridx of Object.keys(radioNumStas)) {
+      const { apKey, radioKey } = splitRadioIndex(ridx);
+      const band = bandForRadioIndex(radioKey);
+      if (!band) continue;
+      const ap = byIndex.get(apKey);
+      if (!ap) continue;
+      const v = num(radioNumStas[ridx]);
+      if (v === null) continue;
+      if (band === '2g') ap.clients_2g = v;
+      else if (band === '5g') ap.clients_5g = v;
     }
 
     // Channel → radio_2g_channel / radio_5g_channel (only if not already set)
@@ -177,6 +191,11 @@ function parseApTable(walked) {
       const v = num(uptimes[idx]);
       if (v === null) continue;
       ap.uptime_seconds = v;
+    }
+
+    // Total clients: fall back to the per-radio sum when the AP table omitted it.
+    for (const ap of out) {
+      if (ap.clients_total === null) ap.clients_total = (ap.clients_2g || 0) + (ap.clients_5g || 0);
     }
   } catch (e) {
     // never throw

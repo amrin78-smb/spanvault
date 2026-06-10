@@ -9,7 +9,6 @@ const {
   num,
   str,
   columnMap,
-  bandForChannel,
   emptyAp,
   splitRadioIndex,
   bandForRadioIndex,
@@ -89,13 +88,16 @@ function parseApTable(walked) {
     const bmodels = columnMap(walked.bsnAPModel, bsnAPModel);
     const bstatus = columnMap(walked.bsnAPStatus, bsnAPOperationStatus);
     const bclients = columnMap(walked.bsnApClients, bsnApAssociatedClientCount);
-    const bchannel = columnMap(walked.bsnApChannel, bsnAPIfPhyChannelNumber);
 
+    // NOTE: bsnAPIfPhyChannelNumber is a PER-RADIO column (index apIndex.radioIndex)
+    // and is correlated below — NOT merged into the AP-index set, which would both
+    // create phantom AP rows and never map a channel back to its band.
     const indexes = new Set();
-    [cnames, cips, cmodels, bnames, bips, bmodels, bstatus, bclients, bchannel].forEach((m) => {
+    [cnames, cips, cmodels, bnames, bips, bmodels, bstatus, bclients].forEach((m) => {
       Object.keys(m).forEach((k) => indexes.add(k));
     });
 
+    const byIndex = new Map();
     for (const idx of indexes) {
       const ap = emptyAp();
       ap._index = idx;
@@ -103,24 +105,29 @@ function parseApTable(walked) {
       ap.ip_address = str(cips[idx]) || str(bips[idx]);
       ap.model = str(cmodels[idx]) || str(bmodels[idx]);
       ap.status = mapStatus(bstatus[idx]);
-
-      const ch = num(bchannel[idx]);
-      const band = bandForChannel(ch);
-      if (band === '2g') ap.radio_2g_channel = ch;
-      else if (band === '5g') ap.radio_5g_channel = ch;
-      else if (band === '6g') ap.radio_6g_channel = ch;
-
-      const c = num(bclients[idx]);
-      ap.clients_total = c === null ? 0 : c;
-
+      // Total clients from the AP table; kept nullable for a per-radio fallback.
+      ap.clients_total = num(bclients[idx]);
       out.push(ap);
+      byIndex.set(idx, ap);
     }
 
-    // ── Correlate the per-radio bsnApDot11Table / bsnAPIfTable metrics onto the
-    //    constructed APs. Radio tables are indexed by apIndex.radioIndex, so we
-    //    split the index, resolve the band, and find the matching AP by _index.
-    const byIndex = new Map();
-    for (const ap of out) byIndex.set(ap._index, ap);
+    // ── Correlate per-radio metrics onto the constructed APs. Radio tables are
+    //    indexed apIndex.radioIndex; split the index, resolve the band (0=2.4G,
+    //    1=5G), and find the matching AP by _index.
+
+    // Channel (bsnAPIfPhyChannelNumber) → radio_2g_channel / radio_5g_channel.
+    const chanCol = columnMap(walked.bsnApChannel, bsnAPIfPhyChannelNumber);
+    for (const idx of Object.keys(chanCol)) {
+      const { apKey, radioKey } = splitRadioIndex(idx);
+      const band = bandForRadioIndex(radioKey);
+      if (!band) continue;
+      const ap = byIndex.get(apKey);
+      if (!ap) continue;
+      const v = num(chanCol[idx]);
+      if (v === null) continue;
+      if (band === '2g') ap.radio_2g_channel = v;
+      else if (band === '5g') ap.radio_5g_channel = v;
+    }
 
     // Noise floor (dBm, negative) → noise_floor_2g / noise_floor_5g.
     const noiseCol = columnMap(walked.bsnApNoiseFloor, bsnApDot11QosNoiseFloor);
@@ -171,6 +178,25 @@ function parseApTable(walked) {
       if (!Number.isFinite(approx)) continue;
       if (band === '2g') ap.retry_rate_2g = approx;
       else if (band === '5g') ap.retry_rate_5g = approx;
+    }
+
+    // Per-radio clients (bsnApDot11LoadNumAssociations) → clients_2g / clients_5g.
+    const radioClientsCol = columnMap(walked.bsnApDot11Clients, bsnApDot11LoadNumAssociations);
+    for (const idx of Object.keys(radioClientsCol)) {
+      const { apKey, radioKey } = splitRadioIndex(idx);
+      const band = bandForRadioIndex(radioKey);
+      if (!band) continue;
+      const ap = byIndex.get(apKey);
+      if (!ap) continue;
+      const v = num(radioClientsCol[idx]);
+      if (v === null) continue;
+      if (band === '2g') ap.clients_2g = v;
+      else if (band === '5g') ap.clients_5g = v;
+    }
+
+    // Total clients: fall back to the per-radio sum when the AP table omitted it.
+    for (const ap of out) {
+      if (ap.clients_total === null) ap.clients_total = (ap.clients_2g || 0) + (ap.clients_5g || 0);
     }
 
     // rx_errors_*, tx_errors_*, rx_bytes, tx_bytes are NOT available per-AP on
