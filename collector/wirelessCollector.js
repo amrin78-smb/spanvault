@@ -18,7 +18,8 @@ const { createSession, walk } = require('./snmp-session');
 const { getWirelessParser, wirelessVendorFor } = require('./wireless');
 
 // Vendor SNMP metric support matrix (what each parser actually returns):
-//   Aruba:        full metrics (noise floor, retry rate, rx/tx errors, SSID, auth)
+//   Aruba:        radio channel/util/clients/noise/retry + per-SSID stats
+//                 (no byte/error counters, so throughput & rx/tx errors stay NULL)
 //   Cisco:        partial (per-SSID clients + traffic, noise floor; retry approx)
 //   Ruckus:       full radio metrics (noise, util, throughput) + per-SSID clients
 //   MikroTik/HPE/Grandstream: basic only (no radio/SSID stats) — fields stay NULL
@@ -347,7 +348,11 @@ async function pollController(pool, controller) {
     await pool.query(
       `UPDATE wireless_controllers SET last_polled_at = NOW(), status = 'ok', last_error = NULL WHERE id = $1`,
       [controller.id]);
-    log(`polled ${controller.name}: ${aps.length} AP(s), ${ssids.length} SSID(s)`);
+    const s0 = aps[0];
+    const sample = s0
+      ? ` — e.g. ${s0.name}: clients=${s0.clients_total} ch=${s0.radio_2g_channel ?? '-'} /${s0.radio_5g_channel ?? '-'} util=${s0.radio_2g_util_pct ?? '-'}%/${s0.radio_5g_util_pct ?? '-'}%`
+      : '';
+    log(`polled ${controller.name} (${controller.vendor}): ${aps.length} AP(s), ${ssids.length} SSID(s)${sample}`);
   } catch (e) {
     // Keep existing AP records; just record the failure on the controller.
     try {

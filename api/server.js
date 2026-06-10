@@ -2484,6 +2484,34 @@ app.get('/api/wireless/ssids/summary', wrap(async (req, res) => {
   });
 }));
 
+// Admin-only diagnostic dump of the wireless tables (controllers, APs, SSIDs, history).
+app.get('/api/wireless/debug', wrap(async (req, res) => {
+  const role = req.headers['x-user-role'];
+  if (role !== 'admin' && role !== 'super_admin') {
+    return res.status(403).json({ error: 'Admin only' });
+  }
+  const controllers = await sv.query('SELECT * FROM wireless_controllers ORDER BY id');
+  const apCount = await sv.query('SELECT COUNT(*)::int AS n FROM wireless_aps');
+  const apSample = await sv.query('SELECT * FROM wireless_aps ORDER BY id LIMIT 3');
+  const ssidCount = await sv.query('SELECT COUNT(*)::int AS n FROM wireless_ssids');
+  const ssidSample = await sv.query('SELECT * FROM wireless_ssids ORDER BY id LIMIT 3');
+  const histCount = await sv.query('SELECT COUNT(*)::int AS n FROM wireless_history');
+  const lastPoll = await sv.query('SELECT MAX(updated_at) AS last_poll FROM wireless_aps');
+  // Redact controller credentials before returning (never expose secrets, even to admins).
+  const controllerRows = controllers.rows.map((c) => ({
+    ...c, api_key: c.api_key ? '***' : null, api_password: c.api_password ? '***' : null,
+  }));
+  res.json({
+    controllers: controllerRows,
+    ap_count: apCount.rows[0].n,
+    ap_sample: apSample.rows,
+    ssid_count: ssidCount.rows[0].n,
+    ssid_sample: ssidSample.rows,
+    history_count: histCount.rows[0].n,
+    last_poll: lastPoll.rows[0].last_poll,
+  });
+}));
+
 // ══════════════════════════════════════════════════════════════
 // Reports (?format=csv supported)
 // ══════════════════════════════════════════════════════════════
