@@ -1069,8 +1069,9 @@ function SsidControllerGroup({
 
   const shown = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return ssids;
-    return ssids.filter((r) => r.ssid_name.toLowerCase().includes(q));
+    const list = q ? ssids.filter((r) => r.ssid_name.toLowerCase().includes(q)) : ssids;
+    // Sort by client count DESC (busiest SSIDs first).
+    return [...list].sort((a, b) => (b.clients_total || 0) - (a.clients_total || 0));
   }, [ssids, search]);
 
   return (
@@ -1095,32 +1096,22 @@ function SsidControllerGroup({
               <thead>
                 <tr>
                   <th>SSID Name</th><th>Site</th><th>Status</th><th>Clients</th>
-                  <th>Traffic In</th><th>Traffic Out</th><th>Auth Fail</th><th>Failure Rate</th>
                 </tr>
               </thead>
               <tbody>
-                {shown.map((r: Ssid) => {
-                  const rate = failureRate(r.auth_successes, r.auth_failures);
-                  return (
-                    <tr key={r.id}>
-                      <td style={{ fontWeight: 600 }}>{r.ssid_name}</td>
-                      <td>{r.site_name || '—'}</td>
-                      <td>
-                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                          <StatusDot status={r.status === 'up' ? 'up' : 'down'} />
-                          {r.status}
-                        </span>
-                      </td>
-                      <td>{r.clients_total}</td>
-                      <td>{fmtBytes(r.bytes_in)}</td>
-                      <td>{fmtBytes(r.bytes_out)}</td>
-                      <td>{r.auth_failures}</td>
-                      <td style={{ color: failureRateColor(rate), fontWeight: 600 }}>
-                        {rate.toFixed(1)}%
-                      </td>
-                    </tr>
-                  );
-                })}
+                {shown.map((r: Ssid) => (
+                  <tr key={r.id}>
+                    <td style={{ fontWeight: 600 }}>{r.ssid_name}</td>
+                    <td>{r.site_name || '—'}</td>
+                    <td>
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                        <StatusDot status={r.status === 'up' ? 'up' : 'down'} />
+                        {r.status}
+                      </span>
+                    </td>
+                    <td>{r.clients_total}</td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           ) : (
