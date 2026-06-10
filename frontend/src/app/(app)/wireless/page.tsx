@@ -324,6 +324,10 @@ export default function WirelessPage() {
     setTab('aps');
   }
 
+  function gotoIntelligence() {
+    setTab('intelligence');
+  }
+
   return (
     <div>
       <h1 className="sv-page-title" style={{ margin: 0 }}>Wireless</h1>
@@ -352,7 +356,7 @@ export default function WirelessPage() {
         >Controllers</button>
       </div>
 
-      {tab === 'overview' && <OverviewTab onSelectSite={gotoApsForSite} />}
+      {tab === 'overview' && <OverviewTab onSelectSite={gotoApsForSite} onViewIntelligence={gotoIntelligence} />}
       {tab === 'aps' && (
         <AccessPointsTab
           siteFilter={siteFilter}
@@ -373,7 +377,58 @@ export default function WirelessPage() {
 // TAB 1 — Overview
 // ════════════════════════════════════════════════════════════
 
-function OverviewTab({ onSelectSite }: { onSelectSite: (siteId: number | null) => void }) {
+// Compact Wireless Intelligence summary card, shown at the top of the Overview
+// tab. Hidden until intelligence has been computed for at least one controller.
+function WirelessIntelCard({ onView }: { onView: () => void }) {
+  const summary = useApi<IntelSummary>('/api/wireless/intelligence/summary', 30000);
+  const list = useApi<IntelRow[]>('/api/wireless/intelligence', 30000);
+  const s = summary.data;
+  if (!s || !s.controllers || s.controllers.length === 0) return null;
+
+  const score = Number(s.overall_score);
+  const lastAnalyzed = (list.data || []).reduce<string | null>((max, r) => {
+    if (!r.computed_at) return max;
+    return !max || r.computed_at > max ? r.computed_at : max;
+  }, null);
+
+  return (
+    <div
+      className="sv-card"
+      style={{
+        borderLeftColor: scoreColor(score), marginBottom: 16,
+        display: 'flex', alignItems: 'center', gap: 18, flexWrap: 'wrap',
+      }}
+    >
+      <div>
+        <div style={{
+          fontSize: 12, color: 'var(--text-muted)', textTransform: 'uppercase',
+          letterSpacing: 0.4, fontWeight: 700,
+        }}>Wireless Intelligence</div>
+        <div style={{ fontSize: 26, fontWeight: 800, color: scoreColor(score) }}>
+          {score}/100 <span style={{ fontSize: 18 }}>{s.overall_grade}</span>
+        </div>
+      </div>
+      <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
+        {s.total_recommendations} recommendation{s.total_recommendations === 1 ? '' : 's'} pending
+        {s.critical_count > 0 && (
+          <span style={{ color: 'var(--red)', fontWeight: 700 }}> · {s.critical_count} critical</span>
+        )}
+        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
+          Last analyzed {fmtRel(lastAnalyzed)}
+        </div>
+      </div>
+      <div style={{ flex: 1 }} />
+      <button className="sv-btn ghost sm" onClick={onView}>View Intelligence →</button>
+    </div>
+  );
+}
+
+function OverviewTab({
+  onSelectSite, onViewIntelligence,
+}: {
+  onSelectSite: (siteId: number | null) => void;
+  onViewIntelligence: () => void;
+}) {
   const summary = useApi<WirelessSummary>('/api/wireless/summary', 30000);
   const offline = useApi<AccessPoint[]>('/api/wireless/aps?status=offline', 30000);
   const ssidSummary = useApi<SsidSummary>('/api/wireless/ssids/summary', 30000);
@@ -388,6 +443,7 @@ function OverviewTab({ onSelectSite }: { onSelectSite: (siteId: number | null) =
 
   return (
     <div>
+      <WirelessIntelCard onView={onViewIntelligence} />
       <div className="sv-cards">
         <div className="sv-card total">
           <div className="num">{s.total_aps}</div>
