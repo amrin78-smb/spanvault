@@ -2713,6 +2713,25 @@ app.get('/api/wireless/debug/walk', wrap(async (req, res) => {
   res.json(await wireless.debugWalk(sv, controller));
 }));
 
+// Usage: GET /api/wireless/debug/walk-oid?controller_id=N&oid=1.3.6.1.2.1.1
+app.get('/api/wireless/debug/walk-oid', wrap(async (req, res) => {
+  const role = req.headers['x-user-role'];
+  if (role !== 'admin' && role !== 'super_admin') {
+    return res.status(403).json({ error: 'Admin only' });
+  }
+  const id = parseInt(req.query.controller_id, 10);
+  const oid = String(req.query.oid || '').trim();
+  if (!id) return res.status(400).json({ error: 'controller_id is required' });
+  if (!oid) return res.status(400).json({ error: 'oid is required' });
+  if (!/^\.?\d+(\.\d+)+$/.test(oid)) {
+    return res.status(400).json({ error: 'Invalid OID (expected numeric dotted form)' });
+  }
+  const r = await sv.query('SELECT * FROM wireless_controllers WHERE id = $1', [id]);
+  const controller = r.rows[0];
+  if (!controller) return res.status(404).json({ error: 'Controller not found' });
+  res.json(await wireless.walkOid(sv, controller, oid));
+}));
+
 // ── Wireless intelligence ─────────────────────────────────────
 // Route order matters: register the static /summary route BEFORE the
 // /:controller_id param route so Express doesn't match "summary" as an id.
