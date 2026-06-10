@@ -69,6 +69,26 @@ function asIp(val) {
   return String(val);
 }
 
+// Diagnostic OIDs walked on every Aruba poll to locate the real license-limit
+// OID on a given ArubaOS build. Results are logged via [OID Probe] lines only —
+// never stored — so the correct OID can be confirmed against live hardware.
+const ARUBA_LICENSE_DIAG_OIDS = [
+  '1.3.6.1.4.1.14823.2.2.1.2.1.4.0',
+  '1.3.6.1.4.1.14823.2.2.1.1.1.4.0',
+  '1.3.6.1.4.1.14823.2.2.1.2.1.1.0',
+  '1.3.6.1.4.1.14823.2.2.1.2.1.2.0',
+  '1.3.6.1.4.1.14823.2.2.1.2.1.3.0',
+  '1.3.6.1.4.1.14823.2.2.1.2.1.5.0',
+  '1.3.6.1.4.1.14823.2.2.1.2.1.6.0',
+  '1.3.6.1.4.1.14823.2.2.1.2.1.7.0',
+  '1.3.6.1.4.1.14823.2.2.1.2.1.8.0',
+  '1.3.6.1.4.1.14823.2.2.1.2.1.9.0',
+  '1.3.6.1.4.1.14823.2.2.1.2.1.10.0',
+];
+// Parent of the Aruba license/switch-role branch — walked whole so every
+// populated OID under it is logged for discovery.
+const ARUBA_LICENSE_SUBTREE = '1.3.6.1.4.1.14823.2.2.1.2.1';
+
 // Probe per-vendor controller metadata via scalar SNMP OIDs. Always returns the
 // full object shape; every field is null when unavailable. Best-effort — every
 // OID goes through probeOid() and never crashes the caller.
@@ -93,10 +113,23 @@ async function pollControllerMetadata(session, vendor) {
       const n = Number(lic);
       md.licensed_aps = Number.isFinite(n) ? n : null;
     }
-    // Model/firmware from sysDescr: "ArubaOS (MODEL) VERSION".
+    // Model/firmware from sysDescr. Newer ArubaOS 8.x:
+    //   "ArubaOS (MODEL: Aruba7205), Version 8.10.0.8"
+    // Older builds: "ArubaOS (MODEL) VERSION".
     if (sysDescr) {
-      const m = sysDescr.match(/ArubaOS\s*\(([^)]+)\)\s*([\d.]+)/);
-      if (m) { md.model = m[1]; md.firmware_version = m[2]; }
+      const modelM = sysDescr.match(/MODEL:\s*([^),]+)/i);
+      const verM = sysDescr.match(/Version\s+([\d][\d.]*)/i);
+      if (modelM) md.model = modelM[1].trim();
+      if (verM) md.firmware_version = verM[1];
+      // Fallback to the older "ArubaOS (MODEL) VERSION" shape for fields we
+      // couldn't fill from the newer pattern.
+      if (!md.model || !md.firmware_version) {
+        const m = sysDescr.match(/ArubaOS\s*\(([^)]+)\)\s*([\d.]+)/);
+        if (m) {
+          if (!md.model) md.model = m[1].trim();
+          if (!md.firmware_version) md.firmware_version = m[2];
+        }
+      }
     }
     // HA state: 1=disabled,2=active,3=standby,4=candidate.
     const haState = await probeOid(session, '1.3.6.1.4.1.14823.2.2.1.2.1.19.0', 'wlsxHAState');
@@ -108,11 +141,30 @@ async function pollControllerMetadata(session, vendor) {
     // HA peer IP (4-byte buffer → dotted quad).
     const peer = await probeOid(session, '1.3.6.1.4.1.14823.2.2.1.2.1.20.0', 'wlsxHAPeerIp');
     md.ha_peer_ip = asIp(peer);
-    // HA sync: 0=not-synced, 1=synced.
+    // HA sync: 0=not-synced, 1=synced, 4=standalone (no HA configured —
+    // confirmed from probe output on Aruba7205 / ArubaOS 8.10).
     const sync = await probeOid(session, '1.3.6.1.4.1.14823.2.2.1.2.1.21.0', 'wlsxHASyncStatus');
     if (sync != null) {
-      md.ha_sync_status = Number(sync) === 1 ? 'synced' : 'not-synced';
+      const syncMap = { 0: 'not-synced', 1: 'synced', 4: 'standalone' };
+      md.ha_sync_status = syncMap[Number(sync)] || 'unknown';
     }
+
+    // ── Diagnostic: locate the real license-limit OID on this ArubaOS build ──
+    // Probe each candidate scalar, then walk the whole license branch; every
+    // result is logged via [OID Probe]. Discovery only — nothing is stored.
+    for (const oid of ARUBA_LICENSE_DIAG_OIDS) {
+      await probeOid(session, oid, 'aruba-license-diag');
+    }
+    try {
+      const licRows = await walk(session, ARUBA_LICENSE_SUBTREE);
+      for (const row of licRows) {
+        const v = row.value;
+        const shown = Buffer.isBuffer(v)
+          ? `hex:${v.toString('hex')} ascii:${v.toString('latin1').replace(/[^\x20-\x7e]/g, '.')}`
+          : v;
+        console.log(`[OID Probe] aruba-license-subtree (${row.oid}) → ${shown}`);
+      }
+    } catch (_e) { /* discovery walk is best-effort */ }
   } else if (vendor === 'cisco') {
     // Max concurrent associations as the license/AP cap.
     const lic = await probeOid(session, '1.3.6.1.4.1.14179.1.1.1.18', 'bsnMaximumNumberOfConcurrentAssociations');
