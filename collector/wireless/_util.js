@@ -61,6 +61,26 @@ function bandForChannel(ch) {
   return '6g';
 }
 
+// Radio tables are indexed by "<apIndex>.<radioIndex>" (e.g. "5.0" = AP 5,
+// radio 0). splitRadioIndex returns { apKey, radioKey } so radio-level metrics
+// can be correlated back to the AP-table index (which is apKey) and the band.
+function splitRadioIndex(idx) {
+  if (idx === null || idx === undefined) return { apKey: null, radioKey: null };
+  const s = String(idx);
+  const dot = s.lastIndexOf('.');
+  if (dot < 0) return { apKey: s, radioKey: null };
+  return { apKey: s.slice(0, dot), radioKey: s.slice(dot + 1) };
+}
+
+// Vendor radio indexes: 0 = 2.4GHz, 1 = 5GHz (the dominant convention across
+// Aruba/Cisco/Ruckus MIBs). Returns '2g' | '5g' | null.
+function bandForRadioIndex(radioKey) {
+  const r = num(radioKey);
+  if (r === 0) return '2g';
+  if (r === 1) return '5g';
+  return null;
+}
+
 // A fresh WirelessAP with all the required defaults applied.
 function emptyAp() {
   return {
@@ -82,8 +102,27 @@ function emptyAp() {
     tx_power_5g: null,
     uptime_seconds: null,
     firmware_version: null,
+    // ── Expanded radio metrics (best-effort; null when the vendor/firmware
+    //    does not expose the OID — never default to 0, which would be misleading).
+    noise_floor_2g: null,    // dBm, negative
+    noise_floor_5g: null,    // dBm, negative
+    retry_rate_2g: null,     // percent
+    retry_rate_5g: null,     // percent
+    rx_errors_2g: null,
+    tx_errors_2g: null,
+    rx_errors_5g: null,
+    tx_errors_5g: null,
+    // Raw cumulative byte counters (sum across radios). The collector converts
+    // these to throughput_in_bps / throughput_out_bps via a per-poll delta.
+    rx_bytes: null,          // bytes received by the AP (→ throughput_in_bps)
+    tx_bytes: null,          // bytes sent by the AP    (→ throughput_out_bps)
+    serial_number: null,
+    auth_failures: null,
     _index: null,
   };
 }
 
-module.exports = { num, str, indexAfter, columnMap, bandForChannel, emptyAp };
+module.exports = {
+  num, str, indexAfter, columnMap, bandForChannel, emptyAp,
+  splitRadioIndex, bandForRadioIndex,
+};

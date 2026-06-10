@@ -549,6 +549,51 @@ CREATE TABLE IF NOT EXISTS wireless_history (
 CREATE INDEX IF NOT EXISTS idx_wireless_hist_ap_ts
   ON wireless_history(ap_id, ts DESC);
 
+-- ── Expanded wireless radio metrics (Aruba/Cisco/Ruckus richer SNMP) ─────────
+-- Per-band noise floor (negative dBm), frame retry rate (%), rx/tx frame error
+-- counters, throughput rate (bps, derived from cumulative byte counters by the
+-- collector), serial number and an auth-failure counter. All nullable — old
+-- firmware that does not expose an OID stores NULL rather than a misleading 0.
+ALTER TABLE wireless_aps ADD COLUMN IF NOT EXISTS noise_floor_2g    INTEGER;
+ALTER TABLE wireless_aps ADD COLUMN IF NOT EXISTS noise_floor_5g    INTEGER;
+ALTER TABLE wireless_aps ADD COLUMN IF NOT EXISTS retry_rate_2g     NUMERIC;
+ALTER TABLE wireless_aps ADD COLUMN IF NOT EXISTS retry_rate_5g     NUMERIC;
+ALTER TABLE wireless_aps ADD COLUMN IF NOT EXISTS rx_errors_2g      BIGINT;
+ALTER TABLE wireless_aps ADD COLUMN IF NOT EXISTS tx_errors_2g      BIGINT;
+ALTER TABLE wireless_aps ADD COLUMN IF NOT EXISTS rx_errors_5g      BIGINT;
+ALTER TABLE wireless_aps ADD COLUMN IF NOT EXISTS tx_errors_5g      BIGINT;
+ALTER TABLE wireless_aps ADD COLUMN IF NOT EXISTS throughput_in_bps  BIGINT;
+ALTER TABLE wireless_aps ADD COLUMN IF NOT EXISTS throughput_out_bps BIGINT;
+ALTER TABLE wireless_aps ADD COLUMN IF NOT EXISTS serial_number     TEXT;
+ALTER TABLE wireless_aps ADD COLUMN IF NOT EXISTS auth_failures     INTEGER DEFAULT 0;
+
+-- Per-SSID statistics (one row per controller + SSID name).
+CREATE TABLE IF NOT EXISTS wireless_ssids (
+  id              SERIAL PRIMARY KEY,
+  controller_id   INTEGER NOT NULL REFERENCES wireless_controllers(id) ON DELETE CASCADE,
+  ssid_name       TEXT NOT NULL,
+  site_id         INTEGER,
+  site_name       TEXT,
+  status          TEXT NOT NULL DEFAULT 'up',
+  clients_total   INTEGER NOT NULL DEFAULT 0,
+  bytes_in        BIGINT DEFAULT 0,
+  bytes_out       BIGINT DEFAULT 0,
+  auth_successes  INTEGER DEFAULT 0,
+  auth_failures   INTEGER DEFAULT 0,
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_wireless_ssid_ctrl_name
+  ON wireless_ssids(controller_id, ssid_name);
+CREATE INDEX IF NOT EXISTS idx_wireless_ssid_ctrl
+  ON wireless_ssids(controller_id);
+
+-- Expanded wireless_history with the new time-series metrics.
+ALTER TABLE wireless_history ADD COLUMN IF NOT EXISTS noise_floor_2g    INTEGER;
+ALTER TABLE wireless_history ADD COLUMN IF NOT EXISTS noise_floor_5g    INTEGER;
+ALTER TABLE wireless_history ADD COLUMN IF NOT EXISTS throughput_in_bps BIGINT;
+ALTER TABLE wireless_history ADD COLUMN IF NOT EXISTS throughput_out_bps BIGINT;
+ALTER TABLE wireless_history ADD COLUMN IF NOT EXISTS auth_failures     INTEGER;
+
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO spanvault_user;
 GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO spanvault_user;
 
