@@ -37,6 +37,7 @@ export type DeviceDetail = {
   };
   health: { score: number | null; grade: string | null; trend: string | null };
   baseline: { mean_ms: number | null; p95_ms: number | null };
+  analysis?: string;
   alerts: {
     id: number;
     alert_type: string;
@@ -117,6 +118,13 @@ const STAT_CARD: React.CSSProperties = {
   justifyContent: 'center',
 };
 const STAT_VALUE: React.CSSProperties = { fontSize: 24, fontWeight: 800, lineHeight: 1.1 };
+const ANALYSIS_BODY: React.CSSProperties = {
+  fontSize: 13,
+  lineHeight: 1.6,
+  color: 'var(--text-primary)',
+  maxWidth: '70ch',
+  margin: 0,
+};
 const STAT_LABEL: React.CSSProperties = {
   fontSize: 11,
   textTransform: 'uppercase',
@@ -174,6 +182,7 @@ export default function DeviceDetailReport({ data }: { data?: DeviceDetail | nul
   const uptime_by_day = data.uptime_by_day || [];
   const snmp_summary = data.snmp_summary || [];
   const topology = data.topology || [];
+  const analysis = (data.analysis || '').trim();
 
   const subline = [device.ip, device.type, device.site, device.vendor]
     .filter((x) => x !== null && x !== undefined && x !== '')
@@ -222,6 +231,14 @@ export default function DeviceDetailReport({ data }: { data?: DeviceDetail | nul
           <div style={STAT_LABEL}>Downtime</div>
         </div>
       </div>
+
+      {/* 2b. Device analysis (auto-generated interpretation of the numbers above) */}
+      {analysis && (
+        <div className="sv-panel" style={PANEL}>
+          <h3 style={SECTION_TITLE}>Device analysis</h3>
+          <p style={ANALYSIS_BODY}>{analysis}</p>
+        </div>
+      )}
 
       {/* 3. 90-day availability calendar */}
       <div className="sv-panel" style={PANEL}>

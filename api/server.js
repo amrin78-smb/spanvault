@@ -3488,10 +3488,48 @@ app.get('/api/reports/network-summary', wrap(async (req, res) => {
   const scores = devices.map((d) => d.health_score).filter((v) => v != null).map(Number);
   const avgScore = scores.length ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : null;
 
+  // ── Auto-generated "Key Findings" (compares current vs the previous period) ──
+  const periodLabel = ({ '24h': 'the last 24 hours', '7d': 'the last 7 days', '30d': 'the last 30 days', '90d': 'the last 90 days' })[req.query.range] || 'this period';
+  const durationMs = Date.parse(win.end) - Date.parse(win.start);
+  const prevStart = new Date(Date.parse(win.start) - durationMs).toISOString();
+  const iParams = [win.start, win.end, prevStart];
+  const iSc = siteFilterClause(getSiteFilter(req), iParams, 'd.site_id');
+  const iAnd = iSc ? ` AND ${iSc}` : '';
+  const prevResp = await sv.query(`
+    SELECT p.device_id, AVG(p.response_ms) AS avg_ms
+    FROM ping_results p JOIN monitored_devices d ON d.id = p.device_id
+    WHERE p.status = 'up' AND p.ts >= $3 AND p.ts < $1${iAnd}
+    GROUP BY p.device_id`, iParams).catch(() => ({ rows: [] }));
+  const cpuRisk = await sv.query(`
+    SELECT d.name AS device_name, ROUND(AVG(s.value)::numeric, 0) AS cpu
+    FROM snmp_results s JOIN monitored_devices d ON d.id = s.device_id
+    WHERE s.metric_name ILIKE '%cpu%' AND s.ts BETWEEN $1 AND $2${iAnd}
+    GROUP BY d.name HAVING AVG(s.value) >= 75 ORDER BY cpu DESC LIMIT 1`, iParams).catch(() => ({ rows: [] }));
+
+  const key_findings = [];
+  const bestSite = [...sites].filter((s) => s.uptime_pct != null).sort((a, b) => b.uptime_pct - a.uptime_pct)[0];
+  if (bestSite) key_findings.push(`${bestSite.site_name} was the most available site at ${bestSite.uptime_pct}% over ${periodLabel}.`);
+  const prevMap = new Map(prevResp.rows.map((r) => [r.device_id, r.avg_ms != null ? Number(r.avg_ms) : null]));
+  let improved = null;
+  for (const d of devices) {
+    const cur = d.avg_response_ms != null ? Number(d.avg_response_ms) : null;
+    const prev = prevMap.get(d.id);
+    if (cur != null && prev != null && prev > 0) {
+      const ch = ((prev - cur) / prev) * 100;
+      if (ch > 20 && (!improved || ch > improved.ch)) improved = { name: d.device_name, ch: Math.round(ch) };
+    }
+  }
+  if (improved) key_findings.push(`${improved.name} response time improved ${improved.ch}% versus the previous period.`);
+  if (top_alerts[0] && top_alerts[0].alerts_count > 0) {
+    key_findings.push(`${top_alerts[0].device_name} triggered ${top_alerts[0].alerts_count} alerts — the most in the network.`);
+  }
+  if (cpuRisk.rows[0]) key_findings.push(`${cpuRisk.rows[0].device_name} CPU is averaging ${cpuRisk.rows[0].cpu}% — approaching its threshold.`);
+
   res.json({
     generated_at: new Date().toISOString(),
     period: req.query.range || '30d',
     overall_health: { score: avgScore, grade: gradeFromScore(avgScore), trend: null },
+    key_findings,
     sites,
     totals: {
       devices: devices.length, up: upN, down: downN,
@@ -3531,15 +3569,36 @@ app.get('/api/reports/site-summary', wrap(async (req, res) => {
   const up = r.rows.filter((d) => (d.current_status || '').toLowerCase() === 'up').length;
   const down = r.rows.filter((d) => (d.current_status || '').toLowerCase() === 'down').length;
   const worst = devices.filter((d) => d.uptime_pct != null).sort((a, b) => Number(a.uptime_pct) - Number(b.uptime_pct))[0] || null;
+  const avgUptime = pct2(failed, checks);
+
+  // ── Auto-generated "Site Analysis" paragraph ──
+  const periodLabel = ({ '24h': 'the last 24 hours', '7d': 'the last 7 days', '30d': 'the last 30 days', '90d': 'the last 90 days' })[req.query.range] || 'this period';
+  const netAvg = await sv.query(
+    `SELECT ROUND(AVG(response_ms)::numeric, 1) AS avg FROM ping_results WHERE status = 'up' AND ts BETWEEN $1 AND $2`,
+    [win.start, win.end]).catch(() => ({ rows: [] }));
+  const best = devices.filter((d) => d.uptime_pct != null).sort((a, b) => Number(b.uptime_pct) - Number(a.uptime_pct))[0];
+  const mostAlerts = [...devices].sort((a, b) => b.alerts_count - a.alerts_count)[0];
+  const respVals = devices.map((d) => d.avg_response_ms).filter((v) => v != null).map(Number);
+  const siteAvg = respVals.length ? Math.round((respVals.reduce((a, b) => a + b, 0) / respVals.length) * 10) / 10 : null;
+  const netAvgMs = netAvg.rows[0] && netAvg.rows[0].avg != null ? Number(netAvg.rows[0].avg) : null;
+  let analysis = `${site_name} maintained ${avgUptime != null ? avgUptime : '—'}% availability over ${periodLabel}.`;
+  if (best) analysis += ` ${best.name} was the most reliable device (${best.uptime_pct != null ? best.uptime_pct : '—'}% uptime).`;
+  if (mostAlerts && mostAlerts.alerts_count > 0) analysis += ` ${mostAlerts.name} had the most issues with ${mostAlerts.alerts_count} alert${mostAlerts.alerts_count > 1 ? 's' : ''}.`;
+  if (siteAvg != null) {
+    const cmp = netAvgMs == null ? null : siteAvg < netAvgMs ? 'better than' : siteAvg > netAvgMs ? 'worse than' : 'in line with';
+    analysis += ` Average response time was ${siteAvg}ms${cmp ? `, ${cmp} the network average of ${netAvgMs}ms` : ''}.`;
+  }
+
   res.json({
     site_name, period: req.query.range || '30d', sla_target: slaTarget,
     devices,
     summary: {
       total: devices.length, up, down,
-      avg_uptime: pct2(failed, checks),
+      avg_uptime: avgUptime,
       total_alerts: devices.reduce((a, d) => a + d.alerts_count, 0),
     },
     top_issue: worst,
+    analysis,
   });
 }));
 
@@ -3612,9 +3671,35 @@ app.get('/api/reports/device-detail', wrap(async (req, res) => {
 
   const a0 = avail.rows[0] || { total_checks: 0, failed_checks: 0 };
   const poll = d.poll_interval_seconds || 300;
+
+  // ── Auto-generated "Device Analysis" paragraph ──
+  const periodLabel = ({ '24h': 'the last 24 hours', '7d': 'the last 7 days', '30d': 'the last 30 days', '90d': 'the last 90 days' })[req.query.range] || 'this period';
+  const trend = health.rows[0] && health.rows[0].trend ? health.rows[0].trend : 'stable';
+  const avgMs = resp.rows[0] && resp.rows[0].avg_ms != null ? Number(resp.rows[0].avg_ms) : null;
+  const baseMs = baseline.rows[0] && baseline.rows[0].mean != null ? Number(baseline.rows[0].mean) : null;
+  const typeCounts = {};
+  for (const al of alerts.rows) {
+    if (al.alert_type && al.alert_type !== 'recovery') typeCounts[al.alert_type] = (typeCounts[al.alert_type] || 0) + 1;
+  }
+  const alertEntries = Object.entries(typeCounts).sort((a, b) => b[1] - a[1]);
+  const totalAlerts = alertEntries.reduce((s, [, n]) => s + n, 0);
+  let analysis = `${d.name} has been ${trend} over ${periodLabel}.`;
+  if (avgMs != null) {
+    if (baseMs != null) {
+      const rel = avgMs > baseMs * 1.1 ? 'above' : avgMs < baseMs * 0.9 ? 'below' : 'in line with';
+      analysis += ` Average response of ${avgMs}ms is ${rel} its ${baseMs}ms baseline.`;
+    } else {
+      analysis += ` Average response was ${avgMs}ms.`;
+    }
+  }
+  if (totalAlerts > 0) {
+    analysis += ` ${totalAlerts} alert${totalAlerts > 1 ? 's were' : ' was'} raised${alertEntries[0] ? `, mostly ${alertEntries[0][0].replace(/_/g, ' ')}` : ''}.`;
+  }
+
   res.json({
     device: { name: d.name, ip: d.ip_address, site: d.site_name, type: d.device_type, vendor: d.device_vendor, snmp_enabled: d.snmp_enabled },
     period: req.query.range || '30d',
+    analysis,
     availability: {
       uptime_pct: pct2(a0.failed_checks, a0.total_checks),
       total_checks: a0.total_checks, failed_checks: a0.failed_checks,
@@ -3642,6 +3727,46 @@ app.get('/api/reports/sla-compliance', wrap(async (req, res) => {
   const withData = rows.filter((r) => r.total_checks > 0);
   const tChecks = withData.reduce((a, r) => a + r.total_checks, 0);
   const tFailed = withData.reduce((a, r) => a + r.failed_checks, 0);
+
+  // ── Risk Assessment: devices hovering near the SLA target + downtime trend ──
+  const at_risk = [];
+  for (const r of rows) {
+    const u = r.uptime_pct != null ? Number(r.uptime_pct) : null;
+    if (u == null || u >= 100) continue;
+    if (u >= 99 && u <= slaTarget + 0.4 && u >= slaTarget - 0.6) {
+      const minsPerCheck = r.failed_checks > 0 ? Number(r.downtime_minutes) / r.failed_checks : null;
+      const periodMins = minsPerCheck != null ? r.total_checks * minsPerCheck : null;
+      const toBreach = periodMins != null ? Math.max(0, Math.round(periodMins * (u - slaTarget) / 100)) : null;
+      at_risk.push({ device_name: r.device_name, site_name: r.site_name, uptime_pct: u, minutes_to_breach: toBreach });
+    }
+  }
+  at_risk.sort((a, b) => a.uptime_pct - b.uptime_pct);
+
+  // Downtime trend vs the previous same-length period.
+  const trends = [];
+  try {
+    const win = getDateRange(req.query);
+    const durationMs = Date.parse(win.end) - Date.parse(win.start);
+    const fmtD = (ms) => new Date(ms).toISOString().slice(0, 10);
+    const prevQ = {
+      range: 'custom', from: fmtD(Date.parse(win.start) - durationMs), to: fmtD(Date.parse(win.start)),
+      sla_target: req.query.sla_target, site_id: req.query.site_id, device_id: req.query.device_id,
+    };
+    const prev = await slaRows(prevQ, getSiteFilter(req));
+    const prevMap = new Map(prev.rows.map((r) => [r.device_id, Number(r.downtime_minutes) || 0]));
+    const incr = [];
+    for (const r of rows) {
+      const cur = Number(r.downtime_minutes) || 0;
+      const pv = prevMap.get(r.device_id);
+      if (pv != null && pv > 0 && cur > pv) {
+        const pct = Math.round(((cur - pv) / pv) * 100);
+        if (pct >= 40) incr.push({ name: r.device_name, pct });
+      }
+    }
+    incr.sort((a, b) => b.pct - a.pct);
+    for (const i of incr.slice(0, 2)) trends.push(`${i.name} downtime increased ${i.pct}% versus the previous period.`);
+  } catch (e) { console.error('[reports/sla-compliance] trend failed:', e.message); }
+
   res.json({
     sla_target: slaTarget, generated_at: new Date().toISOString(),
     summary: {
@@ -3652,6 +3777,7 @@ app.get('/api/reports/sla-compliance', wrap(async (req, res) => {
       total_downtime_minutes: Math.round(rows.reduce((a, r) => a + (Number(r.downtime_minutes) || 0), 0) * 10) / 10,
     },
     devices: rows,
+    risk_assessment: { at_risk, trends },
   });
 }));
 
@@ -3844,13 +3970,44 @@ app.get('/api/reports/executive', wrap(async (req, res) => {
     health_grade: gradeFromUptime(pct2(s.bad, s.tc)), incidents: s.incidents,
   }));
 
-  // Up to 3 auto-generated recommendations.
+  const alertDelta = (alertCounts.rows[0].cur || 0) - (alertCounts.rows[0].prev || 0);
+
+  // Previous-period incident count + data-driven inputs for recommendations.
+  let prevIncidents = 0;
+  if (caps.incidents) {
+    try {
+      const pic = await sv.query(`SELECT COUNT(*)::int AS c FROM incidents WHERE started_at >= $3 AND started_at < $1`, params);
+      prevIncidents = pic.rows[0] ? pic.rows[0].c : 0;
+    } catch (e) { console.error('[reports/executive] prev incidents failed:', e.message); }
+  }
+  const cpuRow = await sv.query(`
+    SELECT d.name AS device_name, ROUND(AVG(s.value)::numeric, 0) AS cpu
+    FROM snmp_results s JOIN monitored_devices d ON d.id = s.device_id
+    WHERE s.metric_name ILIKE '%cpu%' AND s.ts BETWEEN $1 AND $2${scAnd}
+    GROUP BY d.name HAVING AVG(s.value) >= 75 ORDER BY cpu DESC LIMIT 1`, params).catch(() => ({ rows: [] }));
+  let degradingCount = 0;
+  if (caps.health) {
+    try {
+      const dg = await sv.query(`
+        SELECT COUNT(*)::int AS c FROM device_health_scores h
+        JOIN monitored_devices d ON d.id = h.device_id
+        WHERE h.trend = 'degrading' AND d.active = TRUE${scAnd}`, params);
+      degradingCount = dg.rows[0] ? dg.rows[0].c : 0;
+    } catch (e) { console.error('[reports/executive] degrading health failed:', e.message); }
+  }
+
+  // Up to 3 auto-generated recommendations, in priority order.
   const recommendations = [];
+  if (cpuRow.rows[0]) {
+    recommendations.push(`Consider upgrading ${cpuRow.rows[0].device_name} — its CPU is averaging ${cpuRow.rows[0].cpu}%, approaching capacity.`);
+  }
   const worstSite = [...sites_summary].filter((s) => s.uptime_pct != null).sort((a, b) => a.uptime_pct - b.uptime_pct)[0];
   if (worstSite && worstSite.uptime_pct < 99.5) {
-    recommendations.push(`Investigate ${worstSite.site} — its availability (${worstSite.uptime_pct}%) is the lowest across your sites.`);
+    recommendations.push(`${worstSite.site} availability (${worstSite.uptime_pct}%) is below SLA — investigate recurring outages.`);
   }
-  const alertDelta = (alertCounts.rows[0].cur || 0) - (alertCounts.rows[0].prev || 0);
+  if (degradingCount > 0) {
+    recommendations.push(`${degradingCount} device${degradingCount > 1 ? 's are' : ' is'} showing degrading health trends — proactive maintenance recommended.`);
+  }
   if (alertDelta > 0) {
     recommendations.push(`Alert volume rose by ${alertDelta} versus the previous period — review recurring offenders for remediation.`);
   }
@@ -3872,6 +4029,14 @@ app.get('/api/reports/executive', wrap(async (req, res) => {
     improvement_vs_prev: {
       uptime_delta: curUptime != null && prevUptime != null ? Math.round((curUptime - prevUptime) * 100) / 100 : null,
       alert_delta: alertDelta,
+    },
+    vs_previous: {
+      uptime: {
+        current: curUptime, previous: prevUptime,
+        delta: curUptime != null && prevUptime != null ? Math.round((curUptime - prevUptime) * 100) / 100 : null,
+      },
+      alerts: { current: alertCounts.rows[0].cur || 0, previous: alertCounts.rows[0].prev || 0, delta: alertDelta },
+      incidents: { current: totalIncidents, previous: prevIncidents, delta: totalIncidents - prevIncidents },
     },
     recommendations: recommendations.slice(0, 3),
   });

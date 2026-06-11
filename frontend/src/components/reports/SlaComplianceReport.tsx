@@ -17,6 +17,15 @@ type SlaCompliance = {
     downtime_minutes: number | null;
     sla_met: boolean;
   }[];
+  risk_assessment?: {
+    at_risk: {
+      device_name: string;
+      site_name: string | null;
+      uptime_pct: number;
+      minutes_to_breach: number | null;
+    }[];
+    trends: string[];
+  };
 };
 
 function fmtNum(value: number | null): string {
@@ -102,6 +111,7 @@ export default function SlaComplianceReport({ data }: { data: SlaCompliance }) {
   const sla_target = data.sla_target ?? 99.5;
   const summary = data.summary || ({} as SlaCompliance['summary']);
   const devices = data.devices || [];
+  const riskAssessment = data.risk_assessment;
 
   // Failing devices first, then by uptime ascending (worst first), preserving order otherwise.
   const sortedDevices = devices
@@ -253,6 +263,47 @@ export default function SlaComplianceReport({ data }: { data: SlaCompliance }) {
           </tbody>
         </table>
       </div>
+
+      {/* 5. Risk Assessment */}
+      {riskAssessment ? (
+        <div className="sv-panel" style={{ ...PANEL, marginTop: 16 }}>
+          <h3 style={SECTION_TITLE}>Risk Assessment</h3>
+          {(() => {
+            const atRisk = riskAssessment.at_risk || [];
+            const trends = riskAssessment.trends || [];
+            if (atRisk.length === 0 && trends.length === 0) {
+              return (
+                <div className="sv-muted" style={{ fontSize: 12.5 }}>
+                  No SLA risks detected — all devices have comfortable headroom.
+                </div>
+              );
+            }
+            return (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {atRisk.map((r, index) => (
+                  <div key={`at-risk-${r.device_name}-${index}`} style={{ fontSize: 12.5 }}>
+                    <span style={{ color: 'var(--yellow)', fontWeight: 700, marginRight: 6 }}>⚠</span>
+                    At Risk: <strong>{r.device_name}</strong>
+                    {r.site_name ? (
+                      <span className="sv-muted"> ({r.site_name})</span>
+                    ) : null}{' '}
+                    at {r.uptime_pct}%
+                    {r.minutes_to_breach != null
+                      ? ` — ${r.minutes_to_breach} minutes from SLA breach`
+                      : ''}
+                  </div>
+                ))}
+                {trends.map((t, index) => (
+                  <div key={`trend-${index}`} style={{ fontSize: 12.5 }}>
+                    <span className="sv-muted" style={{ marginRight: 6 }}>›</span>
+                    {t}
+                  </div>
+                ))}
+              </div>
+            );
+          })()}
+        </div>
+      ) : null}
     </div>
   );
 }

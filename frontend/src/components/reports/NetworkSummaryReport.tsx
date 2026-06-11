@@ -40,6 +40,7 @@ type NetworkSummary = {
     site_name: string;
     alerts_count: number;
   }[];
+  key_findings?: string[];
 };
 
 type SiteRow = NetworkSummary['sites'][number];
@@ -162,6 +163,7 @@ export default function NetworkSummaryReport({ data }: { data: NetworkSummary })
   const totals = data.totals || ({} as Partial<NetworkSummary['totals']>);
   const sites = data.sites || [];
   const topIssues = data.top_issues || [];
+  const keyFindings = data.key_findings || [];
 
   const sortedSites = [...sites].sort((a, b) => compareSites(a, b, sortKey, sortDir));
 
@@ -239,6 +241,29 @@ export default function NetworkSummaryReport({ data }: { data: NetworkSummary })
           </tbody>
         </table>
       </div>
+
+      {/* 2.5 Key Findings */}
+      {keyFindings.length > 0 && (
+        <div className="sv-panel" style={{ ...PANEL, marginTop: 16 }}>
+          <h3 style={SECTION_TITLE}>Key Findings</h3>
+          {keyFindings.map((finding, i) => (
+            <div
+              key={i}
+              style={{
+                display: 'flex',
+                alignItems: 'flex-start',
+                gap: 8,
+                padding: '4px 0',
+              }}
+            >
+              <span style={{ color: 'var(--primary)', fontWeight: 700, lineHeight: 1.4 }}>›</span>
+              <span style={{ fontSize: 12.5, color: 'var(--text-primary)', lineHeight: 1.4 }}>
+                {finding}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* 3. Top Issues */}
       <div className="sv-panel" style={{ ...PANEL, marginTop: 16 }}>

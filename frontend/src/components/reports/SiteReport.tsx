@@ -29,6 +29,7 @@ export type SiteSummary = {
     total_alerts: number;
   };
   top_issue: { name: string; uptime_pct: number | null } | null;
+  analysis?: string;
 };
 
 // ── Sort keys (module scope, never nested) ─────────────────────
@@ -195,7 +196,25 @@ export default function SiteReport({ data }: { data: SiteSummary }) {
         </div>
       </div>
 
-      {/* 2. Devices table */}
+      {/* 2. Site analysis (auto-generated executive lead-in) */}
+      {data.analysis && data.analysis.trim() !== '' && (
+        <div className="sv-panel" style={{ ...PANEL, marginBottom: 16 }}>
+          <h3 style={SECTION_TITLE}>Site Analysis</h3>
+          <p
+            style={{
+              fontSize: 13,
+              lineHeight: 1.6,
+              color: 'var(--text-primary)',
+              maxWidth: '70ch',
+              margin: 0,
+            }}
+          >
+            {data.analysis}
+          </p>
+        </div>
+      )}
+
+      {/* 3. Devices table */}
       <div className="sv-panel" style={PANEL}>
         <table className="sv-table">
           <thead>

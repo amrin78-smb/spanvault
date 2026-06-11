@@ -21,6 +21,11 @@ type Executive = {
     affected: number;
   } | null;
   improvement_vs_prev: { uptime_delta: number | null; alert_delta: number };
+  vs_previous?: {
+    uptime: { current: number | null; previous: number | null; delta: number | null };
+    alerts: { current: number; previous: number; delta: number };
+    incidents: { current: number; previous: number; delta: number };
+  };
   recommendations: string[];
 };
 
@@ -82,6 +87,60 @@ function fmtPct(v: number | null | undefined): string {
   return v === null || v === undefined ? '—' : `${v}%`;
 }
 
+// ── vs-previous comparison row styling/helpers (module scope) ──────
+const VS_ROW: React.CSSProperties = {
+  display: 'grid',
+  gridTemplateColumns: '1fr auto auto',
+  alignItems: 'baseline',
+  gap: 12,
+  padding: '8px 0',
+  borderBottom: '1px solid var(--border)',
+  fontVariantNumeric: 'tabular-nums',
+};
+const VS_LABEL: React.CSSProperties = {
+  fontSize: 12.5,
+  fontWeight: 600,
+  color: 'var(--text-primary)',
+};
+const VS_VALUE: React.CSSProperties = {
+  fontSize: 14,
+  fontWeight: 700,
+  color: 'var(--text-primary)',
+  textAlign: 'right',
+  fontFamily: 'var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace)',
+};
+const VS_DELTA: React.CSSProperties = {
+  fontSize: 12,
+  fontWeight: 600,
+  textAlign: 'right',
+  minWidth: 150,
+};
+
+// Renders the delta cell for a metric.
+// `goodWhenUp` = positive delta is good (green). For alerts/incidents pass false.
+function renderDelta(
+  delta: number | null | undefined,
+  goodWhenUp: boolean,
+  unit: '%' | '',
+): JSX.Element {
+  if (delta === null || delta === undefined) {
+    return <span style={{ ...VS_DELTA, color: 'var(--text-muted)' }}>—</span>;
+  }
+  const up = delta > 0;
+  const flat = delta === 0;
+  const isGood = flat ? true : up === goodWhenUp;
+  const color = flat ? 'var(--text-muted)' : isGood ? 'var(--green)' : 'var(--primary)';
+  const arrow = flat ? '→' : up ? '↑' : '↓';
+  const sign = delta > 0 ? '+' : ''; // negatives carry their own minus sign
+  return (
+    <span style={{ ...VS_DELTA, color }}>
+      ({arrow} {sign}
+      {delta}
+      {unit} <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>vs last period</span>)
+    </span>
+  );
+}
+
 export default function ExecutiveSummaryReport({ data }: { data: Executive }) {
   if (!data) return null;
 
@@ -90,6 +149,7 @@ export default function ExecutiveSummaryReport({ data }: { data: Executive }) {
   const uptimeDelta = data.improvement_vs_prev?.uptime_delta;
   const hasDelta = uptimeDelta !== null && uptimeDelta !== undefined;
   const deltaPositive = hasDelta && (uptimeDelta as number) >= 0;
+  const vsPrev = data.vs_previous;
 
   return (
     <div>
@@ -140,6 +200,30 @@ export default function ExecutiveSummaryReport({ data }: { data: Executive }) {
           <div style={STAT_LABEL}>Downtime</div>
         </div>
       </div>
+
+      {/* 2b. Network performance vs previous period */}
+      {vsPrev && (
+        <div className="sv-panel" style={{ ...PANEL, marginBottom: 16 }}>
+          <h3 style={SECTION_TITLE}>Network Performance vs Previous Period</h3>
+          <div>
+            <div style={VS_ROW}>
+              <span style={VS_LABEL}>Uptime</span>
+              <span style={VS_VALUE}>{fmtPct(vsPrev.uptime.current)}</span>
+              {renderDelta(vsPrev.uptime.delta, true, '%')}
+            </div>
+            <div style={VS_ROW}>
+              <span style={VS_LABEL}>Alerts</span>
+              <span style={VS_VALUE}>{vsPrev.alerts.current}</span>
+              {renderDelta(vsPrev.alerts.delta, false, '')}
+            </div>
+            <div style={{ ...VS_ROW, borderBottom: 'none' }}>
+              <span style={VS_LABEL}>Incidents</span>
+              <span style={VS_VALUE}>{vsPrev.incidents.current}</span>
+              {renderDelta(vsPrev.incidents.delta, false, '')}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 3. Sites table */}
       <div className="sv-panel" style={PANEL}>
