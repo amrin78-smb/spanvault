@@ -50,11 +50,11 @@ const TEMPLATES: Template[] = [
   { key: 'alert-analysis', icon: '🔔', label: 'Alert Analysis', desc: 'Most alerted devices, MTTR, and patterns', scope: 'flexibleNoDevice' },
   { key: 'capacity', icon: '📈', label: 'Capacity', desc: 'Bandwidth trends and utilization projections', scope: 'flexibleNoDevice' },
   { key: 'executive', icon: '📋', label: 'Executive', desc: 'Management-level overview with recommendations', scope: 'all' },
-  { key: 'wireless-overview', icon: '📶', label: 'Wireless Overview', desc: 'Controllers, APs, clients and utilisation across the wireless network', scope: 'all', wireless: true },
-  { key: 'wireless-ap-health', icon: '📡', label: 'AP Health', desc: 'Per-AP health, channels, utilisation, noise and issues', scope: 'all', wireless: true },
-  { key: 'wireless-clients', icon: '👥', label: 'Client Analysis', desc: 'Client distribution, problem clients, bands and roaming', scope: 'all', wireless: true },
-  { key: 'wireless-rf', icon: '📻', label: 'RF Health', desc: 'Interference, channel distribution and RF recommendations', scope: 'all', wireless: true },
-  { key: 'wireless-capacity', icon: '📊', label: 'Wireless Capacity', desc: 'Licensed vs used APs, client trend and growth projection', scope: 'all', wireless: true },
+  { key: 'wireless-overview', icon: '📶', label: 'Wireless Overview', desc: 'AP status, clients and utilization across all sites', scope: 'all', wireless: true },
+  { key: 'wireless-ap-health', icon: '📡', label: 'AP Health', desc: 'Per-AP health scores, channels and utilization', scope: 'all', wireless: true },
+  { key: 'wireless-clients', icon: '👥', label: 'Client Analysis', desc: 'Client distribution, problem clients and roaming', scope: 'all', wireless: true },
+  { key: 'wireless-rf', icon: '📻', label: 'RF Health', desc: 'Co-channel interference, band steering and RF scores', scope: 'all', wireless: true },
+  { key: 'wireless-capacity', icon: '📊', label: 'Wireless Capacity', desc: 'AP capacity usage and client growth trends', scope: 'all', wireless: true },
 ];
 const TEMPLATE_BY_KEY: Record<string, Template> = Object.fromEntries(TEMPLATES.map((t) => [t.key, t]));
 
@@ -322,7 +322,7 @@ export default function ReportsPage() {
         <TemplatePills active={template} onSelect={setTemplate} />
 
         {/* Selected-template description */}
-        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>{tpl.desc}</div>
+        <div style={{ fontSize: 12, color: 'var(--text-muted)', fontStyle: 'italic', marginTop: 6, marginBottom: 12 }}>{tpl.desc}</div>
 
         {/* Controls — single inline row */}
         <div style={{
