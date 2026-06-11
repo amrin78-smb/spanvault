@@ -3913,6 +3913,13 @@ app.get('/api/reports/executive', wrap(async (req, res) => {
   const pPrev = [win.start, win.end, prevStart];
   const scPrev = siteFilterClause(siteFilter, pPrev, 'd.site_id');
   const scPrevAnd = scPrev ? ` AND ${scPrev}` : '';
+  // Previous-window-ONLY queries (the span [prevStart, start)): $1=prevStart,
+  // $2=start, optional site filter at $3. A dedicated 2-bound array avoids a
+  // supplied-but-unreferenced parameter that Postgres can't type-infer
+  // ("could not determine data type of parameter $2").
+  const pPrevWin = [prevStart, win.start];
+  const scPrevWin = siteFilterClause(siteFilter, pPrevWin, 'd.site_id');
+  const scPrevWinAnd = scPrevWin ? ` AND ${scPrevWin}` : '';
   // Site-only filter (no time bounds): optional site filter at $1.
   const pSite = [];
   const scSite = siteFilterClause(siteFilter, pSite, 'd.site_id');
@@ -3931,25 +3938,25 @@ app.get('/api/reports/executive', wrap(async (req, res) => {
   const ov = await runQ('overview', `
     SELECT COUNT(*)::int AS tc, SUM(CASE WHEN p.status <> 'up' THEN 1 ELSE 0 END)::int AS bad
     FROM ping_results p JOIN monitored_devices d ON d.id = p.device_id
-    WHERE p.ts BETWEEN $1 AND $2${scWinAnd}`, pWin, [{ tc: 0, bad: 0 }]);
+    WHERE p.ts BETWEEN $1::timestamptz AND $2::timestamptz${scWinAnd}`, pWin, [{ tc: 0, bad: 0 }]);
   const prev = await runQ('prev-overview', `
     SELECT COUNT(*)::int AS tc, SUM(CASE WHEN p.status <> 'up' THEN 1 ELSE 0 END)::int AS bad
     FROM ping_results p JOIN monitored_devices d ON d.id = p.device_id
-    WHERE p.ts >= $3 AND p.ts < $1${scPrevAnd}`, pPrev, [{ tc: 0, bad: 0 }]);
+    WHERE p.ts >= $1::timestamptz AND p.ts < $2::timestamptz${scPrevWinAnd}`, pPrevWin, [{ tc: 0, bad: 0 }]);
   const dt = await runQ('downtime', `
     SELECT COALESCE(SUM(sub.failed * d.poll_interval_seconds / 60.0), 0) AS dt
     FROM monitored_devices d
     JOIN LATERAL (
       SELECT SUM(CASE WHEN status <> 'up' THEN 1 ELSE 0 END) AS failed
-      FROM ping_results WHERE device_id = d.id AND ts BETWEEN $1 AND $2
+      FROM ping_results WHERE device_id = d.id AND ts BETWEEN $1::timestamptz AND $2::timestamptz
     ) sub ON TRUE
     WHERE d.active = TRUE${scWinAnd}`, pWin, [{ dt: 0 }]);
   const alertCounts = await runQ('alert-counts', `
     SELECT
-      COUNT(*) FILTER (WHERE a.triggered_at BETWEEN $1 AND $2)::int AS cur,
-      COUNT(*) FILTER (WHERE a.triggered_at >= $3 AND a.triggered_at < $1)::int AS prev
+      COUNT(*) FILTER (WHERE a.triggered_at BETWEEN $1::timestamptz AND $2::timestamptz)::int AS cur,
+      COUNT(*) FILTER (WHERE a.triggered_at >= $3::timestamptz AND a.triggered_at < $1::timestamptz)::int AS prev
     FROM alerts a JOIN monitored_devices d ON d.id = a.device_id
-    WHERE a.alert_type <> 'recovery' AND a.triggered_at >= $3${scPrevAnd}`, pPrev, [{ cur: 0, prev: 0 }]);
+    WHERE a.alert_type <> 'recovery' AND a.triggered_at >= $3::timestamptz${scPrevAnd}`, pPrev, [{ cur: 0, prev: 0 }]);
   // Per-site availability + a per-site "incidents" count (device_down alerts).
   // The incident count is pre-aggregated into a CTE keyed by the resolved site
   // name and LEFT JOINed — this avoids referencing the grouped column inside a
@@ -3958,14 +3965,14 @@ app.get('/api/reports/executive', wrap(async (req, res) => {
     WITH site_alerts AS (
       SELECT COALESCE(d.site_name, 'Unassigned') AS site_name, COUNT(*)::int AS incidents
       FROM alerts a JOIN monitored_devices d ON d.id = a.device_id
-      WHERE a.alert_type = 'device_down' AND a.triggered_at BETWEEN $1 AND $2${scWinAnd}
+      WHERE a.alert_type = 'device_down' AND a.triggered_at BETWEEN $1::timestamptz AND $2::timestamptz${scWinAnd}
       GROUP BY 1
     )
     SELECT COALESCE(d.site_name, 'Unassigned') AS site_name,
            COUNT(p.*)::int AS tc, SUM(CASE WHEN p.status <> 'up' THEN 1 ELSE 0 END)::int AS bad,
            COALESCE(MAX(sa.incidents), 0)::int AS incidents
     FROM monitored_devices d
-    LEFT JOIN ping_results p ON p.device_id = d.id AND p.ts BETWEEN $1 AND $2
+    LEFT JOIN ping_results p ON p.device_id = d.id AND p.ts BETWEEN $1::timestamptz AND $2::timestamptz
     LEFT JOIN site_alerts sa ON sa.site_name = COALESCE(d.site_name, 'Unassigned')
     WHERE d.active = TRUE${scWinAnd}
     GROUP BY COALESCE(d.site_name, 'Unassigned') ORDER BY 1`, pWin, []);
@@ -3976,11 +3983,11 @@ app.get('/api/reports/executive', wrap(async (req, res) => {
   let totalIncidents = 0, biggest = null;
   if (caps.incidents) {
     try {
-      const ic = await sv.query(`SELECT COUNT(*)::int AS c FROM incidents WHERE started_at BETWEEN $1 AND $2`, [win.start, win.end]);
+      const ic = await sv.query(`SELECT COUNT(*)::int AS c FROM incidents WHERE started_at BETWEEN $1::timestamptz AND $2::timestamptz`, [win.start, win.end]);
       totalIncidents = ic.rows[0] ? ic.rows[0].c : 0;
       const bg = await sv.query(`
         SELECT title, duration_seconds, affected_count FROM incidents
-        WHERE started_at BETWEEN $1 AND $2
+        WHERE started_at BETWEEN $1::timestamptz AND $2::timestamptz
         ORDER BY COALESCE(duration_seconds, 0) DESC, affected_count DESC LIMIT 1`, [win.start, win.end]);
       if (bg.rows[0]) biggest = {
         title: bg.rows[0].title,
@@ -4007,14 +4014,14 @@ app.get('/api/reports/executive', wrap(async (req, res) => {
   let prevIncidents = 0;
   if (caps.incidents) {
     try {
-      const pic = await sv.query(`SELECT COUNT(*)::int AS c FROM incidents WHERE started_at >= $3 AND started_at < $1`, [win.start, win.end, prevStart]);
+      const pic = await sv.query(`SELECT COUNT(*)::int AS c FROM incidents WHERE started_at >= $1::timestamptz AND started_at < $2::timestamptz`, [prevStart, win.start]);
       prevIncidents = pic.rows[0] ? pic.rows[0].c : 0;
     } catch (e) { console.error('[reports/executive] prev incidents failed:', e.message); }
   }
   const cpuRow = await sv.query(`
     SELECT d.name AS device_name, ROUND(AVG(s.value)::numeric, 0) AS cpu
     FROM snmp_results s JOIN monitored_devices d ON d.id = s.device_id
-    WHERE s.metric_name ILIKE '%cpu%' AND s.ts BETWEEN $1 AND $2${scWinAnd}
+    WHERE s.metric_name ILIKE '%cpu%' AND s.ts BETWEEN $1::timestamptz AND $2::timestamptz${scWinAnd}
     GROUP BY d.name HAVING AVG(s.value) >= 75 ORDER BY cpu DESC LIMIT 1`, pWin).catch(() => ({ rows: [] }));
   let degradingCount = 0;
   if (caps.health) {
