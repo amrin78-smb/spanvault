@@ -3878,6 +3878,360 @@ app.get('/api/reports/executive', wrap(async (req, res) => {
 }));
 
 // ══════════════════════════════════════════════════════════════
+// Wireless reports
+// ══════════════════════════════════════════════════════════════
+// Optional ?controller_id=N scopes a wireless report to one controller.
+function wlCtrl(req) {
+  const id = parseInt(req.query.controller_id, 10);
+  return isNaN(id) ? { has: false, id: null } : { has: true, id };
+}
+// SQL expression for an AP's effective utilisation (higher of the two bands).
+const WL_UTIL = 'GREATEST(COALESCE(a.radio_2g_util_pct,0), COALESCE(a.radio_5g_util_pct,0))';
+// Coerce a JSONB issues/recommendations element to a display string.
+function wlText(v) {
+  if (v == null) return null;
+  if (typeof v === 'string') return v;
+  if (typeof v === 'object') return v.message || v.text || v.title || v.recommendation || JSON.stringify(v);
+  return String(v);
+}
+function wlGradeFromUtil(util) {
+  if (util == null) return null;
+  return gradeFromScore(Math.max(0, 100 - Number(util)));
+}
+const mean = (arr) => (arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0);
+
+// ── Wireless overview ─────────────────────────────────────────
+app.get('/api/reports/wireless-overview', wrap(async (req, res) => {
+  const c = wlCtrl(req);
+  const p = c.has ? [c.id] : [];
+  const apW = c.has ? 'WHERE a.controller_id = $1' : '';
+  const ctrlW = c.has ? 'WHERE id = $1' : '';
+
+  const sum = await sv.query(`
+    SELECT
+      (SELECT COUNT(*)::int FROM wireless_controllers ${ctrlW}) AS total_controllers,
+      COUNT(*)::int AS total_aps,
+      COUNT(*) FILTER (WHERE a.status = 'online')::int  AS online_aps,
+      COUNT(*) FILTER (WHERE a.status = 'offline')::int AS offline_aps,
+      COALESCE(SUM(a.clients_total), 0)::int AS total_clients,
+      ROUND(AVG(${WL_UTIL})::numeric, 1) AS avg_utilization
+    FROM wireless_aps a ${apW}`, p);
+  const intel = await sv.query(`
+    SELECT ROUND(AVG(overall_score)::numeric, 0) AS score
+    FROM wireless_intelligence ${c.has ? 'WHERE controller_id = $1' : ''}`, p).catch(() => ({ rows: [] }));
+
+  const bySite = await sv.query(`
+    SELECT COALESCE(a.site_name, 'Unassigned') AS site_name,
+           COUNT(DISTINCT a.controller_id)::int AS controllers,
+           COUNT(*)::int AS aps,
+           COUNT(*) FILTER (WHERE a.status = 'online')::int AS online_aps,
+           COALESCE(SUM(a.clients_total), 0)::int AS clients,
+           ROUND(AVG(${WL_UTIL})::numeric, 1) AS avg_utilization
+    FROM wireless_aps a ${apW}
+    GROUP BY 1 ORDER BY 1`, p);
+  const topAps = await sv.query(`
+    SELECT a.name, COALESCE(a.site_name, 'Unassigned') AS site_name,
+           COALESCE(a.clients_total, 0)::int AS clients,
+           ROUND(${WL_UTIL}::numeric, 1) AS util
+    FROM wireless_aps a ${apW}
+    ORDER BY a.clients_total DESC NULLS LAST LIMIT 5`, p);
+  const topSsids = await sv.query(`
+    SELECT ssid_name, COALESCE(clients_total, 0)::int AS client_count
+    FROM wireless_ssids ${c.has ? 'WHERE controller_id = $1' : ''}
+    ORDER BY clients_total DESC NULLS LAST LIMIT 5`, p);
+  const offline = await sv.query(`
+    SELECT a.name, COALESCE(a.site_name, 'Unassigned') AS site_name, a.last_seen_at AS last_seen
+    FROM wireless_aps a WHERE a.status = 'offline'${c.has ? ' AND a.controller_id = $1' : ''}
+    ORDER BY a.last_seen_at ASC NULLS LAST LIMIT 50`, p);
+  const highUtil = await sv.query(`
+    SELECT a.name, COALESCE(a.site_name, 'Unassigned') AS site_name, ROUND(${WL_UTIL}::numeric, 1) AS util
+    FROM wireless_aps a WHERE ${WL_UTIL} > 70${c.has ? ' AND a.controller_id = $1' : ''}
+    ORDER BY util DESC LIMIT 50`, p);
+
+  const s = sum.rows[0] || {};
+  const score = intel.rows[0] && intel.rows[0].score != null ? Number(intel.rows[0].score) : null;
+  res.json({
+    period: req.query.range || '30d',
+    summary: {
+      total_controllers: s.total_controllers || 0,
+      total_aps: s.total_aps || 0,
+      online_aps: s.online_aps || 0,
+      offline_aps: s.offline_aps || 0,
+      total_clients: s.total_clients || 0,
+      avg_utilization: s.avg_utilization != null ? Number(s.avg_utilization) : null,
+      overall_health_score: score,
+      overall_grade: gradeFromScore(score),
+    },
+    by_site: bySite.rows.map((r) => ({
+      ...r, health_grade: wlGradeFromUtil(r.avg_utilization),
+    })),
+    top_aps_by_clients: topAps.rows,
+    top_ssids: topSsids.rows,
+    offline_aps: offline.rows,
+    high_util_aps: highUtil.rows,
+  });
+}));
+
+// ── Wireless AP health ────────────────────────────────────────
+app.get('/api/reports/wireless-ap-health', wrap(async (req, res) => {
+  const c = wlCtrl(req);
+  const p = c.has ? [c.id] : [];
+  const where = c.has ? 'WHERE a.controller_id = $1' : '';
+  const baseCols = `
+    a.name, c.name AS controller_name, COALESCE(a.site_name, 'Unassigned') AS site_name,
+    a.status, COALESCE(a.clients_total, 0)::int AS clients,
+    a.radio_2g_channel, a.radio_5g_channel, a.radio_2g_util_pct, a.radio_5g_util_pct,
+    a.noise_floor_2g, a.noise_floor_5g, a.uptime_seconds`;
+  // Intelligence columns are optional — fall back to a query without them.
+  let rows;
+  try {
+    const r = await sv.query(`
+      SELECT ${baseCols},
+             ai.health_score, ai.health_grade, ai.load_status,
+             ROUND(ai.load_pct::numeric, 1) AS load_pct,
+             COALESCE(ai.issues, '[]'::jsonb) AS issues
+      FROM wireless_aps a
+      LEFT JOIN wireless_controllers c ON c.id = a.controller_id
+      LEFT JOIN wireless_ap_intelligence ai ON ai.ap_id = a.id
+      ${where}
+      ORDER BY ai.health_score ASC NULLS LAST, a.name`, p);
+    rows = r.rows;
+  } catch (e) {
+    console.error('[reports/wireless-ap-health] intelligence join failed:', e.message);
+    const r = await sv.query(`
+      SELECT ${baseCols}, NULL::numeric AS health_score, NULL::text AS health_grade,
+             NULL::text AS load_status, NULL::numeric AS load_pct, '[]'::jsonb AS issues
+      FROM wireless_aps a LEFT JOIN wireless_controllers c ON c.id = a.controller_id
+      ${where} ORDER BY a.name`, p);
+    rows = r.rows;
+  }
+
+  const aps = rows.map((r) => {
+    const util = Math.max(Number(r.radio_2g_util_pct || 0), Number(r.radio_5g_util_pct || 0));
+    return {
+      name: r.name, controller_name: r.controller_name, site_name: r.site_name,
+      status: r.status, clients: r.clients,
+      radio_2g_channel: r.radio_2g_channel, radio_5g_channel: r.radio_5g_channel,
+      radio_2g_util_pct: r.radio_2g_util_pct != null ? Number(r.radio_2g_util_pct) : null,
+      radio_5g_util_pct: r.radio_5g_util_pct != null ? Number(r.radio_5g_util_pct) : null,
+      noise_floor_2g: r.noise_floor_2g, noise_floor_5g: r.noise_floor_5g,
+      uptime_seconds: r.uptime_seconds != null ? Number(r.uptime_seconds) : null,
+      health_score: r.health_score != null ? Number(r.health_score) : null,
+      health_grade: r.health_grade || null,
+      _util: util, _load_status: r.load_status,
+      issues: Array.isArray(r.issues) ? r.issues.map(wlText).filter(Boolean) : [],
+    };
+  });
+  const scores = aps.map((a) => a.health_score).filter((v) => v != null);
+  const summary = {
+    total: aps.length,
+    online: aps.filter((a) => a.status === 'online').length,
+    offline: aps.filter((a) => a.status === 'offline').length,
+    avg_health_score: scores.length ? Math.round(mean(scores)) : null,
+    overloaded_count: aps.filter((a) => a._load_status === 'overloaded' || a._util > 85).length,
+    high_util_count: aps.filter((a) => a._util > 70).length,
+  };
+  for (const a of aps) { delete a._util; delete a._load_status; }
+  res.json({ period: req.query.range || '30d', aps, summary });
+}));
+
+// ── Wireless client analysis ──────────────────────────────────
+app.get('/api/reports/wireless-clients', wrap(async (req, res) => {
+  const c = wlCtrl(req);
+  const p = c.has ? [c.id] : [];
+  const w = c.has ? 'WHERE controller_id = $1' : '';
+  const and = c.has ? 'AND controller_id = $1' : '';
+
+  const sum = await sv.query(`
+    SELECT COUNT(*)::int AS total_clients,
+           COUNT(*) FILTER (WHERE is_problem)::int AS problem_clients,
+           COUNT(*) FILTER (WHERE rssi_dbm < -75)::int AS low_signal_count,
+           COUNT(*) FILTER (WHERE roaming_count > 5)::int AS frequent_roamers,
+           COUNT(*) FILTER (WHERE band = '2.4GHz')::int AS b2,
+           COUNT(*) FILTER (WHERE band = '5GHz')::int  AS b5
+    FROM wireless_clients ${w}`, p);
+  const problem = await sv.query(`
+    SELECT mac_address, hostname, ap_name, ssid_name, band, rssi_dbm, COALESCE(roaming_count, 0)::int AS roaming_count
+    FROM wireless_clients WHERE is_problem = TRUE ${and}
+    ORDER BY rssi_dbm ASC NULLS LAST LIMIT 100`, p);
+  const bySsid = await sv.query(`
+    SELECT ssid_name, COUNT(*)::int AS client_count
+    FROM wireless_clients WHERE ssid_name IS NOT NULL ${and}
+    GROUP BY ssid_name ORDER BY client_count DESC LIMIT 20`, p);
+  const byBand = await sv.query(`
+    SELECT COALESCE(band, 'Unknown') AS band, COUNT(*)::int AS n
+    FROM wireless_clients ${w} GROUP BY 1`, p);
+  const roam = await sv.query(`
+    SELECT COUNT(*)::int AS n FROM wireless_client_events
+    WHERE event_type = 'roam' AND ts >= NOW() - INTERVAL '24 hours' ${and}`, p);
+  const busiest = await sv.query(`
+    SELECT ap_name AS name, COUNT(*)::int AS clients
+    FROM wireless_clients WHERE ap_name IS NOT NULL ${and}
+    GROUP BY ap_name ORDER BY clients DESC LIMIT 5`, p);
+
+  const s = sum.rows[0] || {};
+  const bandTotal = (s.b2 || 0) + (s.b5 || 0);
+  const by_band = {};
+  for (const r of byBand.rows) by_band[r.band] = r.n;
+  res.json({
+    period: req.query.range || '30d',
+    summary: {
+      total_clients: s.total_clients || 0,
+      problem_clients: s.problem_clients || 0,
+      low_signal_count: s.low_signal_count || 0,
+      frequent_roamers: s.frequent_roamers || 0,
+      band_2g_pct: bandTotal ? Math.round((s.b2 / bandTotal) * 1000) / 10 : null,
+      band_5g_pct: bandTotal ? Math.round((s.b5 / bandTotal) * 1000) / 10 : null,
+    },
+    problem_clients: problem.rows.map((r) => {
+      const reasons = [];
+      if (r.rssi_dbm != null && r.rssi_dbm < -75) reasons.push('Low signal');
+      if (r.roaming_count > 5) reasons.push('Frequent roaming');
+      return { ...r, reason: reasons.join(', ') || 'Flagged' };
+    }),
+    by_ssid: bySsid.rows,
+    by_band,
+    roaming_events_24h: roam.rows[0] ? roam.rows[0].n : 0,
+    busiest_aps: busiest.rows,
+  });
+}));
+
+// ── Wireless RF health ────────────────────────────────────────
+app.get('/api/reports/wireless-rf', wrap(async (req, res) => {
+  const c = wlCtrl(req);
+  const p = c.has ? [c.id] : [];
+  const intelW = c.has ? 'WHERE controller_id = $1' : '';
+  const apW = c.has ? 'WHERE a.controller_id = $1' : '';
+
+  const agg = await sv.query(`
+    SELECT ROUND(AVG(overall_score)::numeric, 0)      AS overall_score,
+           COALESCE(SUM(co_channel_pairs), 0)::int     AS co_channel_affected,
+           ROUND(AVG(interference_score)::numeric, 1)  AS interference_score,
+           ROUND(AVG(band_steering_score)::numeric, 1) AS band_steering_score,
+           ROUND(AVG(band_2g_pct)::numeric, 1)         AS band_2g_pct,
+           ROUND(AVG(band_5g_pct)::numeric, 1)         AS band_5g_pct,
+           ROUND(AVG(load_balance_score)::numeric, 1)  AS load_balance_score,
+           COALESCE(SUM(overloaded_aps), 0)::int       AS overloaded_aps
+    FROM wireless_intelligence ${intelW}`, p).catch(() => ({ rows: [] }));
+  const recRows = await sv.query(`
+    SELECT recommendations FROM wireless_intelligence ${intelW}`, p).catch(() => ({ rows: [] }));
+  const chans = await sv.query(`
+    SELECT a.radio_2g_channel AS ch2, a.radio_5g_channel AS ch5
+    FROM wireless_aps a ${apW}`, p);
+  const grades = await sv.query(`
+    SELECT ai.health_grade AS g, COUNT(*)::int AS n
+    FROM wireless_ap_intelligence ai JOIN wireless_aps a ON a.id = ai.ap_id ${apW}
+    GROUP BY 1`, p).catch(() => ({ rows: [] }));
+
+  const recommendations = [];
+  const seen = new Set();
+  for (const row of recRows.rows) {
+    const arr = Array.isArray(row.recommendations) ? row.recommendations : [];
+    for (const item of arr) {
+      const t = wlText(item);
+      if (t && !seen.has(t)) { seen.add(t); recommendations.push(t); }
+    }
+  }
+  const dist24 = { '1': 0, '6': 0, '11': 0, other: 0 };
+  const dist5 = {};
+  for (const r of chans.rows) {
+    if (r.ch2 != null) {
+      const k = [1, 6, 11].includes(r.ch2) ? String(r.ch2) : 'other';
+      dist24[k] = (dist24[k] || 0) + 1;
+    }
+    if (r.ch5 != null) { const k = String(r.ch5); dist5[k] = (dist5[k] || 0) + 1; }
+  }
+  const ap_health_distribution = { A: 0, B: 0, C: 0, D: 0, F: 0 };
+  for (const r of grades.rows) {
+    if (r.g && Object.prototype.hasOwnProperty.call(ap_health_distribution, r.g)) ap_health_distribution[r.g] = r.n;
+  }
+  const a = agg.rows[0] || {};
+  const score = a.overall_score != null ? Number(a.overall_score) : null;
+  res.json({
+    period: req.query.range || '30d',
+    overall_score: score, overall_grade: gradeFromScore(score),
+    co_channel_affected: a.co_channel_affected || 0,
+    interference_score: a.interference_score != null ? Number(a.interference_score) : null,
+    band_steering_score: a.band_steering_score != null ? Number(a.band_steering_score) : null,
+    band_2g_pct: a.band_2g_pct != null ? Number(a.band_2g_pct) : null,
+    band_5g_pct: a.band_5g_pct != null ? Number(a.band_5g_pct) : null,
+    load_balance_score: a.load_balance_score != null ? Number(a.load_balance_score) : null,
+    overloaded_aps: a.overloaded_aps || 0,
+    recommendations: recommendations.slice(0, 10),
+    channel_distribution: { '2.4GHz': dist24, '5GHz': dist5 },
+    ap_health_distribution,
+  });
+}));
+
+// ── Wireless capacity ─────────────────────────────────────────
+app.get('/api/reports/wireless-capacity', wrap(async (req, res) => {
+  const c = wlCtrl(req);
+  const p = c.has ? [c.id] : [];
+  const apW = c.has ? 'WHERE a.controller_id = $1' : '';
+
+  const lic = await sv.query(`
+    SELECT COALESCE(SUM(licensed_aps), 0)::int AS licensed
+    FROM wireless_controllers ${c.has ? 'WHERE id = $1' : ''}`, p);
+  const used = await sv.query(`
+    SELECT COUNT(*)::int AS used, COALESCE(SUM(a.clients_total), 0)::int AS total_clients
+    FROM wireless_aps a ${apW}`, p);
+  const trendR = await sv.query(`
+    WITH per_poll AS (
+      SELECT date_trunc('hour', h.ts) AS bucket, SUM(h.clients_total) AS total
+      FROM wireless_history h JOIN wireless_aps a ON a.id = h.ap_id
+      WHERE h.ts >= NOW() - INTERVAL '30 days'${c.has ? ' AND a.controller_id = $1' : ''}
+      GROUP BY 1
+    )
+    SELECT to_char(date_trunc('day', bucket), 'YYYY-MM-DD') AS day, ROUND(AVG(total))::int AS clients
+    FROM per_poll GROUP BY 1 ORDER BY 1`, p).catch(() => ({ rows: [] }));
+  const highUtil = await sv.query(`
+    SELECT a.name, COALESCE(a.site_name, 'Unassigned') AS site_name, ROUND(${WL_UTIL}::numeric, 1) AS util
+    FROM wireless_aps a WHERE ${WL_UTIL} > 70${c.has ? ' AND a.controller_id = $1' : ''}
+    ORDER BY util DESC LIMIT 50`, p);
+
+  const licensed = lic.rows[0] ? lic.rows[0].licensed : 0;
+  const usedAps = used.rows[0] ? used.rows[0].used : 0;
+  const totalClients = used.rows[0] ? used.rows[0].total_clients : 0;
+  const trend = trendR.rows;
+  const capacity_pct = licensed > 0 ? Math.round((usedAps / licensed) * 1000) / 10 : null;
+  let peak = null;
+  for (const t of trend) if (!peak || t.clients > peak.count) peak = { date: t.day, count: t.clients };
+
+  // Growth + projection from the daily client trend.
+  let growth_rate = 'n/a', days_to_80pct = null, days_to_full = null;
+  if (trend.length >= 8) {
+    const half = Math.floor(trend.length / 2);
+    const firstAvg = mean(trend.slice(0, half).map((t) => t.clients));
+    const lastAvg = mean(trend.slice(-half).map((t) => t.clients));
+    const gap = Math.max(1, trend.length - half);
+    const perDay = (lastAvg - firstAvg) / gap;
+    if (firstAvg > 0 && perDay > 0) {
+      growth_rate = `${Math.round((perDay * 7 / firstAvg) * 1000) / 10}% per week`;
+      const ceiling = licensed > 0 ? licensed * 50 : null; // ~50 clients/AP soft ceiling
+      if (ceiling) {
+        const d80 = (0.8 * ceiling - lastAvg) / perDay;
+        const dFull = (ceiling - lastAvg) / perDay;
+        if (d80 > 0 && isFinite(d80)) days_to_80pct = Math.round(d80);
+        if (dFull > 0 && isFinite(dFull)) days_to_full = Math.round(dFull);
+      }
+    } else {
+      growth_rate = 'flat/declining';
+    }
+  }
+  res.json({
+    period: req.query.range || '90d',
+    licensed_aps: licensed || null, used_aps: usedAps,
+    capacity_pct,
+    client_trend: trend,
+    peak_clients: peak,
+    avg_clients_per_ap: usedAps > 0 ? Math.round((totalClients / usedAps) * 10) / 10 : null,
+    high_util_aps: highUtil.rows,
+    growth_rate,
+    projected_capacity: { days_to_80pct, days_to_full },
+  });
+}));
+
+// ══════════════════════════════════════════════════════════════
 // Settings
 // ══════════════════════════════════════════════════════════════
 app.get('/api/settings', wrap(async (_req, res) => {

@@ -12,10 +12,16 @@ import TopWorstReport from '@/components/reports/TopWorstReport';
 import AlertAnalysisReport from '@/components/reports/AlertAnalysisReport';
 import CapacityReport from '@/components/reports/CapacityReport';
 import ExecutiveSummaryReport from '@/components/reports/ExecutiveSummaryReport';
+import WirelessOverviewReport from '@/components/reports/WirelessOverviewReport';
+import WirelessAPHealthReport from '@/components/reports/WirelessAPHealthReport';
+import WirelessClientReport from '@/components/reports/WirelessClientReport';
+import WirelessRFReport from '@/components/reports/WirelessRFReport';
+import WirelessCapacityReport from '@/components/reports/WirelessCapacityReport';
 
 // ── Types ──────────────────────────────────────────────────────
 type Site = { id: number; name: string };
 type DeviceLite = { id: number; name: string; ip_address: string };
+type Controller = { id: number; name: string };
 type SavedReport = {
   id: number; name: string; template: string; scope_type: string;
   scope_id: number | null; scope_name: string | null; date_range: string;
@@ -25,12 +31,13 @@ type SavedReport = {
 type ScopeKind = 'all' | 'site' | 'device' | 'flexible' | 'flexibleNoDevice';
 type Template = {
   key: string; icon: string; label: string; desc: string;
-  scope: ScopeKind; sla?: boolean; metric?: boolean;
+  scope: ScopeKind; sla?: boolean; metric?: boolean; wireless?: boolean;
 };
 type Applied = {
   template: string; range: string; from: string; to: string;
   scopeMode: 'all' | 'site' | 'device';
   siteId: string; siteLabel: string; deviceId: string; deviceLabel: string;
+  controllerId: string; controllerLabel: string;
   slaTarget: string; metric: string;
 };
 
@@ -43,6 +50,11 @@ const TEMPLATES: Template[] = [
   { key: 'alert-analysis', icon: '🔔', label: 'Alert Analysis', desc: 'Most alerted devices, MTTR, and patterns', scope: 'flexibleNoDevice' },
   { key: 'capacity', icon: '📈', label: 'Capacity', desc: 'Bandwidth trends and utilization projections', scope: 'flexibleNoDevice' },
   { key: 'executive', icon: '📋', label: 'Executive', desc: 'Management-level overview with recommendations', scope: 'all' },
+  { key: 'wireless-overview', icon: '📶', label: 'Wireless Overview', desc: 'Controllers, APs, clients and utilisation across the wireless network', scope: 'all', wireless: true },
+  { key: 'wireless-ap-health', icon: '📡', label: 'AP Health', desc: 'Per-AP health, channels, utilisation, noise and issues', scope: 'all', wireless: true },
+  { key: 'wireless-clients', icon: '👥', label: 'Client Analysis', desc: 'Client distribution, problem clients, bands and roaming', scope: 'all', wireless: true },
+  { key: 'wireless-rf', icon: '📻', label: 'RF Health', desc: 'Interference, channel distribution and RF recommendations', scope: 'all', wireless: true },
+  { key: 'wireless-capacity', icon: '📊', label: 'Wireless Capacity', desc: 'Licensed vs used APs, client trend and growth projection', scope: 'all', wireless: true },
 ];
 const TEMPLATE_BY_KEY: Record<string, Template> = Object.fromEntries(TEMPLATES.map((t) => [t.key, t]));
 
@@ -64,6 +76,11 @@ function buildEndpoint(a: Applied): string {
   else p.set('range', a.range);
   const useSite = (a.scopeMode === 'site') && a.siteId;
   const useDevice = (a.scopeMode === 'device') && a.deviceId;
+  // Wireless reports are scoped by an optional controller_id instead of site/device.
+  if (a.template.startsWith('wireless-')) {
+    if (a.controllerId) p.set('controller_id', a.controllerId);
+    return `/api/reports/${a.template}?${p}`;
+  }
   switch (a.template) {
     case 'network-summary': return `/api/reports/network-summary?${p}`;
     case 'executive':       return `/api/reports/executive?${p}`;
@@ -99,6 +116,11 @@ function isEmptyReport(template: string, data: any): boolean {
     case 'capacity':        return !Array.isArray(data) || data.length === 0;
     case 'device-detail':   return !data.device;
     case 'executive':       return false; // executive always renders a summary
+    case 'wireless-overview':  return !data.summary || data.summary.total_aps === 0;
+    case 'wireless-ap-health': return !data.aps || data.aps.length === 0;
+    case 'wireless-clients':   return !data.summary || data.summary.total_clients === 0;
+    case 'wireless-rf':        return false; // always renders score/recommendations
+    case 'wireless-capacity':  return !data || (data.used_aps === 0 && (!data.client_trend || data.client_trend.length === 0));
     default: return false;
   }
 }
@@ -110,6 +132,9 @@ function rangeLabel(a: Applied): string {
   return RANGES.find((r) => r.key === a.range)?.label || a.range;
 }
 function scopeLabel(a: Applied): string {
+  if (a.template.startsWith('wireless-')) {
+    return a.controllerId ? `Controller: ${a.controllerLabel || a.controllerId}` : 'All Controllers';
+  }
   if (a.scopeMode === 'site') return `Site: ${a.siteLabel || a.siteId}`;
   if (a.scopeMode === 'device') return `Device: ${a.deviceLabel || a.deviceId}`;
   return 'All Sites';
@@ -170,6 +195,7 @@ export default function ReportsPage() {
   const email = session?.user?.email || '';
   const sites = useApi<Site[]>('/api/netvault/sites');
   const devices = useApi<DeviceLite[]>('/api/devices');
+  const controllers = useApi<Controller[]>('/api/wireless/controllers');
   const saved = useApi<SavedReport[]>(email ? `/api/reports/saved?created_by=${encodeURIComponent(email)}` : '/api/reports/saved');
 
   const [template, setTemplate] = useState('network-summary');
@@ -179,6 +205,7 @@ export default function ReportsPage() {
   const [scopeMode, setScopeMode] = useState<'all' | 'site' | 'device'>('all');
   const [siteId, setSiteId] = useState('');
   const [deviceId, setDeviceId] = useState('');
+  const [controllerId, setControllerId] = useState('');
   const [deviceSearch, setDeviceSearch] = useState('');
   const [slaTarget, setSlaTarget] = useState('99.5');
   const [metric, setMetric] = useState('uptime');
@@ -212,7 +239,8 @@ export default function ReportsPage() {
     if (!canRun()) return;
     const siteLabel = sites.data?.find((s) => String(s.id) === siteId)?.name || '';
     const deviceLabel = devices.data?.find((d) => String(d.id) === deviceId)?.name || '';
-    setApplied({ template, range, from, to, scopeMode, siteId, siteLabel, deviceId, deviceLabel, slaTarget, metric });
+    const controllerLabel = controllers.data?.find((c) => String(c.id) === controllerId)?.name || '';
+    setApplied({ template, range, from, to, scopeMode, siteId, siteLabel, deviceId, deviceLabel, controllerId, controllerLabel, slaTarget, metric });
     setSaveName('');
     setShowSave(false);
   }
@@ -272,7 +300,8 @@ export default function ReportsPage() {
       from: '', to: '', scopeMode: mode === 'site' || mode === 'device' ? mode : 'all',
       siteId: mode === 'site' && s.scope_id ? String(s.scope_id) : '',
       siteLabel, deviceId: mode === 'device' && s.scope_id ? String(s.scope_id) : '',
-      deviceLabel, slaTarget: s.sla_target != null ? String(s.sla_target) : '99.5',
+      deviceLabel, controllerId: '', controllerLabel: '',
+      slaTarget: s.sla_target != null ? String(s.sla_target) : '99.5',
       metric: 'uptime',
     });
     setShowSave(false);
@@ -301,6 +330,15 @@ export default function ReportsPage() {
           borderRadius: 'var(--radius-sm)', padding: '12px 16px', marginBottom: 12,
         }}>
           <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12 }}>
+            {/* Wireless controller scope */}
+            {tpl.wireless && (
+              <label style={fieldLabel}>Controller
+                <select style={ctrlBase} value={controllerId} onChange={(e) => setControllerId(e.target.value)}>
+                  <option value="">All Controllers</option>
+                  {controllers.data?.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+              </label>
+            )}
             {/* Scope */}
             {showScopeSelector && (
               <label style={fieldLabel}>Scope
@@ -485,6 +523,11 @@ function ReportBody({ template, data }: { template: string; data: any }) {
     case 'alert-analysis':  return <AlertAnalysisReport data={data} />;
     case 'capacity':        return <CapacityReport data={data} />;
     case 'executive':       return <ExecutiveSummaryReport data={data} />;
+    case 'wireless-overview':  return <WirelessOverviewReport data={data} />;
+    case 'wireless-ap-health': return <WirelessAPHealthReport data={data} />;
+    case 'wireless-clients':   return <WirelessClientReport data={data} />;
+    case 'wireless-rf':        return <WirelessRFReport data={data} />;
+    case 'wireless-capacity':  return <WirelessCapacityReport data={data} />;
     default: return null;
   }
 }
