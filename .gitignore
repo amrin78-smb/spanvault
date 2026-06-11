@@ -1,5 +1,6 @@
 node_modules/
 .next/
+*.tsbuildinfo
 .env.local
 !.env.local.example
 *.log
