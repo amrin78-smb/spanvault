@@ -3500,11 +3500,17 @@ app.get('/api/reports/network-summary', wrap(async (req, res) => {
     FROM ping_results p JOIN monitored_devices d ON d.id = p.device_id
     WHERE p.status = 'up' AND p.ts >= $3 AND p.ts < $1${iAnd}
     GROUP BY p.device_id`, iParams).catch(() => ({ rows: [] }));
+  // cpuRisk only spans the current window ($1/$2) — it must NOT receive the
+  // prevStart ($3) element that iParams carries, or an unscoped request binds 3
+  // params to a 2-placeholder statement. Use a dedicated window-only array.
+  const cpuParams = [win.start, win.end];
+  const cpuSc = siteFilterClause(getSiteFilter(req), cpuParams, 'd.site_id');
+  const cpuAnd = cpuSc ? ` AND ${cpuSc}` : '';
   const cpuRisk = await sv.query(`
     SELECT d.name AS device_name, ROUND(AVG(s.value)::numeric, 0) AS cpu
     FROM snmp_results s JOIN monitored_devices d ON d.id = s.device_id
-    WHERE s.metric_name ILIKE '%cpu%' AND s.ts BETWEEN $1 AND $2${iAnd}
-    GROUP BY d.name HAVING AVG(s.value) >= 75 ORDER BY cpu DESC LIMIT 1`, iParams).catch(() => ({ rows: [] }));
+    WHERE s.metric_name ILIKE '%cpu%' AND s.ts BETWEEN $1 AND $2${cpuAnd}
+    GROUP BY d.name HAVING AVG(s.value) >= 75 ORDER BY cpu DESC LIMIT 1`, cpuParams).catch(() => ({ rows: [] }));
 
   const key_findings = [];
   const bestSite = [...sites].filter((s) => s.uptime_pct != null).sort((a, b) => b.uptime_pct - a.uptime_pct)[0];
