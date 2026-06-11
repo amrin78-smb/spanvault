@@ -3492,14 +3492,19 @@ app.get('/api/reports/network-summary', wrap(async (req, res) => {
   const periodLabel = ({ '24h': 'the last 24 hours', '7d': 'the last 7 days', '30d': 'the last 30 days', '90d': 'the last 90 days' })[req.query.range] || 'this period';
   const durationMs = Date.parse(win.end) - Date.parse(win.start);
   const prevStart = new Date(Date.parse(win.start) - durationMs).toISOString();
-  const iParams = [win.start, win.end, prevStart];
-  const iSc = siteFilterClause(getSiteFilter(req), iParams, 'd.site_id');
-  const iAnd = iSc ? ` AND ${iSc}` : '';
+  // prevResp spans ONLY the previous window [prevStart, start): $1=prevStart,
+  // $2=start, optional site filter at $3. A dedicated 2-bound array avoids a
+  // supplied-but-unreferenced $2 that Postgres can't type-infer
+  // ("could not determine data type of parameter $2"), which was silently
+  // suppressing the "most-improved device" key finding via the .catch below.
+  const prevParams = [prevStart, win.start];
+  const prevSc = siteFilterClause(getSiteFilter(req), prevParams, 'd.site_id');
+  const prevAnd = prevSc ? ` AND ${prevSc}` : '';
   const prevResp = await sv.query(`
     SELECT p.device_id, AVG(p.response_ms) AS avg_ms
     FROM ping_results p JOIN monitored_devices d ON d.id = p.device_id
-    WHERE p.status = 'up' AND p.ts >= $3 AND p.ts < $1${iAnd}
-    GROUP BY p.device_id`, iParams).catch(() => ({ rows: [] }));
+    WHERE p.status = 'up' AND p.ts >= $1::timestamptz AND p.ts < $2::timestamptz${prevAnd}
+    GROUP BY p.device_id`, prevParams).catch(() => ({ rows: [] }));
   // cpuRisk only spans the current window ($1/$2) — it must NOT receive the
   // prevStart ($3) element that iParams carries, or an unscoped request binds 3
   // params to a 2-placeholder statement. Use a dedicated window-only array.
