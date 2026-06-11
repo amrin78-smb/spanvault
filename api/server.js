@@ -3769,6 +3769,7 @@ app.get('/api/reports/executive', wrap(async (req, res) => {
   const params = [win.start, win.end, prevStart];
   const sc = siteFilterClause(getSiteFilter(req), params, 'd.site_id');
   const scAnd = sc ? ` AND ${sc}` : '';
+  const caps = await getReportCaps();
 
   const ov = await sv.query(`
     SELECT COUNT(*)::int AS tc, SUM(CASE WHEN p.status <> 'up' THEN 1 ELSE 0 END)::int AS bad
@@ -3792,32 +3793,45 @@ app.get('/api/reports/executive', wrap(async (req, res) => {
       COUNT(*) FILTER (WHERE a.triggered_at >= $3 AND a.triggered_at < $1)::int AS prev
     FROM alerts a JOIN monitored_devices d ON d.id = a.device_id
     WHERE a.alert_type <> 'recovery' AND a.triggered_at >= $3${scAnd}`, params);
+  // Per-site availability + a per-site "incidents" count (device_down alerts).
+  // The incident count is pre-aggregated into a CTE keyed by the resolved site
+  // name and LEFT JOINed — this avoids referencing the grouped column inside a
+  // correlated sub-select (a GROUP-BY error on stricter Postgres configs).
   const siteRows = await sv.query(`
+    WITH site_alerts AS (
+      SELECT COALESCE(d.site_name, 'Unassigned') AS site_name, COUNT(*)::int AS incidents
+      FROM alerts a JOIN monitored_devices d ON d.id = a.device_id
+      WHERE a.alert_type = 'device_down' AND a.triggered_at BETWEEN $1 AND $2${scAnd}
+      GROUP BY 1
+    )
     SELECT COALESCE(d.site_name, 'Unassigned') AS site_name,
            COUNT(p.*)::int AS tc, SUM(CASE WHEN p.status <> 'up' THEN 1 ELSE 0 END)::int AS bad,
-           (SELECT COUNT(*)::int FROM alerts a JOIN monitored_devices d2 ON d2.id = a.device_id
-             WHERE d2.site_name IS NOT DISTINCT FROM d.site_name
-               AND a.alert_type = 'device_down' AND a.triggered_at BETWEEN $1 AND $2) AS incidents
+           COALESCE(MAX(sa.incidents), 0)::int AS incidents
     FROM monitored_devices d
     LEFT JOIN ping_results p ON p.device_id = d.id AND p.ts BETWEEN $1 AND $2
+    LEFT JOIN site_alerts sa ON sa.site_name = COALESCE(d.site_name, 'Unassigned')
     WHERE d.active = TRUE${scAnd}
-    GROUP BY d.site_name ORDER BY 1`, params);
+    GROUP BY COALESCE(d.site_name, 'Unassigned') ORDER BY 1`, params);
 
-  // Incidents are global (no site column); guard in case the table is absent.
+  // Incidents are global (no site column) and the table is created by a later
+  // intelligence migration — gate on capability detection (like alerts) and
+  // wrap in try/catch so an un-migrated DB degrades to zero rather than 500ing.
   let totalIncidents = 0, biggest = null;
-  try {
-    const ic = await sv.query(`SELECT COUNT(*)::int AS c FROM incidents WHERE started_at BETWEEN $1 AND $2`, [win.start, win.end]);
-    totalIncidents = ic.rows[0] ? ic.rows[0].c : 0;
-    const bg = await sv.query(`
-      SELECT title, duration_seconds, affected_count FROM incidents
-      WHERE started_at BETWEEN $1 AND $2
-      ORDER BY COALESCE(duration_seconds, 0) DESC, affected_count DESC LIMIT 1`, [win.start, win.end]);
-    if (bg.rows[0]) biggest = {
-      title: bg.rows[0].title,
-      duration_minutes: bg.rows[0].duration_seconds != null ? Math.round(bg.rows[0].duration_seconds / 60) : null,
-      affected: bg.rows[0].affected_count,
-    };
-  } catch (_e) { /* incidents table optional */ }
+  if (caps.incidents) {
+    try {
+      const ic = await sv.query(`SELECT COUNT(*)::int AS c FROM incidents WHERE started_at BETWEEN $1 AND $2`, [win.start, win.end]);
+      totalIncidents = ic.rows[0] ? ic.rows[0].c : 0;
+      const bg = await sv.query(`
+        SELECT title, duration_seconds, affected_count FROM incidents
+        WHERE started_at BETWEEN $1 AND $2
+        ORDER BY COALESCE(duration_seconds, 0) DESC, affected_count DESC LIMIT 1`, [win.start, win.end]);
+      if (bg.rows[0]) biggest = {
+        title: bg.rows[0].title,
+        duration_minutes: bg.rows[0].duration_seconds != null ? Math.round(bg.rows[0].duration_seconds / 60) : null,
+        affected: bg.rows[0].affected_count,
+      };
+    } catch (e) { console.error('[reports/executive] incidents query failed:', e.message); }
+  }
 
   const curUptime = pct2(ov.rows[0].bad, ov.rows[0].tc);
   const prevUptime = pct2(prev.rows[0].bad, prev.rows[0].tc);
