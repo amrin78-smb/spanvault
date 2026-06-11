@@ -1,5 +1,6 @@
 'use client';
 
+import type { CSSProperties, ReactNode } from 'react';
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
@@ -50,14 +51,51 @@ function vendorLabel(v: string | null): string | null {
 }
 
 const RANGES = [
-  { key: '24h', label: '24 Hours' },
-  { key: '7d', label: '7 Days' },
-  { key: '30d', label: '30 Days' },
+  { key: '24h', label: '24h' },
+  { key: '7d', label: '7d' },
+  { key: '30d', label: '30d' },
 ];
 
 const CAT_COLOR: Record<string, string> = {
   system: '#1a2744', interface: '#C8102E', vendor: '#2e9e5b',
 };
+
+// ── Shared layout style constants (inline — globals.css is not editable here) ──
+const SECTION_CARD: CSSProperties = {
+  background: 'var(--bg-card)', border: '1px solid var(--border)',
+  borderRadius: 'var(--radius-sm)', padding: '16px 20px', marginBottom: 16,
+};
+const SECTION_HEADING: CSSProperties = {
+  fontSize: 12, fontWeight: 600, textTransform: 'uppercase', color: 'var(--text-muted)',
+  letterSpacing: '0.06em', margin: '0 0 8px',
+};
+const GRAPH_CARD: CSSProperties = {
+  background: 'var(--bg-card)', border: '1px solid var(--border)',
+  borderRadius: 'var(--radius-sm)', padding: '12px 16px',
+  height: 220, display: 'flex', flexDirection: 'column',
+};
+const GRAPH_HEADER: CSSProperties = {
+  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+  gap: 8, marginBottom: 6, minHeight: 22,
+};
+const GRAPH_TITLE: CSSProperties = {
+  fontSize: 12, fontWeight: 600, textTransform: 'uppercase', color: 'var(--text-muted)',
+  letterSpacing: '0.06em', margin: 0, overflow: 'hidden', textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+};
+const GRAPH_BODY: CSSProperties = { flex: 1, minHeight: 0 };
+const GRAPH_GRID: CSSProperties = {
+  display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 12, marginBottom: 16,
+};
+const TAB_BTN_BASE: CSSProperties = {
+  fontSize: 11, padding: '2px 8px', borderRadius: 6, border: '1px solid var(--border)',
+  background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', lineHeight: 1.4,
+};
+const TAB_BTN_ACTIVE: CSSProperties = {
+  ...TAB_BTN_BASE, background: 'var(--primary)', borderColor: 'var(--primary)', color: '#fff',
+};
+
+const GRAPH_HEIGHT = 160;
 
 // Combined interface-traffic line colours (In = blue, Out = orange).
 const TRAFFIC_IN_COLOR = '#3b82f6';
@@ -104,13 +142,14 @@ export default function DeviceDetailPage() {
         </div>
       )}
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4, flexWrap: 'wrap' }}>
+      {/* Compact header: name + status + badges inline, actions right */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 2, flexWrap: 'wrap' }}>
         <StatusDot
           status={d.current_status}
           size={14}
           title={`${(d.current_status || 'unknown').replace(/^\w/, (c) => c.toUpperCase())} — last seen ${fmtRel(d.last_seen_at)}${d.last_response_ms != null ? `, ${Number(d.last_response_ms).toFixed(0)}ms` : ''}`}
         />
-        <h1 className="sv-page-title" style={{ margin: 0 }}>{d.name}</h1>
+        <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, letterSpacing: '-0.3px' }}>{d.name}</h1>
         <StatusBadge status={d.current_status} />
         {d.is_gateway && (
           <span className="sv-gw-badge" title={`Site gateway for ${d.site_name || 'this site'}`}>
@@ -124,78 +163,57 @@ export default function DeviceDetailPage() {
         {snmpOn && <TestSnmpButton deviceId={d.id} onResult={setToast} />}
         <PingNow deviceId={d.id} />
       </div>
-      <p className="sv-page-sub">
+      <p style={{ color: 'var(--text-muted)', fontSize: 13, margin: '0 0 14px' }}>
         {d.ip_address} · {d.device_type || 'Unknown type'} · {d.site_name || 'Unassigned'}
         {vendorLabel(d.device_vendor) && <> · {vendorLabel(d.device_vendor)}</>}
+        {d.is_gateway && <> · ⭐ Gateway</>}
+        <span style={{ marginLeft: 8 }}>
+          · Last latency {d.last_response_ms != null ? `${Number(d.last_response_ms).toFixed(0)}ms` : '—'}
+          {' '}· Seen {fmtRel(d.last_seen_at)} · Checked {fmtRel(d.last_checked_at)} · Poll {d.poll_interval_seconds}s
+        </span>
       </p>
 
+      {/* Quick stats: 4 compact cards */}
       <QuickStats deviceId={d.id} />
+
+      {/* 90-day availability calendar */}
       <UptimeCalendar deviceId={d.id} />
 
-      <div className="sv-cards">
-        <div className="sv-card total">
-          <div className="num">{d.last_response_ms != null ? `${Number(d.last_response_ms).toFixed(0)}` : '—'}</div>
-          <div className="label">Last Latency (ms)</div>
-        </div>
-        <div className="sv-card">
-          <div className="num" style={{ fontSize: 18 }}>{fmtRel(d.last_seen_at)}</div>
-          <div className="label">Last Seen</div>
-        </div>
-        <div className="sv-card">
-          <div className="num" style={{ fontSize: 18 }}>{fmtRel(d.last_checked_at)}</div>
-          <div className="label">Last Checked</div>
-        </div>
-        <div className="sv-card">
-          <div className="num">{d.poll_interval_seconds}s</div>
-          <div className="label">Poll Interval</div>
-        </div>
-      </div>
-
-      <div className="sv-toolbar">
-        <div className="sv-tabs" style={{ marginBottom: 0, border: 'none' }}>
-          {RANGES.map((r) => (
-            <button key={r.key} className={`sv-tab ${range === r.key ? 'active' : ''}`} onClick={() => setRange(r.key)}>
-              {r.label}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <div className="sv-sensor-grid">
-        <div className="sv-sensor-cell wide">
-          <h2>Ping Latency (ms)</h2>
+      {/* Graphs — 2-column grid; Row 1: Ping Latency | Packet Loss */}
+      <div style={GRAPH_GRID}>
+        <GraphCard title="Ping Latency (ms)" range={range} setRange={setRange}>
           <LatencyChart
             data={ping.data || []}
             loading={ping.loading}
             alertTimes={(alerts.data || []).map((a) => a.triggered_at)}
           />
-        </div>
-        <div className="sv-sensor-cell wide">
-          <h2>Packet Loss (%)</h2>
+        </GraphCard>
+        <GraphCard title="Packet Loss (%)" range={range} setRange={setRange}>
           <SingleChart
             data={(ping.data || []).map((p) => ({ bucket: p.bucket, value: p.max_loss }))}
             loading={ping.loading} color="#C8102E" unit="%"
           />
-        </div>
+        </GraphCard>
+        {/* Row 2+: CPU / Memory / interface graphs (2 per row) */}
         {snmpOn && !sensorsLoading && standardSensors.length > 0 && (
-          <SensorGraphs deviceId={d.id} sensors={standardSensors} range={range} />
+          <SensorGraphs deviceId={d.id} sensors={standardSensors} range={range} setRange={setRange} />
         )}
       </div>
 
       {snmpOn && !sensorsLoading && customSensors.length > 0 && (
         <>
-          <h2 style={{ margin: '20px 0 12px', fontSize: 16 }}>Custom Sensors</h2>
-          <div className="sv-sensor-grid">
+          <div style={SECTION_HEADING}>Custom Sensors</div>
+          <div style={GRAPH_GRID}>
             {customSensors.map((s) => (
-              <CustomSensorChart key={s.id} deviceId={d.id} sensor={s} range={range} />
+              <CustomSensorChart key={s.id} deviceId={d.id} sensor={s} range={range} setRange={setRange} />
             ))}
           </div>
         </>
       )}
 
-      {snmpOn && sensorsLoading && <div className="sv-panel"><Loading /></div>}
+      {snmpOn && sensorsLoading && <div style={SECTION_CARD}><Loading /></div>}
       {snmpOn && !sensorsLoading && enabledSensors.length === 0 && (
-        <div className="sv-panel" style={{ textAlign: 'center', padding: '32px 20px' }}>
+        <div style={{ ...SECTION_CARD, textAlign: 'center', padding: '24px 20px' }}>
           <p className="sv-muted" style={{ marginTop: 0 }}>
             No sensors configured. Run Discovery to choose what to monitor on this device.
           </p>
@@ -210,8 +228,8 @@ export default function DeviceDetailPage() {
 
       <SiteGateway device={d} onChanged={() => device.reload()} />
 
-      <div className="sv-panel">
-        <h2>Alert History</h2>
+      <div style={SECTION_CARD}>
+        <div style={SECTION_HEADING}>Alert History</div>
         {alerts.loading && !alerts.data ? (
           <Loading />
         ) : alerts.data && alerts.data.length ? (
@@ -370,13 +388,13 @@ function buildGraphItems(sensors: Sensor[]): GraphItem[] {
 
 // ── Sensor graphs in a compact responsive grid (top-level component) ─
 function SensorGraphs({
-  deviceId, sensors, range,
+  deviceId, sensors, range, setRange,
 }: {
-  deviceId: number; sensors: Sensor[]; range: string;
+  deviceId: number; sensors: Sensor[]; range: string; setRange: (r: string) => void;
 }) {
   const items = buildGraphItems(sensors);
   // Returns cells only (no grid wrapper) so they join the page-level
-  // sv-sensor-grid alongside the Ping Latency / Packet Loss cells.
+  // 2-column graph grid alongside the Ping Latency / Packet Loss cards.
   return (
     <>
       {items.map((it) =>
@@ -384,10 +402,10 @@ function SensorGraphs({
           <InterfaceTrafficChart
             key={`pair-${it.ifIndex}`}
             deviceId={deviceId} ifLabel={it.ifLabel}
-            inSensor={it.inSensor} outSensor={it.outSensor} range={range}
+            inSensor={it.inSensor} outSensor={it.outSensor} range={range} setRange={setRange}
           />
         ) : (
-          <SensorChart key={it.sensor.id} deviceId={deviceId} sensor={it.sensor} range={range} />
+          <SensorChart key={it.sensor.id} deviceId={deviceId} sensor={it.sensor} range={range} setRange={setRange} />
         )
       )}
     </>
@@ -407,9 +425,9 @@ function metricUnit(metric: string): Unit {
 
 // Combined In/Out traffic chart for one interface (two lines: blue In, orange Out).
 function InterfaceTrafficChart({
-  deviceId, ifLabel, inSensor, outSensor, range,
+  deviceId, ifLabel, inSensor, outSensor, range, setRange,
 }: {
-  deviceId: number; ifLabel: string; inSensor: Sensor; outSensor: Sensor; range: string;
+  deviceId: number; ifLabel: string; inSensor: Sensor; outSensor: Sensor; range: string; setRange: (r: string) => void;
 }) {
   const inHist = useApi<SnmpPoint[]>(
     `/api/devices/${deviceId}/snmp-history?metric=${encodeURIComponent(inSensor.metric_name)}&range=${range}`, 0
@@ -434,18 +452,17 @@ function InterfaceTrafficChart({
   const loading = (inHist.loading && !inHist.data) || (outHist.loading && !outHist.data);
 
   return (
-    <div className="sv-sensor-cell wide">
-      <h2 title={ifLabel}>{ifLabel}</h2>
+    <GraphCard title={ifLabel} titleAttr={ifLabel} range={range} setRange={setRange}>
       {loading ? (
         <Loading />
       ) : !data.length ? (
         <Empty message="No data yet for this interface." />
       ) : (
-        <ResponsiveContainer width="100%" height={160}>
+        <ResponsiveContainer width="100%" height={GRAPH_HEIGHT}>
           <LineChart data={data} margin={{ top: 5, right: 16, bottom: 5, left: 0 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#eef0f3" />
-            <XAxis dataKey="bucket" tickFormatter={tickLabel} fontSize={10} minTickGap={40} />
-            <YAxis fontSize={10} width={64} tickFormatter={(v) => fmtBps(Number(v))} />
+            <XAxis dataKey="bucket" tickFormatter={tickLabel} fontSize={11} minTickGap={40} />
+            <YAxis fontSize={11} width={64} tickFormatter={(v) => fmtBps(Number(v))} />
             <Tooltip
               labelFormatter={tickLabel}
               formatter={(v: any, name: any) => [v == null ? '—' : fmtBps(Number(v)), name]}
@@ -456,11 +473,11 @@ function InterfaceTrafficChart({
           </LineChart>
         </ResponsiveContainer>
       )}
-    </div>
+    </GraphCard>
   );
 }
 
-function SensorChart({ deviceId, sensor, range }: { deviceId: number; sensor: Sensor; range: string }) {
+function SensorChart({ deviceId, sensor, range, setRange }: { deviceId: number; sensor: Sensor; range: string; setRange: (r: string) => void }) {
   const hist = useApi<SnmpPoint[]>(
     `/api/devices/${deviceId}/snmp-history?metric=${encodeURIComponent(sensor.metric_name)}&range=${range}`,
     0
@@ -469,6 +486,7 @@ function SensorChart({ deviceId, sensor, range }: { deviceId: number; sensor: Se
   const color = CAT_COLOR[sensor.category] || '#1a2744';
   const data = (hist.data || []).map((p) => ({ bucket: p.bucket, value: p.avg_value != null ? Number(p.avg_value) : null }));
   const suffix = unit === 'count' || unit === 'state' ? '' : ` (${unit})`;
+  const title = `${sensor.sensor_name}${suffix}`;
 
   const fmtVal = (v: number) => {
     if (unit === 'bps') return fmtBps(v);
@@ -480,19 +498,18 @@ function SensorChart({ deviceId, sensor, range }: { deviceId: number; sensor: Se
   };
 
   return (
-    <div className="sv-sensor-cell">
-      <h2 title={`${sensor.sensor_name}${suffix}`}>{sensor.sensor_name}{suffix}</h2>
+    <GraphCard title={title} titleAttr={title} range={range} setRange={setRange}>
       {hist.loading && !hist.data ? (
         <Loading />
       ) : !data.length ? (
         <Empty message="No data yet for this sensor." />
       ) : (
-        <ResponsiveContainer width="100%" height={160}>
+        <ResponsiveContainer width="100%" height={GRAPH_HEIGHT}>
           <LineChart data={data} margin={{ top: 5, right: 16, bottom: 5, left: 0 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#eef0f3" />
-            <XAxis dataKey="bucket" tickFormatter={tickLabel} fontSize={10} minTickGap={40} />
+            <XAxis dataKey="bucket" tickFormatter={tickLabel} fontSize={11} minTickGap={40} />
             <YAxis
-              fontSize={10}
+              fontSize={11}
               width={unit === 'bps' ? 64 : 44}
               domain={unit === 'state' ? [0, 1] : undefined}
               tickFormatter={unit === 'bps' ? (v) => fmtBps(Number(v)) : undefined}
@@ -502,48 +519,48 @@ function SensorChart({ deviceId, sensor, range }: { deviceId: number; sensor: Se
           </LineChart>
         </ResponsiveContainer>
       )}
-    </div>
+    </GraphCard>
   );
 }
 
 // Custom OID sensor chart: titled by custom_label with custom_unit on the
 // Y-axis. Values are raw numbers (no metric_name-based unit inference).
-function CustomSensorChart({ deviceId, sensor, range }: { deviceId: number; sensor: Sensor; range: string }) {
+function CustomSensorChart({ deviceId, sensor, range, setRange }: { deviceId: number; sensor: Sensor; range: string; setRange: (r: string) => void }) {
   const hist = useApi<SnmpPoint[]>(
     `/api/devices/${deviceId}/snmp-history?metric=${encodeURIComponent(sensor.metric_name)}&range=${range}`,
     0
   );
-  const title = sensor.custom_label || sensor.sensor_name;
+  const label = sensor.custom_label || sensor.sensor_name;
   const unit = (sensor.custom_unit || '').trim();
   const data = (hist.data || []).map((p) => ({ bucket: p.bucket, value: p.avg_value != null ? Number(p.avg_value) : null }));
   const suffix = unit ? ` (${unit})` : '';
+  const title = `${label}${suffix}`;
 
   return (
-    <div className="sv-sensor-cell">
-      <h2 title={`${title}${suffix}`}>{title}{suffix}</h2>
+    <GraphCard title={title} titleAttr={title} range={range} setRange={setRange}>
       {hist.loading && !hist.data ? (
         <Loading />
       ) : !data.length ? (
         <Empty message="No data yet for this sensor." />
       ) : (
-        <ResponsiveContainer width="100%" height={160}>
+        <ResponsiveContainer width="100%" height={GRAPH_HEIGHT}>
           <LineChart data={data} margin={{ top: 5, right: 16, bottom: 5, left: 0 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#eef0f3" />
-            <XAxis dataKey="bucket" tickFormatter={tickLabel} fontSize={10} minTickGap={40} />
+            <XAxis dataKey="bucket" tickFormatter={tickLabel} fontSize={11} minTickGap={40} />
             <YAxis
-              fontSize={10}
+              fontSize={11}
               width={48}
-              label={unit ? { value: unit, angle: -90, position: 'insideLeft', fontSize: 10 } : undefined}
+              label={unit ? { value: unit, angle: -90, position: 'insideLeft', fontSize: 11 } : undefined}
             />
             <Tooltip
               labelFormatter={tickLabel}
-              formatter={(v: any) => [`${Number(v)}${unit ? ` ${unit}` : ''}`, title]}
+              formatter={(v: any) => [`${Number(v)}${unit ? ` ${unit}` : ''}`, label]}
             />
             <Line type="monotone" dataKey="value" stroke="#7c3aed" strokeWidth={2} dot={false} connectNulls />
           </LineChart>
         </ResponsiveContainer>
       )}
-    </div>
+    </GraphCard>
   );
 }
 
@@ -580,11 +597,11 @@ function LatencyChart({ data, loading, alertTimes = [] }: { data: PingPoint[]; l
   }));
   const marks = nearestBuckets(chartData.map((p) => p.bucket), alertTimes);
   return (
-    <ResponsiveContainer width="100%" height={160}>
+    <ResponsiveContainer width="100%" height={GRAPH_HEIGHT}>
       <LineChart data={chartData} margin={{ top: 5, right: 16, bottom: 5, left: 0 }}>
         <CartesianGrid strokeDasharray="3 3" stroke="#eef0f3" />
-        <XAxis dataKey="bucket" tickFormatter={tickLabel} fontSize={10} minTickGap={40} />
-        <YAxis fontSize={10} width={44} />
+        <XAxis dataKey="bucket" tickFormatter={tickLabel} fontSize={11} minTickGap={40} />
+        <YAxis fontSize={11} width={44} />
         <Tooltip labelFormatter={tickLabel} formatter={(v: any) => [`${v} ms`, 'Latency']} />
         {marks.map((b) => (
           <ReferenceLine key={b} x={b} stroke="#dc2626" strokeDasharray="3 2" strokeOpacity={0.6} />
@@ -604,15 +621,51 @@ function SingleChart({
   if (!data.length) return <Empty message="No data for this range." />;
   const chartData = data.map((p) => ({ bucket: p.bucket, value: p.value != null ? Number(p.value) : null }));
   return (
-    <ResponsiveContainer width="100%" height={160}>
+    <ResponsiveContainer width="100%" height={GRAPH_HEIGHT}>
       <LineChart data={chartData} margin={{ top: 5, right: 16, bottom: 5, left: 0 }}>
         <CartesianGrid strokeDasharray="3 3" stroke="#eef0f3" />
-        <XAxis dataKey="bucket" tickFormatter={tickLabel} fontSize={10} minTickGap={40} />
-        <YAxis fontSize={10} width={44} />
+        <XAxis dataKey="bucket" tickFormatter={tickLabel} fontSize={11} minTickGap={40} />
+        <YAxis fontSize={11} width={44} />
         <Tooltip labelFormatter={tickLabel} formatter={(v: any) => [`${v}${unit}`, '']} />
         <Line type="monotone" dataKey="value" stroke={color} strokeWidth={2} dot={false} connectNulls />
       </LineChart>
     </ResponsiveContainer>
+  );
+}
+
+// ── Compact time-range tabs (top-level component) ──────────────
+function RangeTabs({ range, setRange }: { range: string; setRange: (r: string) => void }) {
+  return (
+    <div style={{ display: 'flex', gap: 4 }}>
+      {RANGES.map((r) => (
+        <button
+          key={r.key}
+          type="button"
+          onClick={() => setRange(r.key)}
+          style={range === r.key ? TAB_BTN_ACTIVE : TAB_BTN_BASE}
+        >
+          {r.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// ── Graph card shell: 220px card with header (title + optional tabs) ──
+function GraphCard({
+  title, range, setRange, children, titleAttr,
+}: {
+  title: string; range?: string; setRange?: (r: string) => void;
+  children: ReactNode; titleAttr?: string;
+}) {
+  return (
+    <div style={GRAPH_CARD}>
+      <div style={GRAPH_HEADER}>
+        <h3 style={GRAPH_TITLE} title={titleAttr || title}>{title}</h3>
+        {range != null && setRange && <RangeTabs range={range} setRange={setRange} />}
+      </div>
+      <div style={GRAPH_BODY}>{children}</div>
+    </div>
   );
 }
 
@@ -622,6 +675,25 @@ type QuickStatsT = {
   baseline_response: number | null; alerts_30d: number;
   health_score: number | null; health_grade: string | null; health_trend: string | null;
 };
+const STAT_COLORS: Record<string, string> = {
+  up: 'var(--green)', warning: 'var(--yellow)', down: 'var(--red)', unknown: 'var(--text-muted)',
+};
+const STAT_GRID: CSSProperties = {
+  display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16,
+};
+function statCardStyle(variant?: string): CSSProperties {
+  return {
+    background: 'var(--bg-card)', border: '1px solid var(--border)',
+    borderLeft: `3px solid ${variant ? STAT_COLORS[variant] || 'var(--border)' : 'var(--border)'}`,
+    borderRadius: 'var(--radius-sm)', padding: '12px 16px', minHeight: 75,
+    display: 'flex', flexDirection: 'column', justifyContent: 'center',
+  };
+}
+const STAT_VALUE: CSSProperties = { fontSize: 24, fontWeight: 800, lineHeight: 1.1, letterSpacing: '-0.5px' };
+const STAT_LABEL: CSSProperties = {
+  fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase',
+  letterSpacing: '0.04em', marginTop: 6,
+};
 function QuickStats({ deviceId }: { deviceId: number }) {
   const stats = useApi<QuickStatsT>(`/api/devices/${deviceId}/quick-stats`, 30000);
   const s = stats.data;
@@ -630,28 +702,28 @@ function QuickStats({ deviceId }: { deviceId: number }) {
   const avg = s && s.avg_response_7d != null ? Number(s.avg_response_7d) : null;
   const base = s && s.baseline_response != null ? Number(s.baseline_response) : null;
   return (
-    <div className="sv-cards">
-      <div className={`sv-card ${upVariant}`}>
-        <div className="num">{upPct != null ? `${upPct}%` : '—'}</div>
-        <div className="label">Uptime (30 days)</div>
+    <div style={STAT_GRID}>
+      <div style={statCardStyle(upVariant)}>
+        <div style={STAT_VALUE}>{upPct != null ? `${upPct}%` : '—'}</div>
+        <div style={STAT_LABEL}>Uptime (30 days)</div>
       </div>
-      <div className="sv-card">
-        <div className="num">{avg != null ? `${avg}` : '—'}<span style={{ fontSize: 13 }}> ms</span></div>
-        <div className="label">
+      <div style={statCardStyle()}>
+        <div style={STAT_VALUE}>{avg != null ? `${avg}` : '—'}<span style={{ fontSize: 13, fontWeight: 600 }}> ms</span></div>
+        <div style={STAT_LABEL}>
           Avg Response (7d){base != null ? ` · baseline ${Math.round(base)}ms` : ''}
         </div>
       </div>
-      <div className={`sv-card ${s && s.alerts_30d > 0 ? 'warning' : ''}`}>
-        <div className="num">{s ? s.alerts_30d : '—'}</div>
-        <div className="label">Alerts (30 days)</div>
+      <div style={statCardStyle(s && s.alerts_30d > 0 ? 'warning' : undefined)}>
+        <div style={STAT_VALUE}>{s ? s.alerts_30d : '—'}</div>
+        <div style={STAT_LABEL}>Alerts (30 days)</div>
       </div>
-      <div className="sv-card">
-        <div className="num" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      <div style={statCardStyle()}>
+        <div style={{ ...STAT_VALUE, display: 'flex', alignItems: 'center', gap: 8 }}>
           {s && s.health_score != null ? Math.round(s.health_score) : '—'}
           {s && s.health_grade && <GradeBadge grade={s.health_grade} />}
           {s && s.health_trend && <TrendArrow trend={s.health_trend} />}
         </div>
-        <div className="label">Health Score</div>
+        <div style={STAT_LABEL}>Health Score</div>
       </div>
     </div>
   );
@@ -679,14 +751,20 @@ function UptimeCalendar({ deviceId }: { deviceId: number }) {
   const days = cal.data || [];
   if (!days.length) return null;
   return (
-    <div className="sv-panel" style={{ marginBottom: 18 }}>
-      <h2 style={{ marginTop: 0 }}>90-day availability</h2>
-      <div className="sv-uptime-cal">
+    <div style={{ ...SECTION_CARD, padding: '12px 16px' }}>
+      <div style={SECTION_HEADING}>90-day availability</div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 2, maxHeight: 56, overflow: 'hidden' }}>
         {days.map((c) => {
           const tip = c.total_checks
             ? `${dayLabel(c.day)} — ${c.uptime_pct ?? 100}% uptime, ${c.incidents} incident${c.incidents === 1 ? '' : 's'}`
             : `${dayLabel(c.day)} — no data`;
-          return <span key={c.day} className="sv-uptime-day" style={{ background: calColor(c) }} title={tip} />;
+          return (
+            <span
+              key={c.day}
+              title={tip}
+              style={{ width: 10, height: 10, borderRadius: 2, background: calColor(c), flex: 'none', cursor: 'default' }}
+            />
+          );
         })}
       </div>
     </div>
@@ -697,16 +775,27 @@ function UptimeCalendar({ deviceId }: { deviceId: number }) {
 type IfRow = { if_index: number; if_name: string; status: string | null; in_bps: number | null; out_bps: number | null };
 
 // Compact grid cell — used in the expanded "show all" view.
+const COMPACT_TOGGLE: CSSProperties = {
+  background: 'transparent', border: 'none', color: 'var(--primary)', cursor: 'pointer',
+  fontSize: 12, fontWeight: 600, padding: '4px 0',
+};
 function IfGridCell({ r }: { r: IfRow }) {
   const bps =
     r.status === 'down' || (r.in_bps == null && r.out_bps == null)
       ? '—'
       : `${fmtBps(r.in_bps)} / ${fmtBps(r.out_bps)}`;
   return (
-    <div className="sv-if-cell" title={`${r.if_name} — ${r.status || 'unknown'}`}>
+    <div
+      title={`${r.if_name} — ${r.status || 'unknown'}`}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 8, height: 28, padding: '0 8px',
+        border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
+        background: 'var(--bg-primary)', fontSize: 12.5, minWidth: 0,
+      }}
+    >
       <StatusDot status={r.status || 'unknown'} size={9} title={`Interface ${r.status || 'unknown'}`} />
-      <span className="sv-if-cname">{r.if_name}</span>
-      <span className="sv-if-cbps">{bps}</span>
+      <span style={{ fontWeight: 600, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.if_name}</span>
+      <span style={{ marginLeft: 'auto', color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums', fontSize: 11.5 }}>{bps}</span>
     </div>
   );
 }
@@ -747,44 +836,38 @@ function InterfacePanel({ deviceId }: { deviceId: number }) {
   const unknownCount = total - upCount - downCount;
 
   return (
-    <div className="sv-panel">
-      <h2>Interface Status</h2>
+    <div style={SECTION_CARD}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 8 }}>
+        <div style={{ ...SECTION_HEADING, margin: 0 }}>Interface Status</div>
+        <button type="button" style={COMPACT_TOGGLE} onClick={() => toggle(!expanded)}>
+          {expanded ? 'Show summary' : `Show all ${total} interfaces`}
+        </button>
+      </div>
 
       {expanded ? (
-        <>
-          <button type="button" className="sv-if-toggle" onClick={() => toggle(false)}>
-            Show summary
-          </button>
-          <div className="sv-if-grid">
-            {rows.map((r) => (
-              <IfGridCell key={r.if_index} r={r} />
-            ))}
-          </div>
-        </>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
+          {rows.map((r) => (
+            <IfGridCell key={r.if_index} r={r} />
+          ))}
+        </div>
       ) : (
-        <>
-          <div className="sv-if-summary">
-            {upCount > 0 && (
-              <span className="sv-if-summary-item">
-                <StatusDot status="up" size={10} title="Up" /> {upCount} Up
-              </span>
-            )}
-            {downCount > 0 && (
-              <span className="sv-if-summary-item">
-                <StatusDot status="down" size={10} title="Down" /> {downCount} Down
-              </span>
-            )}
-            {unknownCount > 0 && (
-              <span className="sv-if-summary-item">
-                <StatusDot status="unknown" size={10} title="Unknown" /> {unknownCount} Unknown
-              </span>
-            )}
-          </div>
-
-          <button type="button" className="sv-if-toggle" onClick={() => toggle(true)}>
-            Show all {total} interfaces
-          </button>
-        </>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 18, fontSize: 13.5 }}>
+          {upCount > 0 && (
+            <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600 }}>
+              <StatusDot status="up" size={10} title="Up" /> {upCount} Up
+            </span>
+          )}
+          {downCount > 0 && (
+            <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600 }}>
+              <StatusDot status="down" size={10} title="Down" /> {downCount} Down
+            </span>
+          )}
+          {unknownCount > 0 && (
+            <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600 }}>
+              <StatusDot status="unknown" size={10} title="Unknown" /> {unknownCount} Unknown
+            </span>
+          )}
+        </div>
       )}
     </div>
   );
@@ -825,45 +908,44 @@ function ConnectedDevices({ deviceId }: { deviceId: number }) {
   const total = rows.length;
 
   return (
-    <div className="sv-panel">
-      <h2>Connected to</h2>
+    <div style={SECTION_CARD}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 8 }}>
+        <div style={{ ...SECTION_HEADING, margin: 0 }}>Connected To</div>
+        <button type="button" style={COMPACT_TOGGLE} onClick={() => toggle(!expanded)}>
+          {expanded ? 'Show summary' : `Show all ${total} connections`}
+        </button>
+      </div>
 
       {expanded ? (
-        <>
-          <button type="button" className="sv-if-toggle" onClick={() => toggle(false)}>
-            Show summary
-          </button>
-          <div className="sv-conn-list" style={{ maxHeight: 300, overflowY: 'auto' }}>
-            {rows.map((c, i) => (
-              <div key={i} className="sv-conn-row">
-                <span className="sv-conn-port">{c.from_port || '—'}</span>
-                <span className="sv-conn-arrow">→</span>
-                <span className="sv-conn-nb">
-                  {c.to_device_id ? (
-                    <Link href={`/devices/${c.to_device_id}`} style={{ color: 'var(--sv-crimson)', fontWeight: 600 }}>
-                      {c.neighbor_name || c.neighbor_ip || `#${c.to_device_id}`}
-                    </Link>
-                  ) : (
-                    <span style={{ fontWeight: 600 }}>{c.neighbor_name || c.neighbor_ip || 'Unknown neighbor'}</span>
-                  )}
-                  {c.to_port && <span className="sv-muted"> · {c.to_port}</span>}
-                  {c.protocol && <span className="sv-muted"> · {c.protocol.toUpperCase()}</span>}
-                </span>
-              </div>
-            ))}
-          </div>
-        </>
+        <div style={{ display: 'flex', flexDirection: 'column', maxHeight: 320, overflowY: 'auto' }}>
+          {rows.map((c, i) => (
+            <div
+              key={i}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 8, height: 32,
+                borderBottom: '1px solid var(--border)', fontSize: 13, padding: '0 2px',
+              }}
+            >
+              <span style={{ color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' }}>{c.from_port || '—'}</span>
+              <span style={{ color: 'var(--text-muted)' }}>→</span>
+              <span>
+                {c.to_device_id ? (
+                  <Link href={`/devices/${c.to_device_id}`} style={{ color: 'var(--sv-crimson)', fontWeight: 600 }}>
+                    {c.neighbor_name || c.neighbor_ip || `#${c.to_device_id}`}
+                  </Link>
+                ) : (
+                  <span style={{ fontWeight: 600 }}>{c.neighbor_name || c.neighbor_ip || 'Unknown neighbor'}</span>
+                )}
+                {c.to_port && <span className="sv-muted"> · {c.to_port}</span>}
+                {c.protocol && <span className="sv-muted"> · {c.protocol.toUpperCase()}</span>}
+              </span>
+            </div>
+          ))}
+        </div>
       ) : (
-        <>
-          <div className="sv-if-summary">
-            <span className="sv-if-summary-item">
-              Connected to {total} neighbor{total === 1 ? '' : 's'}
-            </span>
-          </div>
-          <button type="button" className="sv-if-toggle" onClick={() => toggle(true)}>
-            Show all {total} connections
-          </button>
-        </>
+        <div style={{ fontSize: 13.5, fontWeight: 600 }}>
+          Connected to {total} neighbor{total === 1 ? '' : 's'}
+        </div>
       )}
     </div>
   );
@@ -927,12 +1009,12 @@ function DeviceIntelligence({ deviceId }: { deviceId: number }) {
   const hasAnything = health || baseline || anomalies.length || patterns.length || threshold;
 
   return (
-    <div className="sv-panel" style={{ marginBottom: 20 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-        <h2 style={{ margin: 0 }}>⚡ Intelligence</h2>
+    <div style={SECTION_CARD}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+        <div style={{ ...SECTION_HEADING, margin: 0 }}>⚡ Intelligence</div>
         <div style={{ flex: 1 }} />
-        <Link href={`/intelligence?device=${deviceId}#health`} className="sv-dash-link" style={{ fontSize: 13 }}>
-          Full intelligence →
+        <Link href={`/intelligence?device=${deviceId}#health`} className="sv-dash-link" style={{ fontSize: 12, fontWeight: 600 }}>
+          View full intelligence →
         </Link>
       </div>
 
@@ -941,88 +1023,63 @@ function DeviceIntelligence({ deviceId }: { deviceId: number }) {
       ) : intel.error ? (
         <ErrorBox message={intel.error} />
       ) : !hasAnything ? (
-        <p className="sv-muted" style={{ marginBottom: 0 }}>
+        <p className="sv-muted" style={{ margin: 0 }}>
           Collecting baseline data — intelligence appears once this device has a few hours of monitoring history.
           Baselines become reliable after ~7 days.
         </p>
       ) : (
-        <div style={{ display: 'grid', gap: 14 }}>
-          {/* Health */}
-          {health && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
-              <span className="sv-muted" style={{ fontSize: 13, minWidth: 90 }}>Health score</span>
-              <ScoreBar score={health.score} />
-              <GradeBadge grade={health.grade} />
-              <TrendArrow trend={health.trend} />
-              {intelNum(health.uptime_pct) != null && (
-                <span className="sv-muted" style={{ fontSize: 12.5 }}>
-                  Uptime {Number(health.uptime_pct).toFixed(1)}%
-                </span>
-              )}
-            </div>
-          )}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, alignItems: 'start' }}>
+          {/* Left: health score + grade + trend, baseline line */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, minWidth: 0 }}>
+            {health ? (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                <span className="sv-muted" style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Health</span>
+                <ScoreBar score={health.score} />
+                <GradeBadge grade={health.grade} />
+                <TrendArrow trend={health.trend} />
+                {intelNum(health.uptime_pct) != null && (
+                  <span className="sv-muted" style={{ fontSize: 12 }}>Uptime {Number(health.uptime_pct).toFixed(1)}%</span>
+                )}
+              </div>
+            ) : (
+              <span className="sv-muted" style={{ fontSize: 12.5 }}>Health score not computed yet.</span>
+            )}
+            {baseline && (
+              <div style={{ fontSize: 12.5 }} title={`p99 ${Math.round(Number(baseline.p99))}ms · ${baseline.sample_count} samples`}>
+                Normal: <strong>{Math.round(Number(baseline.mean))}ms</strong>
+                {' '}(p95: {Math.round(Number(baseline.p95))}ms)
+              </div>
+            )}
+          </div>
 
-          {/* Baseline */}
-          {baseline && (
-            <div style={{ fontSize: 13.5 }}>
-              <span className="sv-muted" style={{ minWidth: 90, display: 'inline-block' }}>Latency baseline</span>
-              Normal range: <strong>{Math.round(Number(baseline.min_val))}-{Math.round(Number(baseline.p95))}ms</strong>
-              {' '}(p95: {Math.round(Number(baseline.p95))}ms · p99: {Math.round(Number(baseline.p99))}ms · mean {Math.round(Number(baseline.mean))}ms)
-              <span className="sv-muted" style={{ fontSize: 12 }}> · {baseline.sample_count} samples</span>
-            </div>
-          )}
-
-          {/* Active anomalies */}
-          {anomalies.length > 0 && (
-            <div>
-              <div className="sv-muted" style={{ fontSize: 13, marginBottom: 4 }}>Active anomalies</div>
-              {anomalies.map((a) => {
-                const z = intelNum(a.z_score) ?? 0;
-                const val = intelNum(a.value);
-                const base = intelNum(a.baseline_mean);
-                const dir = val != null && base != null ? (val >= base ? 'above' : 'below') : '';
-                return (
-                  <div key={a.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, padding: '3px 0' }}>
-                    <span style={{ color: a.severity === 'critical' ? 'var(--sv-down)' : 'var(--sv-warning)' }}>●</span>
-                    <span>{a.metric}</span>
-                    <span className={`sv-badge ${a.severity === 'critical' ? 'down' : 'warning'}`}>{z.toFixed(1)}σ {dir} normal</span>
-                    <span className="sv-muted" style={{ fontSize: 12 }}>{fmtRel(a.detected_at)}</span>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-
-          {/* Recurring patterns */}
-          {patterns.length > 0 && (
-            <div>
-              <div className="sv-muted" style={{ fontSize: 13, marginBottom: 4 }}>Recurring patterns</div>
-              {patterns.map((p) => (
-                <div key={p.id} style={{ fontSize: 13, padding: '2px 0' }}>
-                  ⚠ Recurring: {p.description}
-                  <span className="sv-muted" style={{ fontSize: 12 }}> · seen {p.occurrence_count}×</span>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* Threshold recommendation */}
-          {threshold && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', padding: '10px 12px', background: 'var(--bg-primary)', borderRadius: 8 }}>
-              <span style={{ fontSize: 13.5 }} title={threshold.reasoning}>
-                Recommended threshold: <strong style={{ color: 'var(--primary)' }}>{Math.round(Number(threshold.recommended_threshold))}ms</strong>
-                {' '}(current: {intelNum(threshold.current_threshold) ?? '—'}ms)
+          {/* Right: anomaly count, pattern count, threshold recommendation (one line) */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, minWidth: 0 }}>
+            <div style={{ display: 'flex', gap: 16, fontSize: 12.5, flexWrap: 'wrap' }}>
+              <span>
+                <strong style={{ color: anomalies.length ? 'var(--sv-down)' : 'var(--text-primary)' }}>{anomalies.length}</strong>
+                <span className="sv-muted"> active {anomalies.length === 1 ? 'anomaly' : 'anomalies'}</span>
               </span>
-              <div style={{ flex: 1 }} />
-              <button className="sv-btn sm" onClick={applyThreshold} disabled={applying}>
-                {applying ? <span className="sv-spinner-sm" /> : 'Apply'}
-              </button>
+              <span>
+                <strong style={{ color: patterns.length ? 'var(--sv-warning)' : 'var(--text-primary)' }}>{patterns.length}</strong>
+                <span className="sv-muted"> active {patterns.length === 1 ? 'pattern' : 'patterns'}</span>
+              </span>
             </div>
-          )}
-
-          {applied != null && !threshold && (
-            <div style={{ fontSize: 13, color: 'var(--sv-up)' }}>✓ Threshold updated to {applied}ms</div>
-          )}
+            {threshold ? (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', fontSize: 12.5 }}>
+                <span title={threshold.reasoning}>
+                  Recommend threshold <strong style={{ color: 'var(--primary)' }}>{Math.round(Number(threshold.recommended_threshold))}ms</strong>
+                  <span className="sv-muted"> (now {intelNum(threshold.current_threshold) ?? '—'}ms)</span>
+                </span>
+                <button className="sv-btn sm" onClick={applyThreshold} disabled={applying}>
+                  {applying ? <span className="sv-spinner-sm" /> : 'Apply'}
+                </button>
+              </div>
+            ) : applied != null ? (
+              <div style={{ fontSize: 12.5, color: 'var(--sv-up)' }}>✓ Threshold updated to {applied}ms</div>
+            ) : (
+              <span className="sv-muted" style={{ fontSize: 12.5 }}>No threshold recommendation.</span>
+            )}
+          </div>
         </div>
       )}
     </div>
@@ -1063,9 +1120,9 @@ function SiteGateway({ device, onChanged }: { device: Device; onChanged: () => v
   }
 
   return (
-    <div className="sv-panel sv-gw-panel" style={{ marginBottom: 20 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <h2 style={{ margin: 0 }}>Site Gateway</h2>
+    <div className="sv-gw-panel" style={SECTION_CARD}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+        <div style={{ ...SECTION_HEADING, margin: 0 }}>Site Gateway</div>
         <div style={{ flex: 1 }} />
         {canEdit && device.is_gateway ? (
           <button className="sv-btn ghost sm" onClick={() => act('clear-gateway')} disabled={busy}>
