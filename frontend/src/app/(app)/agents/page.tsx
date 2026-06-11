@@ -9,7 +9,7 @@ import {
   ErrorBox, fmtRel, PageHeader, CardSkeleton, EmptyState, useRefreshKey, Loading,
 } from '@/components/ui';
 import { IconAgents } from '@/components/icons';
-import { AgentStatusPill, AgentInstall, NewAgentModal } from '@/components/AgentBits';
+import { AgentInstall, NewAgentModal } from '@/components/AgentBits';
 
 type AgentSite = { site_id: number; site_name: string | null };
 export type Agent = {
@@ -18,6 +18,14 @@ export type Agent = {
   last_seen_at: string | null; connected_at: string | null; created_at: string;
   device_count: number; sites: AgentSite[];
 };
+
+// ── Status dot colour by agent connection state ────────────────
+function dotColor(status: string): string {
+  const s = (status || '').toLowerCase();
+  if (s === 'online') return 'var(--green)';
+  if (s === 'offline') return 'var(--red)';
+  return 'var(--text-muted)';
+}
 
 export default function AgentsPage() {
   const { canManageAgents } = useRbac();
@@ -47,6 +55,8 @@ export default function AgentsPage() {
   }
 
   const list = agents.data || [];
+  const online = list.filter((a) => (a.status || '').toLowerCase() === 'online').length;
+  const devicesAssigned = list.reduce((sum, a) => sum + (a.device_count || 0), 0);
 
   return (
     <div>
@@ -56,10 +66,19 @@ export default function AgentsPage() {
 
       {agents.error && <ErrorBox message={agents.error} />}
 
+      {/* Slim summary row — no cards */}
+      {!!list.length && (
+        <div style={{ fontSize: 12, color: 'var(--text-muted)', margin: '2px 0 14px' }}>
+          {list.length} {list.length === 1 ? 'agent' : 'agents'} · {online} online · {devicesAssigned} {devicesAssigned === 1 ? 'device' : 'devices'} assigned
+        </div>
+      )}
+
       {agents.loading && !agents.data ? (
-        <div className="sv-cards"><CardSkeleton count={3} height={150} /></div>
+        <div className="sv-agent-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
+          <CardSkeleton count={3} height={120} />
+        </div>
       ) : list.length ? (
-        <div className="sv-agent-grid">
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
           {list.map((a) => (
             <AgentCard key={a.id} agent={a} onDelete={handleDelete} />
           ))}
@@ -104,27 +123,58 @@ export default function AgentsPage() {
 // ── Single agent card (top-level component) ────────────────────
 function AgentCard({ agent, onDelete }: { agent: Agent; onDelete: (a: Agent) => void }) {
   return (
-    <div className="sv-agent-card">
-      <div className="sv-agent-card-head">
-        <Link href={`/agents/${agent.id}`} className="nm">{agent.name}</Link>
-        <AgentStatusPill status={agent.status} />
+    <div
+      style={{
+        background: 'var(--bg-card)',
+        border: '1px solid var(--border)',
+        borderRadius: 'var(--radius-sm)',
+        padding: '12px 16px',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 6,
+        minHeight: 120,
+      }}
+    >
+      {/* line 1 — status dot + name + vendor badge */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span
+          aria-label={`status: ${agent.status}`}
+          title={agent.status}
+          style={{ width: 8, height: 8, borderRadius: '50%', flex: 'none', background: dotColor(agent.status) }}
+        />
+        <Link
+          href={`/agents/${agent.id}`}
+          style={{ fontWeight: 600, fontSize: 14, color: 'var(--text-primary)', textDecoration: 'none', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+        >
+          {agent.name}
+        </Link>
+        <span
+          style={{
+            fontSize: 11, color: 'var(--text-muted)', border: '1px solid var(--border)',
+            borderRadius: 'var(--radius-sm)', padding: '1px 7px', flex: 'none', whiteSpace: 'nowrap',
+          }}
+        >
+          SpanVault
+        </span>
       </div>
 
-      <div className="sv-agent-meta">
-        <div><span className="k">Last seen</span><span className="v">{fmtRel(agent.last_seen_at)}</span></div>
-        <div><span className="k">Version</span><span className="v">{agent.version ? `v${agent.version}` : '—'}</span></div>
-        <div><span className="k">Host</span><span className="v">{agent.hostname || '—'}</span></div>
-        <div><span className="k">IP</span><span className="v">{agent.ip_address || '—'}</span></div>
-        <div><span className="k">Devices</span><span className="v">{agent.device_count}</span></div>
+      {/* line 2 — IP · hostname */}
+      <div style={{ fontSize: 12, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        {agent.ip_address || '—'} · {agent.hostname || 'no hostname'}
       </div>
 
-      <div className="sv-agent-sites">
-        {agent.sites.length ? agent.sites.map((s) => (
-          <span key={s.site_id} className="sv-pill unknown">{s.site_name || `Site ${s.site_id}`}</span>
-        )) : <span className="sv-muted" style={{ fontSize: 12 }}>No sites assigned</span>}
+      {/* line 3 — devices · version */}
+      <div style={{ fontSize: 12, color: 'var(--text-primary)' }}>
+        {agent.device_count} {agent.device_count === 1 ? 'device' : 'devices'} · {agent.version ? `v${agent.version}` : 'v—'}
       </div>
 
-      <div className="sv-agent-actions">
+      {/* line 4 — last seen */}
+      <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+        Last seen: {fmtRel(agent.last_seen_at)}
+      </div>
+
+      {/* footer — Configure (left) / Delete (right) */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 'auto', paddingTop: 4 }}>
         <Link href={`/agents/${agent.id}`} className="sv-btn ghost sm">Configure</Link>
         <button className="sv-btn ghost sm" onClick={() => onDelete(agent)}>Delete</button>
       </div>

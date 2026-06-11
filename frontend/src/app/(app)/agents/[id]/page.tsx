@@ -39,6 +39,22 @@ function groupDevices(devices: AgentDevice[]) {
   return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
 }
 
+// ── Shared style snippets ──────────────────────────────────────
+const CARD_STYLE: React.CSSProperties = {
+  background: 'var(--bg-card)',
+  border: '1px solid var(--border)',
+  borderRadius: 'var(--radius-sm)',
+  padding: '16px 20px',
+};
+const SECTION_TITLE_STYLE: React.CSSProperties = {
+  fontSize: 12,
+  textTransform: 'uppercase',
+  fontWeight: 600,
+  color: 'var(--text-muted)',
+  marginBottom: 8,
+  letterSpacing: '0.06em',
+};
+
 export default function AgentDetailPage({ params }: { params: { id: string } }) {
   const router = useRouter();
   const agent = useApi<AgentDetail>(`/api/agents/${params.id}`, 15000);
@@ -61,96 +77,115 @@ export default function AgentDetailPage({ params }: { params: { id: string } }) 
 
   const groups = groupDevices(a.devices);
   const offline = a.status === 'offline';
+  const statusLabel = a.status === 'online' ? 'Online' : a.status === 'offline' ? 'Offline' : 'Never';
 
   return (
     <div>
       <PageHeader title={a.name} subtitle="Remote polling agent detail.">
+        <AgentStatusPill status={a.status} />
         <Link href="/agents" className="sv-btn ghost">← Back to Agents</Link>
         <button className="sv-btn ghost" onClick={handleDelete}>Delete Agent</button>
       </PageHeader>
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 18 }}>
-        <AgentStatusPill status={a.status} />
-        <span className="sv-muted" style={{ fontSize: 13 }}>{a.version ? `v${a.version}` : 'version unknown'}</span>
-        {a.hostname && <span className="sv-muted" style={{ fontSize: 13 }}>· {a.hostname}</span>}
-        {a.ip_address && <span className="sv-muted" style={{ fontSize: 13 }}>· {a.ip_address}</span>}
-      </div>
-
-      {/* Status cards */}
-      <div className="sv-cards">
-        <div className="sv-card total">
-          <div className="num" style={{ fontSize: 20 }}>{a.status === 'online' ? 'Online' : a.status === 'offline' ? 'Offline' : 'Never'}</div>
-          <div className="label">Status</div>
-        </div>
-        <div className="sv-card">
-          <div className="num" style={{ fontSize: 20 }}>{fmtRel(a.last_seen_at)}</div>
-          <div className="label">Last seen</div>
-        </div>
-        <div className="sv-card">
-          <div className="num">{a.devices.length}</div>
-          <div className="label">Devices</div>
-        </div>
-        <div className="sv-card">
-          <div className="num">{a.sites.length}</div>
-          <div className="label">Sites</div>
-        </div>
+      {/* Row 1 — compact stat cards */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 12 }}>
+        <StatCard label="Status" value={statusLabel} accent={a.status === 'online' ? 'var(--green)' : a.status === 'offline' ? 'var(--red)' : 'var(--text-muted)'} />
+        <StatCard label="Devices" value={String(a.devices.length)} accent="var(--primary)" />
+        <StatCard label="Version" value={a.version ? `v${a.version}` : '—'} accent="var(--text-muted)" />
+        <StatCard label="Last Seen" value={fmtRel(a.last_seen_at)} accent="var(--text-muted)" />
       </div>
 
       {offline && (
-        <div className="sv-panel" style={{ borderLeft: '4px solid var(--sv-warning)', marginBottom: 18 }}>
+        <div style={{ ...CARD_STYLE, borderLeft: '3px solid var(--yellow)', marginBottom: 12, fontSize: 13 }}>
           ⚠ Agent is offline — its devices may be stale. Check the <strong>SpanVault-Agent</strong> service
           on {a.hostname ? <strong>{a.hostname}</strong> : 'the remote server'} (last seen {fmtRel(a.last_seen_at)}).
         </div>
       )}
 
-      {/* Assigned sites */}
-      <div className="sv-panel">
-        <div style={{ display: 'flex', alignItems: 'center', marginBottom: 12 }}>
-          <h2 style={{ margin: 0 }}>Assigned Sites</h2>
-          <span style={{ flex: 1 }} />
-          {!editSites && <button className="sv-btn ghost sm" onClick={() => setEditSites(true)}>Edit sites</button>}
+      {/* Row 2 — Agent Info (40) / Assigned Sites (60) */}
+      <div style={{ display: 'grid', gridTemplateColumns: '40fr 60fr', gap: 12, marginBottom: 12, alignItems: 'stretch' }}>
+        {/* Left — Agent Info */}
+        <div style={{ ...CARD_STYLE, display: 'flex', flexDirection: 'column' }}>
+          <div style={SECTION_TITLE_STYLE}>Agent Info</div>
+          <dl style={{ margin: 0, display: 'grid', gridTemplateColumns: 'auto 1fr', rowGap: 6, columnGap: 12, fontSize: 12.5 }}>
+            <dt style={{ color: 'var(--text-muted)' }}>IP</dt>
+            <dd style={{ margin: 0, color: 'var(--text-primary)' }}>{a.ip_address || '—'}</dd>
+            <dt style={{ color: 'var(--text-muted)' }}>Hostname</dt>
+            <dd style={{ margin: 0, color: 'var(--text-primary)' }}>{a.hostname || '—'}</dd>
+            <dt style={{ color: 'var(--text-muted)' }}>Connected</dt>
+            <dd style={{ margin: 0, color: 'var(--text-primary)' }}>{a.connected_at ? fmtTime(a.connected_at) : '—'}</dd>
+            <dt style={{ color: 'var(--text-muted)' }}>Created</dt>
+            <dd style={{ margin: 0, color: 'var(--text-primary)' }}>{fmtTime(a.created_at)}</dd>
+          </dl>
+          <div style={{ ...SECTION_TITLE_STYLE, marginTop: 16 }}>Install / Reconnect</div>
+          <AgentInstall command={a.install_command} />
         </div>
-        {editSites ? (
-          <SiteEditor
-            agentId={a.id}
-            allSites={sites.data || []}
-            current={a.sites.map((s) => s.site_id)}
-            onClose={() => setEditSites(false)}
-            onSaved={() => { setEditSites(false); agent.reload(); }}
-          />
-        ) : a.sites.length ? (
-          <div className="sv-agent-sites">
-            {a.sites.map((s) => (
-              <Link key={s.site_id} href={`/sites/${s.site_id}`} className="sv-pill unknown">
-                {s.site_name || `Site ${s.site_id}`}
-              </Link>
-            ))}
+
+        {/* Right — Assigned Sites */}
+        <div style={{ ...CARD_STYLE, display: 'flex', flexDirection: 'column' }}>
+          <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
+            <span style={{ ...SECTION_TITLE_STYLE, marginBottom: 0 }}>Assigned Sites</span>
+            <span style={{ flex: 1 }} />
+            {!editSites && <button className="sv-btn ghost sm" onClick={() => setEditSites(true)}>Edit sites</button>}
           </div>
-        ) : (
-          <Empty message="No sites assigned. Edit sites to assign devices to this agent." />
-        )}
+          {editSites ? (
+            <SiteEditor
+              agentId={a.id}
+              allSites={sites.data || []}
+              current={a.sites.map((s) => s.site_id)}
+              onClose={() => setEditSites(false)}
+              onSaved={() => { setEditSites(false); agent.reload(); }}
+            />
+          ) : a.sites.length ? (
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr>
+                  <th style={TH_STYLE}>Site</th>
+                  <th style={{ ...TH_STYLE, textAlign: 'right' }}>Devices</th>
+                </tr>
+              </thead>
+              <tbody>
+                {a.sites.map((s) => {
+                  const count = a.devices.filter((d) => d.site_id === s.site_id).length;
+                  return (
+                    <tr key={s.site_id} style={{ height: 36 }} className="sv-agent-site-row">
+                      <td style={TD_STYLE}>
+                        <Link href={`/sites/${s.site_id}`} style={{ color: 'var(--primary)', textDecoration: 'none' }}>
+                          {s.site_name || `Site ${s.site_id}`}
+                        </Link>
+                      </td>
+                      <td style={{ ...TD_STYLE, textAlign: 'right', color: 'var(--text-muted)' }}>{count}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          ) : (
+            <Empty message="No sites assigned. Edit sites to assign devices to this agent." />
+          )}
+        </div>
       </div>
 
-      {/* Devices grouped by site */}
-      <div className="sv-panel">
-        <h2 style={{ marginTop: 0 }}>Devices Polled by This Agent</h2>
+      {/* Row 3 — Devices grouped by site, full width */}
+      <div style={CARD_STYLE}>
+        <div style={SECTION_TITLE_STYLE}>Devices Polled by This Agent</div>
         {!a.devices.length ? (
           <Empty message="No devices assigned to this agent yet." />
         ) : (
           groups.map((g) => (
-            <div key={g.name} style={{ marginBottom: 16 }}>
-              <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 6 }}>
+            <div key={g.name} style={{ marginBottom: 14 }}>
+              <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>
                 {g.siteId != null ? <Link href={`/sites/${g.siteId}`}>{g.name}</Link> : g.name}
                 <span className="sv-muted" style={{ fontWeight: 400, fontSize: 12, marginLeft: 8 }}>
                   {g.devices.length} {g.devices.length === 1 ? 'device' : 'devices'}
                 </span>
               </div>
               {g.devices.map((d) => (
-                <div key={d.id} className="sv-dev-row">
+                <div key={d.id} className="sv-dev-row" style={{ height: 36 }}>
                   <StatusDot status={d.current_status === 'agent_offline' ? 'unknown' : d.current_status} />
                   <div className="sv-dev-id">
                     <div className="nm">
-                      <Link href={`/devices/${d.id}`} style={{ color: 'var(--sv-crimson)' }}>{d.name}</Link>
+                      <Link href={`/devices/${d.id}`} style={{ color: 'var(--primary)' }}>{d.name}</Link>
                     </div>
                     <div className="ip">{d.ip_address}{d.device_type ? ` · ${d.device_type}` : ''}</div>
                   </div>
@@ -164,14 +199,46 @@ export default function AgentDetailPage({ params }: { params: { id: string } }) 
           ))
         )}
       </div>
+    </div>
+  );
+}
 
-      {/* Reconnect / install info */}
-      <div className="sv-panel">
-        <h2 style={{ marginTop: 0 }}>Install / Reconnect</h2>
-        <p className="sv-muted" style={{ fontSize: 13, marginTop: 0 }}>
-          Run this on the remote server to (re)install the agent. Created {fmtTime(a.created_at)}.
-        </p>
-        <AgentInstall command={a.install_command} />
+const TH_STYLE: React.CSSProperties = {
+  fontSize: 11,
+  textTransform: 'uppercase',
+  color: 'var(--text-muted)',
+  fontWeight: 600,
+  textAlign: 'left',
+  padding: '8px 12px',
+  borderBottom: '1px solid var(--border)',
+};
+const TD_STYLE: React.CSSProperties = {
+  fontSize: 12.5,
+  padding: '8px 12px',
+  borderBottom: '1px solid var(--border)',
+};
+
+// ── Compact stat card (top-level component) ────────────────────
+function StatCard({ label, value, accent }: { label: string; value: string; accent: string }) {
+  return (
+    <div
+      style={{
+        background: 'var(--bg-card)',
+        border: '1px solid var(--border)',
+        borderLeft: `3px solid ${accent}`,
+        borderRadius: 'var(--radius-sm)',
+        padding: '12px 16px',
+        minHeight: 75,
+        display: 'flex',
+        flexDirection: 'column',
+        justifyContent: 'center',
+      }}
+    >
+      <div style={{ fontSize: 24, fontWeight: 800, lineHeight: 1.1, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        {value}
+      </div>
+      <div style={{ fontSize: 11, textTransform: 'uppercase', color: 'var(--text-muted)', marginTop: 4, letterSpacing: '0.04em' }}>
+        {label}
       </div>
     </div>
   );
