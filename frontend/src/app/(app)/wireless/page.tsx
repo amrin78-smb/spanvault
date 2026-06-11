@@ -292,7 +292,7 @@ interface ClientDetail {
 interface ClientSummary {
   total_clients: number;
   by_band: Record<string, number>;
-  by_controller: { name: string; count: number }[];
+  by_controller: { controller_id: number; controller_name: string; client_count: number; problem_count: number }[];
   problem_clients: number;
   low_signal_clients: number;
   frequent_roamers: number;
@@ -2144,10 +2144,12 @@ function SignalCell({ rssi }: { rssi: number | null }) {
 // ── One controller's collapsible client group (collapse state shared with ──────
 // the APs/SSIDs tabs via the sv-wireless-ctrl-{id}-collapsed localStorage key) ─
 function ClientControllerGroup({
-  controller, clients, onSelectMac,
+  controller, clients, totalClients, problemClients, onSelectMac,
 }: {
   controller: Controller;
   clients: WirelessClient[];
+  totalClients: number | null;
+  problemClients: number | null;
   onSelectMac: (mac: string) => void;
 }) {
   const online = controllerOnline(controller);
@@ -2159,8 +2161,14 @@ function ClientControllerGroup({
     setCollapsed((c) => { const n = !c; writeCollapsed(controller.id, n); return n; });
   }
 
-  const problems = clients.reduce((s, c) => s + (c.is_problem ? 1 : 0), 0);
-  const summary = `${clients.length} client${clients.length === 1 ? '' : 's'}`
+  // Prefer the authoritative wireless_clients count from the summary (grouped by
+  // controller_id) so the header matches the Total Clients card; fall back to the
+  // shown rows (which may be capped/filtered) only when the summary count is absent.
+  const total = totalClients != null ? totalClients : clients.length;
+  const problems = problemClients != null
+    ? problemClients
+    : clients.reduce((s, c) => s + (c.is_problem ? 1 : 0), 0);
+  const summary = `${total} client${total === 1 ? '' : 's'}`
     + (problems > 0 ? ` · ${problems} problem${problems === 1 ? '' : 's'}` : '');
 
   return (
@@ -2260,6 +2268,16 @@ function ClientsTab({
     [shown, controllers.data],
   );
 
+  // Authoritative per-controller client/problem counts from wireless_clients
+  // (summary.by_controller, keyed by controller_id) — used for the accordion
+  // headers so they stay consistent with the Total Clients card.
+  const ctrlCounts = useMemo(() => {
+    const m = new Map<number, { client_count: number; problem_count: number }>();
+    (summary.data?.by_controller || []).forEach((c) =>
+      m.set(c.controller_id, { client_count: c.client_count, problem_count: c.problem_count }));
+    return m;
+  }, [summary.data]);
+
   return (
     <div>
       <input
@@ -2344,14 +2362,19 @@ function ClientsTab({
       {clientsApi.loading && !clientsApi.data ? (
         <div className="sv-panel"><Loading /></div>
       ) : clientGroups.length ? (
-        clientGroups.map(({ controller, rows }) => (
-          <ClientControllerGroup
-            key={controller.id}
-            controller={controller}
-            clients={rows}
-            onSelectMac={setSelectedMac}
-          />
-        ))
+        clientGroups.map(({ controller, rows }) => {
+          const counts = ctrlCounts.get(controller.id);
+          return (
+            <ClientControllerGroup
+              key={controller.id}
+              controller={controller}
+              clients={rows}
+              totalClients={counts ? counts.client_count : null}
+              problemClients={counts ? counts.problem_count : null}
+              onSelectMac={setSelectedMac}
+            />
+          );
+        })
       ) : (
         <Empty message="No clients found." />
       )}

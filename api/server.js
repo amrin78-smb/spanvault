@@ -2884,26 +2884,37 @@ app.get('/api/wireless/clients/summary', wrap(async (req, res) => {
   const params = [];
   const sc = siteFilterClause(getSiteFilter(req), params, 'c.site_id');
   const rows = await sv.query(`
-    SELECT cl.band, cl.rssi_dbm, cl.is_problem, cl.roaming_count, cl.ap_name, c.name AS controller_name
+    SELECT cl.band, cl.rssi_dbm, cl.is_problem, cl.roaming_count, cl.ap_name,
+           cl.controller_id, c.name AS controller_name
     FROM wireless_clients cl JOIN wireless_controllers c ON c.id = cl.controller_id
     ${sc ? 'WHERE ' + sc : ''}
   `, params);
 
   const byBand = { '2.4GHz': 0, '5GHz': 0, '6GHz': 0 };
-  const byController = {};
+  // Per-controller client + problem counts, keyed by controller_id, so the Clients
+  // tab accordion headers use the SAME wireless_clients (station table) source as
+  // the Total Clients card — not the radio-based wireless_aps.clients_total.
+  const byController = new Map();
   const byAp = {};
   let problemClients = 0, lowSignalClients = 0, frequentRoamers = 0;
   for (const row of rows.rows) {
     if (Object.prototype.hasOwnProperty.call(byBand, row.band)) byBand[row.band]++;
-    if (row.controller_name) byController[row.controller_name] = (byController[row.controller_name] || 0) + 1;
+    if (row.controller_id != null) {
+      let entry = byController.get(row.controller_id);
+      if (!entry) {
+        entry = { controller_id: row.controller_id, controller_name: row.controller_name, client_count: 0, problem_count: 0 };
+        byController.set(row.controller_id, entry);
+      }
+      entry.client_count++;
+      if (row.is_problem) entry.problem_count++;
+    }
     if (row.ap_name) byAp[row.ap_name] = (byAp[row.ap_name] || 0) + 1;
     if (row.is_problem) problemClients++;
     if (row.rssi_dbm !== null && row.rssi_dbm !== undefined && row.rssi_dbm < -75) lowSignalClients++;
     if ((row.roaming_count || 0) > 5) frequentRoamers++;
   }
-  const byControllerArr = Object.entries(byController)
-    .map(([name, count]) => ({ name, count }))
-    .sort((a, b) => b.count - a.count);
+  const byControllerArr = Array.from(byController.values())
+    .sort((a, b) => b.client_count - a.client_count);
   const topApsByClients = Object.entries(byAp)
     .map(([ap_name, count]) => ({ ap_name, count }))
     .sort((a, b) => b.count - a.count)
