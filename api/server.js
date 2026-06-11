@@ -100,7 +100,7 @@ async function enforceLicense(req, res, next) {
   }
 
   // Block all access if disabled
-  const exemptPaths = ['/api/health', '/api/license-status', '/api/system/update-available'];
+  const exemptPaths = ['/api/health', '/api/stats', '/api/license-status', '/api/system/update-available'];
   if (state.disabled && !exemptPaths.some(p => req.path.startsWith(p))) {
     return res.status(402).json({
       error: 'License has expired. Please renew your NocVault license.',
@@ -233,6 +233,38 @@ app.get('/api/health', wrap(async (_req, res) => {
   await sv.query('SELECT 1');
   res.json({ status: 'ok', service: 'spanvault-api', version, time: new Date().toISOString() });
 }));
+
+// ══════════════════════════════════════════════════════════════
+// Public stats (read-only, NO-AUTH — same access level as /api/health)
+// ══════════════════════════════════════════════════════════════
+// Permissive CORS is already applied globally via app.use(cors()) above, so
+// this responds with Access-Control-Allow-Origin: * like /api/health. On any
+// error we return zeros with HTTP 200 — this endpoint never 500s.
+//   monitored_devices = count of active monitored devices
+//   availability      = avg uptime % over last 24h (status='up' ping samples),
+//                       rounded to 1 decimal; 0.0 when no samples
+//   active_alerts     = count of alerts with status='active'
+app.get('/api/stats', async (_req, res) => {
+  try {
+    const [devices, avail, alerts] = await Promise.all([
+      sv.query(`SELECT COUNT(*)::int AS c FROM monitored_devices WHERE active = TRUE`),
+      sv.query(`
+        SELECT ROUND(100.0 * SUM(CASE WHEN status = 'up' THEN 1 ELSE 0 END)
+                          / NULLIF(COUNT(*), 0), 1) AS pct
+        FROM ping_results WHERE ts >= NOW() - INTERVAL '24 hours'`),
+      sv.query(`SELECT COUNT(*)::int AS c FROM alerts WHERE status = 'active'`),
+    ]);
+    const pct = avail.rows[0] && avail.rows[0].pct != null ? Number(avail.rows[0].pct) : 0.0;
+    res.json({
+      monitored_devices: devices.rows[0] ? devices.rows[0].c : 0,
+      availability: pct,
+      active_alerts: alerts.rows[0] ? alerts.rows[0].c : 0,
+    });
+  } catch (e) {
+    console.error('[stats] query failed:', e.message);
+    res.json({ monitored_devices: 0, availability: 0.0, active_alerts: 0 });
+  }
+});
 
 // ══════════════════════════════════════════════════════════════
 // System updates (Check for Updates)
