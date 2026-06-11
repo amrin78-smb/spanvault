@@ -2270,8 +2270,8 @@ app.get('/api/wireless/controllers/overview', wrap(async (_req, res) => {
     if (cpu != null && Number.isFinite(cpu)) { cpuSum += cpu; cpuCount += 1; }
     if (mem != null && Number.isFinite(mem)) { memSum += mem; memCount += 1; }
 
-    if (row.ha_sync_status === 'synced') haHealthy += 1;
-    if (row.ha_mode != null && row.ha_mode !== 'disabled') haTotal += 1;
+    if (row.ha_sync_status === 'Synced') haHealthy += 1;
+    if (row.ha_mode != null && row.ha_sync_status != null && row.ha_sync_status !== 'Standalone') haTotal += 1;
 
     const licensed = row.licensed_aps == null ? null : Number(row.licensed_aps);
     let perCap = null;

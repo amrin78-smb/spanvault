@@ -367,17 +367,6 @@ interface IntelRow {
 }
 
 // ── Formatting / RF helpers (top-level) ───────────────────────
-function fmtBytes(n: number | null): string {
-  if (n == null || isNaN(n)) return '—';
-  if (n === 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const neg = n < 0;
-  let v = Math.abs(n);
-  let i = 0;
-  while (v >= 1024 && i < units.length - 1) { v /= 1024; i += 1; }
-  return `${neg ? '-' : ''}${v.toFixed(1)} ${units[i]}`;
-}
-
 function fmtBps(n: number | null): string {
   if (n == null || isNaN(n)) return '—';
   if (Math.abs(n) < 1e6) return `${(n / 1e3).toFixed(1)} Kbps`;
@@ -391,17 +380,6 @@ function noiseBadge(dbm: number | null): { label: string; color: string } {
   return { label: 'Poor', color: 'var(--red)' };
 }
 
-function failureRate(ok: number, fail: number): number {
-  const denom = ok + fail;
-  if (denom <= 0) return 0;
-  return (fail / denom) * 100;
-}
-
-function failureRateColor(pct: number): string {
-  if (pct < 1) return 'var(--green)';
-  if (pct <= 5) return 'var(--yellow)';
-  return 'var(--red)';
-}
 
 // ── Wireless client signal helpers (top-level) ────────────────
 function signalColor(rssi: number | null): string {
@@ -434,6 +412,158 @@ const CHART_COLORS = {
   g2: '#0ea5e9',
   g5: '#16a34a',
 };
+
+// ════════════════════════════════════════════════════════════
+// Shared compact UI primitives (top-level — design-rule sized)
+// ════════════════════════════════════════════════════════════
+
+// Compact stat card: ~75px tall, 24px bold value, 11px uppercase label.
+function StatCard({ value, label, sub, color, valueColor }: {
+  value: React.ReactNode;
+  label: string;
+  sub?: React.ReactNode;
+  color?: string;          // left border accent
+  valueColor?: string;     // value text color
+}) {
+  return (
+    <div
+      style={{
+        flex: '1 1 0', minWidth: 120, minHeight: 75, boxSizing: 'border-box',
+        padding: '12px 16px', background: 'var(--bg-card)',
+        border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
+        borderLeft: `3px solid ${color || 'var(--border)'}`,
+        display: 'flex', flexDirection: 'column', justifyContent: 'center',
+      }}
+    >
+      <div style={{ fontSize: 24, fontWeight: 700, lineHeight: 1.1, color: valueColor }}>
+        {value}
+      </div>
+      {sub != null && (
+        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 1 }}>{sub}</div>
+      )}
+      <div style={{
+        fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase',
+        letterSpacing: 0.4, marginTop: 2,
+      }}>{label}</div>
+    </div>
+  );
+}
+
+// A row of equal-width stat cards (responsive 6-up).
+function StatRow({ children }: { children: React.ReactNode }) {
+  return (
+    <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 16 }}>
+      {children}
+    </div>
+  );
+}
+
+// Section card: padding 16/20, 12px uppercase 600 muted heading.
+function SectionCard({ title, action, maxHeight, scroll, children, flex, minWidth }: {
+  title: string;
+  action?: React.ReactNode;
+  maxHeight?: number;
+  scroll?: boolean;
+  children: React.ReactNode;
+  flex?: string;
+  minWidth?: number;
+}) {
+  return (
+    <div style={{
+      flex: flex || '1 1 0', minWidth: minWidth ?? 0, boxSizing: 'border-box',
+      background: 'var(--bg-card)', border: '1px solid var(--border)',
+      borderRadius: 'var(--radius-sm)', padding: '16px 20px',
+      display: 'flex', flexDirection: 'column',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+        <span style={{
+          fontSize: 12, fontWeight: 600, textTransform: 'uppercase',
+          letterSpacing: 0.4, color: 'var(--text-muted)', flex: 1,
+        }}>{title}</span>
+        {action}
+      </div>
+      <div style={maxHeight != null ? { maxHeight, overflowY: scroll === false ? 'visible' : 'auto', flex: 1 } : { flex: 1 }}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+// Equal-height responsive row (align-items: stretch).
+function EqualRow({ children, marginTop }: { children: React.ReactNode; marginTop?: number }) {
+  return (
+    <div style={{
+      display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'stretch',
+      marginTop: marginTop ?? 16,
+    }}>{children}</div>
+  );
+}
+
+// Compact table styling helpers (32-36px rows, 12.5px font).
+const TH_STYLE: React.CSSProperties = {
+  fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.3,
+  color: 'var(--text-muted)', fontWeight: 600, padding: '8px 12px', textAlign: 'left',
+};
+const TD_STYLE: React.CSSProperties = { padding: '8px 12px', fontSize: 12.5 };
+
+// CPU/Mem style 4px progress bar, green<60 yellow<80 red.
+function ProgressBar({ pct, width }: { pct: number | null | undefined; width?: number }) {
+  const v = Number(pct);
+  const p = Number.isFinite(v) ? Math.max(0, Math.min(100, v)) : 0;
+  const c = p > 80 ? 'var(--red)' : p >= 60 ? 'var(--yellow)' : 'var(--green)';
+  return (
+    <div style={{
+      width: width ?? 48, height: 4, borderRadius: 2, background: 'var(--border)',
+      overflow: 'hidden', display: 'inline-block', verticalAlign: 'middle',
+    }}>
+      <div style={{ width: `${p}%`, height: '100%', background: c }} />
+    </div>
+  );
+}
+
+// Grade badge pill.
+function GradeBadge({ grade }: { grade: string }) {
+  const c = gradeColor(grade);
+  return (
+    <span style={{
+      fontSize: 11, fontWeight: 700, color: c, border: `1px solid ${c}`,
+      borderRadius: 4, padding: '0 6px', lineHeight: '16px', display: 'inline-block',
+    }}>{grade}</span>
+  );
+}
+
+// Compact score card with grade + (neutral) trend arrow.
+function ScoreCard({ label, score, grade }: { label: string; score: number; grade?: string }) {
+  const v = Math.round(score);
+  return (
+    <div style={{
+      flex: '1 1 0', minWidth: 140, minHeight: 75, boxSizing: 'border-box',
+      padding: '12px 16px', background: 'var(--bg-card)',
+      border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
+      borderLeft: `3px solid ${scoreColor(v)}`,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+        <span style={{ fontSize: 24, fontWeight: 700, color: scoreColor(v) }}>{v}</span>
+        <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>/100</span>
+        {grade && <GradeBadge grade={grade} />}
+        <span style={{ fontSize: 12, color: 'var(--text-muted)', marginLeft: 'auto' }} title="No historical trend data">→</span>
+      </div>
+      <div style={{
+        fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase',
+        letterSpacing: 0.4, marginTop: 4,
+      }}>{label}</div>
+    </div>
+  );
+}
+
+// HA label derivation from a controller's ha fields.
+function haCellLabel(ha_mode: string | null, ha_sync_status: string | null): { text: string; color: string; dot: boolean } {
+  if (ha_sync_status === 'Standalone') return { text: 'Standalone', color: 'var(--text-muted)', dot: false };
+  if (ha_mode == null || ha_sync_status == null) return { text: 'N/A', color: 'var(--text-muted)', dot: false };
+  if (ha_mode === 'Active') return { text: 'Active', color: 'var(--green)', dot: true };
+  if (ha_mode === 'Standby') return { text: 'Standby', color: 'var(--text-muted)', dot: true };
+  return { text: ha_mode, color: 'var(--text-muted)', dot: true };
+}
 
 // ════════════════════════════════════════════════════════════
 // Page
@@ -535,50 +665,51 @@ export default function WirelessPage() {
 // TAB 1 — Overview
 // ════════════════════════════════════════════════════════════
 
-// Compact Wireless Intelligence summary card, shown at the top of the Overview
-// tab. Hidden until intelligence has been computed for at least one controller.
-function WirelessIntelCard({ onView }: { onView: () => void }) {
+// Slim, single-line intelligence summary banner shown at the bottom of the
+// Overview tab. Pulls from /intelligence/summary; degrades gracefully when data
+// is missing. `coChannel` and `band5Pct` are derived client-side by OverviewTab.
+function IntelBanner({ onView, coChannel, band5Pct }: {
+  onView: () => void;
+  coChannel: number | null;
+  band5Pct: number | null;
+}) {
   const summary = useApi<IntelSummary>('/api/wireless/intelligence/summary', 30000);
-  const list = useApi<IntelRow[]>('/api/wireless/intelligence', 30000);
   const s = summary.data;
   if (!s || !s.controllers || s.controllers.length === 0) return null;
 
-  const score = Number(s.overall_score);
-  const lastAnalyzed = (list.data || []).reduce<string | null>((max, r) => {
-    if (!r.computed_at) return max;
-    return !max || r.computed_at > max ? r.computed_at : max;
-  }, null);
+  const score = Math.round(Number(s.overall_score));
+  const recs = Number(s.total_recommendations) || 0;
 
   return (
     <div
-      className="sv-card"
       style={{
-        borderLeftColor: scoreColor(score), marginBottom: 16,
-        display: 'flex', alignItems: 'center', gap: 18, flexWrap: 'wrap',
+        display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+        marginTop: 16, padding: '10px 16px', borderRadius: 'var(--radius-sm)',
+        border: '1px solid color-mix(in srgb, #2563eb 35%, var(--border))',
+        background: 'color-mix(in srgb, #2563eb 8%, transparent)',
+        fontSize: 13, color: 'var(--text-secondary)',
       }}
     >
-      <div>
-        <div style={{
-          fontSize: 12, color: 'var(--text-muted)', textTransform: 'uppercase',
-          letterSpacing: 0.4, fontWeight: 700,
-        }}>Wireless Intelligence</div>
-        <div style={{ fontSize: 26, fontWeight: 800, color: scoreColor(score) }}>
-          {score}/100 <span style={{ fontSize: 18 }}>{s.overall_grade}</span>
-        </div>
-      </div>
-      <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
-        {s.total_recommendations} recommendation{s.total_recommendations === 1 ? '' : 's'} pending
+      <span>
+        <strong>Wireless Health:</strong>{' '}
+        <span style={{ color: scoreColor(score), fontWeight: 700 }}>
+          {score}/100 {s.overall_grade}
+        </span>
+        {' · '}{recs} recommendation{recs === 1 ? '' : 's'}
         {s.critical_count > 0 && (
-          <span style={{ color: 'var(--red)', fontWeight: 700 }}> · {s.critical_count} critical</span>
+          <span style={{ color: 'var(--red)', fontWeight: 700 }}> ({s.critical_count} critical)</span>
         )}
-        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
-          Last analyzed {fmtRel(lastAnalyzed)}
-        </div>
-      </div>
-      <div style={{ flex: 1 }} />
+        {coChannel != null && coChannel > 0 && <>{' · '}{coChannel} APs co-channel</>}
+        {band5Pct != null && <>{' · '}{Math.round(band5Pct)}% on 5GHz</>}
+      </span>
+      <span style={{ flex: 1 }} />
       <button className="sv-btn ghost sm" onClick={onView}>View Intelligence →</button>
     </div>
   );
+}
+
+function apUtil(ap: AccessPoint): number {
+  return Math.max(ap.radio_2g_util_pct || 0, ap.radio_5g_util_pct || 0);
 }
 
 function OverviewTab({
@@ -589,9 +720,44 @@ function OverviewTab({
   onViewProblemClients: () => void;
 }) {
   const summary = useApi<WirelessSummary>('/api/wireless/summary', 30000);
-  const offline = useApi<AccessPoint[]>('/api/wireless/aps?status=offline', 30000);
+  const apsApi = useApi<AccessPoint[]>('/api/wireless/aps', 30000);
   const ssidSummary = useApi<SsidSummary>('/api/wireless/ssids/summary', 30000);
-  const clientSummary = useApi<ClientSummary>('/api/wireless/clients/summary', 30000);
+  const controllers = useApi<Controller[]>('/api/wireless/controllers', 30000);
+
+  const aps = useMemo(() => apsApi.data || [], [apsApi.data]);
+
+  const topApsByClients = useMemo(
+    () => [...aps].sort((a, b) => (b.clients_total || 0) - (a.clients_total || 0)).slice(0, 5),
+    [aps],
+  );
+  const offlineAps = useMemo(() => aps.filter((a) => a.status === 'offline'), [aps]);
+  const highUtilAps = useMemo(
+    () => aps.filter((a) => apUtil(a) > 70).sort((a, b) => apUtil(b) - apUtil(a)),
+    [aps],
+  );
+
+  // Co-channel count: APs sharing a 2.4GHz or 5GHz channel with another AP.
+  const coChannelCount = useMemo(() => {
+    const counts = new Map<string, number>();
+    aps.forEach((a) => {
+      if (a.radio_2g_channel != null) counts.set(`2-${a.radio_2g_channel}`, (counts.get(`2-${a.radio_2g_channel}`) || 0) + 1);
+      if (a.radio_5g_channel != null) counts.set(`5-${a.radio_5g_channel}`, (counts.get(`5-${a.radio_5g_channel}`) || 0) + 1);
+    });
+    let n = 0;
+    aps.forEach((a) => {
+      const co2 = a.radio_2g_channel != null && (counts.get(`2-${a.radio_2g_channel}`) || 0) > 1;
+      const co5 = a.radio_5g_channel != null && (counts.get(`5-${a.radio_5g_channel}`) || 0) > 1;
+      if (co2 || co5) n += 1;
+    });
+    return n;
+  }, [aps]);
+
+  // % of clients on 5GHz (derived from AP clients_5g vs total).
+  const band5Pct = useMemo(() => {
+    let total = 0, g5 = 0;
+    aps.forEach((a) => { total += a.clients_total || 0; g5 += a.clients_5g || 0; });
+    return total > 0 ? (g5 / total) * 100 : null;
+  }, [aps]);
 
   if (summary.loading && !summary.data) {
     return <div className="sv-panel"><Loading /></div>;
@@ -600,207 +766,140 @@ function OverviewTab({
   if (!summary.data) return <Empty message="No wireless data available." />;
 
   const s = summary.data;
-  const problemClients = clientSummary.data ? Number(clientSummary.data.problem_clients) : 0;
+  const avgUtil = s.by_site.length
+    ? s.by_site.reduce((acc, r) => acc + (r.avg_util ?? 0), 0) / s.by_site.length
+    : 0;
+  const ctlCount = controllers.data ? controllers.data.length : (s.by_controller?.length ?? 0);
 
   return (
     <div>
-      {problemClients > 0 && (
-        <div
-          style={{
-            display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
-            marginBottom: 16, padding: '12px 16px', borderRadius: 8,
-            border: '1px solid var(--red)',
-            background: 'color-mix(in srgb, var(--red) 10%, transparent)',
-            color: 'var(--red)', fontWeight: 600,
-          }}
-        >
-          <span>⚠ {problemClients} client{problemClients === 1 ? '' : 's'} with poor signal or frequent roaming</span>
-          <span style={{ flex: 1 }} />
-          <button className="sv-btn ghost sm" onClick={onViewProblemClients}>View problem clients →</button>
-        </div>
-      )}
-      <WirelessIntelCard onView={onViewIntelligence} />
-      <div className="sv-cards">
-        <div className="sv-card total">
-          <div className="num">{s.total_aps}</div>
-          <div className="label">Total APs</div>
-        </div>
-        <div className="sv-card up">
-          <div className="num" style={{ color: 'var(--green)' }}>{s.online_aps}</div>
-          <div className="label">Online</div>
-        </div>
-        <div className="sv-card down">
-          <div className="num" style={{ color: 'var(--red)' }}>{s.offline_aps}</div>
-          <div className="label">Offline</div>
-        </div>
-        <div className="sv-card">
-          <div className="num">{s.total_clients}</div>
-          <div className="label">Clients</div>
-        </div>
-        <div className="sv-card">
-          <div
-            className="num"
-            style={{ color: s.auth_failures_total > 0 ? 'var(--red)' : undefined }}
-          >{s.auth_failures_total}</div>
-          <div className="label">Auth Failures</div>
-        </div>
-        <div className="sv-card">
-          <div className="num" style={{ color: noiseBadge(s.avg_noise_floor).color }}>
-            {s.avg_noise_floor ?? '—'} dBm
-          </div>
-          <div className="label">Avg Noise Floor</div>
-        </div>
-      </div>
+      {/* Row 1 — 6 compact stat cards */}
+      <StatRow>
+        <StatCard value={fmtInt(s.total_aps)} label="Total APs" color="var(--primary)" />
+        <StatCard value={fmtInt(s.online_aps)} valueColor="var(--green)" label="Online" color="var(--green)" />
+        <StatCard value={fmtInt(s.offline_aps)} valueColor={s.offline_aps > 0 ? 'var(--red)' : undefined} label="Offline" color="var(--red)" />
+        <StatCard value={fmtInt(s.total_clients)} label="Clients" />
+        <StatCard value={fmtInt(ctlCount)} label="Controllers" />
+        <StatCard value={fmtPct(avgUtil)} valueColor={pctColor(avgUtil)} label="Avg Utilization" />
+      </StatRow>
 
-      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'flex-start' }}>
-        <div className="sv-panel" style={{ flex: '2 1 420px', minWidth: 320 }}>
-          <h3 style={{ marginTop: 0 }}>Site Wireless Health</h3>
+      {/* Row 2 — Site breakdown | Top APs | Top SSIDs */}
+      <EqualRow>
+        <SectionCard title="Site Breakdown" maxHeight={200} minWidth={240}>
           {s.by_site.length ? (
-            <table className="sv-table">
-              <thead>
-                <tr>
-                  <th>Site</th><th>APs</th><th>Online</th><th>Clients</th><th>Avg Utilization</th>
-                </tr>
-              </thead>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead><tr>
+                <th style={TH_STYLE}>Site</th><th style={TH_STYLE}>APs</th>
+                <th style={TH_STYLE}>Online</th><th style={TH_STYLE}>Clients</th><th style={TH_STYLE}>Avg Util</th>
+              </tr></thead>
               <tbody>
                 {s.by_site.map((row: SummarySite) => (
-                  <tr
-                    key={`${row.site_id ?? 'none'}-${row.site_name}`}
-                    style={{ cursor: 'pointer' }}
-                    onClick={() => onSelectSite(row.site_id)}
-                    title="View access points for this site"
-                  >
-                    <td>{row.site_name}</td>
-                    <td>{row.aps}</td>
-                    <td>{row.online}</td>
-                    <td>{row.clients}</td>
-                    <td style={{ minWidth: 150 }}><UtilBar pct={row.avg_util ?? 0} /></td>
+                  <tr key={`${row.site_id ?? 'none'}-${row.site_name}`} style={{ cursor: 'pointer' }}
+                    onClick={() => onSelectSite(row.site_id)} title="View access points for this site">
+                    <td style={{ ...TD_STYLE, fontWeight: 600 }}>{row.site_name}</td>
+                    <td style={TD_STYLE}>{row.aps}</td>
+                    <td style={TD_STYLE}>{row.online}</td>
+                    <td style={TD_STYLE}>{row.clients}</td>
+                    <td style={{ ...TD_STYLE, color: pctColor(row.avg_util ?? 0), fontWeight: 600 }}>{fmtPct(row.avg_util ?? 0)}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           ) : <Empty message="No site data." />}
-        </div>
+        </SectionCard>
 
-        <div className="sv-panel" style={{ flex: '1 1 280px', minWidth: 240 }}>
-          <h3 style={{ marginTop: 0 }}>Offline APs</h3>
-          {offline.loading && !offline.data ? (
-            <Loading />
-          ) : offline.data && offline.data.length ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {offline.data.map((ap: AccessPoint) => (
-                <div key={ap.id} style={{
-                  display: 'flex', alignItems: 'center', gap: 10,
-                  padding: '8px 4px', borderBottom: '1px solid var(--border-light)',
-                }}>
-                  <StatusDot status="down" />
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontWeight: 600 }}>{ap.name}</div>
-                    <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                      {ap.site_name || '—'} · last seen {fmtRel(ap.last_seen_at)}
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div style={{ color: 'var(--green)', fontWeight: 600, padding: '8px 0' }}>
-              All APs online ✓
-            </div>
-          )}
-        </div>
-      </div>
-
-      {s.high_utilization.length > 0 && (
-        <div style={{ marginTop: 20 }}>
-          <h3 style={{ marginBottom: 12 }}>High Channel Utilization (&gt;80%)</h3>
-          <div className="sv-cards">
-            {s.high_utilization.map((ap: HighUtilAp) => (
-              <div
-                key={ap.id}
-                className="sv-card warning"
-                style={{ borderLeftColor: pctColor(ap.util_pct) }}
-              >
-                <div style={{ fontWeight: 700, fontSize: 15 }}>{ap.name}</div>
-                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
-                  {ap.site_name || '—'}
-                  {ap.channel != null ? ` · Ch ${ap.channel}` : ''}
-                </div>
-                <div style={{ marginTop: 8 }}>
-                  <UtilBar pct={ap.util_pct} />
-                </div>
-                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 6 }}>
-                  {ap.clients_total} client{ap.clients_total === 1 ? '' : 's'}
-                </div>
-                <div style={{ fontSize: 12, color: 'var(--yellow)', marginTop: 4 }}>
-                  Consider changing channel or adding an AP.
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      <div className="sv-panel" style={{ marginTop: 20 }}>
-        <h3 style={{ marginTop: 0 }}>RF Health by Site</h3>
-        {s.rf_by_site && s.rf_by_site.length ? (
-          <table className="sv-table">
-            <thead>
-              <tr>
-                <th>Site</th><th>APs</th><th>Avg Noise Floor</th>
-                <th>High Util APs</th><th>Avg Retry Rate</th><th>Auth Failures</th>
-              </tr>
-            </thead>
-            <tbody>
-              {s.rf_by_site.map((row: RfBySite) => (
-                <tr key={row.site_id}>
-                  <td>{row.site_name}</td>
-                  <td>{row.aps}</td>
-                  <td style={{ color: noiseBadge(row.avg_noise_floor).color, fontWeight: 600 }}>
-                    {row.avg_noise_floor ?? '—'} dBm
-                  </td>
-                  <td>{row.high_util_aps}</td>
-                  <td>{row.avg_retry_rate ?? '—'}%</td>
-                  <td style={{ color: row.auth_failures > 0 ? 'var(--red)' : undefined }}>
-                    {row.auth_failures}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        ) : <Empty message="No RF site data yet." />}
-      </div>
-
-      <div className="sv-panel" style={{ marginTop: 20 }}>
-        <h3 style={{ marginTop: 0 }}>Top SSIDs by Clients</h3>
-        {ssidSummary.loading && !ssidSummary.data ? (
-          <Loading />
-        ) : ssidSummary.data && ssidSummary.data.top_ssids.length ? (
-          <table className="sv-table">
-            <thead>
-              <tr>
-                <th>SSID</th><th>Clients</th><th>Traffic</th><th>Auth Failure Rate</th>
-              </tr>
-            </thead>
-            <tbody>
-              {ssidSummary.data.top_ssids.slice(0, 5).map((row: Ssid) => {
-                const rate = failureRate(row.auth_successes, row.auth_failures);
-                const traffic = (row.bytes_in ?? 0) + (row.bytes_out ?? 0);
-                return (
-                  <tr key={row.id}>
-                    <td style={{ fontWeight: 600 }}>{row.ssid_name}</td>
-                    <td>{row.clients_total}</td>
-                    <td>{fmtBytes(traffic)}</td>
-                    <td style={{ color: failureRateColor(rate), fontWeight: 600 }}>
-                      {rate.toFixed(1)}%
-                    </td>
+        <SectionCard title="Top APs by Clients" maxHeight={200} minWidth={240}>
+          {topApsByClients.length ? (
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead><tr>
+                <th style={TH_STYLE}>AP Name</th><th style={TH_STYLE}>Clients</th><th style={TH_STYLE}>Util%</th>
+              </tr></thead>
+              <tbody>
+                {topApsByClients.map((ap) => (
+                  <tr key={ap.id}>
+                    <td style={{ ...TD_STYLE, fontWeight: 600 }}>{ap.name}</td>
+                    <td style={TD_STYLE}>{ap.clients_total}</td>
+                    <td style={{ ...TD_STYLE, color: pctColor(apUtil(ap)), fontWeight: 600 }}>{fmtPct(apUtil(ap))}</td>
                   </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        ) : <Empty message="No SSID data yet." />}
-      </div>
+                ))}
+              </tbody>
+            </table>
+          ) : <Empty message="No AP data." />}
+        </SectionCard>
+
+        <SectionCard title="Top SSIDs by Clients" maxHeight={200} minWidth={240}>
+          {ssidSummary.data && ssidSummary.data.top_ssids.length ? (
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead><tr>
+                <th style={TH_STYLE}>SSID</th><th style={TH_STYLE}>Controller</th><th style={TH_STYLE}>Clients</th>
+              </tr></thead>
+              <tbody>
+                {ssidSummary.data.top_ssids.slice(0, 5).map((row: Ssid) => (
+                  <tr key={row.id}>
+                    <td style={{ ...TD_STYLE, fontWeight: 600 }}>{row.ssid_name}</td>
+                    <td style={{ ...TD_STYLE, color: 'var(--text-muted)' }}>{row.controller_name || '—'}</td>
+                    <td style={TD_STYLE}>{row.clients_total}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : <Empty message="No SSID data yet." />}
+        </SectionCard>
+      </EqualRow>
+
+      {/* Row 3 — Offline APs | High utilization APs */}
+      <EqualRow>
+        <SectionCard title="Offline APs" maxHeight={160} minWidth={280}>
+          {offlineAps.length ? (
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead><tr>
+                <th style={TH_STYLE}>AP</th><th style={TH_STYLE}>Controller</th>
+                <th style={TH_STYLE}>Site</th><th style={TH_STYLE}>Last Seen</th>
+              </tr></thead>
+              <tbody>
+                {offlineAps.map((ap) => (
+                  <tr key={ap.id}>
+                    <td style={{ ...TD_STYLE, fontWeight: 600 }}>
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                        <StatusDot status="down" />{ap.name}
+                      </span>
+                    </td>
+                    <td style={{ ...TD_STYLE, color: 'var(--text-muted)' }}>{ap.controller_name || '—'}</td>
+                    <td style={TD_STYLE}>{ap.site_name || '—'}</td>
+                    <td style={{ ...TD_STYLE, color: 'var(--text-muted)' }}>{fmtRel(ap.last_seen_at)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <div style={{ color: 'var(--green)', fontWeight: 600, fontSize: 13 }}>All APs online ✓</div>
+          )}
+        </SectionCard>
+
+        <SectionCard title="High Utilization APs (>70%)" maxHeight={160} minWidth={280}>
+          {highUtilAps.length ? (
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead><tr>
+                <th style={TH_STYLE}>AP</th><th style={TH_STYLE}>Util%</th><th style={TH_STYLE}>Clients</th>
+              </tr></thead>
+              <tbody>
+                {highUtilAps.map((ap) => (
+                  <tr key={ap.id}>
+                    <td style={{ ...TD_STYLE, fontWeight: 600 }}>{ap.name}</td>
+                    <td style={{ ...TD_STYLE, color: pctColor(apUtil(ap)), fontWeight: 600 }}>{fmtPct(apUtil(ap))}</td>
+                    <td style={TD_STYLE}>{ap.clients_total}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <div style={{ color: 'var(--green)', fontWeight: 600, fontSize: 13 }}>No congestion detected ✓</div>
+          )}
+        </SectionCard>
+      </EqualRow>
+
+      {/* Row 4 — Slim intelligence banner */}
+      <IntelBanner onView={onViewIntelligence} coChannel={coChannelCount} band5Pct={band5Pct} />
     </div>
   );
 }
@@ -1631,89 +1730,6 @@ function ScoreBar({ label, value }: { label: string; value: number }) {
   );
 }
 
-// ── Recommendation card (top-level component) ─────────────────
-function RecommendationCard({
-  rec, onDismiss,
-}: {
-  rec: Recommendation;
-  onDismiss: (rec: Recommendation) => void;
-}) {
-  const meta = prioMeta(rec.priority);
-  const aps = rec.affected_aps || [];
-  return (
-    <div
-      className="sv-panel"
-      style={{ borderLeft: `4px solid ${meta.color}`, marginBottom: 10 }}
-    >
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-        <span
-          className="sv-badge"
-          style={{ color: meta.color, borderColor: meta.color, fontWeight: 700 }}
-        >{meta.dot} {meta.label}</span>
-        <span className="sv-badge">{rec.category}</span>
-        {rec.controller_name && (
-          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{rec.controller_name}</span>
-        )}
-        <span style={{ flex: 1 }} />
-        <button className="sv-btn ghost sm" onClick={() => onDismiss(rec)}>Dismiss</button>
-      </div>
-      <div style={{ fontWeight: 700, marginTop: 8 }}>{rec.issue}</div>
-      <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 4 }}>{rec.action}</div>
-      {aps.length > 0 && (
-        <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 6 }}>
-          Affected: {aps.slice(0, 3).join(', ')}
-          {aps.length > 3 ? ` +${aps.length - 3} more` : ''}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── Per-controller intelligence card (top-level component) ────
-function ControllerIntelCard({ row, aps }: { row: IntelRow; aps: AccessPoint[] }) {
-  const score = Number(row.overall_score);
-  const band5 = Number(row.band_5g_pct);
-  const band2 = Number(row.band_2g_pct);
-  const ctrlAps = aps.filter((a) => a.controller_id === row.controller_id);
-  const apCount = ctrlAps.length;
-  const clients = ctrlAps.reduce((s, a) => s + (a.clients_total || 0), 0);
-
-  return (
-    <div className="sv-panel" style={{ flex: '1 1 320px', minWidth: 300 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <div style={{ fontWeight: 700, fontSize: 15, flex: 1 }}>{row.controller_name}</div>
-        <span style={{ color: scoreColor(score), fontWeight: 700 }}>
-          Overall: {Math.round(score)}/100
-        </span>
-        <span className="sv-badge" style={{ color: gradeColor(row.overall_grade), borderColor: gradeColor(row.overall_grade) }}>
-          {row.overall_grade}
-        </span>
-      </div>
-      <div style={{ marginTop: 12 }}>
-        <ScoreBar label="Load Balance" value={Number(row.load_balance_score)} />
-        <ScoreBar label="Band Steering" value={Number(row.band_steering_score)} />
-        <ScoreBar label="Capacity" value={Number(row.capacity_score)} />
-        <ScoreBar label="RF Planning" value={100 - Number(row.interference_score)} />
-      </div>
-      <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 10, lineHeight: 1.7 }}>
-        <div>
-          {apCount} APs · {clients} clients · Avg {Number(row.avg_clients_per_ap).toFixed(1)} clients/AP
-        </div>
-        <div>
-          Overloaded: {row.overloaded_aps} | Idle: {row.underloaded_aps}
-        </div>
-        <div>
-          2.4GHz: {Math.round(band2)}% | 5GHz: {Math.round(band5)}%
-          {band5 < 60 && (
-            <span style={{ color: 'var(--red)' }}> ← below target</span>
-          )}
-        </div>
-        <div>Co-channel affected APs: {row.co_channel_pairs}</div>
-      </div>
-    </div>
-  );
-}
-
 // ── Worst-AP drawer loader (top-level component) ──────────────
 function IntelApDrawer({ apId, onClose }: { apId: number; onClose: () => void }) {
   const [ap, setAp] = useState<AccessPoint | null>(null);
@@ -1750,6 +1766,110 @@ function IntelApDrawer({ apId, onClose }: { apId: number; onClose: () => void })
   if (!ap) return null;
   return (
     <ApDetailDrawer ap={ap} onClose={onClose} onFilterController={() => {}} />
+  );
+}
+
+// ── Compact recommendations table (collapsible) (top-level) ───
+function RecommendationsTable({
+  recs, criticalCount, highCount, onDismiss,
+}: {
+  recs: Recommendation[];
+  criticalCount: number;
+  highCount: number;
+  onDismiss: (rec: Recommendation) => void;
+}) {
+  const [open, setOpen] = useState(true);
+  const [showAll, setShowAll] = useState(false);
+
+  if (!recs.length) {
+    return (
+      <div style={{ color: 'var(--green)', fontWeight: 600, fontSize: 13 }}>
+        ✓ No issues detected — wireless looks healthy.
+      </div>
+    );
+  }
+
+  if (!open) {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
+        <span>{recs.length} recommendation{recs.length === 1 ? '' : 's'}</span>
+        {(criticalCount > 0 || highCount > 0) && (
+          <span style={{ color: 'var(--text-muted)' }}>
+            — {criticalCount} critical, {highCount} high
+          </span>
+        )}
+        <span style={{ flex: 1 }} />
+        <button className="sv-btn ghost sm" onClick={() => setOpen(true)}>Show →</button>
+      </div>
+    );
+  }
+
+  const shown = showAll ? recs : recs.slice(0, 5);
+  return (
+    <div>
+      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+        <thead><tr>
+          <th style={TH_STYLE}>Priority</th><th style={TH_STYLE}>Category</th>
+          <th style={TH_STYLE}>Issue</th><th style={TH_STYLE}>Action</th>
+          <th style={TH_STYLE}>Affected</th><th style={{ ...TH_STYLE, textAlign: 'right' }}></th>
+        </tr></thead>
+        <tbody>
+          {shown.map((rec, i) => {
+            const meta = prioMeta(rec.priority);
+            const aps = rec.affected_aps || [];
+            const affected = rec.affected_count ?? aps.length;
+            return (
+              <tr key={`${recKey(rec)}-${i}`}>
+                <td style={TD_STYLE}>
+                  <span style={{ color: meta.color, fontWeight: 700 }}>{meta.dot} {meta.label}</span>
+                </td>
+                <td style={{ ...TD_STYLE, color: 'var(--text-muted)' }}>{rec.category}</td>
+                <td style={{ ...TD_STYLE, fontWeight: 600 }}>
+                  {rec.issue}
+                  {rec.controller_name && (
+                    <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}> · {rec.controller_name}</span>
+                  )}
+                </td>
+                <td style={{ ...TD_STYLE, color: 'var(--text-secondary)' }}>{rec.action}</td>
+                <td style={TD_STYLE}>{affected > 0 ? affected : '—'}</td>
+                <td style={{ ...TD_STYLE, textAlign: 'right' }}>
+                  <button className="sv-btn ghost sm" onClick={() => onDismiss(rec)}>Dismiss</button>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      <div style={{ display: 'flex', gap: 12, marginTop: 8 }}>
+        {recs.length > 5 && (
+          <button className="sv-btn ghost sm" onClick={() => setShowAll((v) => !v)}>
+            {showAll ? 'Show less' : `Show all ${recs.length}`}
+          </button>
+        )}
+        <button className="sv-btn ghost sm" onClick={() => setOpen(false)}>Collapse</button>
+      </div>
+    </div>
+  );
+}
+
+// ── Controller detail mini score card (top-level) ─────────────
+function ControllerMiniScoreCard({ row }: { row: IntelRow }) {
+  return (
+    <div style={{
+      border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
+      padding: '10px 12px', marginBottom: 8,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+        <span style={{ fontWeight: 700, fontSize: 13, flex: 1 }}>{row.controller_name}</span>
+        <span style={{ color: scoreColor(Number(row.overall_score)), fontWeight: 700, fontSize: 13 }}>
+          {Math.round(Number(row.overall_score))}
+        </span>
+        <GradeBadge grade={row.overall_grade} />
+      </div>
+      <ScoreBar label="Load Balance" value={Number(row.load_balance_score)} />
+      <ScoreBar label="Capacity" value={Number(row.capacity_score)} />
+      <ScoreBar label="Band Steering" value={Number(row.band_steering_score)} />
+    </div>
   );
 }
 
@@ -1832,141 +1952,82 @@ function IntelligenceTab({ onViewApClients }: { onViewApClients?: (apId: number)
 
   const overall = Number(summary.overall_score);
   const bandSteer = Number(summary.band_steering_avg);
+  const loadAvg = rows.length
+    ? rows.reduce((s, r) => s + Number(r.load_balance_score), 0) / rows.length
+    : 0;
   const capacityAvg = rows.length
     ? rows.reduce((s, r) => s + Number(r.capacity_score), 0) / rows.length
     : 0;
-  const rfAvg = rows.length
-    ? rows.reduce((s, r) => s + (100 - Number(r.interference_score)), 0) / rows.length
-    : 0;
+  const criticalCount = recommendations.filter((r) => r.priority === 'critical').length;
+  const highCount = recommendations.filter((r) => r.priority === 'high').length;
 
   return (
     <div>
-      {/* SECTION 1 — Health overview */}
-      <div className="sv-cards">
-        <div className="sv-card" style={{ borderLeftColor: scoreColor(overall) }}>
-          <div className="num" style={{ color: scoreColor(overall) }}>
-            {Math.round(overall)}<span style={{ fontSize: 16, color: 'var(--text-muted)' }}>/100</span>
-            {' '}<span style={{ color: gradeColor(summary.overall_grade) }}>{summary.overall_grade}</span>
-          </div>
-          <div className="label">Wireless Health</div>
-        </div>
-        <div className="sv-card">
-          <div className="num" style={{ color: scoreColor(bandSteer) }}>
-            {Math.round(bandSteer)}<span style={{ fontSize: 16, color: 'var(--text-muted)' }}>/100</span>
-          </div>
-          <div className="label">Band Steering</div>
-        </div>
-        <div className="sv-card">
-          <div className="num" style={{ color: scoreColor(capacityAvg) }}>
-            {Math.round(capacityAvg)}<span style={{ fontSize: 16, color: 'var(--text-muted)' }}>/100</span>
-          </div>
-          <div className="label">Capacity Score</div>
-        </div>
-        <div className="sv-card">
-          <div className="num" style={{ color: scoreColor(rfAvg) }}>
-            {Math.round(rfAvg)}<span style={{ fontSize: 16, color: 'var(--text-muted)' }}>/100</span>
-          </div>
-          <div className="label">RF Planning</div>
-        </div>
-      </div>
+      {/* Row 1 — 4 compact score cards */}
+      <StatRow>
+        <ScoreCard label="Overall Health" score={overall} grade={summary.overall_grade} />
+        <ScoreCard label="Load Balance" score={loadAvg} />
+        <ScoreCard label="Band Steering" score={bandSteer} />
+        <ScoreCard label="Capacity" score={capacityAvg} />
+      </StatRow>
 
-      {/* SECTION 2 — Recommendations */}
-      <div style={{ marginTop: 20 }}>
-        <h3 style={{ marginBottom: 12 }}>Recommendations</h3>
-        {recommendations.length ? (
-          recommendations.map((rec, i) => (
-            <RecommendationCard key={`${recKey(rec)}-${i}`} rec={rec} onDismiss={handleDismiss} />
-          ))
-        ) : (
-          <div style={{ color: 'var(--green)', fontWeight: 600 }}>
-            ✓ No issues detected — wireless looks healthy.
-          </div>
-        )}
-      </div>
+      {/* Row 2 — Recommendations (single card, compact table) */}
+      <SectionCard title="Recommendations">
+        <RecommendationsTable
+          recs={recommendations}
+          criticalCount={criticalCount}
+          highCount={highCount}
+          onDismiss={handleDismiss}
+        />
+      </SectionCard>
 
-      {/* SECTION 3 — Per-controller breakdown */}
-      <div style={{ marginTop: 20 }}>
-        <h3 style={{ marginBottom: 12 }}>Per-Controller Breakdown</h3>
-        <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'flex-start' }}>
-          {rows.map((r) => (
-            <ControllerIntelCard key={r.controller_id} row={r} aps={aps} />
-          ))}
-        </div>
-      </div>
+      {/* Row 3 — Score bars | Band distribution | Channel map */}
+      <EqualRow>
+        <SectionCard title="Per-Controller Scores" minWidth={260}>
+          {rows.length ? (
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead><tr>
+                <th style={TH_STYLE}>Controller</th><th style={TH_STYLE}>Score</th>
+                <th style={TH_STYLE}>Bar</th><th style={TH_STYLE}>Grade</th>
+              </tr></thead>
+              <tbody>
+                {rows.map((r) => {
+                  const sc = Math.round(Number(r.overall_score));
+                  return (
+                    <tr key={r.controller_id}>
+                      <td style={{ ...TD_STYLE, fontWeight: 600 }}>{r.controller_name}</td>
+                      <td style={{ ...TD_STYLE, color: scoreColor(sc), fontWeight: 700 }}>{sc}</td>
+                      <td style={TD_STYLE}><ProgressBar pct={sc} width={70} /></td>
+                      <td style={TD_STYLE}><GradeBadge grade={r.overall_grade} /></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          ) : <Empty message="No controller data." />}
+        </SectionCard>
 
-      {/* SECTION 4 — APs Needing Attention */}
-      <div className="sv-panel" style={{ marginTop: 20 }}>
-        <h3 style={{ marginTop: 0 }}>APs Needing Attention</h3>
-        {summary.worst_aps && summary.worst_aps.length ? (
-          <table className="sv-table">
-            <thead>
-              <tr>
-                <th>AP Name</th><th>Score</th><th>Grade</th><th>Load</th><th>Clients</th><th>Issues</th>
-              </tr>
-            </thead>
-            <tbody>
-              {summary.worst_aps.map((ap: WorstAp) => {
-                const sc = Number(ap.health_score);
-                const issues = ap.issues || [];
-                const apRow = aps.find((a) => a.id === ap.ap_id);
-                return (
-                  <tr
-                    key={ap.ap_id}
-                    style={{ cursor: 'pointer' }}
-                    onClick={() => setDrawerApId(ap.ap_id)}
-                  >
-                    <td style={{ fontWeight: 600 }}>{ap.ap_name}</td>
-                    <td style={{ color: scoreColor(sc), fontWeight: 600 }}>{Math.round(sc)}</td>
-                    <td style={{ color: gradeColor(ap.health_grade), fontWeight: 600 }}>{ap.health_grade}</td>
-                    <td>{ap.load_status}</td>
-                    <td>
-                      {apRow ? apRow.clients_total : '—'}
-                      {onViewApClients && (
-                        <button
-                          className="sv-btn ghost sm"
-                          style={{ marginLeft: 8 }}
-                          onClick={(e) => { e.stopPropagation(); onViewApClients(ap.ap_id); }}
-                        >View clients</button>
-                      )}
-                    </td>
-                    <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                      {issues.slice(0, 2).join(', ')}
-                      {issues.length > 2 ? ` +${issues.length - 2}` : ''}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        ) : <Empty message="No AP health data yet." />}
-      </div>
-
-      {/* SECTIONS 5 & 6 — Band distribution + Channel map, side by side */}
-      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginTop: 20 }}>
-        <div className="sv-panel" style={{ flex: 1, minWidth: 320 }}>
-          <h3 style={{ marginTop: 0 }}>2.4GHz vs 5GHz Client Distribution</h3>
+        <SectionCard title="Band Distribution (2.4 vs 5GHz)" minWidth={260}>
           {bandChartData.length ? (
-            <ResponsiveContainer width="100%" height={250}>
-              <BarChart data={bandChartData}>
+            <ResponsiveContainer width="100%" height={180}>
+              <BarChart data={bandChartData} margin={{ top: 4, right: 8, bottom: 0, left: -8 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
                 <XAxis dataKey="name" fontSize={11} />
                 <YAxis domain={[0, 100]} fontSize={11} />
                 <Tooltip />
-                <Legend />
-                <ReferenceLine y={60} stroke="var(--red)" strokeDasharray="4 4" label="5GHz target" />
+                <ReferenceLine y={60} stroke="var(--red)" strokeDasharray="4 4" />
                 <Bar dataKey="g2" name="2.4GHz %" fill="#94a3b8" />
                 <Bar dataKey="g5" name="5GHz %" fill="#0ea5e9" />
               </BarChart>
             </ResponsiveContainer>
           ) : <Empty message="No band distribution data." />}
-        </div>
+        </SectionCard>
 
-        <div className="sv-panel" style={{ flex: 1, minWidth: 320 }}>
-          <h3 style={{ marginTop: 0 }}>Channel Map</h3>
+        <SectionCard title="Channel Map" minWidth={260}>
           {channelChartData.length ? (
             <>
-              <ResponsiveContainer width="100%" height={250}>
-                <BarChart data={channelChartData}>
+              <ResponsiveContainer width="100%" height={180}>
+                <BarChart data={channelChartData} margin={{ top: 4, right: 8, bottom: 0, left: -8 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
                   <XAxis dataKey="name" fontSize={11} />
                   <YAxis fontSize={11} allowDecimals={false} />
@@ -1978,14 +2039,58 @@ function IntelligenceTab({ onViewApClients }: { onViewApClients?: (apId: number)
                   </Bar>
                 </BarChart>
               </ResponsiveContainer>
-              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 6 }}>
-                <span style={{ color: 'var(--green)' }}>■</span> Standard channel ·{' '}
-                <span style={{ color: '#f97316' }}>■</span> Non-standard 2.4GHz (not 1/6/11)
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+                <span style={{ color: 'var(--green)' }}>■</span> Standard ·{' '}
+                <span style={{ color: '#f97316' }}>■</span> Non-standard
               </div>
             </>
           ) : <Empty message="No channel data." />}
-        </div>
-      </div>
+        </SectionCard>
+      </EqualRow>
+
+      {/* Row 4 — AP Health Leaderboard | Controller detail */}
+      <EqualRow>
+        <SectionCard title="AP Health Leaderboard (Worst 8)" flex="1 1 55%" minWidth={320}>
+          {summary.worst_aps && summary.worst_aps.length ? (
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead><tr>
+                <th style={TH_STYLE}>AP</th><th style={TH_STYLE}>Score</th>
+                <th style={TH_STYLE}>Grade</th><th style={TH_STYLE}>Load</th><th style={TH_STYLE}>Issues</th>
+              </tr></thead>
+              <tbody>
+                {summary.worst_aps.slice(0, 8).map((ap: WorstAp) => {
+                  const sc = Number(ap.health_score);
+                  const issues = ap.issues || [];
+                  return (
+                    <tr key={ap.ap_id} style={{ cursor: 'pointer' }} onClick={() => setDrawerApId(ap.ap_id)}>
+                      <td style={{ ...TD_STYLE, fontWeight: 600 }}>{ap.ap_name}</td>
+                      <td style={{ ...TD_STYLE, color: scoreColor(sc), fontWeight: 700 }}>{Math.round(sc)}</td>
+                      <td style={TD_STYLE}><GradeBadge grade={ap.health_grade} /></td>
+                      <td style={TD_STYLE}>{ap.load_status}</td>
+                      <td style={{ ...TD_STYLE, color: 'var(--text-muted)' }}>
+                        {issues.slice(0, 2).join(', ')}{issues.length > 2 ? ` +${issues.length - 2}` : ''}
+                        {onViewApClients && (
+                          <button
+                            className="sv-btn ghost sm"
+                            style={{ marginLeft: 8 }}
+                            onClick={(e) => { e.stopPropagation(); onViewApClients(ap.ap_id); }}
+                          >Clients</button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          ) : <Empty message="No AP health data yet." />}
+        </SectionCard>
+
+        <SectionCard title="Controller Detail" flex="1 1 40%" minWidth={280} maxHeight={360}>
+          {rows.length ? (
+            rows.map((r) => <ControllerMiniScoreCard key={r.controller_id} row={r} />)
+          ) : <Empty message="No controller data." />}
+        </SectionCard>
+      </EqualRow>
 
       {drawerApId != null && (
         <IntelApDrawer apId={drawerApId} onClose={() => setDrawerApId(null)} />
@@ -2462,12 +2567,6 @@ function fmtPct(n: number | null | undefined): string {
   return `${Math.round(v)}%`;
 }
 
-function ctlStatusColor(status: string | null | undefined): string {
-  if (status === 'ok') return 'var(--green)';
-  if (status === 'error') return 'var(--red)';
-  return 'var(--text-muted)';
-}
-
 const EVENT_META: Record<string, { icon: string; color: string }> = {
   join: { icon: '↑', color: 'var(--green)' },
   leave: { icon: '↓', color: 'var(--text-muted)' },
@@ -2475,193 +2574,63 @@ const EVENT_META: Record<string, { icon: string; color: string }> = {
   alert: { icon: '●', color: 'var(--red)' },
 };
 
-// ── Mini inline progress bar (top-level) ──────────────────────
-function MiniBar({ pct, color }: { pct: number | null | undefined; color?: string }) {
-  const v = Number(pct);
-  const p = Number.isFinite(v) ? Math.max(0, Math.min(100, v)) : 0;
-  const c = color || pctColor(p);
-  return (
-    <div style={{
-      width: 56, height: 6, borderRadius: 4, background: 'var(--border)',
-      overflow: 'hidden', display: 'inline-block', verticalAlign: 'middle',
-    }}>
-      <div style={{ width: `${p}%`, height: '100%', background: c }} />
-    </div>
-  );
-}
-
-// ── Aggregate stat card (top-level) ───────────────────────────
-function CtlStatCard({ num, sub, label, color }: {
-  num: React.ReactNode;
-  sub?: React.ReactNode;
-  label: string;
-  color?: string;
-}) {
-  return (
-    <div className="sv-card" style={color ? { borderLeftColor: color } : undefined}>
-      <div className="num" style={color ? { color } : undefined}>{num}</div>
-      {sub != null && <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>{sub}</div>}
-      <div className="label">{label}</div>
-    </div>
-  );
-}
-
-// ── Compact controller card (top-level) ───────────────────────
-function ControllerCard({
-  controller, canEdit, canProbe, onEdit, onTest, onDelete, onProbe,
-}: {
-  controller: Controller;
-  canEdit: boolean;
-  canProbe: boolean;
-  onEdit: () => void;
-  onTest: () => void;
-  onDelete: () => void;
-  onProbe: () => Promise<void>;
-}) {
-  const statusColor = ctlStatusColor(controller.status);
-  const [probing, setProbing] = useState(false);
-  const isSnmp = controller.snmp_device_id != null;
-
-  async function handleProbe() {
-    if (probing) return;
-    setProbing(true);
-    try { await onProbe(); }
-    finally { setProbing(false); }
-  }
-
-  return (
-    <div className="sv-card" style={{ borderLeftColor: statusColor, padding: 14 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <StatusDot status={controller.status === 'ok' ? 'up' : controller.status === 'error' ? 'down' : 'unknown'} />
-        <div style={{ fontWeight: 700, fontSize: 14, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {controller.name}
-        </div>
-        <span className="sv-badge">{controller.vendor}</span>
-      </div>
-      {controller.model && (
-        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>{controller.model}</div>
-      )}
-      <div style={{ display: 'flex', gap: 18, marginTop: 8 }}>
-        <div>
-          <div style={{ fontSize: 16, fontWeight: 800 }}>{fmtInt(controller.ap_count)}</div>
-          <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>APs</div>
-        </div>
-        <div>
-          <div style={{ fontSize: 16, fontWeight: 800 }}>{fmtInt(controller.client_count)}</div>
-          <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>Clients</div>
-        </div>
-      </div>
-      {isSnmp && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, fontSize: 11 }}>
-          {probing ? (
-            <span style={{ color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-              <span className="sv-spinner-sm" />Detecting…
-            </span>
-          ) : controller.has_capabilities ? (
-            <>
-              <span style={{ color: 'var(--text-muted)' }}>Capabilities detected</span>
-              {canProbe && (
-                <button
-                  className="sv-btn ghost sm"
-                  title="Re-detect capabilities"
-                  style={{ padding: '0 6px', lineHeight: '18px' }}
-                  onClick={handleProbe}
-                >↻</button>
-              )}
-            </>
-          ) : (
-            <>
-              <span style={{ color: 'var(--orange)', fontWeight: 600 }}>⚡ Capabilities not detected</span>
-              {canProbe && (
-                <button className="sv-btn ghost sm" onClick={handleProbe}>Detect Capabilities</button>
-              )}
-            </>
-          )}
-        </div>
-      )}
-      {canEdit && (
-        <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-          <button className="sv-btn ghost sm" onClick={onEdit}>Edit</button>
-          <button className="sv-btn ghost sm" onClick={onTest}>Test</button>
-          <div style={{ flex: 1 }} />
-          <button className="sv-btn ghost sm" onClick={onDelete}>Delete</button>
-        </div>
-      )}
-    </div>
-  );
-}
-
 // ── Controller inventory table (top-level) ────────────────────
-function ControllerInventoryTable({ controllers }: { controllers: OverviewController[] }) {
+function ControllerInventoryTable({ controllers, capsById }: {
+  controllers: OverviewController[];
+  capsById: Map<number, boolean>;
+}) {
   return (
-    <div className="sv-panel" style={{ overflowX: 'auto' }}>
-      <h3 style={{ marginTop: 0 }}>Controller Inventory</h3>
-      <table className="sv-table">
-        <thead>
-          <tr>
-            <th>Controller</th><th>Site</th><th>Vendor</th><th>Model</th>
-            <th>APs</th><th>Cap%</th><th>Clients</th><th>CPU</th><th>Mem</th><th>HA</th><th>Uptime</th>
-          </tr>
-        </thead>
+    <div style={{ overflowX: 'auto' }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+        <thead><tr>
+          <th style={TH_STYLE}>Name</th><th style={TH_STYLE}>Site</th><th style={TH_STYLE}>Model</th>
+          <th style={TH_STYLE}>APs</th><th style={TH_STYLE}>Cap%</th><th style={TH_STYLE}>Clients</th>
+          <th style={TH_STYLE}>CPU</th><th style={TH_STYLE}>Mem</th><th style={TH_STYLE}>HA</th><th style={TH_STYLE}>Uptime</th>
+        </tr></thead>
         <tbody>
           {controllers.map((c) => {
             const hasLic = c.licensed_aps != null && Number(c.licensed_aps) > 0;
             const cap = c.ap_capacity_pct;
-            const haMode = c.ha_mode && c.ha_mode !== 'disabled' ? c.ha_mode : null;
-            const synced = c.ha_sync_status ? /sync/i.test(c.ha_sync_status) && !/not/i.test(c.ha_sync_status) : null;
+            const ha = haCellLabel(c.ha_mode, c.ha_sync_status);
+            const probed = capsById.get(c.id) === true;
             return (
               <tr key={c.id}>
-                <td>
-                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                <td style={{ ...TD_STYLE, fontWeight: 600 }}>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                     <StatusDot status={c.status === 'ok' ? 'up' : c.status === 'error' ? 'down' : 'unknown'} />
-                    <span style={{ fontWeight: 600 }}>{c.name}</span>
+                    {c.name}
+                    <span
+                      title={probed ? 'Capabilities probed' : 'Capabilities not probed'}
+                      style={{ color: probed ? 'var(--text-muted)' : 'var(--orange)', fontWeight: 700 }}
+                    >{probed ? '✓' : '⚡'}</span>
                   </span>
                 </td>
-                <td>{c.site_name || '—'}</td>
-                <td>{c.vendor}</td>
-                <td>
-                  {c.model ? (
-                    <>
-                      <div style={{ fontWeight: 600 }}>{c.model}</div>
-                      {c.firmware_version && (
-                        <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{c.firmware_version}</div>
-                      )}
-                    </>
-                  ) : c.vendor}
-                </td>
-                <td>{fmtInt(c.ap_count)}</td>
-                <td>
-                  {hasLic ? (
-                    <div>
-                      <div style={{ fontSize: 12 }}>
-                        {fmtInt(c.ap_count)}/{fmtInt(c.licensed_aps)}
-                        {cap != null && <span style={{ color: 'var(--text-muted)' }}> ({Math.round(Number(cap))}%)</span>}
-                      </div>
-                      <MiniBar pct={cap} />
-                    </div>
-                  ) : (
-                    <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>{fmtInt(c.ap_count)} APs</span>
+                <td style={TD_STYLE}>{c.site_name || '—'}</td>
+                <td style={TD_STYLE}>
+                  {c.model || c.vendor}
+                  {c.firmware_version && (
+                    <span style={{ color: 'var(--text-muted)' }}> · {c.firmware_version}</span>
                   )}
                 </td>
-                <td>{fmtInt(c.client_count)}</td>
-                <td>{c.cpu_pct != null ? `${Math.round(Number(c.cpu_pct))}%` : '—'}</td>
-                <td>{c.mem_pct != null ? `${Math.round(Number(c.mem_pct))}%` : '—'}</td>
-                <td>
-                  {haMode ? (
-                    <span style={{ display: 'inline-flex', flexDirection: 'column', gap: 2 }}>
-                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                        <span style={{ color: haMode === 'active' ? 'var(--green)' : 'var(--text-muted)' }}>●</span>
-                        {haMode === 'active' ? 'Active' : haMode === 'standby' ? 'Standby' : haMode}
-                      </span>
-                      {synced != null && (
-                        <span style={{ fontSize: 11, color: synced ? 'var(--green)' : 'var(--orange)' }}>
-                          {synced ? '✓ Synced' : '⚠ Not synced'}
-                        </span>
-                      )}
+                <td style={TD_STYLE}>{fmtInt(c.ap_count)}</td>
+                <td style={TD_STYLE}>
+                  {hasLic ? (
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                      <span>{fmtInt(c.ap_count)}/{fmtInt(c.licensed_aps)}{cap != null && ` ${Math.round(Number(cap))}%`}</span>
+                      <ProgressBar pct={cap} width={36} />
                     </span>
-                  ) : <span style={{ color: 'var(--text-muted)' }}>N/A</span>}
+                  ) : (
+                    <span style={{ color: 'var(--text-muted)' }}>{fmtInt(c.ap_count)} APs</span>
+                  )}
                 </td>
-                <td>{fmtUptimeShort(c.uptime_seconds)}</td>
+                <td style={TD_STYLE}>{fmtInt(c.client_count)}</td>
+                <td style={TD_STYLE}>{c.cpu_pct != null ? `${Math.round(Number(c.cpu_pct))}%` : '—'}</td>
+                <td style={TD_STYLE}>{c.mem_pct != null ? `${Math.round(Number(c.mem_pct))}%` : '—'}</td>
+                <td style={{ ...TD_STYLE, color: ha.color, fontWeight: 600 }}>
+                  {ha.dot && <span style={{ marginRight: 4 }}>●</span>}
+                  {ha.text === 'N/A' || ha.text === 'Standalone' ? (ha.text === 'N/A' ? 'N/A' : '—') : ha.text}
+                </td>
+                <td style={TD_STYLE}>{fmtUptimeShort(c.uptime_seconds)}</td>
               </tr>
             );
           })}
@@ -2671,101 +2640,95 @@ function ControllerInventoryTable({ controllers }: { controllers: OverviewContro
   );
 }
 
-// ── AP capacity overview chart (top-level) ────────────────────
+// ── AP capacity chart (donut if licensed, else bar) (top-level) ─
 const CAP_COLORS = ['var(--green)', 'var(--border)'];
-function ApCapacityOverview({ controllers }: { controllers: OverviewController[] }) {
+function ApCapacityChart({ controllers }: { controllers: OverviewController[] }) {
   const withLic = controllers.filter((c) => c.licensed_aps != null && Number(c.licensed_aps) > 0);
   if (withLic.length) {
     const usedTotal = withLic.reduce((s, c) => s + Number(c.ap_count || 0), 0);
     const licTotal = withLic.reduce((s, c) => s + Number(c.licensed_aps || 0), 0);
     const available = Math.max(0, licTotal - usedTotal);
+    const pct = licTotal > 0 ? Math.round((usedTotal / licTotal) * 100) : 0;
     const data = [
-      { name: 'Used APs', value: usedTotal },
+      { name: 'Used', value: usedTotal },
       { name: 'Available', value: available },
     ];
     return (
-      <div className="sv-panel">
-        <h3 style={{ marginTop: 0 }}>AP Capacity Overview</h3>
-        <ResponsiveContainer width="100%" height={240}>
+      <div style={{ position: 'relative' }}>
+        <ResponsiveContainer width="100%" height={180}>
           <PieChart>
-            <Pie data={data} dataKey="value" nameKey="name" innerRadius={55} outerRadius={85} paddingAngle={2}>
+            <Pie data={data} dataKey="value" nameKey="name" innerRadius={52} outerRadius={75} paddingAngle={2}>
               {data.map((_, i) => <Cell key={i} fill={CAP_COLORS[i % CAP_COLORS.length]} />)}
             </Pie>
             <Tooltip />
-            <Legend />
           </PieChart>
         </ResponsiveContainer>
-        <div style={{ textAlign: 'center', fontSize: 14, fontWeight: 700, marginTop: -8 }}>
-          {fmtInt(usedTotal)} / {fmtInt(licTotal)} licensed
+        <div style={{
+          position: 'absolute', top: '50%', left: 0, right: 0, transform: 'translateY(-50%)',
+          textAlign: 'center', pointerEvents: 'none',
+        }}>
+          <div style={{ fontSize: 20, fontWeight: 800 }}>{pct}%</div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Used</div>
         </div>
-        <div style={{ fontSize: 11, color: 'var(--text-muted)', textAlign: 'center', marginTop: 6 }}>
-          Licensed count available for Aruba/Cisco only
+        <div style={{ fontSize: 11, color: 'var(--text-muted)', textAlign: 'center', marginTop: 4 }}>
+          {fmtInt(usedTotal)} / {fmtInt(licTotal)} licensed
         </div>
       </div>
     );
   }
   const barData = controllers.map((c) => ({ name: c.name, aps: Number(c.ap_count || 0) }));
-  return (
-    <div className="sv-panel">
-      <h3 style={{ marginTop: 0 }}>AP Count by Controller</h3>
-      {barData.length ? (
-        <ResponsiveContainer width="100%" height={240}>
-          <BarChart data={barData} layout="vertical" margin={{ left: 8 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-            <XAxis type="number" fontSize={11} />
-            <YAxis type="category" dataKey="name" width={110} fontSize={11} />
-            <Tooltip />
-            <Bar dataKey="aps" fill="var(--green)" name="APs" />
-          </BarChart>
-        </ResponsiveContainer>
-      ) : <Empty message="No AP data." />}
-    </div>
-  );
+  return barData.length ? (
+    <ResponsiveContainer width="100%" height={180}>
+      <BarChart data={barData} layout="vertical" margin={{ left: 8, right: 8, top: 4, bottom: 0 }}>
+        <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+        <XAxis type="number" fontSize={11} allowDecimals={false} />
+        <YAxis type="category" dataKey="name" width={100} fontSize={11} />
+        <Tooltip />
+        <Bar dataKey="aps" fill="var(--green)" name="APs" />
+      </BarChart>
+    </ResponsiveContainer>
+  ) : <Empty message="No AP data." />;
 }
 
 // ── Controller health table (top-level) ───────────────────────
 function ControllerHealthTable({ controllers }: { controllers: OverviewController[] }) {
   return (
-    <div className="sv-panel" style={{ overflowX: 'auto' }}>
-      <h3 style={{ marginTop: 0 }}>Controller Health</h3>
-      <table className="sv-table">
-        <thead>
-          <tr>
-            <th>Controller</th><th>Uptime</th><th>CPU</th><th>Mem</th><th>AP Disc (24h)</th><th>Last Polled</th>
-          </tr>
-        </thead>
+    <div style={{ overflowX: 'auto' }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+        <thead><tr>
+          <th style={TH_STYLE}>Name</th><th style={TH_STYLE}>Uptime</th><th style={TH_STYLE}>CPU</th>
+          <th style={TH_STYLE}>Mem</th><th style={TH_STYLE}>Disc (24h)</th><th style={TH_STYLE}>Polled</th>
+        </tr></thead>
         <tbody>
           {controllers.map((c) => {
             const disc = Number(c.ap_disconnects_24h || 0);
             return (
               <tr key={c.id}>
-                <td>
-                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                <td style={{ ...TD_STYLE, fontWeight: 600 }}>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                     <StatusDot status={c.status === 'ok' ? 'up' : c.status === 'error' ? 'down' : 'unknown'} />
-                    <span style={{ fontWeight: 600 }}>{c.name}</span>
+                    {c.name}
                   </span>
                 </td>
-                <td>{fmtUptimeShort(c.uptime_seconds)}</td>
-                <td>
+                <td style={TD_STYLE}>{fmtUptimeShort(c.uptime_seconds)}</td>
+                <td style={TD_STYLE}>
                   {c.cpu_pct != null ? (
                     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                      <MiniBar pct={c.cpu_pct} /> {Math.round(Number(c.cpu_pct))}%
+                      <ProgressBar pct={c.cpu_pct} /> {Math.round(Number(c.cpu_pct))}%
                     </span>
                   ) : '—'}
                 </td>
-                <td>
+                <td style={TD_STYLE}>
                   {c.mem_pct != null ? (
                     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                      <MiniBar pct={c.mem_pct} /> {Math.round(Number(c.mem_pct))}%
+                      <ProgressBar pct={c.mem_pct} /> {Math.round(Number(c.mem_pct))}%
                     </span>
                   ) : '—'}
                 </td>
-                <td>
-                  {disc > 10 ? (
-                    <span className="sv-badge" style={{ background: 'var(--red)', color: '#fff' }}>{disc}</span>
-                  ) : (c.ap_disconnects_24h != null ? disc : '—')}
+                <td style={{ ...TD_STYLE, color: disc > 10 ? 'var(--red)' : undefined, fontWeight: disc > 10 ? 700 : 400 }}>
+                  {c.ap_disconnects_24h != null ? disc : '—'}
                 </td>
-                <td>{fmtRel(c.last_polled_at)}</td>
+                <td style={{ ...TD_STYLE, color: 'var(--text-muted)' }}>{fmtRel(c.last_polled_at)}</td>
               </tr>
             );
           })}
@@ -2776,88 +2739,154 @@ function ControllerHealthTable({ controllers }: { controllers: OverviewControlle
 }
 
 // ── HA / redundancy status table (top-level) ──────────────────
+// A controller has HA configured when ha_sync_status is set and not 'Standalone'.
 function HaStatusTable({ controllers }: { controllers: OverviewController[] }) {
-  const haCtls = controllers.filter((c) => c.ha_mode && c.ha_mode !== 'disabled');
+  const haCtls = controllers.filter(
+    (c) => c.ha_sync_status != null && c.ha_sync_status !== 'Standalone',
+  );
+  if (!haCtls.length) {
+    return <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>No HA configured</div>;
+  }
   return (
-    <div className="sv-panel" style={{ overflowX: 'auto' }}>
-      <h3 style={{ marginTop: 0 }}>HA / Redundancy Status</h3>
-      {haCtls.length ? (
-        <table className="sv-table">
-          <thead>
-            <tr><th>Controller</th><th>Peer</th><th>Mode</th><th>Sync</th><th>Status</th></tr>
-          </thead>
-          <tbody>
-            {haCtls.map((c) => {
-              const synced = c.ha_sync_status ? /sync/i.test(c.ha_sync_status) && !/not/i.test(c.ha_sync_status) : null;
-              const ready = c.status === 'ok';
-              return (
-                <tr key={c.id}>
-                  <td style={{ fontWeight: 600 }}>{c.name}</td>
-                  <td>{c.ha_peer_ip || '—'}</td>
-                  <td>
-                    <span style={{ color: c.ha_mode === 'active' ? 'var(--green)' : 'var(--text-muted)' }}>● </span>
-                    {c.ha_mode === 'active' ? 'Active' : c.ha_mode === 'standby' ? 'Standby' : c.ha_mode}
-                  </td>
-                  <td>
-                    {synced == null ? '—' : (
-                      <span style={{ color: synced ? 'var(--green)' : 'var(--orange)' }}>
-                        {synced ? '✓ Synced' : '⚠ Not synced'}
-                      </span>
-                    )}
-                  </td>
-                  <td>
-                    <span style={{ color: ready ? 'var(--green)' : 'var(--red)' }}>● {ready ? 'Ready' : 'Down'}</span>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      ) : <Empty message="No HA configured" />}
+    <div style={{ overflowX: 'auto' }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+        <thead><tr>
+          <th style={TH_STYLE}>Controller</th><th style={TH_STYLE}>Peer</th>
+          <th style={TH_STYLE}>Role</th><th style={TH_STYLE}>Sync</th>
+        </tr></thead>
+        <tbody>
+          {haCtls.map((c) => {
+            const synced = c.ha_sync_status === 'Synced';
+            const role = haCellLabel(c.ha_mode, c.ha_sync_status);
+            return (
+              <tr key={c.id}>
+                <td style={{ ...TD_STYLE, fontWeight: 600 }}>{c.name}</td>
+                <td style={TD_STYLE}>{c.ha_peer_ip || '—'}</td>
+                <td style={{ ...TD_STYLE, color: role.color, fontWeight: 600 }}>
+                  {role.dot && <span style={{ marginRight: 4 }}>●</span>}{role.text}
+                </td>
+                <td style={{ ...TD_STYLE, color: synced ? 'var(--green)' : 'var(--orange)' }}>
+                  {synced ? '✓ Synced' : `⚠ ${c.ha_sync_status || 'Not Synced'}`}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }
 
-// ── Recent controller events timeline (top-level) ─────────────
-function ControllerEventsTimeline({ events, onViewEvents }: {
-  events: ControllerEvent[];
-  onViewEvents?: () => void;
-}) {
+// ── Recent controller events timeline (slim) (top-level) ──────
+function ControllerEventsTimeline({ events }: { events: ControllerEvent[] }) {
+  if (!events.length) return <Empty message="No recent controller events." />;
   return (
-    <div className="sv-panel">
-      <div style={{ display: 'flex', alignItems: 'center' }}>
-        <h3 style={{ marginTop: 0, marginBottom: 0, flex: 1 }}>Recent Controller Events</h3>
-        {onViewEvents && (
-          <button className="sv-btn ghost sm" onClick={onViewEvents}>View all events →</button>
-        )}
+    <div>
+      {events.map((e, i) => {
+        const meta = EVENT_META[e.event_type] || { icon: '•', color: 'var(--text-muted)' };
+        return (
+          <div key={i} style={{
+            display: 'flex', alignItems: 'center', gap: 10,
+            padding: '5px 0', borderBottom: '1px solid var(--border-light)', fontSize: 12.5,
+          }}>
+            <span style={{ width: 96, color: 'var(--text-muted)', flexShrink: 0 }}>{fmtTime(e.ts)}</span>
+            <span style={{ color: meta.color, fontWeight: 700, width: 14, textAlign: 'center', flexShrink: 0 }}>
+              {meta.icon}
+            </span>
+            <span style={{ flex: 1 }}>
+              {e.description}
+              {e.ap_name && <span style={{ color: 'var(--text-muted)' }}> · {e.ap_name}</span>}
+            </span>
+            <span style={{ color: 'var(--text-muted)', flexShrink: 0 }}>{e.site_name || ''}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── Capabilities detection accordion (collapsed) (top-level) ──
+function CapabilitiesAccordion({
+  controllers, canProbe, canEdit, probingId, onProbe, onEdit, onTest, onDelete,
+}: {
+  controllers: Controller[];
+  canProbe: boolean;
+  canEdit: boolean;
+  probingId: number | null;
+  onProbe: (c: Controller) => void;
+  onEdit: (c: Controller) => void;
+  onTest: (c: Controller) => void;
+  onDelete: (c: Controller) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div style={{
+      marginTop: 16, background: 'var(--bg-card)', border: '1px solid var(--border)',
+      borderRadius: 'var(--radius-sm)',
+    }}>
+      <div
+        onClick={() => setOpen((v) => !v)}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer',
+          padding: '12px 20px', fontSize: 12, fontWeight: 600,
+          textTransform: 'uppercase', letterSpacing: 0.4, color: 'var(--text-muted)',
+        }}
+      >
+        <span style={{ color: 'var(--orange)' }}>⚡</span>
+        Controller Capabilities
+        <span style={{ flex: 1 }} />
+        <span>{open ? '▲' : '▼'}</span>
       </div>
-      {events.length ? (
-        <div style={{ marginTop: 12 }}>
-          {events.map((e, i) => {
-            const meta = EVENT_META[e.event_type] || { icon: '•', color: 'var(--text-muted)' };
-            return (
-              <div key={i} style={{
-                display: 'flex', alignItems: 'center', gap: 10,
-                padding: '8px 0', borderBottom: '1px solid var(--border-light)',
-              }}>
-                <span style={{ width: 110, fontSize: 12, color: 'var(--text-muted)', flexShrink: 0 }}>
-                  {fmtTime(e.ts)}
-                </span>
-                <span style={{ color: meta.color, fontWeight: 700, width: 16, textAlign: 'center', flexShrink: 0 }}>
-                  {meta.icon}
-                </span>
-                <span style={{ flex: 1, fontSize: 13 }}>
-                  {e.description}
-                  {e.ap_name && <span style={{ color: 'var(--text-muted)' }}> · {e.ap_name}</span>}
-                </span>
-                <span style={{ fontSize: 12, color: 'var(--text-muted)', flexShrink: 0 }}>
-                  {e.site_name || ''}
-                </span>
-              </div>
-            );
-          })}
+      {open && (
+        <div style={{ padding: '0 20px 16px', overflowX: 'auto' }}>
+          {controllers.length ? (
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead><tr>
+                <th style={TH_STYLE}>Controller</th><th style={TH_STYLE}>Vendor</th>
+                <th style={TH_STYLE}>Probe Status</th><th style={{ ...TH_STYLE, textAlign: 'right' }}></th>
+              </tr></thead>
+              <tbody>
+                {controllers.map((c) => {
+                  const probed = c.has_capabilities === true;
+                  const isSnmp = c.snmp_device_id != null;
+                  const busy = probingId === c.id;
+                  return (
+                    <tr key={c.id}>
+                      <td style={{ ...TD_STYLE, fontWeight: 600 }}>{c.name}</td>
+                      <td style={TD_STYLE}>{c.vendor}</td>
+                      <td style={TD_STYLE}>
+                        {probed ? (
+                          <span style={{ color: 'var(--text-muted)' }}>
+                            ✓ Probed{c.capabilities_probed_at ? ` ${fmtRel(c.capabilities_probed_at)}` : ''}
+                          </span>
+                        ) : (
+                          <span style={{ color: 'var(--orange)', fontWeight: 600 }}>⚡ Not probed</span>
+                        )}
+                      </td>
+                      <td style={{ ...TD_STYLE, textAlign: 'right' }}>
+                        <span style={{ display: 'inline-flex', gap: 6, justifyContent: 'flex-end' }}>
+                          {isSnmp && canProbe && (
+                            <button className="sv-btn ghost sm" disabled={busy} onClick={() => onProbe(c)}>
+                              {busy ? 'Detecting…' : 'Detect'}
+                            </button>
+                          )}
+                          {canEdit && (
+                            <>
+                              <button className="sv-btn ghost sm" onClick={() => onEdit(c)}>Edit</button>
+                              <button className="sv-btn ghost sm" onClick={() => onTest(c)}>Test</button>
+                              <button className="sv-btn ghost sm" onClick={() => onDelete(c)}>Delete</button>
+                            </>
+                          )}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          ) : <Empty message="No controllers." />}
         </div>
-      ) : <Empty message="No recent controller events." />}
+      )}
     </div>
   );
 }
@@ -2891,7 +2920,9 @@ function ControllersTab({ onViewEvents }: { onViewEvents?: () => void }) {
     overview.reload();
   }
 
+  const [probingId, setProbingId] = useState<number | null>(null);
   async function handleProbe(c: Controller) {
+    setProbingId(c.id);
     try {
       await apiSend(`/api/wireless/controllers/${c.id}/probe`, 'POST', {});
       setToast(`✓ ${c.name}: capability probe complete`);
@@ -2901,16 +2932,47 @@ function ControllersTab({ onViewEvents }: { onViewEvents?: () => void }) {
     setTimeout(() => setToast(null), 6000);
     await controllers.reload();
     overview.reload();
+    setProbingId(null);
   }
 
   const canProbe = role === 'admin' || role === 'super_admin';
 
   const ov = overview.data;
   const ovCtls: OverviewController[] = ov?.controllers || [];
-  const siteCount = new Set(ovCtls.map((c) => c.site_name).filter(Boolean)).size;
-  const haTotal = ov?.ha_total_count ?? 0;
-  const haHealthy = ov?.ha_healthy_count ?? 0;
+  const ctlList: Controller[] = controllers.data || [];
   const evList: ControllerEvent[] = events.data || [];
+
+  // has_capabilities map (overview rows don't carry it — join by controller id).
+  const capsById = useMemo(() => {
+    const m = new Map<number, boolean>();
+    ctlList.forEach((c) => m.set(c.id, c.has_capabilities === true));
+    return m;
+  }, [ctlList]);
+
+  // AP CAPACITY card text: "111 / 347 (32%)" if license data, else "111 APs".
+  const hasLicensed = ovCtls.some((c) => c.licensed_aps != null && Number(c.licensed_aps) > 0);
+  const licensedTotal = ovCtls.reduce((s, c) => s + (Number(c.licensed_aps) > 0 ? Number(c.licensed_aps) : 0), 0);
+  const apCapValue = ov
+    ? (hasLicensed && licensedTotal > 0
+        ? `${fmtInt(ov.total_aps)} / ${fmtInt(licensedTotal)} (${ov.ap_capacity_pct ?? 0}%)`
+        : `${fmtInt(ov.total_aps)} APs`)
+    : '—';
+
+  // HA STATUS card: aggregate from per-controller HA fields.
+  const haConfigured = ovCtls.filter((c) => c.ha_sync_status != null && c.ha_sync_status !== 'Standalone');
+  const anyStandalone = ovCtls.some((c) => c.ha_sync_status === 'Standalone');
+  let haText = 'N/A';
+  let haColor: string | undefined;
+  if (haConfigured.length) {
+    const allSynced = haConfigured.every((c) => c.ha_sync_status === 'Synced');
+    const active = haConfigured.find((c) => c.ha_mode === 'Active');
+    const role2 = active ? 'Active' : (haConfigured[0].ha_mode || 'HA');
+    haText = `${role2}/${allSynced ? 'Synced' : 'Not Synced'}`;
+    haColor = allSynced ? 'var(--green)' : 'var(--yellow)';
+  } else if (anyStandalone) {
+    haText = 'Standalone';
+    haColor = 'var(--text-muted)';
+  }
 
   return (
     <div>
@@ -2926,92 +2988,83 @@ function ControllersTab({ onViewEvents }: { onViewEvents?: () => void }) {
 
       {toast && <div className="sv-toast ok" onClick={() => setToast(null)}>{toast}</div>}
       {controllers.error && <ErrorBox message={controllers.error} />}
+      {overview.error && <ErrorBox message={overview.error} />}
 
-      {/* SECTION 0 — Compact controller cards */}
       {controllers.loading && !controllers.data ? (
         <div className="sv-panel"><Loading /></div>
-      ) : controllers.data && controllers.data.length ? (
-        <div style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))',
-          gap: 12,
-        }}>
-          {controllers.data.map((c: Controller) => (
-            <ControllerCard
-              key={c.id}
-              controller={c}
-              canEdit={canEdit}
-              canProbe={canProbe}
-              onEdit={() => { setEditing(c); setShowModal(true); }}
-              onTest={() => handleTest(c)}
-              onDelete={() => handleDelete(c)}
-              onProbe={() => handleProbe(c)}
-            />
-          ))}
-        </div>
-      ) : (
+      ) : ctlList.length === 0 ? (
         <div className="sv-panel" style={{ padding: 0 }}>
           <Empty message="No wireless controllers yet — add a wireless controller to get started →" />
         </div>
-      )}
-
-      {/* SECTION 1 — Aggregate stat cards */}
-      {overview.error && <ErrorBox message={overview.error} />}
-      {ov && (
-        <div className="sv-cards" style={{ marginTop: 20 }}>
-          <CtlStatCard
-            num={fmtInt(ov.total_controllers)}
-            sub={ov.online_controllers === ov.total_controllers ? 'All Online' : `${fmtInt(ov.online_controllers)} online`}
-            label="Controllers"
-            color={ov.online_controllers === ov.total_controllers ? 'var(--green)' : 'var(--yellow)'}
-          />
-          <CtlStatCard num={fmtInt(ov.total_aps)} sub={`${siteCount} Sites`} label="APs Total" />
-          <CtlStatCard num={fmtInt(ov.total_clients)} label="Clients" />
-          <CtlStatCard num={fmtPct(ov.avg_cpu_pct)} label="Avg CPU" />
-          <CtlStatCard num={fmtPct(ov.ap_capacity_pct)} label="AP Capacity" />
-          <CtlStatCard
-            num={haTotal === 0 ? 'N/A' : (haHealthy === haTotal ? 'Healthy' : `${haHealthy}/${haTotal} Ready`)}
-            label="HA Status"
-            color={haTotal === 0 ? undefined : (haHealthy === haTotal ? 'var(--green)' : 'var(--yellow)')}
-          />
-        </div>
-      )}
-
-      {overview.loading && !ov ? (
-        <div className="sv-panel" style={{ marginTop: 20 }}><Loading /></div>
-      ) : ov && ovCtls.length ? (
+      ) : (
         <>
-          {/* SECTION 2 — Inventory + capacity */}
-          <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginTop: 20, alignItems: 'flex-start' }}>
-            <div style={{ flex: '1 1 60%', minWidth: 360 }}>
-              <ControllerInventoryTable controllers={ovCtls} />
-            </div>
-            <div style={{ flex: '1 1 32%', minWidth: 280 }}>
-              <ApCapacityOverview controllers={ovCtls} />
-            </div>
+          {/* Row 1 — 6 compact stat cards */}
+          {ov && (
+            <StatRow>
+              <StatCard
+                value={fmtInt(ov.total_controllers)}
+                sub={ov.online_controllers === ov.total_controllers ? 'All online' : `${fmtInt(ov.online_controllers)} online`}
+                label="Controllers"
+                color={ov.online_controllers === ov.total_controllers ? 'var(--green)' : 'var(--yellow)'}
+              />
+              <StatCard value={fmtInt(ov.total_aps)} label="APs Managed" />
+              <StatCard value={fmtInt(ov.total_clients)} label="Clients" />
+              <StatCard value={fmtPct(ov.avg_cpu_pct)} label="Avg CPU" />
+              <StatCard value={apCapValue} label="AP Capacity" />
+              <StatCard value={haText} valueColor={haColor} label="HA Status" color={haColor} />
+            </StatRow>
+          )}
+
+          {overview.loading && !ov ? (
+            <div className="sv-panel"><Loading /></div>
+          ) : ov && ovCtls.length ? (
+            <>
+              {/* Row 2 — Inventory (60%) | AP Capacity (40%) */}
+              <EqualRow>
+                <SectionCard title="Controller Inventory" flex="1 1 60%" minWidth={360}>
+                  <ControllerInventoryTable controllers={ovCtls} capsById={capsById} />
+                </SectionCard>
+                <SectionCard title="AP Capacity" flex="1 1 36%" minWidth={260}>
+                  <ApCapacityChart controllers={ovCtls} />
+                </SectionCard>
+              </EqualRow>
+
+              {/* Row 3 — Health (60%) | HA / Redundancy (40%) */}
+              <EqualRow>
+                <SectionCard title="Controller Health" flex="1 1 60%" minWidth={360}>
+                  <ControllerHealthTable controllers={ovCtls} />
+                </SectionCard>
+                <SectionCard title="HA / Redundancy" flex="1 1 36%" minWidth={260}>
+                  <HaStatusTable controllers={ovCtls} />
+                </SectionCard>
+              </EqualRow>
+            </>
+          ) : null}
+
+          {/* Row 4 — Recent events */}
+          <div style={{ marginTop: 16 }}>
+            <SectionCard
+              title="Recent Events"
+              maxHeight={160}
+              action={onViewEvents && <button className="sv-btn ghost sm" onClick={onViewEvents}>View all →</button>}
+            >
+              {events.loading && !events.data ? <Loading /> : <ControllerEventsTimeline events={evList} />}
+            </SectionCard>
           </div>
 
-          {/* SECTION 3 — Health + HA */}
-          <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginTop: 20, alignItems: 'flex-start' }}>
-            <div style={{ flex: '1 1 60%', minWidth: 360 }}>
-              <ControllerHealthTable controllers={ovCtls} />
-            </div>
-            <div style={{ flex: '1 1 32%', minWidth: 280 }}>
-              <HaStatusTable controllers={ovCtls} />
-            </div>
-          </div>
+          {/* Row 5 — Capabilities detection accordion (collapsed) */}
+          <CapabilitiesAccordion
+            controllers={ctlList}
+            canProbe={canProbe}
+            canEdit={canEdit}
+            probingId={probingId}
+            onProbe={handleProbe}
+            onEdit={(c) => { setEditing(c); setShowModal(true); }}
+            onTest={handleTest}
+            onDelete={handleDelete}
+          />
         </>
-      ) : null}
-
-      {/* SECTION 4 — Recent controller events */}
-      <div style={{ marginTop: 20 }}>
-        {events.error && <ErrorBox message={events.error} />}
-        {events.loading && !events.data ? (
-          <div className="sv-panel"><Loading /></div>
-        ) : (
-          <ControllerEventsTimeline events={evList} onViewEvents={onViewEvents} />
-        )}
-      </div>
+      )}
 
       {showModal && (
         <ControllerModal
