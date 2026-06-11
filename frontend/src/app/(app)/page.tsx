@@ -253,9 +253,6 @@ export default function DashboardPage() {
         <SlowestDevices api={worst} />
       </div>
 
-      {/* ── At-risk devices (health score < 70) ─────────── */}
-      <AtRiskDevices data={intel.data} />
-
       {/* ── Agent-offline group (devices unreachable via an offline agent) ── */}
       <AgentOfflineGroup api={agentOffline} />
 
@@ -265,11 +262,14 @@ export default function DashboardPage() {
         <NetworkAvailabilityCard api={trend} />
       </div>
 
-      {/* ── ROW 5: recent events (full width) ───────────── */}
-      <div style={{ ...CARD_STYLE, marginBottom: 18 }}>
-        <div style={SECTION_HEADING}>Recent Events</div>
-        <div style={{ maxHeight: 200, overflowY: 'auto', margin: '0 -4px' }}>
-          <RecentEvents api={events} />
+      {/* ── ROW 5: at-risk (50%) + recent events (50%) — equal 200px height ── */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, alignItems: 'stretch', marginBottom: 18 }}>
+        <AtRiskDevices data={intel.data} />
+        <div style={{ ...CARD_STYLE, height: 200, display: 'flex', flexDirection: 'column' }}>
+          <div style={SECTION_HEADING}>Recent Events</div>
+          <div style={{ flex: 1, overflowY: 'auto', margin: '0 -4px' }}>
+            <RecentEvents api={events} />
+          </div>
         </div>
       </div>
     </div>
@@ -486,29 +486,38 @@ function AnomalyBanner({ data }: { data: Overview | null }) {
 function AtRiskDevices({ data }: { data: Overview | null }) {
   const atRisk = (data && data.at_risk_devices ? data.at_risk_devices : [])
     .filter((d: HealthRow) => { const s = intelNum(d.score); return s != null && s < 70; });
-  if (!atRisk.length) return null;
   return (
-    <div style={{ ...CARD_STYLE, borderLeft: '3px solid var(--yellow)', marginBottom: 12 }}>
+    <div style={{ ...CARD_STYLE, borderLeft: '3px solid var(--yellow)', height: 200, display: 'flex', flexDirection: 'column' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
         <StatusDot status="warning" size={11} />
         <span style={SECTION_HEADING}>At Risk</span>
         <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--text-muted)' }}>{atRisk.length}</span>
       </div>
-      {atRisk.map((d: HealthRow) => {
-        const s = intelNum(d.score);
-        return (
-          <div key={d.id} style={{ display: 'flex', alignItems: 'center', gap: 8, height: 36, borderBottom: '1px solid var(--border-light)', fontSize: 12.5 }}>
-            <span style={{ color: 'var(--yellow)' }}>⚠</span>
-            <Link href={`/devices/${d.id}`} style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{d.name}</Link>
-            <span style={{ flex: 1 }} />
-            <span style={{ color: scoreColor(s) }}>Health score {s != null ? Math.round(s) : '—'}/100</span>
-            <span style={{ color: 'var(--text-muted)' }}>({d.trend || 'stable'})</span>
+      {atRisk.length ? (
+        <>
+          <div style={{ flex: 1, overflowY: 'auto', margin: '0 -4px', padding: '0 4px' }}>
+            {atRisk.map((d: HealthRow) => {
+              const s = intelNum(d.score);
+              return (
+                <div key={d.id} style={{ display: 'flex', alignItems: 'center', gap: 8, height: 36, borderBottom: '1px solid var(--border-light)', fontSize: 12.5 }}>
+                  <span style={{ color: 'var(--yellow)' }}>⚠</span>
+                  <Link href={`/devices/${d.id}`} style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{d.name}</Link>
+                  <span style={{ flex: 1 }} />
+                  <span style={{ color: scoreColor(s) }}>Health score {s != null ? Math.round(s) : '—'}/100</span>
+                  <span style={{ color: 'var(--text-muted)' }}>({d.trend || 'stable'})</span>
+                </div>
+              );
+            })}
           </div>
-        );
-      })}
-      <div style={{ marginTop: 8, textAlign: 'right' }}>
-        <Link href="/intelligence#health" className="sv-dash-link">View health scores →</Link>
-      </div>
+          <div style={{ marginTop: 8, textAlign: 'right' }}>
+            <Link href="/intelligence#health" className="sv-dash-link">View health scores →</Link>
+          </div>
+        </>
+      ) : (
+        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
+          No at-risk devices ✓
+        </div>
+      )}
     </div>
   );
 }
