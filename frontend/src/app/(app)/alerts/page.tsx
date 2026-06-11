@@ -19,6 +19,13 @@ type Alert = {
   suppressed_by: number | null; suppression_reason: string | null; suppressed_by_name: string | null;
 };
 
+// ── style tokens (kept inline since globals.css is not editable here) ──
+const CARD_BORDER = '1px solid var(--border)';
+const SECTION_HEADING: React.CSSProperties = {
+  fontSize: 12, textTransform: 'uppercase', fontWeight: 600,
+  color: 'var(--text-muted)', marginBottom: 8, letterSpacing: '0.06em',
+};
+
 // Pretty label for an alert_type token (e.g. "high_cpu" → "High Cpu",
 // "rule_12" → "Custom Rule"). Shown as a small secondary badge.
 function prettyType(t: string): string {
@@ -28,15 +35,34 @@ function prettyType(t: string): string {
   return t.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+// Format a duration in seconds as a compact "Xh Ym" / "Xm" / "Xs" string.
+function fmtDuration(sec: number): string {
+  if (!isFinite(sec) || sec < 0) return '—';
+  if (sec < 60) return `${Math.round(sec)}s`;
+  const m = Math.floor(sec / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  const rem = m % 60;
+  return rem ? `${h}h ${rem}m` : `${h}h`;
+}
+
 // Quick-filter chips applied client-side over the fetched alert list.
+// `last24h / lastnight / thisweek / critical / unack` are pure client filters;
+// `suppressed` maps to the existing backend status filter (handled in the page).
 const CHIPS = [
   { key: 'last24h', label: 'Last 24h' },
-  { key: 'lastnight', label: 'Last night (8pm–8am)' },
+  { key: 'lastnight', label: 'Last night' },
   { key: 'thisweek', label: 'This week' },
   { key: 'critical', label: 'Critical only' },
   { key: 'unack', label: 'Unacknowledged' },
+  { key: 'suppressed', label: 'Suppressed' },
 ];
-function passesChips(a: Alert, active: Set<string>): boolean {
+function passesChips(a: Alert, active: Set<string>, search: string): boolean {
+  if (search) {
+    const q = search.toLowerCase();
+    const hay = `${a.device_name || ''} ${a.ip_address || ''} ${a.message || ''} ${a.alert_type || ''}`.toLowerCase();
+    if (!hay.includes(q)) return false;
+  }
   if (!active.size) return true;
   const t = new Date(a.triggered_at).getTime();
   const now = Date.now();
@@ -48,6 +74,7 @@ function passesChips(a: Alert, active: Set<string>): boolean {
   }
   if (active.has('critical') && a.severity !== 'critical') return false;
   if (active.has('unack') && a.status !== 'active') return false;
+  if (active.has('suppressed') && a.status !== 'suppressed') return false;
   return true;
 }
 
@@ -74,12 +101,70 @@ function buildGroups(list: Alert[]): Group[] {
 function worstSeverity(alerts: Alert[]): string {
   return alerts.some((a) => a.severity === 'critical') ? 'critical' : 'warning';
 }
+// Duration of an incident group inferred from the spread of its alert timestamps.
+function groupDurationSec(alerts: Alert[]): number {
+  const ts = alerts.map((a) => new Date(a.triggered_at).getTime()).filter((n) => isFinite(n));
+  if (!ts.length) return 0;
+  return (Math.max(...ts) - Math.min(...ts)) / 1000;
+}
+
+// ════════════════════════════════════════════════════════════
+// Top-level presentational components (never nested — CLAUDE.md rule).
+// ════════════════════════════════════════════════════════════
+
+function AlertStatCard({ num, label, color }: { num: number; label: string; color: string }) {
+  return (
+    <div style={{
+      background: 'var(--bg-card)', border: CARD_BORDER, borderLeft: `3px solid ${color}`,
+      borderRadius: 'var(--radius-sm)', padding: '12px 16px', minHeight: 75,
+      display: 'flex', flexDirection: 'column', justifyContent: 'center',
+    }}>
+      <div style={{ fontSize: 24, fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1.1 }}>{num}</div>
+      <div style={{ fontSize: 11, textTransform: 'uppercase', color: 'var(--text-muted)', letterSpacing: '0.04em', marginTop: 4 }}>{label}</div>
+    </div>
+  );
+}
+
+// Inline acknowledge note form. Kept top-level so it never remounts on parent
+// re-render (prevents input focus loss). It owns no business state — value/handlers
+// are passed in, so editing the note text does not re-create the component.
+function AckNoteForm({
+  value, onChange, onSave, onCancel,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  onSave: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div style={{
+      display: 'flex', gap: 8, alignItems: 'center', padding: '8px 12px 10px',
+      background: 'var(--bg-primary)', borderTop: CARD_BORDER,
+    }}>
+      <input
+        className="sv-input"
+        placeholder="Optional acknowledgement note…"
+        autoFocus
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') onSave();
+          if (e.key === 'Escape') onCancel();
+        }}
+        style={{ flex: 1, width: '100%', height: 32, padding: '4px 10px', fontSize: 12.5 }}
+      />
+      <button className="sv-btn sm" onClick={onSave}>Save</button>
+      <button className="sv-btn ghost sm" onClick={onCancel}>Cancel</button>
+    </div>
+  );
+}
 
 export default function AlertsPage() {
   const { data: session } = useSession();
   const { canAcknowledgeAlerts } = useRbac();
   const [status, setStatus] = useState('active');
   const [severity, setSeverity] = useState('');
+  const [search, setSearch] = useState('');
   const [chips, setChips] = useState<Set<string>>(new Set());
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [ackingId, setAckingId] = useState<number | null>(null);
@@ -99,6 +184,15 @@ export default function AlertsPage() {
     });
     setAckingId(null);
     setNoteText('');
+    alerts.reload();
+  }
+  async function ackAll(list: Alert[]) {
+    const active = list.filter((a) => a.status === 'active');
+    for (const a of active) {
+      await apiSend(`/api/alerts/${a.id}/acknowledge`, 'POST', {
+        acknowledged_by: session?.user?.name || session?.user?.email || 'unknown',
+      });
+    }
     alerts.reload();
   }
   async function resolve(a: Alert) {
@@ -121,66 +215,99 @@ export default function AlertsPage() {
     });
   }
 
-  const filtered = (alerts.data || []).filter((a) => passesChips(a, chips));
+  const all = alerts.data || [];
+  const filtered = all.filter((a) => passesChips(a, chips, search.trim()));
   const groups = buildGroups(filtered);
 
-  // Render the action cell: inline note form while acknowledging, else buttons.
-  function actionsCell(a: Alert) {
+  // Stat counts over the currently fetched set (pre-chip) for an at-a-glance summary.
+  const cCritical = all.filter((a) => a.severity === 'critical' && a.status !== 'resolved').length;
+  const cWarning = all.filter((a) => a.severity === 'warning' && a.status !== 'resolved').length;
+  const cUnack = all.filter((a) => a.status === 'active').length;
+  const cSuppressed = all.filter((a) => a.status === 'suppressed').length;
+
+  // Inline action buttons (Acknowledge / Resolve) shown on row hover.
+  function rowActions(a: Alert) {
     if (!canAcknowledgeAlerts) return null;
-    if (ackingId === a.id) {
-      return (
-        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-          <input
-            className="sv-input sm"
-            placeholder="Optional note…"
-            autoFocus
-            value={noteText}
-            onChange={(e) => setNoteText(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') ack(a, noteText); if (e.key === 'Escape') { setAckingId(null); setNoteText(''); } }}
-            style={{ width: 160 }}
-          />
-          <button className="sv-btn sm" onClick={() => ack(a, noteText)}>Confirm</button>
-          <button className="sv-btn ghost sm" onClick={() => { setAckingId(null); setNoteText(''); }}>Cancel</button>
-        </div>
-      );
-    }
     return (
-      <>
+      <span style={{ display: 'inline-flex', gap: 6, whiteSpace: 'nowrap' }}>
         {a.status === 'active' && (
-          <button className="sv-btn ghost sm" onClick={() => { setAckingId(a.id); setNoteText(''); }}>Acknowledge</button>
-        )}{' '}
-        {a.status !== 'resolved' && a.status !== 'suppressed' && (
-          <button className="sv-btn ghost sm" onClick={() => resolve(a)}>Resolve</button>
+          <button
+            className="sv-btn ghost sm"
+            style={{ height: 24, padding: '0 10px', fontSize: 11 }}
+            onClick={() => { setAckingId(ackingId === a.id ? null : a.id); setNoteText(''); }}
+          >Ack</button>
         )}
-      </>
+        {a.status !== 'resolved' && a.status !== 'suppressed' && (
+          <button
+            className="sv-btn ghost sm"
+            style={{ height: 24, padding: '0 10px', fontSize: 11 }}
+            onClick={() => resolve(a)}
+          >Resolve</button>
+        )}
+      </span>
     );
   }
 
-  // Render a single alert as a table row (optionally indented under an incident).
+  // Render a single alert as a table row, plus the inline ack form below it when
+  // this row is being acknowledged. `indent` nests the row under an incident header.
   function alertRow(a: Alert, indent: boolean) {
     const suppressed = a.status === 'suppressed';
+    const acking = ackingId === a.id;
     return (
-      <tr key={a.id} style={suppressed ? { opacity: 0.6 } : undefined}>
-        <td>{indent ? <span style={{ paddingLeft: 18 }}><StatusBadge status={a.severity} /></span> : <StatusBadge status={a.severity} />}</td>
-        <td>
-          <Link href={`/devices/${a.device_id}`} style={{ color: 'var(--sv-crimson)', fontWeight: 600 }}>
-            {a.device_name || a.ip_address || `#${a.device_id}`}
-          </Link>
-        </td>
-        <td>
-          <div className="sv-alert-msg">{a.message}</div>
-          <span className="sv-type-badge">{prettyType(a.alert_type)}</span>
-          {a.note && <div className="sv-alert-note">📝 {a.note}</div>}
-          {suppressed && (
-            <div className="sv-muted" style={{ fontSize: 12, marginTop: 2 }}>
-              Suppressed{a.suppressed_by_name ? ` — ${a.suppressed_by_name} is down` : (a.suppression_reason ? ` — ${a.suppression_reason}` : '')}
-            </div>
-          )}
-        </td>
-        <td className="sv-muted">{fmtTime(a.triggered_at)}</td>
-        <td><StatusBadge status={a.status} /></td>
-        <td style={{ whiteSpace: 'nowrap' }}>{actionsCell(a)}</td>
-      </tr>
+      <Fragment key={a.id}>
+        <tr style={{ height: 40, ...(suppressed ? { opacity: 0.6 } : {}) }}>
+          {/* severity dot */}
+          <td style={{ paddingLeft: indent ? 28 : 12, width: 28 }}>
+            <StatusDot status={a.severity === 'critical' ? 'down' : 'warning'} size={9} />
+          </td>
+          {/* alert-type badge */}
+          <td style={{ width: 1, whiteSpace: 'nowrap' }}>
+            <span className="sv-type-badge">{prettyType(a.alert_type)}</span>
+          </td>
+          {/* device */}
+          <td style={{ whiteSpace: 'nowrap' }}>
+            <Link href={`/devices/${a.device_id}`} style={{ color: 'var(--sv-crimson)', fontWeight: 600 }}>
+              {a.device_name || a.ip_address || `#${a.device_id}`}
+            </Link>
+          </td>
+          {/* message (truncate at 300px) + note + suppression reason */}
+          <td>
+            <div
+              title={a.message}
+              style={{ maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 12, color: 'var(--text-primary)' }}
+            >{a.message}</div>
+            {a.note && <div className="sv-alert-note" style={{ fontSize: 11 }}>📝 {a.note}</div>}
+            {suppressed && (
+              <div style={{ fontSize: 11, fontStyle: 'italic', color: 'var(--text-muted)', marginTop: 2 }}>
+                Suppressed{a.suppressed_by_name ? ` — ${a.suppressed_by_name} down`
+                  : (a.suppression_reason ? ` — ${a.suppression_reason}` : '')}
+              </div>
+            )}
+          </td>
+          {/* status */}
+          <td style={{ width: 1, whiteSpace: 'nowrap' }}><StatusBadge status={a.status} /></td>
+          {/* time (right-aligned, muted) */}
+          <td style={{ fontSize: 11, color: 'var(--text-muted)', textAlign: 'right', whiteSpace: 'nowrap' }}>
+            {fmtTime(a.triggered_at)}
+          </td>
+          {/* hover actions */}
+          <td style={{ width: 1, textAlign: 'right', whiteSpace: 'nowrap' }}>
+            {rowActions(a)}
+          </td>
+        </tr>
+        {acking && (
+          <tr>
+            <td colSpan={7} style={{ padding: 0 }}>
+              <AckNoteForm
+                value={noteText}
+                onChange={setNoteText}
+                onSave={() => ack(a, noteText)}
+                onCancel={() => { setAckingId(null); setNoteText(''); }}
+              />
+            </td>
+          </tr>
+        )}
+      </Fragment>
     );
   }
 
@@ -190,48 +317,68 @@ export default function AlertsPage() {
 
       <SiteScopeBanner />
 
-      <div className="sv-toolbar">
-        <select className="sv-select" value={status} onChange={(e) => setStatus(e.target.value)}>
-          <option value="">All statuses</option>
-          <option value="active">Active</option>
-          <option value="acknowledged">Acknowledged</option>
-          <option value="resolved">Resolved</option>
-          <option value="suppressed">Suppressed</option>
-        </select>
-        <select className="sv-select" value={severity} onChange={(e) => setSeverity(e.target.value)}>
-          <option value="">All severities</option>
-          <option value="critical">Critical</option>
-          <option value="warning">Warning</option>
-        </select>
+      {/* ── Stat cards ───────────────────────────────────────── */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 12, marginBottom: 16 }}>
+        <AlertStatCard num={cCritical} label="Critical" color="var(--red)" />
+        <AlertStatCard num={cWarning} label="Warning" color="var(--yellow)" />
+        <AlertStatCard num={cUnack} label="Unacknowledged" color="var(--red)" />
+        <AlertStatCard num={cSuppressed} label="Suppressed" color="var(--text-muted)" />
       </div>
 
-      <div className="sv-chips">
-        {CHIPS.map((c) => (
-          <button
-            key={c.key}
-            className={`sv-chip ${chips.has(c.key) ? 'active' : ''}`}
-            onClick={() => toggleChip(c.key)}
-          >
-            {c.label}
-          </button>
-        ))}
-        {chips.size > 0 && (
-          <button className="sv-chip clear" onClick={() => setChips(new Set())}>Clear</button>
-        )}
+      {/* ── Filter bar (2 rows) ──────────────────────────────── */}
+      <div style={{
+        background: 'var(--bg-card)', border: CARD_BORDER, borderRadius: 'var(--radius-sm)',
+        padding: '12px 16px', marginBottom: 16,
+      }}>
+        {/* Row 1: status / severity / search */}
+        <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+          <select className="sv-select" value={status} onChange={(e) => setStatus(e.target.value)} style={{ height: 32 }}>
+            <option value="">All statuses</option>
+            <option value="active">Active</option>
+            <option value="acknowledged">Acknowledged</option>
+            <option value="resolved">Resolved</option>
+            <option value="suppressed">Suppressed</option>
+          </select>
+          <select className="sv-select" value={severity} onChange={(e) => setSeverity(e.target.value)} style={{ height: 32 }}>
+            <option value="">All severities</option>
+            <option value="critical">Critical</option>
+            <option value="warning">Warning</option>
+          </select>
+          <input
+            className="sv-input"
+            placeholder="Search device or message…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            style={{ height: 32, flex: 1, minWidth: 180 }}
+          />
+        </div>
+        {/* Row 2: quick-filter chips */}
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 12 }}>
+          {CHIPS.map((c) => (
+            <button
+              key={c.key}
+              className={`sv-chip ${chips.has(c.key) ? 'active' : ''}`}
+              onClick={() => toggleChip(c.key)}
+              style={{ height: 24, fontSize: 11 }}
+            >
+              {c.label}
+            </button>
+          ))}
+          {chips.size > 0 && (
+            <button className="sv-chip clear" onClick={() => setChips(new Set())} style={{ height: 24, fontSize: 11 }}>
+              Clear
+            </button>
+          )}
+        </div>
       </div>
 
+      {/* ── Alerts table ─────────────────────────────────────── */}
       {alerts.error && <ErrorBox message={alerts.error} />}
-      <div className="sv-panel" style={{ padding: 0 }}>
+      <div style={{ background: 'var(--bg-card)', border: CARD_BORDER, borderRadius: 'var(--radius-sm)', overflow: 'hidden' }}>
         {alerts.loading && !alerts.data ? (
           <TableSkeleton rows={6} cols={6} />
         ) : groups.length ? (
           <table className="sv-table">
-            <thead>
-              <tr>
-                <th>Severity</th><th>Device</th><th>Alert</th>
-                <th>Triggered</th><th>Status</th><th></th>
-              </tr>
-            </thead>
             <tbody>
               {groups.map((g) => {
                 // Single-alert groups (incident or standalone) render as one row.
@@ -240,16 +387,37 @@ export default function AlertsPage() {
                 }
                 const open = expanded.has(g.incidentId);
                 const sev = worstSeverity(g.alerts);
+                const dur = fmtDuration(groupDurationSec(g.alerts));
+                const hasActive = g.alerts.some((a) => a.status === 'active');
                 return (
                   <Fragment key={`incgrp-${g.incidentId}`}>
-                    <tr className="sv-incident-head" onClick={() => toggleIncident(g.incidentId!)}>
-                      <td colSpan={6}>
-                        <span className="sv-incident-toggle">
-                          <StatusDot status={sev === 'critical' ? 'down' : 'warning'} size={11} />
-                          <span className="sv-incident-title">{g.title}</span>
-                          <span className="sv-muted">— {g.alerts.length} alerts</span>
-                          <span className="sv-incident-exp">{open ? 'Collapse ▲' : 'Expand ▼'}</span>
+                    <tr
+                      className="sv-incident-head"
+                      style={{ height: 36, background: 'rgba(220,38,38,0.06)' }}
+                    >
+                      <td
+                        colSpan={6}
+                        onClick={() => toggleIncident(g.incidentId!)}
+                        style={{ cursor: 'pointer' }}
+                      >
+                        <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                          <StatusDot status={sev === 'critical' ? 'down' : 'warning'} size={10} />
+                          <span style={{ fontWeight: 700, color: 'var(--text-primary)' }}>{g.title}</span>
+                          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{g.alerts.length} alerts</span>
+                          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>· {dur}</span>
+                          <span style={{ marginLeft: 'auto', fontSize: 11, fontWeight: 600, color: 'var(--primary)' }}>
+                            {open ? 'Collapse ▲' : 'Expand ▼'}
+                          </span>
                         </span>
+                      </td>
+                      <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                        {canAcknowledgeAlerts && hasActive && (
+                          <button
+                            className="sv-btn ghost sm"
+                            style={{ height: 24, padding: '0 10px', fontSize: 11 }}
+                            onClick={() => ackAll(g.alerts)}
+                          >Ack All</button>
+                        )}
                       </td>
                     </tr>
                     {open && g.alerts.map((a) => alertRow(a, true))}
@@ -259,11 +427,13 @@ export default function AlertsPage() {
             </tbody>
           </table>
         ) : (
-          <EmptyState
-            icon={<IconAlerts width={26} height={26} />}
-            title="All clear ✓"
-            message="No alerts in this period. Everything looks healthy."
-          />
+          <div style={{ padding: '32px 24px' }}>
+            <EmptyState
+              icon={<IconAlerts width={24} height={24} />}
+              title="All clear ✓"
+              message="No alerts in this period."
+            />
+          </div>
         )}
       </div>
     </div>
