@@ -14,7 +14,7 @@
  * Credentials (snmp_community, api_*) are never logged.
  */
 
-const { snmp, createSession, walk, get } = require('./snmp-session');
+const { createSession, walk, get } = require('./snmp-session');
 const { getWirelessParser, wirelessVendorFor } = require('./wireless');
 const { getClientParser } = require('./wireless/clients');
 const { runWirelessIntelligence } = require('./wirelessIntelligence');

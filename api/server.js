@@ -2276,6 +2276,7 @@ app.get('/api/wireless/controllers/overview', wrap(async (_req, res) => {
     const licensed = row.licensed_aps == null ? null : Number(row.licensed_aps);
     let perCap = null;
     if (licensed != null && Number.isFinite(licensed) && licensed > 0) {
+      // AP capacity % = (active APs / licensed AP limit) * 100.
       perCap = Math.round((apCount / licensed) * 100);
       licensedTotal += licensed;
       hasLicensed = true;
