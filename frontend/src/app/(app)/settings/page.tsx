@@ -642,10 +642,13 @@ function formatChangelog(raw: string): string {
 }
 
 const UPDATE_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes
-// After the API is confirmed stably back up, wait this long before reloading so
-// the Next.js frontend (which starts AFTER the API) has time to finish booting —
-// otherwise the reload lands on "page cannot be reached" for 20-30 seconds.
-const RELOAD_COUNTDOWN_SECONDS = 15;
+// Once BOTH the API and the Next.js frontend are confirmed live, wait only this
+// short settle window before reloading. The real wait is now driven by frontend
+// liveness probes (see UpdatingOverlay), not a fixed guess.
+const RELOAD_SETTLE_SECONDS = 3;
+// Safety cap: if the frontend never confirms live within this window after the
+// API is back, proceed to reload anyway so we never hang worse than before.
+const MAX_FRONTEND_WAIT_MS = 45 * 1000;
 
 // Broadcast so the cross-app update banner (UpdateNotifier) re-fetches its own
 // availability endpoint after a manual re-check — no page reload needed.
@@ -858,13 +861,20 @@ function UpdateConfirmModal({ onCancel, onConfirm }: { onCancel: () => void; onC
   );
 }
 
-// Full-screen overlay shown during an update; polls /api/health for recovery.
-// State machine: 'starting' → 'down' → 'back_up'. A healthy response only counts
-// as recovery once the API has actually been seen down first, so we never declare
-// "complete" against the still-running pre-restart service.
+// Full-screen overlay shown during an update; polls for recovery.
+// State machine: 'starting' → 'down' → 'api_up' → 'back_up' (+ 'timeout').
+//  - 'down'   : a probe failed at least once, so we know a restart is underway.
+//  - 'api_up' : /api/health is stably back (3 consecutive OK after going down),
+//               but the API (:3009) returning does NOT mean the Next.js frontend
+//               (:3008, started LAST by the installer) is serving pages yet. So
+//               we now poll a frontend-served static asset for real liveness.
+//  - 'back_up': the frontend is confirmed live → short settle countdown → reload.
+// A healthy /api/health response only counts as recovery once the API has
+// actually been seen down first, so we never declare "complete" against the
+// still-running pre-restart service.
 function UpdatingOverlay() {
-  const [phase, setPhase] = useState<'starting' | 'down' | 'back_up' | 'timeout'>('starting');
-  const [countdown, setCountdown] = useState(RELOAD_COUNTDOWN_SECONDS);
+  const [phase, setPhase] = useState<'starting' | 'down' | 'api_up' | 'back_up' | 'timeout'>('starting');
+  const [countdown, setCountdown] = useState(RELOAD_SETTLE_SECONDS);
   const wentDown = useRef(false);
   const consecutiveUp = useRef(0);
 
@@ -872,6 +882,7 @@ function UpdatingOverlay() {
   // and the "Reload Now" button (which skips the remaining countdown).
   const reloadToDashboard = () => { window.location.href = '/?updated=true'; };
 
+  // Phase 1: poll /api/health until the API is stably back up after going down.
   useEffect(() => {
     let active = true;
     const startedAt = Date.now();
@@ -924,10 +935,10 @@ function UpdatingOverlay() {
         // mid-startup, which would trigger a premature reload.
         consecutiveUp.current += 1;
         if (consecutiveUp.current >= 3) {
-          setPhase('back_up');
+          // API is stably back. Hand off to the frontend-liveness phase below —
+          // the API returning does NOT mean Next.js is serving pages yet.
           stopPolling();
-          // The reload itself is driven by the countdown effect below — the API
-          // is up, but Next.js needs a little longer before it can serve pages.
+          setPhase('api_up');
         }
       }
       // else: still the pre-restart API — keep waiting for it to go down.
@@ -942,8 +953,65 @@ function UpdatingOverlay() {
     };
   }, []);
 
-  // Once the API is confirmed stably back up, count down (15…14…13…) before
-  // reloading so the Next.js frontend has time to finish starting after the API.
+  // Phase 2: once the API is back ('api_up'), poll a frontend-served static asset
+  // (/spanvault-logo.svg on :3008) to confirm the Next.js app is actually serving
+  // pages before we reload. Require 2 consecutive 200s. Safety fallback: if this
+  // takes longer than MAX_FRONTEND_WAIT_MS, proceed to 'back_up' anyway so we
+  // never hang worse than the old fixed-delay behavior.
+  useEffect(() => {
+    if (phase !== 'api_up') return;
+    let active = true;
+    const startedAt = Date.now();
+    let pollId: ReturnType<typeof setInterval> | null = null;
+    let consecutiveFrontendUp = 0;
+
+    function stopPolling() {
+      if (pollId !== null) { clearInterval(pollId); pollId = null; }
+    }
+
+    const tick = async () => {
+      if (!active) return;
+      if (Date.now() - startedAt > MAX_FRONTEND_WAIT_MS) {
+        // Frontend never confirmed live in time — proceed anyway rather than hang.
+        stopPolling();
+        if (active) setPhase('back_up');
+        return;
+      }
+
+      const ctrl = new AbortController();
+      const abortId = setTimeout(() => ctrl.abort(), 1500);
+      let ok = false;
+      try {
+        const res = await fetch('/spanvault-logo.svg?_=' + Date.now(), { cache: 'no-store', signal: ctrl.signal });
+        ok = res.ok; // 200 from the frontend means it's serving
+      } catch {
+        ok = false;
+      } finally {
+        clearTimeout(abortId);
+      }
+      if (!active) return;
+
+      if (!ok) {
+        consecutiveFrontendUp = 0;
+        return;
+      }
+      consecutiveFrontendUp += 1;
+      if (consecutiveFrontendUp >= 2) {
+        stopPolling();
+        setPhase('back_up');
+      }
+    };
+
+    pollId = setInterval(tick, 1500); // poll every 1.5 seconds
+    tick(); // immediate first poll
+
+    return () => {
+      active = false;
+      stopPolling();
+    };
+  }, [phase]);
+
+  // Phase 3: frontend is confirmed live — short settle countdown, then reload.
   useEffect(() => {
     if (phase !== 'back_up') return;
     if (countdown <= 0) { reloadToDashboard(); return; }
@@ -953,8 +1021,9 @@ function UpdatingOverlay() {
 
   let statusLine = 'Starting update…';
   if (phase === 'down') statusLine = 'Services restarting… ⟳';
+  else if (phase === 'api_up') statusLine = 'API is back. Waiting for the web app to start…';
   else if (phase === 'back_up') {
-    statusLine = `✓ Services are back online. Reloading in ${countdown} second${countdown === 1 ? '' : 's'}…`;
+    statusLine = `✓ Web app is online. Reloading in ${countdown} second${countdown === 1 ? '' : 's'}…`;
   } else if (phase === 'timeout') statusLine = 'Update is taking longer than expected. Try refreshing the page manually.';
 
   return (
