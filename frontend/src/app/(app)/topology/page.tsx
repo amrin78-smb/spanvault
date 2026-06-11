@@ -142,28 +142,46 @@ export default function TopologyPage() {
   const last = status.data;
 
   return (
-    <div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-        <h1 className="sv-page-title" style={{ margin: 0 }}>Network Topology</h1>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12, height: '100%' }}>
+      {/* Slim discovery header bar */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 12,
+          flexWrap: 'wrap',
+          minHeight: 44,
+          padding: '0 16px',
+          background: 'var(--bg-card)',
+          border: '1px solid var(--border)',
+          borderRadius: 'var(--radius-sm)',
+        }}
+      >
+        <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)' }}>
+          Network Topology
+        </span>
+        <span style={{ color: 'var(--border)' }}>·</span>
+        {last ? (
+          <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>
+            Last run: {fmtRel(last.last_run_at)} · {last.links_found} link{last.links_found === 1 ? '' : 's'} · {last.devices_discovered} device{last.devices_discovered === 1 ? '' : 's'}
+          </span>
+        ) : (
+          <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>
+            Auto-discovered device connections via LLDP and CDP.
+          </span>
+        )}
         <div style={{ flex: 1 }} />
         {canEdit && (
-          <button className="sv-btn" onClick={runDiscovery} disabled={running}>
+          <button className="sv-btn sm" onClick={runDiscovery} disabled={running} style={{ height: 32 }}>
             {running ? 'Running…' : 'Run Discovery'}
           </button>
         )}
       </div>
-      <p className="sv-page-sub">Auto-discovered device connections via LLDP and CDP.</p>
-
-      {last && (
-        <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 12 }}>
-          Last run: {fmtRel(last.last_run_at)} · {last.links_found} link{last.links_found === 1 ? '' : 's'} · {last.devices_discovered} device{last.devices_discovered === 1 ? '' : 's'}
-        </div>
-      )}
 
       {toast && <div className="sv-toast ok" onClick={() => setToast(null)}>{toast}</div>}
       {status.error && <ErrorBox message={status.error} />}
 
-      <div className="sv-tabs">
+      <div className="sv-tabs" style={{ margin: 0 }}>
         <button className={`sv-tab ${tab === 'map' ? 'active' : ''}`} onClick={() => setTab('map')}>
           Visual Map
         </button>
@@ -172,7 +190,9 @@ export default function TopologyPage() {
         </button>
       </div>
 
-      {tab === 'map' ? <MapTab canEdit={canEdit} flash={flash} /> : <LinkTable canEdit={canEdit} flash={flash} />}
+      <div style={{ flex: 1, minHeight: 0 }}>
+        {tab === 'map' ? <MapTab canEdit={canEdit} flash={flash} /> : <LinkTable canEdit={canEdit} flash={flash} />}
+      </div>
     </div>
   );
 }
@@ -213,38 +233,56 @@ function MapTab({
   const hasGraph = !!tmap.data && tmap.data.edges.length > 0 && tmap.data.nodes.length > 0;
 
   return (
-    <div>
-      <div className="sv-panel" style={{ padding: 12 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10, height: '100%', minHeight: 0 }}>
+      <div
+        className="sv-panel"
+        style={{ padding: 4, flex: 1, minHeight: 360, display: 'flex', flexDirection: 'column' }}
+      >
         {hasGraph && tmap.data ? (
-          <div style={{ width: '100%', height: 620, background: '#f8fafc', borderRadius: 8, overflow: 'hidden' }}>
+          <div style={{ flex: 1, minHeight: 0, width: '100%', background: '#f8fafc', borderRadius: 6, overflow: 'hidden' }}>
             <TopologyMapView nodes={tmap.data.nodes} edges={tmap.data.edges} interactive />
           </div>
         ) : (
-          <Empty message="No topology discovered yet — run topology discovery to see device connections →" />
+          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <Empty message="No topology discovered yet — run topology discovery to see device connections →" />
+          </div>
         )}
       </div>
 
-      {hasGraph && (
-        <div style={{ display: 'flex', gap: 16, alignItems: 'center', marginTop: 10, fontSize: 13, color: 'var(--text-muted)' }}>
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-            <span style={{ display: 'inline-block', width: 22, height: 3, background: '#2563eb', borderRadius: 2 }} />
-            LLDP
-          </span>
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-            <span style={{ display: 'inline-block', width: 22, height: 3, background: '#f97316', borderRadius: 2 }} />
-            CDP
-          </span>
-        </div>
-      )}
-
-      {canEdit && hasGraph && (
-        <div style={{ display: 'flex', gap: 10, marginTop: 14, flexWrap: 'wrap' }}>
-          <button className="sv-btn ghost" onClick={() => { setShowApply(true); maps.reload(); }}>
-            Apply to Map
-          </button>
-          <button className="sv-btn ghost" onClick={applyDependencies} disabled={applyingDeps}>
-            {applyingDeps ? 'Analyzing…' : 'Apply Dependencies'}
-          </button>
+      {(hasGraph || (canEdit && hasGraph)) && (
+        <div
+          style={{
+            display: 'flex',
+            gap: 16,
+            alignItems: 'center',
+            flexWrap: 'wrap',
+            fontSize: 12.5,
+            color: 'var(--text-muted)',
+          }}
+        >
+          {hasGraph && (
+            <>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ display: 'inline-block', width: 22, height: 3, background: '#2563eb', borderRadius: 2 }} />
+                LLDP
+              </span>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ display: 'inline-block', width: 22, height: 3, background: '#f97316', borderRadius: 2 }} />
+                CDP
+              </span>
+            </>
+          )}
+          <div style={{ flex: 1 }} />
+          {canEdit && hasGraph && (
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+              <button className="sv-btn ghost sm" style={{ height: 32 }} onClick={() => { setShowApply(true); maps.reload(); }}>
+                Apply to Map
+              </button>
+              <button className="sv-btn ghost sm" style={{ height: 32 }} onClick={applyDependencies} disabled={applyingDeps}>
+                {applyingDeps ? 'Analyzing…' : 'Apply Dependencies'}
+              </button>
+            </div>
+          )}
         </div>
       )}
 
@@ -450,17 +488,23 @@ function LinkTable({
   }
 
   return (
-    <div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '14px 0', flexWrap: 'wrap' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      {/* Compact single-row filter + export */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
         <input
           className="sv-input"
           value={q}
           onChange={(e) => setQ(e.target.value)}
           placeholder="Search device name or IP…"
-          style={{ maxWidth: 320 }}
+          style={{ maxWidth: 320, height: 32 }}
         />
         <div style={{ flex: 1 }} />
-        <button className="sv-btn ghost sm" onClick={() => exportLinksCsv(filtered)} disabled={filtered.length === 0}>
+        <button
+          className="sv-btn ghost sm"
+          onClick={() => exportLinksCsv(filtered)}
+          disabled={filtered.length === 0}
+          style={{ height: 32 }}
+        >
           Export CSV
         </button>
       </div>
@@ -474,10 +518,9 @@ function LinkTable({
           <table className="sv-table">
             <thead>
               <tr>
-                <th style={{ width: 32 }} />
                 <th>Device</th>
-                <th>Neighbors</th>
                 <th style={{ whiteSpace: 'nowrap' }}>Last Seen</th>
+                <th style={{ width: 32 }} />
               </tr>
             </thead>
             <tbody>
@@ -517,32 +560,48 @@ function FromDeviceRow({
 
   return (
     <Fragment>
-      <tr className="sv-neighbor-head" style={{ cursor: 'pointer' }} onClick={onToggle}>
-        <td style={{ textAlign: 'center', color: 'var(--text-muted)' }}>{expanded ? '▾' : '▸'}</td>
-        <td>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+      <tr className="sv-neighbor-head" style={{ cursor: 'pointer', height: 40 }} onClick={onToggle}>
+        <td style={{ height: 40 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
             <StatusDot status="up" />
-            <div>
-              <a href={`/devices/${group.from_device_id}`} style={{ textDecoration: 'underline' }} onClick={(e) => e.stopPropagation()}>
-                {group.from_device_name}
-              </a>
-              {group.from_ip && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{group.from_ip}</div>}
-            </div>
+            <a
+              href={`/devices/${group.from_device_id}`}
+              style={{ fontSize: 13, fontWeight: 600, textDecoration: 'underline' }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              {group.from_device_name}
+            </a>
+            {group.from_ip && (
+              <>
+                <span style={{ color: 'var(--border)' }}>·</span>
+                <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{group.from_ip}</span>
+              </>
+            )}
+            <span style={{ color: 'var(--border)' }}>·</span>
+            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+              {count} neighbor{count === 1 ? '' : 's'}
+            </span>
           </div>
         </td>
-        <td style={{ whiteSpace: 'nowrap' }}>{count} neighbor{count === 1 ? '' : 's'} discovered</td>
-        <td title={fmtTime(group.last_seen_at)} style={{ whiteSpace: 'nowrap' }}>{fmtRel(group.last_seen_at)}</td>
+        <td title={fmtTime(group.last_seen_at)} style={{ whiteSpace: 'nowrap', height: 40, color: 'var(--text-muted)' }}>
+          {fmtRel(group.last_seen_at)}
+        </td>
+        <td style={{ textAlign: 'center', width: 32, color: 'var(--text-muted)', height: 40 }}>
+          {expanded ? '▾' : '▸'}
+        </td>
       </tr>
       {expanded && (
         <tr className="sv-neighbor-detail">
-          <td />
           <td colSpan={3} style={{ padding: 0 }}>
             <table className="sv-table" style={{ margin: 0 }}>
               <thead>
                 <tr>
                   <th>Neighbor</th>
+                  <th>Monitored</th>
                   <th>Protocol</th>
                   <th>To Port</th>
+                  <th style={{ whiteSpace: 'nowrap' }}>Last Seen</th>
+                  <th style={{ textAlign: 'right' }} />
                 </tr>
               </thead>
               <tbody>
@@ -597,30 +656,21 @@ function NeighborDetailRow({
   }
 
   return (
-    <tr>
-      <td>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-          <div>
-            {monitored && link.to_device_id ? (
-              <a href={`/devices/${link.to_device_id}`} style={{ textDecoration: 'underline' }}>{name}</a>
-            ) : (
-              <span>{name}</span>
-            )}
-            {link.to_ip && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{link.to_ip}</div>}
-          </div>
-          <span className="sv-badge">{monitored ? 'Monitored' : 'Not monitored'}</span>
-          {canEdit && link.to_device_id == null && (
-            <button
-              className="sv-btn ghost sm"
-              onClick={(e) => { e.stopPropagation(); addToMonitoring(); }}
-              disabled={adding}
-            >
-              {adding ? 'Adding…' : 'Add to monitoring'}
-            </button>
+    <tr style={{ height: 36 }}>
+      <td style={{ height: 36 }}>
+        <div>
+          {monitored && link.to_device_id ? (
+            <a href={`/devices/${link.to_device_id}`} style={{ textDecoration: 'underline' }}>{name}</a>
+          ) : (
+            <span>{name}</span>
           )}
+          {link.to_ip && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{link.to_ip}</div>}
         </div>
       </td>
-      <td>
+      <td style={{ height: 36 }}>
+        <span className="sv-badge">{monitored ? 'Monitored' : 'Not monitored'}</span>
+      </td>
+      <td style={{ height: 36 }}>
         {proto && (
           <span
             className="sv-badge"
@@ -630,7 +680,21 @@ function NeighborDetailRow({
           </span>
         )}
       </td>
-      <td>{link.to_port || '—'}</td>
+      <td style={{ height: 36 }}>{link.to_port || '—'}</td>
+      <td title={fmtTime(link.last_seen_at)} style={{ whiteSpace: 'nowrap', height: 36, color: 'var(--text-muted)' }}>
+        {fmtRel(link.last_seen_at)}
+      </td>
+      <td style={{ textAlign: 'right', height: 36 }}>
+        {canEdit && link.to_device_id == null && (
+          <button
+            className="sv-btn ghost sm"
+            onClick={(e) => { e.stopPropagation(); addToMonitoring(); }}
+            disabled={adding}
+          >
+            {adding ? 'Adding…' : 'Add'}
+          </button>
+        )}
+      </td>
     </tr>
   );
 }
