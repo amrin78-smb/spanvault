@@ -256,14 +256,14 @@ export default function DashboardPage() {
       {/* ── Agent-offline group (devices unreachable via an offline agent) ── */}
       <AgentOfflineGroup api={agentOffline} />
 
-      {/* ── ROW 4: site health (50%) + availability trend (50%) ── */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, alignItems: 'stretch', marginBottom: 12 }}>
+      {/* ── ROW 4: site health (55%) + availability trend (45%) ── */}
+      <div style={{ display: 'grid', gridTemplateColumns: '55fr 45fr', gap: 12, alignItems: 'stretch', marginBottom: 12 }}>
         <SiteHealthCard api={sites} />
         <NetworkAvailabilityCard api={trend} />
       </div>
 
-      {/* ── ROW 5: at-risk (50%) + recent events (50%) — equal 200px height ── */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, alignItems: 'stretch', marginBottom: 18 }}>
+      {/* ── ROW 5: at-risk (55%) + recent events (45%) — equal 200px height ── */}
+      <div style={{ display: 'grid', gridTemplateColumns: '55fr 45fr', gap: 12, alignItems: 'stretch', marginBottom: 18 }}>
         <AtRiskDevices data={intel.data} />
         <div style={{ ...CARD_STYLE, height: 200, display: 'flex', flexDirection: 'column' }}>
           <div style={SECTION_HEADING}>Recent Events</div>
