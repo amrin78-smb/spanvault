@@ -206,36 +206,51 @@ export default function DevicesPage() {
 
       <SiteScopeBanner />
 
-      <div className="sv-chips">
-        {DEVICE_CHIPS.map((c) => (
-          <button
-            key={c.key}
-            className={`sv-chip ${chip === c.key ? 'active' : ''}`}
-            onClick={() => setChip(c.key)}
-          >
-            {c.label}
-          </button>
-        ))}
-      </div>
-
-      <div className="sv-toolbar">
+      {/* Single-row filter bar: search + status + site selects, then quick chips. */}
+      <div
+        className="sv-toolbar"
+        style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginBottom: 16 }}
+      >
         <input
           className="sv-input"
           placeholder="Search name or IP…"
           value={q}
           onChange={(e) => setQ(e.target.value)}
+          style={{ height: 32, padding: '0 10px', fontSize: 13, minWidth: 220 }}
         />
-        <select className="sv-select" value={status} onChange={(e) => setStatus(e.target.value)}>
+        <select
+          className="sv-select"
+          value={status}
+          onChange={(e) => setStatus(e.target.value)}
+          style={{ height: 32, padding: '0 8px', fontSize: 13 }}
+        >
           <option value="">All statuses</option>
           <option value="up">Up</option>
           <option value="down">Down</option>
           <option value="warning">Warning</option>
           <option value="unknown">Unknown</option>
         </select>
-        <select className="sv-select" value={siteId} onChange={(e) => setSiteId(e.target.value)}>
+        <select
+          className="sv-select"
+          value={siteId}
+          onChange={(e) => setSiteId(e.target.value)}
+          style={{ height: 32, padding: '0 8px', fontSize: 13 }}
+        >
           <option value="">All sites</option>
           {sites.data?.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
         </select>
+        <span style={{ display: 'inline-flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+          {DEVICE_CHIPS.map((c) => (
+            <button
+              key={c.key}
+              className={`sv-chip ${chip === c.key ? 'active' : ''}`}
+              onClick={() => setChip(c.key)}
+              style={{ height: 32, padding: '0 12px', fontSize: 12.5, display: 'inline-flex', alignItems: 'center' }}
+            >
+              {c.label}
+            </button>
+          ))}
+        </span>
       </div>
 
       {devices.error && <ErrorBox message={devices.error} />}
@@ -301,35 +316,36 @@ function AgentGroup({
   const counts = countByStatus(group.devices);
 
   return (
-    <div className="sv-agent-group">
+    <div className="sv-agent-group" style={{ marginBottom: 12 }}>
       <div
         className={`sv-agent-group-head ${isLocal ? 'local' : ''} ${offline ? 'offline' : ''}`}
         onClick={() => setOpen((o) => !o)}
+        style={{ minHeight: 36, padding: '0 14px', gap: 10, background: 'var(--bg-primary)' }}
       >
-        <svg className={`chev ${open ? 'open' : ''}`} width="14" height="14" viewBox="0 0 24 24"
+        <svg className={`chev ${open ? 'open' : ''}`} width="13" height="13" viewBox="0 0 24 24"
           fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
           <polyline points="9 18 15 12 9 6" />
         </svg>
         {isLocal ? (
-          <span className="ag-nm">{group.agentName}</span>
+          <span className="ag-nm" style={{ fontSize: 13.5, fontWeight: 700 }}>● {group.agentName}</span>
         ) : (
-          <Link href={`/agents/${group.agentId}`} className="ag-nm" style={{ color: 'inherit' }}
+          <Link href={`/agents/${group.agentId}`} className="ag-nm" style={{ color: 'inherit', fontSize: 13.5, fontWeight: 700 }}
             onClick={(e) => e.stopPropagation()} title="View agent detail">
-            Agent: {group.agentName}
+            ● Agent: {group.agentName}
           </Link>
         )}
         {!isLocal && (
-          <span className="ag-status">
+          <span className="ag-status" style={{ fontSize: 12 }}>
             {group.agentStatus === 'online' ? '● Online' : group.agentStatus === 'offline' ? '○ Offline' : '○ Unknown'}
           </span>
         )}
-        <span style={{ fontWeight: 400, fontSize: 13, opacity: 0.85 }}>
+        <span style={{ fontWeight: 400, fontSize: 12.5, opacity: 0.85 }}>
           {group.devices.length} {group.devices.length === 1 ? 'device' : 'devices'}
         </span>
         <span style={{ flex: 1 }} />
         {offline && <span className="sv-agent-offline-warn">⚠ Agent offline — devices may be stale</span>}
         {!offline && (
-          <span className="sv-acc-summary">
+          <span className="sv-acc-summary" style={{ fontSize: 12 }}>
             {counts.up > 0 && <span className="sv-pill up">{counts.up} up</span>}
             {counts.down > 0 && <span className="sv-pill down">{counts.down} down</span>}
             {counts.warning > 0 && <span className="sv-pill warning">{counts.warning} warning</span>}
@@ -337,7 +353,7 @@ function AgentGroup({
         )}
       </div>
       {open && (
-        <div className="sv-agent-group-body">
+        <div className="sv-agent-group-body" style={{ padding: 8 }}>
           {siteGroups.map((g) => (
             <SiteAccordion key={g.key} group={g} onEdit={onEdit} onDelete={onDelete} />
           ))}
@@ -364,11 +380,11 @@ function SiteAccordion({
 
   return (
     <div className="sv-acc">
-      <div className={`sv-acc-head ${headStatus}`} onClick={() => setOpen((o) => !o)}>
-        <svg className={`chev ${open ? 'open' : ''}`} width="14" height="14" viewBox="0 0 24 24"
-          fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-          <polyline points="9 18 15 12 9 6" />
-        </svg>
+      <div
+        className={`sv-acc-head ${headStatus}`}
+        onClick={() => setOpen((o) => !o)}
+        style={{ minHeight: 32, padding: '0 12px', gap: 10, fontSize: 13.5 }}
+      >
         {group.siteId != null ? (
           <Link
             href={`/sites/${group.siteId}`}
@@ -381,10 +397,10 @@ function SiteAccordion({
         ) : (
           <span className="site-nm">{group.name}</span>
         )}
-        <span className="sv-muted" style={{ fontWeight: 400, fontSize: 13 }}>
+        <span className="sv-muted" style={{ fontWeight: 400, fontSize: 12.5 }}>
           {group.devices.length} {group.devices.length === 1 ? 'device' : 'devices'}
         </span>
-        <span className="sv-acc-summary">
+        <span className="sv-acc-summary" style={{ fontSize: 12 }}>
           {gatewayDown && (
             <span className="sv-acc-gw-down" title={`Site gateway ${gateway?.name} is down`}>
               ⚠ Gateway down — {suppressedCount} suppressed
@@ -395,6 +411,12 @@ function SiteAccordion({
           {counts.warning > 0 && <span className="sv-pill warning">{counts.warning} warning</span>}
           {counts.unknown > 0 && <span className="sv-pill unknown">{counts.unknown} unknown</span>}
         </span>
+        {/* Collapse arrow right-aligned */}
+        <svg className={`chev ${open ? 'open' : ''}`} width="13" height="13" viewBox="0 0 24 24"
+          fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"
+          style={{ marginLeft: 4 }}>
+          <polyline points="9 18 15 12 9 6" />
+        </svg>
       </div>
       {open && group.devices.map((d) => (
         <DeviceRow key={d.id} device={d} onEdit={onEdit} onDelete={onDelete} />
@@ -413,12 +435,12 @@ function DeviceRow({
 }) {
   const { canEdit } = useRbac();
   return (
-    <div className="sv-dev-row">
+    <div className="sv-dev-row" style={{ minHeight: 40, padding: '4px 14px', gap: 12 }}>
       {device.alert_suppressed
         ? <span className="sv-badge suppressed" title="Alerts suppressed — site gateway is down">suppressed</span>
-        : <StatusDot status={device.current_status} title={statusTooltip(device)} />}
-      <div className="sv-dev-id">
-        <div className="nm" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        : <StatusDot status={device.current_status} size={8} title={statusTooltip(device)} />}
+      <div className="sv-dev-id" style={{ minWidth: 200 }}>
+        <div className="nm" style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 500 }}>
           <Link href={`/devices/${device.id}`} style={{ color: 'var(--sv-crimson)' }}>
             {device.name}
           </Link>
@@ -429,11 +451,13 @@ function DeviceRow({
             </span>
           )}
         </div>
-        <div className="ip">{device.ip_address}{device.device_type ? ` · ${device.device_type}` : ''}</div>
+        <div className="ip" style={{ fontSize: 11, marginTop: 1 }}>
+          {device.ip_address}{device.device_type ? ` · ${device.device_type}` : ''}
+        </div>
       </div>
-      <div className="sv-dev-lat">
+      <div className="sv-dev-lat" style={{ minWidth: 60, fontSize: 12.5 }}>
         {fmtMs(device.last_response_ms)}
-        <div className="sv-muted">{fmtRel(device.last_seen_at)}</div>
+        <div className="sv-muted" style={{ fontSize: 11 }}>{fmtRel(device.last_seen_at)}</div>
       </div>
       <UptimeSparkline spark={device.spark} />
       <MonitorBadges device={device} />
@@ -456,7 +480,7 @@ function UptimeSparkline({ spark }: { spark: SparkDay[] | null }) {
   const ups: (number | null)[] = recent.map((s) => (s.uptime == null ? null : Number(s.uptime)));
   while (ups.length < 7) ups.unshift(null);
   return (
-    <div className="sv-spark" title="7-day uptime">
+    <div className="sv-spark" title="7-day uptime" style={{ height: 18, width: 40, flex: 'none' }}>
       {ups.map((up, i) => {
         const cls = up == null ? 'na' : up >= 99 ? 'ok' : up >= 90 ? 'warn' : 'bad';
         const h = up == null ? 35 : Math.max(20, Math.min(100, up));
@@ -482,26 +506,28 @@ function DeviceTrends({ deviceId, snmpEnabled }: { deviceId: number; snmpEnabled
   const cpu = series.cpu_pct;
   const mem = series.mem_pct;
   return (
-    <div className="sv-trends" title="Last 24h">
+    <div className="sv-trends" title="Last 24h" style={{ gap: 8 }}>
       <span className="sv-trends-lbl">TRENDS</span>
       <span className="sv-trend">
         <Sparkline
           data={series.response_ms}
           color={TREND_RESPONSE_UP}
           zeroColor={TREND_RESPONSE_DOWN}
+          width={40}
+          height={18}
           title="24h response time"
         />
       </span>
       {snmpEnabled && Array.isArray(cpu) && (
         <span className="sv-trend">
           <span className="t-lbl">CPU</span>
-          <Sparkline data={cpu} color={TREND_CPU} max={100} title="24h CPU %" />
+          <Sparkline data={cpu} color={TREND_CPU} width={40} height={18} max={100} title="24h CPU %" />
         </span>
       )}
       {snmpEnabled && Array.isArray(mem) && (
         <span className="sv-trend">
           <span className="t-lbl">Mem</span>
-          <Sparkline data={mem} color={TREND_MEM} max={100} title="24h memory %" />
+          <Sparkline data={mem} color={TREND_MEM} width={40} height={18} max={100} title="24h memory %" />
         </span>
       )}
     </div>
@@ -513,13 +539,21 @@ function MonitorBadges({ device }: { device: Device }) {
   const status = (device.current_status || 'unknown').toLowerCase();
   const pingBad = status === 'down' || status === 'warning';
   return (
-    <div className="sv-mon-badges">
-      <span className={`sv-mon ping ${pingBad ? 'bad' : ''}`} title="ICMP ping latency">
+    <div className="sv-mon-badges" style={{ gap: 6 }}>
+      <span
+        className={`sv-mon ping ${pingBad ? 'bad' : ''}`}
+        title="ICMP ping latency"
+        style={{ maxHeight: 22, padding: '2px 8px', fontSize: 11.5, gap: 4 }}
+      >
         <span className="k">Ping</span>
         <span className="m">{fmtMs(device.last_response_ms)}</span>
       </span>
       {device.snmp_enabled && (
-        <span className="sv-mon snmp" title="SNMP CPU / memory utilization">
+        <span
+          className="sv-mon snmp"
+          title="SNMP CPU / memory utilization"
+          style={{ maxHeight: 22, padding: '2px 8px', fontSize: 11.5, gap: 4 }}
+        >
           <span className="k">SNMP</span>
           <span className="m">CPU {fmtPct(device.latest_cpu_pct)}</span>
           <span className="m">Mem {fmtPct(device.latest_mem_pct)}</span>
