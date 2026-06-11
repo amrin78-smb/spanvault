@@ -76,6 +76,57 @@ function uptimeColor(pct: number | null | undefined): string {
   return '#dc2626';
 }
 
+// ── Shared REPORT OUTPUT style constants (module scope) ─────────
+const SECTION_TITLE: React.CSSProperties = {
+  fontSize: 12,
+  textTransform: 'uppercase',
+  fontWeight: 600,
+  color: 'var(--text-muted)',
+  letterSpacing: '0.06em',
+  margin: '0 0 8px',
+};
+const PANEL: React.CSSProperties = { padding: 16 };
+const STAT_GRID: React.CSSProperties = {
+  display: 'grid',
+  gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+  gap: 12,
+  alignItems: 'stretch',
+};
+const STAT_CARD: React.CSSProperties = {
+  background: 'var(--bg-card)',
+  border: '1px solid var(--border)',
+  borderLeftWidth: 3,
+  borderLeftColor: 'var(--text-muted)',
+  borderRadius: 'var(--radius-sm)',
+  padding: '12px 16px',
+  minHeight: 75,
+  display: 'flex',
+  flexDirection: 'column',
+  justifyContent: 'center',
+};
+const STAT_VALUE: React.CSSProperties = { fontSize: 24, fontWeight: 800, lineHeight: 1.1 };
+const STAT_LABEL: React.CSSProperties = {
+  fontSize: 11,
+  textTransform: 'uppercase',
+  color: 'var(--text-muted)',
+  letterSpacing: '0.04em',
+  marginTop: 4,
+};
+const TH: React.CSSProperties = {
+  fontSize: 11,
+  textTransform: 'uppercase',
+  fontWeight: 600,
+  letterSpacing: '0.06em',
+  color: 'var(--text-muted)',
+  padding: '8px 12px',
+};
+const TD: React.CSSProperties = {
+  fontSize: 12.5,
+  color: 'var(--text-primary)',
+  padding: '8px 12px',
+  height: 36,
+};
+
 function compareSites(a: SiteRow, b: SiteRow, key: SortKey, dir: SortDir): number {
   const av = a[key];
   const bv = b[key];
@@ -124,32 +175,32 @@ export default function NetworkSummaryReport({ data }: { data: NetworkSummary })
   return (
     <div>
       {/* 1. Headline stat cards */}
-      <div className="sv-cards">
-        <div className="sv-card total">
-          <div className="num">{fmtCount(totals.devices ?? 0)}</div>
-          <div className="label">Total Devices</div>
+      <div style={STAT_GRID}>
+        <div style={{ ...STAT_CARD, borderLeftColor: 'var(--primary)' }}>
+          <div style={STAT_VALUE}>{fmtCount(totals.devices ?? 0)}</div>
+          <div style={STAT_LABEL}>Total Devices</div>
         </div>
-        <div className="sv-card up">
-          <div className="num">{fmtNum(totals.uptime_pct ?? null)}%</div>
-          <div className="label">Overall Uptime</div>
+        <div style={{ ...STAT_CARD, borderLeftColor: 'var(--green)' }}>
+          <div style={STAT_VALUE}>{fmtNum(totals.uptime_pct ?? null)}%</div>
+          <div style={STAT_LABEL}>Overall Uptime</div>
         </div>
-        <div className="sv-card warning">
-          <div className="num">{fmtCount(totals.total_alerts ?? 0)}</div>
-          <div className="label">Total Alerts</div>
+        <div style={{ ...STAT_CARD, borderLeftColor: 'var(--yellow)' }}>
+          <div style={STAT_VALUE}>{fmtCount(totals.total_alerts ?? 0)}</div>
+          <div style={STAT_LABEL}>Total Alerts</div>
         </div>
-        <div className="sv-card">
-          <div className="num">{fmtNum(totals.avg_response_ms ?? null)} ms</div>
-          <div className="label">Avg Response</div>
+        <div style={STAT_CARD}>
+          <div style={STAT_VALUE}>{fmtNum(totals.avg_response_ms ?? null)} ms</div>
+          <div style={STAT_LABEL}>Avg Response</div>
         </div>
-        <div className="sv-card">
-          <div className="num">{fmtNum(totals.mttr_minutes ?? null)} min</div>
-          <div className="label">Avg MTTR</div>
+        <div style={STAT_CARD}>
+          <div style={STAT_VALUE}>{fmtNum(totals.mttr_minutes ?? null)} min</div>
+          <div style={STAT_LABEL}>Avg MTTR</div>
         </div>
       </div>
 
       {/* 2. Sites comparison table */}
-      <div className="sv-panel" style={{ marginTop: 24 }}>
-        <h3 style={{ marginTop: 0 }}>Sites</h3>
+      <div className="sv-panel" style={{ ...PANEL, marginTop: 16 }}>
+        <h3 style={SECTION_TITLE}>Sites</h3>
         <table className="sv-table">
           <thead>
             <tr>
@@ -158,6 +209,7 @@ export default function NetworkSummaryReport({ data }: { data: NetworkSummary })
                   key={col.key}
                   onClick={() => onSort(col.key)}
                   style={{
+                    ...TH,
                     cursor: 'pointer',
                     textAlign: col.numeric ? 'right' : 'left',
                     whiteSpace: 'nowrap',
@@ -172,14 +224,14 @@ export default function NetworkSummaryReport({ data }: { data: NetworkSummary })
           <tbody>
             {sortedSites.map((s, i) => (
               <tr key={`${s.site_name}-${i}`}>
-                <td>{s.site_name}</td>
-                <td style={{ textAlign: 'right' }}>{fmtCount(s.devices)}</td>
-                <td style={{ textAlign: 'right' }}>{fmtCount(s.up)}</td>
-                <td style={{ textAlign: 'right' }}>{fmtCount(s.down)}</td>
-                <td style={{ textAlign: 'right' }}>{fmtNum(s.uptime_pct)}</td>
-                <td style={{ textAlign: 'right' }}>{fmtNum(s.avg_response_ms)}</td>
-                <td style={{ textAlign: 'right' }}>{fmtCount(s.alerts_count)}</td>
-                <td>
+                <td style={TD}>{s.site_name}</td>
+                <td style={{ ...TD, textAlign: 'right' }}>{fmtCount(s.devices)}</td>
+                <td style={{ ...TD, textAlign: 'right' }}>{fmtCount(s.up)}</td>
+                <td style={{ ...TD, textAlign: 'right' }}>{fmtCount(s.down)}</td>
+                <td style={{ ...TD, textAlign: 'right' }}>{fmtNum(s.uptime_pct)}</td>
+                <td style={{ ...TD, textAlign: 'right' }}>{fmtNum(s.avg_response_ms)}</td>
+                <td style={{ ...TD, textAlign: 'right' }}>{fmtCount(s.alerts_count)}</td>
+                <td style={TD}>
                   <GradeBadge grade={s.grade} />
                 </td>
               </tr>
@@ -189,8 +241,8 @@ export default function NetworkSummaryReport({ data }: { data: NetworkSummary })
       </div>
 
       {/* 3. Top Issues */}
-      <div className="sv-panel" style={{ marginTop: 24 }}>
-        <h3 style={{ marginTop: 0 }}>Top Issues</h3>
+      <div className="sv-panel" style={{ ...PANEL, marginTop: 16 }}>
+        <h3 style={SECTION_TITLE}>Top Issues</h3>
         {topIssues.length === 0 ? (
           <div className="sv-muted">No issues in this period.</div>
         ) : (
@@ -205,19 +257,19 @@ export default function NetworkSummaryReport({ data }: { data: NetworkSummary })
                   alignItems: 'center',
                   gap: 12,
                   padding: '8px 0',
-                  borderBottom: '1px solid #e5e7eb',
+                  borderBottom: '1px solid var(--border-light)',
                 }}
               >
-                <div style={{ flex: '0 0 220px', minWidth: 0 }}>
+                <div style={{ flex: '0 0 220px', minWidth: 0, fontSize: 12.5 }}>
                   <span style={{ fontWeight: 600 }}>{issue.device_name}</span>{' '}
                   <span className="sv-muted">· {issue.site_name}</span>
                 </div>
                 <div
                   style={{
                     flex: 1,
-                    height: 12,
-                    background: '#e5e7eb',
-                    borderRadius: 6,
+                    height: 4,
+                    background: 'var(--border)',
+                    borderRadius: 2,
                     overflow: 'hidden',
                   }}
                 >
@@ -229,10 +281,10 @@ export default function NetworkSummaryReport({ data }: { data: NetworkSummary })
                     }}
                   />
                 </div>
-                <div style={{ flex: '0 0 90px', textAlign: 'right' }}>
+                <div style={{ flex: '0 0 90px', textAlign: 'right', fontSize: 12.5 }}>
                   {fmtNum(pct)}%
                 </div>
-                <div style={{ flex: '0 0 110px', textAlign: 'right' }} className="sv-muted">
+                <div style={{ flex: '0 0 110px', textAlign: 'right', fontSize: 12.5 }} className="sv-muted">
                   {fmtCount(issue.downtime_minutes)} min down
                 </div>
               </div>
@@ -242,8 +294,8 @@ export default function NetworkSummaryReport({ data }: { data: NetworkSummary })
       </div>
 
       {/* 4. Health grade distribution */}
-      <div className="sv-panel" style={{ marginTop: 24 }}>
-        <h3 style={{ marginTop: 0 }}>Health Grade Distribution</h3>
+      <div className="sv-panel" style={{ ...PANEL, marginTop: 16 }}>
+        <h3 style={SECTION_TITLE}>Health Grade Distribution</h3>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           {GRADES.map((g) => (
             <span key={g} className="sv-badge">

@@ -1,9 +1,9 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useSession } from 'next-auth/react';
 import { useApi, apiSend } from '@/lib/api';
-import { ErrorBox, PageHeader, Loading } from '@/components/ui';
+import { ErrorBox, Loading } from '@/components/ui';
 import NetworkSummaryReport from '@/components/reports/NetworkSummaryReport';
 import SiteReport from '@/components/reports/SiteReport';
 import DeviceDetailReport from '@/components/reports/DeviceDetailReport';
@@ -37,19 +37,19 @@ type Applied = {
 const TEMPLATES: Template[] = [
   { key: 'network-summary', icon: '📊', label: 'Network Summary', desc: 'Overall health across all sites and devices', scope: 'all' },
   { key: 'site-summary', icon: '🏢', label: 'Site Report', desc: 'All devices in a site with comparison table', scope: 'site' },
-  { key: 'device-detail', icon: '🖥', label: 'Device Detail Report', desc: 'Full history, graphs and metrics for one device', scope: 'device' },
+  { key: 'device-detail', icon: '🖥', label: 'Device Detail', desc: 'Full history, graphs and metrics for one device', scope: 'device' },
   { key: 'sla-compliance', icon: '✅', label: 'SLA Compliance', desc: 'Pass/fail per device vs SLA target', scope: 'flexible', sla: true },
   { key: 'top-worst', icon: '⚠', label: 'Top 10 Worst', desc: 'Lowest availability, highest latency or most alerts', scope: 'flexibleNoDevice', metric: true },
   { key: 'alert-analysis', icon: '🔔', label: 'Alert Analysis', desc: 'Most alerted devices, MTTR, and patterns', scope: 'flexibleNoDevice' },
-  { key: 'capacity', icon: '📈', label: 'Capacity Planning', desc: 'Bandwidth trends and utilization projections', scope: 'flexibleNoDevice' },
-  { key: 'executive', icon: '📋', label: 'Executive Summary', desc: 'Management-level overview with recommendations', scope: 'all' },
+  { key: 'capacity', icon: '📈', label: 'Capacity', desc: 'Bandwidth trends and utilization projections', scope: 'flexibleNoDevice' },
+  { key: 'executive', icon: '📋', label: 'Executive', desc: 'Management-level overview with recommendations', scope: 'all' },
 ];
 const TEMPLATE_BY_KEY: Record<string, Template> = Object.fromEntries(TEMPLATES.map((t) => [t.key, t]));
 
 const RANGES = [
-  { key: '7d', label: 'Last 7 Days' },
-  { key: '30d', label: 'Last 30 Days' },
-  { key: '90d', label: 'Last 90 Days' },
+  { key: '7d', label: 'Last 7d' },
+  { key: '30d', label: '30d' },
+  { key: '90d', label: '90d' },
 ];
 const METRICS = [
   { key: 'uptime', label: 'Availability' },
@@ -104,12 +104,65 @@ function isEmptyReport(template: string, data: any): boolean {
 }
 function rangeLabel(a: Applied): string {
   if (a.range === 'custom') return `${a.from || '…'} → ${a.to || '…'}`;
+  if (a.range === '7d') return 'Last 7 Days';
+  if (a.range === '30d') return 'Last 30 Days';
+  if (a.range === '90d') return 'Last 90 Days';
   return RANGES.find((r) => r.key === a.range)?.label || a.range;
 }
 function scopeLabel(a: Applied): string {
   if (a.scopeMode === 'site') return `Site: ${a.siteLabel || a.siteId}`;
   if (a.scopeMode === 'device') return `Device: ${a.deviceLabel || a.deviceId}`;
   return 'All Sites';
+}
+
+// ── Shared inline-style constants ──────────────────────────────
+const CTRL_H = 32;
+const ctrlBase: React.CSSProperties = {
+  height: CTRL_H, padding: '0 10px', fontSize: 12,
+  borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)',
+  background: 'var(--bg-card)', color: 'var(--text-primary)', fontFamily: 'inherit',
+  outline: 'none',
+};
+const fieldLabel: React.CSSProperties = {
+  display: 'inline-flex', alignItems: 'center', gap: 6,
+  fontSize: 11, fontWeight: 600, color: 'var(--text-muted)',
+  textTransform: 'uppercase', letterSpacing: '0.04em',
+};
+const presetBtn = (active: boolean): React.CSSProperties => ({
+  height: CTRL_H, padding: '0 11px', fontSize: 12, cursor: 'pointer',
+  borderRadius: 'var(--radius-sm)', fontWeight: 600,
+  border: `1px solid ${active ? 'var(--primary)' : 'var(--border)'}`,
+  background: active ? 'var(--primary)' : 'var(--bg-card)',
+  color: active ? '#fff' : 'var(--text-primary)',
+});
+
+// ── Compact pill tabs (top-level component) ────────────────────
+function TemplatePills({ active, onSelect }: { active: string; onSelect: (k: string) => void }) {
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+      {TEMPLATES.map((t) => {
+        const on = active === t.key;
+        return (
+          <button
+            key={t.key}
+            onClick={() => onSelect(t.key)}
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 6,
+              height: CTRL_H, padding: '0 12px', fontSize: 12, fontWeight: 600,
+              cursor: 'pointer', borderRadius: 'var(--radius-sm)',
+              border: `1px solid ${on ? 'var(--primary)' : 'var(--border)'}`,
+              background: on ? 'var(--primary)' : 'var(--bg-card)',
+              color: on ? '#fff' : 'var(--text-primary)',
+              transition: 'all 0.12s',
+            }}
+          >
+            <span style={{ fontSize: 13, lineHeight: 1 }}>{t.icon}</span>
+            <span>{t.label}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
 }
 
 export default function ReportsPage() {
@@ -132,6 +185,7 @@ export default function ReportsPage() {
   const [applied, setApplied] = useState<Applied | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveName, setSaveName] = useState('');
+  const [showSave, setShowSave] = useState(false);
 
   const tpl = TEMPLATE_BY_KEY[template];
 
@@ -160,6 +214,7 @@ export default function ReportsPage() {
     const deviceLabel = devices.data?.find((d) => String(d.id) === deviceId)?.name || '';
     setApplied({ template, range, from, to, scopeMode, siteId, siteLabel, deviceId, deviceLabel, slaTarget, metric });
     setSaveName('');
+    setShowSave(false);
   }
 
   const endpoint = applied ? buildEndpoint(applied) : null;
@@ -190,6 +245,7 @@ export default function ReportsPage() {
         created_by: email || null,
       });
       setSaveName('');
+      setShowSave(false);
       saved.reload();
     } finally {
       setSaving(false);
@@ -219,6 +275,7 @@ export default function ReportsPage() {
       deviceLabel, slaTarget: s.sla_target != null ? String(s.sla_target) : '99.5',
       metric: 'uptime',
     });
+    setShowSave(false);
   }
 
   const showScopeSelector = tpl.scope === 'flexible' || tpl.scope === 'flexibleNoDevice';
@@ -226,36 +283,28 @@ export default function ReportsPage() {
   return (
     <div>
       <div className="sv-no-print">
-        <PageHeader title="Reports" subtitle="Run reports across your network — printable for management.">
-          {applied && !empty && !loading && (
-            <button className="sv-btn" onClick={() => window.print()}>Export PDF</button>
-          )}
-        </PageHeader>
-
-        {/* Template selector */}
-        <div className="sv-report-templates">
-          {TEMPLATES.map((t) => (
-            <button
-              key={t.key}
-              className={`sv-report-tpl ${template === t.key ? 'active' : ''}`}
-              onClick={() => setTemplate(t.key)}
-            >
-              <span className="ico">{t.icon}</span>
-              <span className="body">
-                <span className="nm">{t.label}</span>
-                <span className="desc">{t.desc}</span>
-              </span>
-            </button>
-          ))}
+        {/* Page heading */}
+        <div className="page-title" style={{ marginBottom: 2 }}>Reports</div>
+        <div className="page-subtitle" style={{ marginBottom: 14 }}>
+          Run reports across your network — printable for management.
         </div>
 
-        {/* Controls */}
-        <div className="sv-panel">
-          <div className="sv-toolbar" style={{ flexWrap: 'wrap', alignItems: 'flex-end' }}>
+        {/* Template selector — compact pill tabs */}
+        <TemplatePills active={template} onSelect={setTemplate} />
+
+        {/* Selected-template description */}
+        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>{tpl.desc}</div>
+
+        {/* Controls — single inline row */}
+        <div style={{
+          background: 'var(--bg-card)', border: '1px solid var(--border)',
+          borderRadius: 'var(--radius-sm)', padding: '12px 16px', marginBottom: 12,
+        }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12 }}>
             {/* Scope */}
             {showScopeSelector && (
-              <label className="sv-field">Scope
-                <select className="sv-select" value={scopeMode} onChange={(e) => setScopeMode(e.target.value as any)}>
+              <label style={fieldLabel}>Scope
+                <select style={ctrlBase} value={scopeMode} onChange={(e) => setScopeMode(e.target.value as any)}>
                   <option value="all">All</option>
                   <option value="site">Site</option>
                   {tpl.scope === 'flexible' && <option value="device">Device</option>}
@@ -263,8 +312,8 @@ export default function ReportsPage() {
               </label>
             )}
             {(tpl.scope === 'site' || (showScopeSelector && scopeMode === 'site')) && (
-              <label className="sv-field">Site
-                <select className="sv-select" value={siteId} onChange={(e) => setSiteId(e.target.value)}>
+              <label style={fieldLabel}>Site
+                <select style={ctrlBase} value={siteId} onChange={(e) => setSiteId(e.target.value)}>
                   <option value="">Select…</option>
                   {sites.data?.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
                 </select>
@@ -272,12 +321,12 @@ export default function ReportsPage() {
             )}
             {(tpl.scope === 'device' || (tpl.scope === 'flexible' && scopeMode === 'device')) && (
               <>
-                <label className="sv-field">Search
-                  <input className="sv-input" placeholder="Device name or IP…" value={deviceSearch}
-                    onChange={(e) => setDeviceSearch(e.target.value)} style={{ width: 170 }} />
+                <label style={fieldLabel}>Search
+                  <input style={{ ...ctrlBase, width: 150 }} placeholder="Name or IP…" value={deviceSearch}
+                    onChange={(e) => setDeviceSearch(e.target.value)} />
                 </label>
-                <label className="sv-field">Device
-                  <select className="sv-select" value={deviceId} onChange={(e) => setDeviceId(e.target.value)}>
+                <label style={fieldLabel}>Device
+                  <select style={ctrlBase} value={deviceId} onChange={(e) => setDeviceId(e.target.value)}>
                     <option value="">Select…</option>
                     {filteredDevices.slice(0, 100).map((d) => <option key={d.id} value={d.id}>{d.name} ({d.ip_address})</option>)}
                   </select>
@@ -287,8 +336,8 @@ export default function ReportsPage() {
 
             {/* Metric (top-worst only) */}
             {tpl.metric && (
-              <label className="sv-field">Metric
-                <select className="sv-select" value={metric} onChange={(e) => setMetric(e.target.value)}>
+              <label style={fieldLabel}>Metric
+                <select style={ctrlBase} value={metric} onChange={(e) => setMetric(e.target.value)}>
                   {METRICS.map((m) => <option key={m.key} value={m.key}>{m.label}</option>)}
                 </select>
               </label>
@@ -296,61 +345,86 @@ export default function ReportsPage() {
 
             {/* SLA target */}
             {tpl.sla && (
-              <label className="sv-field">SLA Target %
-                <input className="sv-input" type="number" step="0.1" value={slaTarget}
-                  onChange={(e) => setSlaTarget(e.target.value)} style={{ width: 90 }} />
+              <label style={fieldLabel}>SLA %
+                <input style={{ ...ctrlBase, width: 70 }} type="number" step="0.1" value={slaTarget}
+                  onChange={(e) => setSlaTarget(e.target.value)} />
               </label>
             )}
 
             {/* Date range presets */}
-            <label className="sv-field">Date range
-              <div style={{ display: 'flex', gap: 6 }}>
+            <label style={fieldLabel}>Range
+              <div style={{ display: 'flex', gap: 4 }}>
                 {RANGES.map((r) => (
-                  <button key={r.key} type="button"
-                    className={`sv-btn ghost sm ${range === r.key ? 'active' : ''}`}
+                  <button key={r.key} type="button" style={presetBtn(range === r.key)}
                     onClick={() => setRange(r.key)}>{r.label}</button>
                 ))}
-                <button type="button" className={`sv-btn ghost sm ${range === 'custom' ? 'active' : ''}`}
+                <button type="button" style={presetBtn(range === 'custom')}
                   onClick={() => setRange('custom')}>Custom</button>
               </div>
             </label>
             {range === 'custom' && (
               <>
-                <label className="sv-field">From
-                  <input className="sv-input" type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
+                <label style={fieldLabel}>From
+                  <input style={ctrlBase} type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
                 </label>
-                <label className="sv-field">To
-                  <input className="sv-input" type="date" value={to} onChange={(e) => setTo(e.target.value)} />
+                <label style={fieldLabel}>To
+                  <input style={ctrlBase} type="date" value={to} onChange={(e) => setTo(e.target.value)} />
                 </label>
               </>
             )}
 
-            <div className="spacer" style={{ flex: 1 }} />
-            <button className="sv-btn" onClick={runReport} disabled={!canRun()}>Run Report →</button>
+            <div style={{ flex: 1 }} />
+            <button style={{ ...presetBtn(true), padding: '0 16px' }} onClick={runReport} disabled={!canRun()}
+              {...(!canRun() ? { 'aria-disabled': true } : {})}>
+              Run Report →
+            </button>
           </div>
+        </div>
 
-          {/* Saved reports chips */}
-          {(saved.data?.length || 0) > 0 && (
-            <div className="sv-saved-chips">
-              <span className="sv-muted" style={{ fontSize: 12.5, marginRight: 4 }}>Saved:</span>
-              {saved.data!.map((s) => (
-                <span key={s.id} className="sv-saved-chip">
-                  <button className="nm" onClick={() => loadSaved(s)} title={`Load "${s.name}"`}>{s.name}</button>
-                  <button className="del" onClick={() => deleteSaved(s.id)} title="Delete">×</button>
-                </span>
-              ))}
-            </div>
+        {/* Saved Reports — slim inline chips */}
+        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6, marginBottom: 16 }}>
+          <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em', marginRight: 2 }}>
+            Saved:
+          </span>
+          {(saved.data?.length || 0) === 0 && (
+            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>none yet</span>
           )}
-
-          {/* Save current report */}
-          {applied && !empty && !loading && (
-            <div className="sv-toolbar" style={{ marginTop: 10 }}>
-              <input className="sv-input" placeholder="Name this report…" value={saveName}
-                onChange={(e) => setSaveName(e.target.value)} style={{ width: 220 }} />
-              <button className="sv-btn ghost sm" onClick={saveReport} disabled={saving || !saveName.trim()}>
-                {saving ? 'Saving…' : '+ Save this report'}
+          {saved.data?.map((s) => (
+            <span key={s.id} style={{
+              display: 'inline-flex', alignItems: 'center', height: 24,
+              border: '1px solid var(--border)', borderRadius: 999, overflow: 'hidden',
+              background: 'var(--bg-card)',
+            }}>
+              <button onClick={() => loadSaved(s)} title={`Load "${s.name}"`}
+                style={{ border: 'none', background: 'transparent', cursor: 'pointer', fontSize: 11, fontWeight: 600, color: 'var(--text-primary)', padding: '0 8px', height: 24 }}>
+                {s.name}
               </button>
-            </div>
+              <button onClick={() => deleteSaved(s.id)} title="Delete"
+                style={{ border: 'none', borderLeft: '1px solid var(--border)', background: 'transparent', cursor: 'pointer', color: 'var(--text-muted)', padding: '0 7px', height: 24, fontSize: 12 }}>
+                ×
+              </button>
+            </span>
+          ))}
+          {applied && !empty && !loading && !showSave && (
+            <button onClick={() => setShowSave(true)}
+              style={{ display: 'inline-flex', alignItems: 'center', height: 24, border: '1px dashed var(--border)', borderRadius: 999, background: 'var(--bg-card)', cursor: 'pointer', fontSize: 11, fontWeight: 600, color: 'var(--primary)', padding: '0 10px' }}>
+              + Save this report
+            </button>
+          )}
+          {applied && !empty && !loading && showSave && (
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+              <input style={{ ...ctrlBase, height: 24, fontSize: 11, width: 170 }} placeholder="Name this report…"
+                value={saveName} autoFocus onChange={(e) => setSaveName(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') saveReport(); if (e.key === 'Escape') setShowSave(false); }} />
+              <button onClick={saveReport} disabled={saving || !saveName.trim()}
+                style={{ ...presetBtn(true), height: 24, padding: '0 10px', fontSize: 11, opacity: saving || !saveName.trim() ? 0.5 : 1 }}>
+                {saving ? 'Saving…' : 'Save'}
+              </button>
+              <button onClick={() => { setShowSave(false); setSaveName(''); }}
+                style={{ ...presetBtn(false), height: 24, padding: '0 9px', fontSize: 11 }}>
+                ×
+              </button>
+            </span>
           )}
         </div>
       </div>
@@ -358,16 +432,25 @@ export default function ReportsPage() {
       {/* Report output */}
       {applied && (
         <div className="sv-report-output" id="report-print">
-          {/* Print-only header */}
-          <div className="sv-print-only sv-print-head">
+          {/* Print-only compact header (~44px) */}
+          <div className="sv-print-only sv-print-head" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', minHeight: 44, gap: 12 }}>
             <span className="brand">SpanVault</span>
-            <span className="meta">
+            <span className="meta" style={{ margin: 0, textAlign: 'right' }}>
               {tpl.label} · {rangeLabel(applied)} · {scopeLabel(applied)} · Generated {new Date().toLocaleString()}
             </span>
           </div>
 
-          <div className="sv-no-print" style={{ margin: '8px 0 14px', fontSize: 13, color: 'var(--text-muted)' }}>
-            {tpl.label} · {rangeLabel(applied)} · {scopeLabel(applied)}
+          {/* On-screen output header: report meta + Export PDF (top-right) */}
+          <div className="sv-no-print" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, margin: '0 0 14px' }}>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+              {tpl.label} · {rangeLabel(applied)} · {scopeLabel(applied)}
+            </div>
+            {!empty && !loading && !report.error && (
+              <button onClick={() => window.print()}
+                style={{ ...presetBtn(false), padding: '0 14px', flex: 'none' }}>
+                Export PDF
+              </button>
+            )}
           </div>
 
           {report.error ? (

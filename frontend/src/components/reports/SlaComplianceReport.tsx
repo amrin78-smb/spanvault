@@ -30,6 +30,59 @@ function escapeCsv(value: string): string {
   return value;
 }
 
+// ── Shared REPORT OUTPUT style constants (module scope) ─────────
+const SECTION_TITLE: React.CSSProperties = {
+  fontSize: 12,
+  textTransform: 'uppercase',
+  fontWeight: 600,
+  color: 'var(--text-muted)',
+  letterSpacing: '0.06em',
+  margin: '0 0 8px',
+};
+const PANEL: React.CSSProperties = { padding: 16 };
+const STAT_GRID: React.CSSProperties = {
+  display: 'grid',
+  gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+  gap: 12,
+  alignItems: 'stretch',
+  marginBottom: 16,
+};
+const STAT_CARD: React.CSSProperties = {
+  background: 'var(--bg-card)',
+  border: '1px solid var(--border)',
+  borderLeftWidth: 3,
+  borderRadius: 'var(--radius-sm)',
+  padding: '12px 16px',
+  minHeight: 75,
+  display: 'flex',
+  flexDirection: 'column',
+  justifyContent: 'center',
+};
+const STAT_VALUE: React.CSSProperties = { fontSize: 24, fontWeight: 800, lineHeight: 1.1 };
+const STAT_LABEL: React.CSSProperties = {
+  fontSize: 11,
+  textTransform: 'uppercase',
+  color: 'var(--text-muted)',
+  letterSpacing: '0.04em',
+  marginTop: 4,
+};
+const TH: React.CSSProperties = {
+  fontSize: 11,
+  textTransform: 'uppercase',
+  fontWeight: 600,
+  letterSpacing: '0.06em',
+  color: 'var(--text-muted)',
+  padding: '8px 12px',
+  textAlign: 'left',
+};
+const TD: React.CSSProperties = {
+  fontSize: 12.5,
+  color: 'var(--text-primary)',
+  padding: '8px 12px',
+  height: 36,
+};
+const numTh: React.CSSProperties = { ...TH, textAlign: 'right' };
+
 function buildCsv(devices: SlaCompliance['devices']): string {
   const header = ['Device', 'Site', 'Uptime %', 'Downtime', 'SLA Status'];
   const rows = (devices || []).map((d) => [
@@ -78,18 +131,19 @@ export default function SlaComplianceReport({ data }: { data: SlaCompliance }) {
 
   return (
     <div>
-      <h2 style={{ margin: '0 0 4px 0' }}>SLA Compliance</h2>
+      <h2 style={SECTION_TITLE}>SLA Compliance</h2>
       {generated_at ? (
-        <div className="sv-muted" style={{ marginBottom: 16, fontSize: 13 }}>
+        <div className="sv-muted" style={{ marginBottom: 12, fontSize: 11 }}>
           Generated {generated_at}
         </div>
       ) : null}
 
       {/* 1. Prominent SLA target banner */}
       <div
-        className="sv-card total"
         style={{
-          display: 'flex',
+          ...STAT_CARD,
+          borderLeftColor: 'var(--primary)',
+          flexDirection: 'row',
           flexWrap: 'wrap',
           alignItems: 'center',
           justifyContent: 'space-between',
@@ -98,47 +152,45 @@ export default function SlaComplianceReport({ data }: { data: SlaCompliance }) {
         }}
       >
         <div>
-          <div className="sv-muted" style={{ fontSize: 13, fontWeight: 600 }}>
-            SLA Target
-          </div>
-          <div style={{ fontSize: 42, fontWeight: 800, lineHeight: 1.1, color: '#C8102E' }}>
+          <div style={STAT_LABEL}>SLA Target</div>
+          <div style={{ fontSize: 24, fontWeight: 800, lineHeight: 1.1, color: 'var(--primary)' }}>
             {sla_target}%
           </div>
         </div>
         <div style={{ textAlign: 'right' }}>
-          <div style={{ fontSize: 22, fontWeight: 700 }}>
+          <div style={{ fontSize: 18, fontWeight: 700 }}>
             {summary.meeting ?? 0}/{summary.total ?? 0}
           </div>
-          <div className="sv-muted" style={{ fontSize: 13 }}>
+          <div className="sv-muted" style={{ fontSize: 11 }}>
             devices meeting SLA
           </div>
-          <div style={{ marginTop: 8, fontSize: 15, fontWeight: 600 }}>
+          <div style={{ marginTop: 4, fontSize: 12.5, fontWeight: 600 }}>
             Overall uptime: {summary.overall_uptime_pct == null ? '—' : `${summary.overall_uptime_pct}%`}
           </div>
         </div>
       </div>
 
       {/* 2. Summary cards */}
-      <div className="sv-cards">
-        <div className="sv-card up">
-          <div className="num">
+      <div style={STAT_GRID}>
+        <div style={{ ...STAT_CARD, borderLeftColor: 'var(--green)' }}>
+          <div style={STAT_VALUE}>
             {summary.meeting ?? 0}/{summary.total ?? 0}
           </div>
-          <div className="label">Meeting SLA</div>
+          <div style={STAT_LABEL}>Meeting SLA</div>
         </div>
-        <div className="sv-card down">
-          <div className="num">{summary.failing ?? 0}</div>
-          <div className="label">Failing</div>
+        <div style={{ ...STAT_CARD, borderLeftColor: 'var(--red)' }}>
+          <div style={STAT_VALUE}>{summary.failing ?? 0}</div>
+          <div style={STAT_LABEL}>Failing</div>
         </div>
-        <div className="sv-card total">
-          <div className="num">
+        <div style={{ ...STAT_CARD, borderLeftColor: 'var(--primary)' }}>
+          <div style={STAT_VALUE}>
             {summary.overall_uptime_pct == null ? '—' : `${summary.overall_uptime_pct}%`}
           </div>
-          <div className="label">Overall Uptime</div>
+          <div style={STAT_LABEL}>Overall Uptime</div>
         </div>
-        <div className="sv-card warning">
-          <div className="num">{summary.total_downtime_minutes ?? 0} min</div>
-          <div className="label">Total Downtime</div>
+        <div style={{ ...STAT_CARD, borderLeftColor: 'var(--yellow)' }}>
+          <div style={STAT_VALUE}>{summary.total_downtime_minutes ?? 0} min</div>
+          <div style={STAT_LABEL}>Total Downtime</div>
         </div>
       </div>
 
@@ -150,15 +202,15 @@ export default function SlaComplianceReport({ data }: { data: SlaCompliance }) {
       </div>
 
       {/* 4. Table */}
-      <div className="sv-panel">
+      <div className="sv-panel" style={PANEL}>
         <table className="sv-table" style={{ width: '100%' }}>
           <thead>
             <tr>
-              <th>Device</th>
-              <th>Site</th>
-              <th style={{ textAlign: 'right' }}>Uptime %</th>
-              <th style={{ textAlign: 'right' }}>Downtime (min)</th>
-              <th>SLA Status</th>
+              <th style={TH}>Device</th>
+              <th style={TH}>Site</th>
+              <th style={numTh}>Uptime %</th>
+              <th style={numTh}>Downtime (min)</th>
+              <th style={TH}>SLA Status</th>
             </tr>
           </thead>
           <tbody>
@@ -167,10 +219,11 @@ export default function SlaComplianceReport({ data }: { data: SlaCompliance }) {
               const uptimeColor = d.uptime_pct == null ? undefined : d.sla_met ? '#1a7f37' : '#C8102E';
               return (
                 <tr key={`${d.device_name}-${index}`} style={rowBg ? { background: rowBg } : undefined}>
-                  <td>{d.device_name || '—'}</td>
-                  <td className="sv-muted">{d.site_name || '—'}</td>
+                  <td style={TD}>{d.device_name || '—'}</td>
+                  <td style={TD} className="sv-muted">{d.site_name || '—'}</td>
                   <td
                     style={{
+                      ...TD,
                       textAlign: 'right',
                       fontVariantNumeric: 'tabular-nums',
                       color: uptimeColor,
@@ -179,10 +232,10 @@ export default function SlaComplianceReport({ data }: { data: SlaCompliance }) {
                   >
                     {d.uptime_pct == null ? '—' : `${d.uptime_pct}%`}
                   </td>
-                  <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                  <td style={{ ...TD, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
                     {fmtNum(d.downtime_minutes)}
                   </td>
-                  <td>
+                  <td style={TD}>
                     <span className={`sv-badge ${d.sla_met ? 'up' : 'down'}`}>
                       {d.sla_met ? '✓ PASS' : '✗ FAIL'}
                     </span>

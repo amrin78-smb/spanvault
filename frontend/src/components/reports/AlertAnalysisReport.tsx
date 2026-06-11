@@ -55,8 +55,59 @@ function severityBadgeClass(key: string): string {
   return 'sv-badge';
 }
 
-const numCellStyle: React.CSSProperties = { textAlign: 'right' };
-const sectionStyle: React.CSSProperties = { marginTop: 24 };
+// ── Shared REPORT OUTPUT style constants (module scope) ─────────
+const SECTION_TITLE: React.CSSProperties = {
+  fontSize: 12,
+  textTransform: 'uppercase',
+  fontWeight: 600,
+  color: 'var(--text-muted)',
+  letterSpacing: '0.06em',
+  margin: '0 0 8px',
+};
+const PANEL: React.CSSProperties = { padding: 16 };
+const STAT_GRID: React.CSSProperties = {
+  display: 'grid',
+  gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+  gap: 12,
+  alignItems: 'stretch',
+};
+const STAT_CARD: React.CSSProperties = {
+  background: 'var(--bg-card)',
+  border: '1px solid var(--border)',
+  borderLeftWidth: 3,
+  borderRadius: 'var(--radius-sm)',
+  padding: '12px 16px',
+  minHeight: 75,
+  display: 'flex',
+  flexDirection: 'column',
+  justifyContent: 'center',
+};
+const STAT_VALUE: React.CSSProperties = { fontSize: 24, fontWeight: 800, lineHeight: 1.1 };
+const STAT_LABEL: React.CSSProperties = {
+  fontSize: 11,
+  textTransform: 'uppercase',
+  color: 'var(--text-muted)',
+  letterSpacing: '0.04em',
+  marginBottom: 4,
+};
+const TH: React.CSSProperties = {
+  fontSize: 11,
+  textTransform: 'uppercase',
+  fontWeight: 600,
+  letterSpacing: '0.06em',
+  color: 'var(--text-muted)',
+  padding: '8px 12px',
+  textAlign: 'left',
+};
+const TD: React.CSSProperties = {
+  fontSize: 12.5,
+  color: 'var(--text-primary)',
+  padding: '8px 12px',
+  height: 36,
+};
+const numCellStyle: React.CSSProperties = { ...TD, textAlign: 'right' };
+const numThStyle: React.CSSProperties = { ...TH, textAlign: 'right' };
+const sectionStyle: React.CSSProperties = { marginTop: 16 };
 
 export default function AlertAnalysisReport({ data }: { data: AlertAnalysis }) {
   if (!data) return null;
@@ -74,32 +125,32 @@ export default function AlertAnalysisReport({ data }: { data: AlertAnalysis }) {
   return (
     <div className="alert-analysis-report">
       {/* 1. Summary cards */}
-      <div className="sv-cards">
-        <div className="sv-card warning">
-          <div className="sv-muted">Total Alerts</div>
-          <div style={{ fontSize: 28, fontWeight: 700 }}>{data.total_alerts ?? 0}</div>
+      <div style={STAT_GRID}>
+        <div style={{ ...STAT_CARD, borderLeftColor: 'var(--yellow)' }}>
+          <div style={STAT_LABEL}>Total Alerts</div>
+          <div style={STAT_VALUE}>{data.total_alerts ?? 0}</div>
         </div>
-        <div className="sv-card total">
-          <div className="sv-muted">Avg MTTR</div>
-          <div style={{ fontSize: 28, fontWeight: 700 }}>
+        <div style={{ ...STAT_CARD, borderLeftColor: 'var(--primary)' }}>
+          <div style={STAT_LABEL}>Avg MTTR</div>
+          <div style={STAT_VALUE}>
             {data.avg_mttr_minutes != null ? `${Math.round(data.avg_mttr_minutes)} min` : '—'}
           </div>
         </div>
-        <div className="sv-card total">
-          <div className="sv-muted">Busiest Hour</div>
-          <div style={{ fontSize: 28, fontWeight: 700 }}>{formatHour(data.busiest_hour)}</div>
+        <div style={{ ...STAT_CARD, borderLeftColor: 'var(--primary)' }}>
+          <div style={STAT_LABEL}>Busiest Hour</div>
+          <div style={STAT_VALUE}>{formatHour(data.busiest_hour)}</div>
         </div>
       </div>
 
       {/* 2. Pattern insight banner */}
       <div
         style={{
-          marginTop: 20,
+          marginTop: 16,
           padding: '12px 16px',
-          borderRadius: 6,
-          background: hasPattern ? '#fff4f5' : '#f3f4f6',
-          borderLeft: `4px solid ${hasPattern ? '#C8102E' : '#9ca3af'}`,
-          fontSize: 14,
+          borderRadius: 'var(--radius-sm)',
+          background: hasPattern ? 'var(--primary-light)' : 'var(--bg-primary)',
+          borderLeft: `3px solid ${hasPattern ? 'var(--primary)' : 'var(--text-muted)'}`,
+          fontSize: 12.5,
         }}
       >
         {hasPattern
@@ -108,23 +159,23 @@ export default function AlertAnalysisReport({ data }: { data: AlertAnalysis }) {
       </div>
 
       {/* 3. Top alerted devices */}
-      <div className="sv-panel" style={sectionStyle}>
-        <h3 style={{ marginTop: 0 }}>Top Alerted Devices</h3>
+      <div className="sv-panel" style={{ ...PANEL, ...sectionStyle }}>
+        <h3 style={SECTION_TITLE}>Top Alerted Devices</h3>
         <table className="sv-table">
           <thead>
             <tr>
-              <th>Device</th>
-              <th>Site</th>
-              <th style={numCellStyle}>Alerts</th>
-              <th style={numCellStyle}>MTTR (min)</th>
+              <th style={TH}>Device</th>
+              <th style={TH}>Site</th>
+              <th style={numThStyle}>Alerts</th>
+              <th style={numThStyle}>MTTR (min)</th>
             </tr>
           </thead>
           <tbody>
             {topRows && topRows.length > 0 ? (
               topRows.map((d) => (
                 <tr key={d.device_id}>
-                  <td>{d.device_name}</td>
-                  <td>{d.site_name}</td>
+                  <td style={TD}>{d.device_name}</td>
+                  <td style={TD}>{d.site_name}</td>
                   <td style={numCellStyle}>{d.count}</td>
                   <td style={numCellStyle}>{formatMttr(d.mttr_minutes)}</td>
                 </tr>
@@ -141,21 +192,21 @@ export default function AlertAnalysisReport({ data }: { data: AlertAnalysis }) {
       </div>
 
       {/* 4. Breakdown tables side by side */}
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, ...sectionStyle }}>
-        <div className="sv-panel" style={{ flex: '1 1 260px', minWidth: 240 }}>
-          <h3 style={{ marginTop: 0 }}>By Type</h3>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, ...sectionStyle }}>
+        <div className="sv-panel" style={{ ...PANEL, flex: '1 1 260px', minWidth: 240 }}>
+          <h3 style={SECTION_TITLE}>By Type</h3>
           <table className="sv-table">
             <thead>
               <tr>
-                <th>Type</th>
-                <th style={numCellStyle}>Count</th>
+                <th style={TH}>Type</th>
+                <th style={numThStyle}>Count</th>
               </tr>
             </thead>
             <tbody>
               {byType.length > 0 ? (
                 byType.map((t) => (
                   <tr key={t.key}>
-                    <td>{t.key}</td>
+                    <td style={TD}>{t.key}</td>
                     <td style={numCellStyle}>{t.count}</td>
                   </tr>
                 ))
@@ -170,20 +221,20 @@ export default function AlertAnalysisReport({ data }: { data: AlertAnalysis }) {
           </table>
         </div>
 
-        <div className="sv-panel" style={{ flex: '1 1 260px', minWidth: 240 }}>
-          <h3 style={{ marginTop: 0 }}>By Severity</h3>
+        <div className="sv-panel" style={{ ...PANEL, flex: '1 1 260px', minWidth: 240 }}>
+          <h3 style={SECTION_TITLE}>By Severity</h3>
           <table className="sv-table">
             <thead>
               <tr>
-                <th>Severity</th>
-                <th style={numCellStyle}>Count</th>
+                <th style={TH}>Severity</th>
+                <th style={numThStyle}>Count</th>
               </tr>
             </thead>
             <tbody>
               {bySeverity.length > 0 ? (
                 bySeverity.map((s) => (
                   <tr key={s.key}>
-                    <td>
+                    <td style={TD}>
                       <span className={severityBadgeClass(s.key)}>{s.key}</span>
                     </td>
                     <td style={numCellStyle}>{s.count}</td>
@@ -200,20 +251,20 @@ export default function AlertAnalysisReport({ data }: { data: AlertAnalysis }) {
           </table>
         </div>
 
-        <div className="sv-panel" style={{ flex: '1 1 260px', minWidth: 240 }}>
-          <h3 style={{ marginTop: 0 }}>By Site</h3>
+        <div className="sv-panel" style={{ ...PANEL, flex: '1 1 260px', minWidth: 240 }}>
+          <h3 style={SECTION_TITLE}>By Site</h3>
           <table className="sv-table">
             <thead>
               <tr>
-                <th>Site</th>
-                <th style={numCellStyle}>Count</th>
+                <th style={TH}>Site</th>
+                <th style={numThStyle}>Count</th>
               </tr>
             </thead>
             <tbody>
               {bySite.length > 0 ? (
                 bySite.map((s) => (
                   <tr key={s.key}>
-                    <td>{s.key}</td>
+                    <td style={TD}>{s.key}</td>
                     <td style={numCellStyle}>{s.count}</td>
                   </tr>
                 ))

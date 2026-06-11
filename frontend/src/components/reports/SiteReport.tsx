@@ -72,8 +72,59 @@ function sortValue(row: SiteDeviceRow, key: SortKey): number | string {
   }
 }
 
+// ── Shared REPORT OUTPUT style constants (module scope) ─────────
+const SECTION_TITLE: React.CSSProperties = {
+  fontSize: 12,
+  textTransform: 'uppercase',
+  fontWeight: 600,
+  color: 'var(--text-muted)',
+  letterSpacing: '0.06em',
+  margin: '0 0 8px',
+};
+const PANEL: React.CSSProperties = { padding: 16 };
+const STAT_GRID: React.CSSProperties = {
+  display: 'grid',
+  gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+  gap: 12,
+  alignItems: 'stretch',
+  marginBottom: 16,
+};
+const STAT_CARD: React.CSSProperties = {
+  background: 'var(--bg-card)',
+  border: '1px solid var(--border)',
+  borderLeftWidth: 3,
+  borderRadius: 'var(--radius-sm)',
+  padding: '12px 16px',
+  minHeight: 75,
+  display: 'flex',
+  flexDirection: 'column',
+  justifyContent: 'center',
+};
+const STAT_VALUE: React.CSSProperties = { fontSize: 24, fontWeight: 800, lineHeight: 1.1 };
+const STAT_LABEL: React.CSSProperties = {
+  fontSize: 11,
+  textTransform: 'uppercase',
+  color: 'var(--text-muted)',
+  letterSpacing: '0.04em',
+  marginBottom: 4,
+};
+const TH: React.CSSProperties = {
+  fontSize: 11,
+  textTransform: 'uppercase',
+  fontWeight: 600,
+  letterSpacing: '0.06em',
+  color: 'var(--text-muted)',
+  padding: '8px 12px',
+  textAlign: 'left',
+};
+const TD: React.CSSProperties = {
+  fontSize: 12.5,
+  color: 'var(--text-primary)',
+  padding: '8px 12px',
+  height: 36,
+};
 const TH_RIGHT: React.CSSProperties = { textAlign: 'right' };
-const TD_RIGHT: React.CSSProperties = { textAlign: 'right', fontVariantNumeric: 'tabular-nums' };
+const TD_RIGHT: React.CSSProperties = { ...TD, textAlign: 'right', fontVariantNumeric: 'tabular-nums' };
 
 export default function SiteReport({ data }: { data: SiteSummary }) {
   const [sortKey, setSortKey] = useState<SortKey>('uptime_pct');
@@ -119,33 +170,33 @@ export default function SiteReport({ data }: { data: SiteSummary }) {
   return (
     <div>
       {/* 1. Site header */}
-      <h2 style={{ margin: '0 0 4px' }}>{data.site_name ?? '—'}</h2>
-      <div className="sv-muted" style={{ marginBottom: 16 }}>
+      <h2 style={{ margin: '0 0 4px', fontSize: 18, fontWeight: 700 }}>{data.site_name ?? '—'}</h2>
+      <div className="sv-muted" style={{ marginBottom: 16, fontSize: 12 }}>
         {summary.total ?? 0} devices · {fmtNum(summary.avg_uptime, 2)}% overall uptime ·{' '}
         {summary.total_alerts ?? 0} alerts
       </div>
 
-      <div className="sv-cards" style={{ marginBottom: 20 }}>
-        <div className="sv-card total">
-          <div className="sv-muted">Devices</div>
-          <div style={{ fontSize: 24, fontWeight: 700 }}>{summary.total ?? 0}</div>
+      <div style={STAT_GRID}>
+        <div style={{ ...STAT_CARD, borderLeftColor: 'var(--primary)' }}>
+          <div style={STAT_LABEL}>Devices</div>
+          <div style={STAT_VALUE}>{summary.total ?? 0}</div>
         </div>
-        <div className="sv-card up">
-          <div className="sv-muted">Up</div>
-          <div style={{ fontSize: 24, fontWeight: 700 }}>{summary.up ?? 0}</div>
+        <div style={{ ...STAT_CARD, borderLeftColor: 'var(--green)' }}>
+          <div style={STAT_LABEL}>Up</div>
+          <div style={STAT_VALUE}>{summary.up ?? 0}</div>
         </div>
-        <div className="sv-card down">
-          <div className="sv-muted">Down</div>
-          <div style={{ fontSize: 24, fontWeight: 700 }}>{summary.down ?? 0}</div>
+        <div style={{ ...STAT_CARD, borderLeftColor: 'var(--red)' }}>
+          <div style={STAT_LABEL}>Down</div>
+          <div style={STAT_VALUE}>{summary.down ?? 0}</div>
         </div>
-        <div className="sv-card warning">
-          <div className="sv-muted">Overall Uptime %</div>
-          <div style={{ fontSize: 24, fontWeight: 700 }}>{fmtNum(summary.avg_uptime, 2)}%</div>
+        <div style={{ ...STAT_CARD, borderLeftColor: 'var(--yellow)' }}>
+          <div style={STAT_LABEL}>Overall Uptime %</div>
+          <div style={STAT_VALUE}>{fmtNum(summary.avg_uptime, 2)}%</div>
         </div>
       </div>
 
       {/* 2. Devices table */}
-      <div className="sv-panel">
+      <div className="sv-panel" style={PANEL}>
         <table className="sv-table">
           <thead>
             <tr>
@@ -154,6 +205,7 @@ export default function SiteReport({ data }: { data: SiteSummary }) {
                   key={c.key}
                   onClick={() => toggleSort(c.key)}
                   style={{
+                    ...TH,
                     cursor: 'pointer',
                     userSelect: 'none',
                     whiteSpace: 'nowrap',
@@ -176,9 +228,9 @@ export default function SiteReport({ data }: { data: SiteSummary }) {
                   key={`${d.ip}-${d.name}-${i}`}
                   style={!d.sla_met ? { background: 'rgba(200,16,46,0.06)' } : undefined}
                 >
-                  <td>{d.name ?? '—'}</td>
-                  <td>{d.device_type || '—'}</td>
-                  <td>{d.ip ?? '—'}</td>
+                  <td style={TD}>{d.name ?? '—'}</td>
+                  <td style={TD}>{d.device_type || '—'}</td>
+                  <td style={TD}>{d.ip ?? '—'}</td>
                   <td style={TD_RIGHT}>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 8 }}>
                       <span style={{ minWidth: 48, textAlign: 'right' }}>
@@ -189,8 +241,8 @@ export default function SiteReport({ data }: { data: SiteSummary }) {
                         style={{
                           display: 'inline-block',
                           width: 70,
-                          height: 6,
-                          borderRadius: 4,
+                          height: 4,
+                          borderRadius: 2,
                           background: '#e2e8f0',
                           overflow: 'hidden',
                           flex: '0 0 auto',
@@ -202,7 +254,7 @@ export default function SiteReport({ data }: { data: SiteSummary }) {
                             width: `${barWidth}%`,
                             height: '100%',
                             background: barColor,
-                            borderRadius: 4,
+                            borderRadius: 2,
                           }}
                         />
                       </span>
@@ -210,12 +262,12 @@ export default function SiteReport({ data }: { data: SiteSummary }) {
                   </td>
                   <td style={TD_RIGHT}>{fmtNum(d.avg_response_ms, 1)}</td>
                   <td style={TD_RIGHT}>{d.alerts_count ?? 0}</td>
-                  <td>
+                  <td style={TD}>
                     <span className={`sv-badge ${d.sla_met ? 'up' : 'down'}`}>
                       {d.sla_met ? '✓ MET' : '✗ FAILED'}
                     </span>
                   </td>
-                  <td>
+                  <td style={TD}>
                     <GradeBadge grade={d.health_grade} />
                   </td>
                 </tr>
@@ -231,15 +283,15 @@ export default function SiteReport({ data }: { data: SiteSummary }) {
           </tbody>
           {/* 3. Summary footer */}
           <tfoot>
-            <tr style={{ fontWeight: 700, borderTop: '2px solid #e2e8f0' }}>
-              <td>Total: {summary.total ?? 0}</td>
-              <td />
-              <td />
+            <tr style={{ fontWeight: 700, borderTop: '2px solid var(--border)' }}>
+              <td style={TD}>Total: {summary.total ?? 0}</td>
+              <td style={TD} />
+              <td style={TD} />
               <td style={TD_RIGHT}>{fmtNum(summary.avg_uptime, 2)}% avg</td>
-              <td />
+              <td style={TD} />
               <td style={TD_RIGHT}>{summary.total_alerts ?? 0}</td>
-              <td />
-              <td />
+              <td style={TD} />
+              <td style={TD} />
             </tr>
           </tfoot>
         </table>

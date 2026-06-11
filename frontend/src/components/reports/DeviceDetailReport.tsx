@@ -88,6 +88,58 @@ function sevClass(severity: string): string {
   return '';
 }
 
+// ── Shared REPORT OUTPUT style constants (module scope) ─────────
+const SECTION_TITLE: React.CSSProperties = {
+  fontSize: 12,
+  textTransform: 'uppercase',
+  fontWeight: 600,
+  color: 'var(--text-muted)',
+  letterSpacing: '0.06em',
+  margin: '0 0 8px',
+};
+const PANEL: React.CSSProperties = { padding: 16 };
+const STAT_GRID: React.CSSProperties = {
+  display: 'grid',
+  gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+  gap: 12,
+  alignItems: 'stretch',
+};
+const STAT_CARD: React.CSSProperties = {
+  background: 'var(--bg-card)',
+  border: '1px solid var(--border)',
+  borderLeftWidth: 3,
+  borderLeftColor: 'var(--text-muted)',
+  borderRadius: 'var(--radius-sm)',
+  padding: '12px 16px',
+  minHeight: 75,
+  display: 'flex',
+  flexDirection: 'column',
+  justifyContent: 'center',
+};
+const STAT_VALUE: React.CSSProperties = { fontSize: 24, fontWeight: 800, lineHeight: 1.1 };
+const STAT_LABEL: React.CSSProperties = {
+  fontSize: 11,
+  textTransform: 'uppercase',
+  color: 'var(--text-muted)',
+  letterSpacing: '0.04em',
+  marginTop: 4,
+};
+const TH: React.CSSProperties = {
+  fontSize: 11,
+  textTransform: 'uppercase',
+  fontWeight: 600,
+  letterSpacing: '0.06em',
+  color: 'var(--text-muted)',
+  padding: '8px 12px',
+  textAlign: 'left',
+};
+const TD: React.CSSProperties = {
+  fontSize: 12.5,
+  color: 'var(--text-primary)',
+  padding: '8px 12px',
+  height: 36,
+};
+
 // ── Loading skeleton (module scope) ────────────────────────────
 function DeviceReportSkeleton() {
   return (
@@ -130,12 +182,12 @@ export default function DeviceDetailReport({ data }: { data?: DeviceDetail | nul
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       {/* 1. Device header */}
-      <div className="sv-panel" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
+      <div className="sv-panel" style={{ ...PANEL, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap', marginBottom: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
           <StatusDot status="up" size={14} />
           <div style={{ minWidth: 0 }}>
-            <h2 style={{ margin: 0, fontSize: 20 }}>{device.name}</h2>
-            <div className="sv-muted" style={{ fontSize: 13, marginTop: 2 }}>{subline || '—'}</div>
+            <h2 style={{ margin: 0, fontSize: 18 }}>{device.name}</h2>
+            <div className="sv-muted" style={{ fontSize: 12, marginTop: 2 }}>{subline || '—'}</div>
           </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, textAlign: 'right' }}>
@@ -152,28 +204,28 @@ export default function DeviceDetailReport({ data }: { data?: DeviceDetail | nul
       </div>
 
       {/* 2. Stat cards */}
-      <div className="sv-cards">
-        <div className="sv-card up">
-          <div className="num">{availability.uptime_pct === null ? '—' : `${availability.uptime_pct}%`}</div>
-          <div className="label">Uptime</div>
+      <div style={STAT_GRID}>
+        <div style={{ ...STAT_CARD, borderLeftColor: 'var(--green)' }}>
+          <div style={STAT_VALUE}>{availability.uptime_pct === null ? '—' : `${availability.uptime_pct}%`}</div>
+          <div style={STAT_LABEL}>Uptime</div>
         </div>
-        <div className="sv-card">
-          <div className="num">{response.avg_ms === null ? '—' : `${response.avg_ms} ms`}</div>
-          <div className="label">Avg Response</div>
+        <div style={STAT_CARD}>
+          <div style={STAT_VALUE}>{response.avg_ms === null ? '—' : `${response.avg_ms} ms`}</div>
+          <div style={STAT_LABEL}>Avg Response</div>
         </div>
-        <div className="sv-card warning">
-          <div className="num">{alerts.length}</div>
-          <div className="label">Total Alerts</div>
+        <div style={{ ...STAT_CARD, borderLeftColor: 'var(--yellow)' }}>
+          <div style={STAT_VALUE}>{alerts.length}</div>
+          <div style={STAT_LABEL}>Total Alerts</div>
         </div>
-        <div className="sv-card down">
-          <div className="num">{`${availability.downtime_minutes} min`}</div>
-          <div className="label">Downtime</div>
+        <div style={{ ...STAT_CARD, borderLeftColor: 'var(--red)' }}>
+          <div style={STAT_VALUE}>{`${availability.downtime_minutes} min`}</div>
+          <div style={STAT_LABEL}>Downtime</div>
         </div>
       </div>
 
       {/* 3. 90-day availability calendar */}
-      <div className="sv-panel">
-        <h3 style={{ marginTop: 0, marginBottom: 12, fontSize: 15 }}>90-day availability</h3>
+      <div className="sv-panel" style={PANEL}>
+        <h3 style={SECTION_TITLE}>90-day availability</h3>
         {uptime_by_day.length === 0 ? (
           <div className="sv-muted">No availability data in this period.</div>
         ) : (
@@ -191,56 +243,56 @@ export default function DeviceDetailReport({ data }: { data?: DeviceDetail | nul
       </div>
 
       {/* 4. Response time summary */}
-      <div className="sv-panel">
-        <h3 style={{ marginTop: 0, marginBottom: 12, fontSize: 15 }}>Response time</h3>
+      <div className="sv-panel" style={PANEL}>
+        <h3 style={SECTION_TITLE}>Response time</h3>
         <table className="sv-table">
           <thead>
             <tr>
-              <th>Metric</th>
-              <th>Value</th>
+              <th style={TH}>Metric</th>
+              <th style={TH}>Value</th>
             </tr>
           </thead>
           <tbody>
-            <tr><td>Avg (ms)</td><td>{dash(response.avg_ms)}</td></tr>
-            <tr><td>Min (ms)</td><td>{dash(response.min_ms)}</td></tr>
-            <tr><td>Max (ms)</td><td>{dash(response.max_ms)}</td></tr>
-            <tr><td>P95 (ms)</td><td>{dash(response.p95_ms)}</td></tr>
+            <tr><td style={TD}>Avg (ms)</td><td style={TD}>{dash(response.avg_ms)}</td></tr>
+            <tr><td style={TD}>Min (ms)</td><td style={TD}>{dash(response.min_ms)}</td></tr>
+            <tr><td style={TD}>Max (ms)</td><td style={TD}>{dash(response.max_ms)}</td></tr>
+            <tr><td style={TD}>P95 (ms)</td><td style={TD}>{dash(response.p95_ms)}</td></tr>
             <tr>
-              <td>Baseline (mean / p95 ms)</td>
-              <td>{`${dash(baseline.mean_ms)} / ${dash(baseline.p95_ms)}`}</td>
+              <td style={TD}>Baseline (mean / p95 ms)</td>
+              <td style={TD}>{`${dash(baseline.mean_ms)} / ${dash(baseline.p95_ms)}`}</td>
             </tr>
           </tbody>
         </table>
       </div>
 
       {/* 5. Alert history */}
-      <div className="sv-panel">
-        <h3 style={{ marginTop: 0, marginBottom: 12, fontSize: 15 }}>Alert history</h3>
+      <div className="sv-panel" style={PANEL}>
+        <h3 style={SECTION_TITLE}>Alert history</h3>
         {alerts.length === 0 ? (
           <div className="sv-muted">No alerts in this period.</div>
         ) : (
           <table className="sv-table">
             <thead>
               <tr>
-                <th>Triggered</th>
-                <th>Type</th>
-                <th>Severity</th>
-                <th>Message</th>
-                <th>Duration</th>
-                <th>Status</th>
-                <th>Ack&apos;d by</th>
+                <th style={TH}>Triggered</th>
+                <th style={TH}>Type</th>
+                <th style={TH}>Severity</th>
+                <th style={TH}>Message</th>
+                <th style={TH}>Duration</th>
+                <th style={TH}>Status</th>
+                <th style={TH}>Ack&apos;d by</th>
               </tr>
             </thead>
             <tbody>
               {alerts.map((a) => (
                 <tr key={a.id}>
-                  <td>{fmtTime(a.triggered_at)}</td>
-                  <td>{a.alert_type}</td>
-                  <td><span className={`sv-badge ${sevClass(a.severity)}`}>{a.severity}</span></td>
-                  <td>{a.message}</td>
-                  <td>{`${a.duration_minutes} min`}</td>
-                  <td>{a.status}</td>
-                  <td>{a.acknowledged_by || '—'}</td>
+                  <td style={TD}>{fmtTime(a.triggered_at)}</td>
+                  <td style={TD}>{a.alert_type}</td>
+                  <td style={TD}><span className={`sv-badge ${sevClass(a.severity)}`}>{a.severity}</span></td>
+                  <td style={TD}>{a.message}</td>
+                  <td style={TD}>{`${a.duration_minutes} min`}</td>
+                  <td style={TD}>{a.status}</td>
+                  <td style={TD}>{a.acknowledged_by || '—'}</td>
                 </tr>
               ))}
             </tbody>
@@ -250,22 +302,22 @@ export default function DeviceDetailReport({ data }: { data?: DeviceDetail | nul
 
       {/* 6. SNMP metrics */}
       {snmp_summary.length > 0 && (
-        <div className="sv-panel">
-          <h3 style={{ marginTop: 0, marginBottom: 12, fontSize: 15 }}>SNMP metrics</h3>
+        <div className="sv-panel" style={PANEL}>
+          <h3 style={SECTION_TITLE}>SNMP metrics</h3>
           <table className="sv-table">
             <thead>
               <tr>
-                <th>Sensor</th>
-                <th>Current</th>
-                <th>Baseline</th>
+                <th style={TH}>Sensor</th>
+                <th style={TH}>Current</th>
+                <th style={TH}>Baseline</th>
               </tr>
             </thead>
             <tbody>
               {snmp_summary.map((s, i) => (
                 <tr key={`${s.sensor_name}-${s.metric_name}-${i}`}>
-                  <td>{s.sensor_name}</td>
-                  <td>{dash(s.current_value)}</td>
-                  <td>{dash(s.baseline_mean)}</td>
+                  <td style={TD}>{s.sensor_name}</td>
+                  <td style={TD}>{dash(s.current_value)}</td>
+                  <td style={TD}>{dash(s.baseline_mean)}</td>
                 </tr>
               ))}
             </tbody>
@@ -275,8 +327,8 @@ export default function DeviceDetailReport({ data }: { data?: DeviceDetail | nul
 
       {/* 7. Connected devices (topology) */}
       {topology.length > 0 && (
-        <div className="sv-panel">
-          <h3 style={{ marginTop: 0, marginBottom: 12, fontSize: 15 }}>Connected devices</h3>
+        <div className="sv-panel" style={PANEL}>
+          <h3 style={SECTION_TITLE}>Connected devices</h3>
           <ul style={{ margin: 0, paddingLeft: 18, display: 'flex', flexDirection: 'column', gap: 6 }}>
             {topology.map((t, i) => {
               const name = t.neighbor_name || t.neighbor_ip || 'Unknown neighbor';

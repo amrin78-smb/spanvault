@@ -63,6 +63,32 @@ function barWidthPct(value: number | null, metric: TopWorst['metric'], maxValue:
   return Math.max(0, Math.min(100, (value / maxValue) * 100));
 }
 
+// ── Shared REPORT OUTPUT style constants (module scope) ─────────
+const PANEL: React.CSSProperties = { padding: 16 };
+const SECTION_TITLE: React.CSSProperties = {
+  fontSize: 12,
+  textTransform: 'uppercase',
+  fontWeight: 600,
+  color: 'var(--text-muted)',
+  letterSpacing: '0.06em',
+  margin: '0 0 8px',
+};
+const TH: React.CSSProperties = {
+  fontSize: 11,
+  textTransform: 'uppercase',
+  fontWeight: 600,
+  letterSpacing: '0.06em',
+  color: 'var(--text-muted)',
+  padding: '8px 12px',
+  textAlign: 'left',
+};
+const TD: React.CSSProperties = {
+  fontSize: 12.5,
+  color: 'var(--text-primary)',
+  padding: '8px 12px',
+  height: 36,
+};
+
 export default function TopWorstReport({ data }: { data: TopWorst }) {
   if (!data) return null;
   const metric = data.metric || 'uptime';
@@ -74,23 +100,23 @@ export default function TopWorstReport({ data }: { data: TopWorst }) {
 
   return (
     <div>
-      <h2 style={{ margin: '0 0 4px 0' }}>
+      <h2 style={SECTION_TITLE}>
         Top {devices.length} Worst by {label}
       </h2>
       {generated_at ? (
-        <div className="sv-muted" style={{ marginBottom: 16, fontSize: 13 }}>
+        <div className="sv-muted" style={{ marginBottom: 12, fontSize: 11 }}>
           Generated {generated_at}
         </div>
       ) : null}
 
-      <div className="sv-panel">
+      <div className="sv-panel" style={PANEL}>
         <table className="sv-table" style={{ width: '100%' }}>
           <thead>
             <tr>
-              <th style={{ width: 64 }}>Rank</th>
-              <th>Device</th>
-              <th>Site</th>
-              <th style={{ width: '38%' }}>{valueHeader}</th>
+              <th style={{ ...TH, width: 64 }}>Rank</th>
+              <th style={TH}>Device</th>
+              <th style={TH}>Site</th>
+              <th style={{ ...TH, width: '38%' }}>{valueHeader}</th>
             </tr>
           </thead>
           <tbody>
@@ -104,19 +130,19 @@ export default function TopWorstReport({ data }: { data: TopWorst }) {
 
               return (
                 <tr key={device.device_id}>
-                  <td>
+                  <td style={TD}>
                     <span
                       style={{
                         display: 'inline-flex',
                         alignItems: 'center',
                         justifyContent: 'center',
-                        minWidth: 30,
-                        height: 30,
+                        minWidth: 26,
+                        height: 22,
                         padding: '0 6px',
                         borderRadius: 999,
                         background: rankBg,
                         color: '#ffffff',
-                        fontSize: 12,
+                        fontSize: 11,
                         fontWeight: 700,
                         lineHeight: 1,
                       }}
@@ -124,19 +150,18 @@ export default function TopWorstReport({ data }: { data: TopWorst }) {
                       #{rank}
                     </span>
                   </td>
-                  <td>{device.device_name || '—'}</td>
-                  <td className="sv-muted">{device.site_name || '—'}</td>
-                  <td>
+                  <td style={TD}>{device.device_name || '—'}</td>
+                  <td style={TD} className="sv-muted">{device.site_name || '—'}</td>
+                  <td style={TD}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                       <div
                         style={{
                           flex: 1,
                           minWidth: 80,
-                          height: 14,
-                          borderRadius: 7,
+                          height: 4,
+                          borderRadius: 2,
                           background: '#eceef2',
                           overflow: 'hidden',
-                          border: '1px solid #e0e3e9',
                         }}
                       >
                         <div

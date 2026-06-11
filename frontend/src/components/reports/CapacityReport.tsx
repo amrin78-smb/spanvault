@@ -36,7 +36,26 @@ function isAtRisk(row: CapacityRow): boolean {
   return false;
 }
 
+// ── Shared REPORT OUTPUT style constants (module scope) ─────────
+const PANEL: React.CSSProperties = { padding: 16 };
+const TH: React.CSSProperties = {
+  fontSize: 11,
+  textTransform: 'uppercase',
+  fontWeight: 600,
+  letterSpacing: '0.06em',
+  color: 'var(--text-muted)',
+  padding: '8px 12px',
+  textAlign: 'left',
+};
+const TD: React.CSSProperties = {
+  fontSize: 12.5,
+  color: 'var(--text-primary)',
+  padding: '8px 12px',
+  height: 36,
+};
+const NUM_TH: React.CSSProperties = { ...TH, textAlign: 'right' };
 const NUM_COL: React.CSSProperties = {
+  ...TD,
   textAlign: 'right',
   fontVariantNumeric: 'tabular-nums',
   whiteSpace: 'nowrap',
@@ -45,20 +64,20 @@ const NUM_COL: React.CSSProperties = {
 export default function CapacityReport({ data }: { data: CapacityRow[] }) {
   const rows = Array.isArray(data) ? data : [];
   return (
-    <div className="sv-panel">
+    <div className="sv-panel" style={PANEL}>
       <table className="sv-table" style={{ width: '100%' }}>
         <thead>
           <tr>
-            <th>Device</th>
-            <th>Interface</th>
-            <th style={NUM_COL}>Avg In</th>
-            <th style={NUM_COL}>Avg Out</th>
-            <th style={NUM_COL}>Peak (In/Out)</th>
-            <th>Trend</th>
-            <th style={NUM_COL}>30d</th>
-            <th style={NUM_COL}>60d</th>
-            <th style={NUM_COL}>90d</th>
-            <th>Status</th>
+            <th style={TH}>Device</th>
+            <th style={TH}>Interface</th>
+            <th style={NUM_TH}>Avg In</th>
+            <th style={NUM_TH}>Avg Out</th>
+            <th style={NUM_TH}>Peak (In/Out)</th>
+            <th style={TH}>Trend</th>
+            <th style={NUM_TH}>30d</th>
+            <th style={NUM_TH}>60d</th>
+            <th style={NUM_TH}>90d</th>
+            <th style={TH}>Status</th>
           </tr>
         </thead>
         <tbody>
@@ -66,23 +85,23 @@ export default function CapacityReport({ data }: { data: CapacityRow[] }) {
             const atRisk = isAtRisk(row);
             return (
               <tr key={`${row.device_name}-${row.interface}-${index}`}>
-                <td>
+                <td style={TD}>
                   {row.device_name || '—'}
                   {row.site_name ? (
-                    <div className="sv-muted" style={{ fontSize: 12 }}>{row.site_name}</div>
+                    <div className="sv-muted" style={{ fontSize: 11 }}>{row.site_name}</div>
                   ) : null}
                 </td>
-                <td>{row.interface || '—'}</td>
+                <td style={TD}>{row.interface || '—'}</td>
                 <td style={NUM_COL}>{fmtMbps(row.avg_in_mbps)}</td>
                 <td style={NUM_COL}>{fmtMbps(row.avg_out_mbps)}</td>
                 <td style={NUM_COL}>
                   {fmtMbps(row.peak_in_mbps)} / {fmtMbps(row.peak_out_mbps)}
                 </td>
-                <td>{trendCell(row.trend_in)}</td>
+                <td style={TD}>{trendCell(row.trend_in)}</td>
                 <td style={NUM_COL}>{fmtMbps(row.proj_30d_in)}</td>
                 <td style={NUM_COL}>{fmtMbps(row.proj_60d_in)}</td>
                 <td style={NUM_COL}>{fmtMbps(row.proj_90d_in)}</td>
-                <td>
+                <td style={TD}>
                   {atRisk ? (
                     <span className="sv-badge down">At Risk</span>
                   ) : (

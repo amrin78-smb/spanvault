@@ -24,7 +24,59 @@ type Executive = {
   recommendations: string[];
 };
 
-const numCell: React.CSSProperties = { textAlign: 'right', fontVariantNumeric: 'tabular-nums' };
+// ── Shared REPORT OUTPUT style constants (module scope) ─────────
+const SECTION_TITLE: React.CSSProperties = {
+  fontSize: 12,
+  textTransform: 'uppercase',
+  fontWeight: 600,
+  color: 'var(--text-muted)',
+  letterSpacing: '0.06em',
+  margin: '0 0 8px',
+};
+const PANEL: React.CSSProperties = { padding: 16 };
+const STAT_GRID: React.CSSProperties = {
+  display: 'grid',
+  gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+  gap: 12,
+  alignItems: 'stretch',
+  marginBottom: 16,
+};
+const STAT_CARD: React.CSSProperties = {
+  background: 'var(--bg-card)',
+  border: '1px solid var(--border)',
+  borderLeftWidth: 3,
+  borderRadius: 'var(--radius-sm)',
+  padding: '12px 16px',
+  minHeight: 75,
+  display: 'flex',
+  flexDirection: 'column',
+  justifyContent: 'center',
+};
+const STAT_VALUE: React.CSSProperties = { fontSize: 24, fontWeight: 800, lineHeight: 1.1 };
+const STAT_LABEL: React.CSSProperties = {
+  fontSize: 11,
+  textTransform: 'uppercase',
+  color: 'var(--text-muted)',
+  letterSpacing: '0.04em',
+  marginTop: 4,
+};
+const TH: React.CSSProperties = {
+  fontSize: 11,
+  textTransform: 'uppercase',
+  fontWeight: 600,
+  letterSpacing: '0.06em',
+  color: 'var(--text-muted)',
+  padding: '8px 12px',
+  textAlign: 'left',
+};
+const TD: React.CSSProperties = {
+  fontSize: 12.5,
+  color: 'var(--text-primary)',
+  padding: '8px 12px',
+  height: 36,
+};
+const numCell: React.CSSProperties = { ...TD, textAlign: 'right', fontVariantNumeric: 'tabular-nums' };
+const numTh: React.CSSProperties = { ...TH, textAlign: 'right' };
 
 function fmtPct(v: number | null | undefined): string {
   return v === null || v === undefined ? '—' : `${v}%`;
@@ -42,36 +94,36 @@ export default function ExecutiveSummaryReport({ data }: { data: Executive }) {
   return (
     <div>
       {/* 1. Headline */}
-      <div style={{ marginBottom: 28 }}>
+      <div style={{ marginBottom: 16 }}>
         <h1
           style={{
-            fontSize: 28,
+            fontSize: 20,
             fontWeight: 700,
             lineHeight: 1.2,
             margin: 0,
-            color: '#1a2744',
+            color: 'var(--text-primary)',
           }}
         >
           {data.headline || 'Network availability summary'}
         </h1>
-        <div className="sv-muted" style={{ marginTop: 8, fontSize: 14 }}>
+        <div className="sv-muted" style={{ marginTop: 4, fontSize: 12 }}>
           Reporting period: {data.period || ''} · Generated{' '}
           {data.generated_at ? new Date(data.generated_at).toLocaleString() : '—'}
         </div>
       </div>
 
       {/* 2. KPI cards */}
-      <div className="sv-cards" style={{ marginBottom: 28 }}>
-        <div className="sv-card up">
-          <div className="num">{fmtPct(data.overall_uptime_pct)}</div>
-          <div className="label">Overall Uptime</div>
+      <div style={STAT_GRID}>
+        <div style={{ ...STAT_CARD, borderLeftColor: 'var(--green)' }}>
+          <div style={STAT_VALUE}>{fmtPct(data.overall_uptime_pct)}</div>
+          <div style={STAT_LABEL}>Overall Uptime</div>
           {hasDelta && (
             <div
               style={{
-                marginTop: 6,
-                fontSize: 13,
+                marginTop: 4,
+                fontSize: 11,
                 fontWeight: 600,
-                color: deltaPositive ? '#16a34a' : '#C8102E',
+                color: deltaPositive ? 'var(--green)' : 'var(--primary)',
               }}
             >
               {deltaPositive ? '+' : ''}
@@ -79,35 +131,33 @@ export default function ExecutiveSummaryReport({ data }: { data: Executive }) {
             </div>
           )}
         </div>
-        <div className="sv-card down">
-          <div className="num">{data.total_incidents ?? '—'}</div>
-          <div className="label">Total Incidents</div>
+        <div style={{ ...STAT_CARD, borderLeftColor: 'var(--red)' }}>
+          <div style={STAT_VALUE}>{data.total_incidents ?? '—'}</div>
+          <div style={STAT_LABEL}>Total Incidents</div>
         </div>
-        <div className="sv-card warning">
-          <div className="num" style={{ fontSize: 24 }}>{data.total_downtime_minutes ?? 0} min</div>
-          <div className="label">Downtime</div>
+        <div style={{ ...STAT_CARD, borderLeftColor: 'var(--yellow)' }}>
+          <div style={STAT_VALUE}>{data.total_downtime_minutes ?? 0} min</div>
+          <div style={STAT_LABEL}>Downtime</div>
         </div>
       </div>
 
       {/* 3. Sites table */}
-      <div className="sv-panel" style={{ marginBottom: 28 }}>
-        <h3 style={{ margin: '0 0 12px', fontSize: 16, fontWeight: 700, color: '#1a2744' }}>
-          Sites Summary
-        </h3>
+      <div className="sv-panel" style={PANEL}>
+        <h3 style={SECTION_TITLE}>Sites Summary</h3>
         <table className="sv-table">
           <thead>
             <tr>
-              <th>Site</th>
-              <th>Grade</th>
-              <th style={numCell}>Uptime %</th>
-              <th style={numCell}>Incidents</th>
+              <th style={TH}>Site</th>
+              <th style={TH}>Grade</th>
+              <th style={numTh}>Uptime %</th>
+              <th style={numTh}>Incidents</th>
             </tr>
           </thead>
           <tbody>
             {sitesSummary.map((s, i) => (
               <tr key={`${s.site}-${i}`}>
-                <td>{s.site}</td>
-                <td>
+                <td style={TD}>{s.site}</td>
+                <td style={TD}>
                   <GradeBadge grade={s.health_grade} />
                 </td>
                 <td style={numCell}>{fmtPct(s.uptime_pct)}</td>
@@ -129,30 +179,21 @@ export default function ExecutiveSummaryReport({ data }: { data: Executive }) {
       {data.biggest_incident && (
         <div
           style={{
-            marginBottom: 28,
-            padding: '16px 18px',
+            marginBottom: 16,
+            padding: '16px 20px',
             border: '1px solid #f3b4bd',
-            borderLeft: '4px solid #C8102E',
-            borderRadius: 6,
-            background: '#fdf2f4',
+            borderLeft: '3px solid var(--primary)',
+            borderRadius: 'var(--radius-sm)',
+            background: 'var(--primary-light)',
           }}
         >
-          <div
-            style={{
-              fontSize: 12,
-              fontWeight: 700,
-              textTransform: 'uppercase',
-              letterSpacing: 0.5,
-              color: '#C8102E',
-              marginBottom: 6,
-            }}
-          >
+          <div style={{ ...SECTION_TITLE, color: 'var(--primary)' }}>
             Biggest Incident
           </div>
-          <div style={{ fontSize: 17, fontWeight: 600, color: '#1a2744' }}>
+          <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text-primary)' }}>
             {data.biggest_incident.title}
           </div>
-          <div className="sv-muted" style={{ marginTop: 4, fontSize: 14 }}>
+          <div className="sv-muted" style={{ marginTop: 4, fontSize: 12.5 }}>
             Lasted{' '}
             {data.biggest_incident.duration_minutes === null
               ? '—'
@@ -163,14 +204,12 @@ export default function ExecutiveSummaryReport({ data }: { data: Executive }) {
       )}
 
       {/* 5. Recommendations */}
-      <div className="sv-panel">
-        <h3 style={{ margin: '0 0 12px', fontSize: 16, fontWeight: 700, color: '#1a2744' }}>
-          Recommendations
-        </h3>
+      <div className="sv-panel" style={PANEL}>
+        <h3 style={SECTION_TITLE}>Recommendations</h3>
         {recommendations.length > 0 ? (
-          <ul style={{ margin: 0, paddingLeft: 20, lineHeight: 1.7 }}>
+          <ul style={{ margin: 0, paddingLeft: 20, lineHeight: 1.6 }}>
             {recommendations.map((r, i) => (
-              <li key={i} style={{ fontSize: 14, color: '#1a2744' }}>
+              <li key={i} style={{ fontSize: 12.5, color: 'var(--text-primary)' }}>
                 {r}
               </li>
             ))}
