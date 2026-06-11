@@ -29,6 +29,14 @@ CREATE TABLE IF NOT EXISTS monitored_devices (
 );
 -- Detected SNMP vendor (populated by the collector's vendor parser system).
 ALTER TABLE monitored_devices ADD COLUMN IF NOT EXISTS device_vendor TEXT;
+-- Columns the reports/dashboard depend on. These also live in the CREATE TABLE
+-- above, but CREATE TABLE IF NOT EXISTS is a no-op on a DB whose table predates
+-- them — so guard each one idempotently or the executive report (and others)
+-- 500 with "column ... does not exist" on an older deployment.
+ALTER TABLE monitored_devices ADD COLUMN IF NOT EXISTS site_id               INTEGER;
+ALTER TABLE monitored_devices ADD COLUMN IF NOT EXISTS site_name             TEXT;
+ALTER TABLE monitored_devices ADD COLUMN IF NOT EXISTS poll_interval_seconds INTEGER NOT NULL DEFAULT 300;
+ALTER TABLE monitored_devices ADD COLUMN IF NOT EXISTS active                 BOOLEAN NOT NULL DEFAULT TRUE;
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_mdev_ip     ON monitored_devices(ip_address);
 CREATE INDEX        IF NOT EXISTS idx_mdev_nvid   ON monitored_devices(netvault_device_id);

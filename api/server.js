@@ -3893,6 +3893,7 @@ app.get('/api/reports/capacity', wrap(async (req, res) => {
 
 // ── Executive summary ─────────────────────────────────────────
 app.get('/api/reports/executive', wrap(async (req, res) => {
+  try {
   const win = getDateRange({ ...req.query, range: req.query.range || '30d' });
   // Previous comparison window: the same-length span immediately before the
   // reporting window ([prevStart, start)).
@@ -3918,33 +3919,42 @@ app.get('/api/reports/executive', wrap(async (req, res) => {
   const scSiteAnd = scSite ? ` AND ${scSite}` : '';
   const caps = await getReportCaps();
 
-  const ov = await sv.query(`
+  // Each core query degrades to a safe fallback row instead of 500ing the whole
+  // report, and logs WHICH query failed (visible in SpanVault-API.err.log) so a
+  // schema/data problem on the live DB is pinpointed without taking the page
+  // down. The outer try/catch below is the backstop for anything non-query.
+  const runQ = async (label, sql, params, fallbackRows) => {
+    try { return await sv.query(sql, params); }
+    catch (e) { console.error(`[reports/executive] query '${label}' failed: ${e.message}`); return { rows: fallbackRows }; }
+  };
+
+  const ov = await runQ('overview', `
     SELECT COUNT(*)::int AS tc, SUM(CASE WHEN p.status <> 'up' THEN 1 ELSE 0 END)::int AS bad
     FROM ping_results p JOIN monitored_devices d ON d.id = p.device_id
-    WHERE p.ts BETWEEN $1 AND $2${scWinAnd}`, pWin);
-  const prev = await sv.query(`
+    WHERE p.ts BETWEEN $1 AND $2${scWinAnd}`, pWin, [{ tc: 0, bad: 0 }]);
+  const prev = await runQ('prev-overview', `
     SELECT COUNT(*)::int AS tc, SUM(CASE WHEN p.status <> 'up' THEN 1 ELSE 0 END)::int AS bad
     FROM ping_results p JOIN monitored_devices d ON d.id = p.device_id
-    WHERE p.ts >= $3 AND p.ts < $1${scPrevAnd}`, pPrev);
-  const dt = await sv.query(`
+    WHERE p.ts >= $3 AND p.ts < $1${scPrevAnd}`, pPrev, [{ tc: 0, bad: 0 }]);
+  const dt = await runQ('downtime', `
     SELECT COALESCE(SUM(sub.failed * d.poll_interval_seconds / 60.0), 0) AS dt
     FROM monitored_devices d
     JOIN LATERAL (
       SELECT SUM(CASE WHEN status <> 'up' THEN 1 ELSE 0 END) AS failed
       FROM ping_results WHERE device_id = d.id AND ts BETWEEN $1 AND $2
     ) sub ON TRUE
-    WHERE d.active = TRUE${scWinAnd}`, pWin);
-  const alertCounts = await sv.query(`
+    WHERE d.active = TRUE${scWinAnd}`, pWin, [{ dt: 0 }]);
+  const alertCounts = await runQ('alert-counts', `
     SELECT
       COUNT(*) FILTER (WHERE a.triggered_at BETWEEN $1 AND $2)::int AS cur,
       COUNT(*) FILTER (WHERE a.triggered_at >= $3 AND a.triggered_at < $1)::int AS prev
     FROM alerts a JOIN monitored_devices d ON d.id = a.device_id
-    WHERE a.alert_type <> 'recovery' AND a.triggered_at >= $3${scPrevAnd}`, pPrev);
+    WHERE a.alert_type <> 'recovery' AND a.triggered_at >= $3${scPrevAnd}`, pPrev, [{ cur: 0, prev: 0 }]);
   // Per-site availability + a per-site "incidents" count (device_down alerts).
   // The incident count is pre-aggregated into a CTE keyed by the resolved site
   // name and LEFT JOINed — this avoids referencing the grouped column inside a
   // correlated sub-select (a GROUP-BY error on stricter Postgres configs).
-  const siteRows = await sv.query(`
+  const siteRows = await runQ('site-rows', `
     WITH site_alerts AS (
       SELECT COALESCE(d.site_name, 'Unassigned') AS site_name, COUNT(*)::int AS incidents
       FROM alerts a JOIN monitored_devices d ON d.id = a.device_id
@@ -3958,7 +3968,7 @@ app.get('/api/reports/executive', wrap(async (req, res) => {
     LEFT JOIN ping_results p ON p.device_id = d.id AND p.ts BETWEEN $1 AND $2
     LEFT JOIN site_alerts sa ON sa.site_name = COALESCE(d.site_name, 'Unassigned')
     WHERE d.active = TRUE${scWinAnd}
-    GROUP BY COALESCE(d.site_name, 'Unassigned') ORDER BY 1`, pWin);
+    GROUP BY COALESCE(d.site_name, 'Unassigned') ORDER BY 1`, pWin, []);
 
   // Incidents are global (no site column) and the table is created by a later
   // intelligence migration — gate on capability detection (like alerts) and
@@ -4061,6 +4071,11 @@ app.get('/api/reports/executive', wrap(async (req, res) => {
     },
     recommendations: recommendations.slice(0, 3),
   });
+  } catch (err) {
+    console.error('[reports/executive] FULL ERROR:', err);
+    console.error('[reports/executive] STACK:', err.stack);
+    res.status(500).json({ error: err.message });
+  }
 }));
 
 // ══════════════════════════════════════════════════════════════
