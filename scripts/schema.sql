@@ -503,6 +503,9 @@ ALTER TABLE wireless_controllers ADD COLUMN IF NOT EXISTS ha_mode TEXT;         
 ALTER TABLE wireless_controllers ADD COLUMN IF NOT EXISTS ha_peer_ip TEXT;
 ALTER TABLE wireless_controllers ADD COLUMN IF NOT EXISTS ha_sync_status TEXT;   -- synced/not-synced/unknown/n-a
 ALTER TABLE wireless_controllers ADD COLUMN IF NOT EXISTS ap_disconnects_24h INTEGER;  -- from wireless_client_events
+-- One-time OID capability discovery: { capabilityKey: workingOid, probe_done: true }.
+ALTER TABLE wireless_controllers ADD COLUMN IF NOT EXISTS capabilities JSONB DEFAULT '{}';
+ALTER TABLE wireless_controllers ADD COLUMN IF NOT EXISTS capabilities_probed_at TIMESTAMPTZ;
 -- Auto-created SNMP controllers are keyed on their device so they aren't dup'd.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_wctl_snmp_device
   ON wireless_controllers(snmp_device_id) WHERE snmp_device_id IS NOT NULL;

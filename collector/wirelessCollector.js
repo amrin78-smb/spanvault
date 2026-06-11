@@ -35,25 +35,6 @@ const apiClients = {
 
 const log = (...a) => console.log(`[${new Date().toISOString()}] [wireless]`, ...a);
 
-// ── Controller metadata probing (scalar OIDs) ─────────────────
-// Probe a single scalar OID, logging the result. Never throws; resolves null on
-// any error / missing varbind so a missing OID never crashes a poll (and never
-// returns a false 0).
-async function probeOid(session, oid, label) {
-  return new Promise((resolve) => {
-    session.get([oid], (err, varbinds) => {
-      if (err || !varbinds[0] || snmp.isVarbindError(varbinds[0])) {
-        console.log(`[OID Probe] ${label} (${oid}) → no data`);
-        resolve(null);
-        return;
-      }
-      const val = varbinds[0].value;
-      console.log(`[OID Probe] ${label} (${oid}) → ${val}`);
-      resolve(val);
-    });
-  });
-}
-
 // Coerce a raw SNMP value to text (Buffers → ascii via .toString()); null-safe.
 function asStr(val) {
   return val == null ? null : String(val);
@@ -69,30 +50,94 @@ function asIp(val) {
   return String(val);
 }
 
-// Diagnostic OIDs walked on every Aruba poll to locate the real license-limit
-// OID on a given ArubaOS build. Results are logged via [OID Probe] lines only —
-// never stored — so the correct OID can be confirmed against live hardware.
-const ARUBA_LICENSE_DIAG_OIDS = [
-  '1.3.6.1.4.1.14823.2.2.1.2.1.4.0',
-  '1.3.6.1.4.1.14823.2.2.1.1.1.4.0',
-  '1.3.6.1.4.1.14823.2.2.1.2.1.1.0',
-  '1.3.6.1.4.1.14823.2.2.1.2.1.2.0',
-  '1.3.6.1.4.1.14823.2.2.1.2.1.3.0',
-  '1.3.6.1.4.1.14823.2.2.1.2.1.5.0',
-  '1.3.6.1.4.1.14823.2.2.1.2.1.6.0',
-  '1.3.6.1.4.1.14823.2.2.1.2.1.7.0',
-  '1.3.6.1.4.1.14823.2.2.1.2.1.8.0',
-  '1.3.6.1.4.1.14823.2.2.1.2.1.9.0',
-  '1.3.6.1.4.1.14823.2.2.1.2.1.10.0',
-];
-// Parent of the Aruba license/switch-role branch — walked whole so every
-// populated OID under it is logged for discovery.
-const ARUBA_LICENSE_SUBTREE = '1.3.6.1.4.1.14823.2.2.1.2.1';
+// ── Capability probe (one-time OID discovery) ─────────────────
+// Per-vendor candidate OIDs for each controller-metadata capability. Probed ONCE
+// per controller; the first OID that returns a real value is stored in the
+// controller's `capabilities` JSONB and reused on every subsequent poll (no more
+// per-poll guessing). Aruba OIDs are confirmed against live Aruba7205 / ArubaOS
+// 8.10.0.8 hardware.
+const VENDOR_OID_CANDIDATES = {
+  aruba: {
+    model:        ['1.3.6.1.4.1.14823.2.2.1.2.1.3.0'],
+    firmware:     ['1.3.6.1.4.1.14823.2.2.1.2.1.28.0'],
+    licensed_aps: ['1.3.6.1.4.1.14823.2.2.1.2.1.23.0'],
+    ha_role:      ['1.3.6.1.4.1.14823.2.2.1.2.1.4.0'],
+    ha_peer_name: ['1.3.6.1.4.1.14823.2.2.1.2.1.2.0'],
+    ha_sync:      ['1.3.6.1.4.1.14823.2.2.1.2.1.21.0'],
+  },
+  cisco: {
+    model:        ['1.3.6.1.2.1.1.1.0'],
+    firmware:     ['1.3.6.1.2.1.1.1.0'],
+    licensed_aps: ['1.3.6.1.4.1.14179.1.1.1.18', '1.3.6.1.4.1.14179.1.1.1.19'],
+    ha_role:      ['1.3.6.1.4.1.14179.2.6.3.34.0'],
+  },
+  ruckus:   { model: ['1.3.6.1.2.1.1.1.0'], licensed_aps: ['1.3.6.1.4.1.25053.1.2.2.1.1.1.1.16.0'] },
+  mikrotik: { model: ['1.3.6.1.2.1.1.1.0'] },
+  hpe:      { model: ['1.3.6.1.2.1.1.1.0'] },
+};
 
-// Probe per-vendor controller metadata via scalar SNMP OIDs. Always returns the
-// full object shape; every field is null when unavailable. Best-effort — every
-// OID goes through probeOid() and never crashes the caller.
-async function pollControllerMetadata(session, vendor) {
+// Aruba returns a short model code (e.g. "A7205"); map to the friendly name.
+const MODEL_MAP = {
+  aruba: { 'A7205': 'Aruba 7205', 'A7210': 'Aruba 7210', 'A7220': 'Aruba 7220', 'A7240': 'Aruba 7240', 'A7280': 'Aruba 7280' },
+};
+const HA_ROLE_MAP = { '1': 'Active', '2': 'Standby' };
+const HA_SYNC_MAP = { '1': 'Synced', '2': 'Not Synced', '3': 'In Progress', '4': 'Standalone' };
+
+// Single non-throwing scalar GET → raw value (or null on any error / varbind
+// error / missing row). Used by both the capability probe and metadata polling.
+async function getOid(session, oid) {
+  const rows = await get(session, [oid]);
+  if (!rows || !rows[0]) return null;
+  const v = rows[0].value;
+  return v == null ? null : v;
+}
+
+// One-time capability probe: try each candidate OID per capability for the
+// controller's vendor and remember the first OID that returns a real value in
+// the controller's `capabilities` JSONB. Never throws.
+async function probeControllerCapabilities(pool, controller) {
+  const capabilities = {};
+  try {
+    if (!controller.snmp_device_id) return {};
+    const dq = await pool.query('SELECT * FROM monitored_devices WHERE id = $1', [controller.snmp_device_id]);
+    const device = dq.rows[0];
+    if (!device) return {};
+
+    const vendor = controller.vendor;
+    const candidates = VENDOR_OID_CANDIDATES[vendor] || {};
+    const capKeys = Object.keys(candidates);
+
+    const session = createSession(device, 10000);
+    try {
+      for (const cap of capKeys) {
+        for (const oid of candidates[cap]) {
+          const val = await getOid(session, oid);
+          if (val != null) { capabilities[cap] = oid; break; }
+        }
+      }
+    } finally {
+      try { session.close(); } catch (_e) { /* ignore */ }
+    }
+
+    capabilities.probe_done = true;
+    await pool.query(
+      'UPDATE wireless_controllers SET capabilities = $2, capabilities_probed_at = NOW() WHERE id = $1',
+      [controller.id, capabilities]);
+
+    const found = capKeys.filter((k) => capabilities[k]).length;
+    log(`[WirelessProbe] ${controller.name}: found ${found}/${capKeys.length} capabilities`);
+    return capabilities;
+  } catch (e) {
+    console.error(`[wireless] capability probe failed on ${controller.name}:`, e.message);
+    return {};
+  }
+}
+
+// Poll controller metadata using ONLY the stored capability OIDs (discovered once
+// by probeControllerCapabilities). No per-poll guessing or diagnostic walks.
+// Always returns the full object shape; fields are null when the capability OID
+// is absent or returns no value. Best-effort — never crashes the caller.
+async function pollControllerMetadata(session, controller) {
   const md = {
     model: null,
     firmware_version: null,
@@ -101,108 +146,37 @@ async function pollControllerMetadata(session, vendor) {
     ha_peer_ip: null,
     ha_sync_status: null,
   };
+  const caps = controller.capabilities || {};
+  const vendor = controller.vendor;
 
-  // sysDescr is parsed for model/firmware on every vendor.
-  const sysDescrRaw = await probeOid(session, '1.3.6.1.2.1.1.1.0', 'sysDescr');
-  const sysDescr = asStr(sysDescrRaw);
-
-  if (vendor === 'aruba') {
-    // AP license limit.
-    const lic = await probeOid(session, '1.3.6.1.4.1.14823.2.2.1.1.1.40', 'wlsxSysExtLicenseApLimit');
-    if (lic != null) {
-      const n = Number(lic);
-      md.licensed_aps = Number.isFinite(n) ? n : null;
+  if (caps.model) {
+    const raw = asStr(await getOid(session, caps.model));
+    if (raw != null) {
+      const mapped = vendor === 'aruba' && MODEL_MAP.aruba[raw];
+      md.model = mapped || raw;
     }
-    // Model/firmware from sysDescr. Newer ArubaOS 8.x:
-    //   "ArubaOS (MODEL: Aruba7205), Version 8.10.0.8"
-    // Older builds: "ArubaOS (MODEL) VERSION".
-    if (sysDescr) {
-      const modelM = sysDescr.match(/MODEL:\s*([^),]+)/i);
-      const verM = sysDescr.match(/Version\s+([\d][\d.]*)/i);
-      if (modelM) md.model = modelM[1].trim();
-      if (verM) md.firmware_version = verM[1];
-      // Fallback to the older "ArubaOS (MODEL) VERSION" shape for fields we
-      // couldn't fill from the newer pattern.
-      if (!md.model || !md.firmware_version) {
-        const m = sysDescr.match(/ArubaOS\s*\(([^)]+)\)\s*([\d.]+)/);
-        if (m) {
-          if (!md.model) md.model = m[1].trim();
-          if (!md.firmware_version) md.firmware_version = m[2];
-        }
-      }
-    }
-    // HA state: 1=disabled,2=active,3=standby,4=candidate.
-    const haState = await probeOid(session, '1.3.6.1.4.1.14823.2.2.1.2.1.19.0', 'wlsxHAState');
-    if (haState != null) {
-      const code = Number(haState);
-      const stateMap = { 1: 'disabled', 2: 'active', 3: 'standby', 4: 'candidate' };
-      md.ha_mode = stateMap[code] || 'unknown';
-    }
-    // HA peer IP (4-byte buffer → dotted quad).
-    const peer = await probeOid(session, '1.3.6.1.4.1.14823.2.2.1.2.1.20.0', 'wlsxHAPeerIp');
-    md.ha_peer_ip = asIp(peer);
-    // HA sync: 0=not-synced, 1=synced, 4=standalone (no HA configured —
-    // confirmed from probe output on Aruba7205 / ArubaOS 8.10).
-    const sync = await probeOid(session, '1.3.6.1.4.1.14823.2.2.1.2.1.21.0', 'wlsxHASyncStatus');
-    if (sync != null) {
-      const syncMap = { 0: 'not-synced', 1: 'synced', 4: 'standalone' };
-      md.ha_sync_status = syncMap[Number(sync)] || 'unknown';
-    }
-
-    // ── Diagnostic: locate the real license-limit OID on this ArubaOS build ──
-    // Probe each candidate scalar, then walk the whole license branch; every
-    // result is logged via [OID Probe]. Discovery only — nothing is stored.
-    for (const oid of ARUBA_LICENSE_DIAG_OIDS) {
-      await probeOid(session, oid, 'aruba-license-diag');
-    }
-    try {
-      const licRows = await walk(session, ARUBA_LICENSE_SUBTREE);
-      for (const row of licRows) {
-        const v = row.value;
-        const shown = Buffer.isBuffer(v)
-          ? `hex:${v.toString('hex')} ascii:${v.toString('latin1').replace(/[^\x20-\x7e]/g, '.')}`
-          : v;
-        console.log(`[OID Probe] aruba-license-subtree (${row.oid}) → ${shown}`);
-      }
-    } catch (_e) { /* discovery walk is best-effort */ }
-  } else if (vendor === 'cisco') {
-    // Max concurrent associations as the license/AP cap.
-    const lic = await probeOid(session, '1.3.6.1.4.1.14179.1.1.1.18', 'bsnMaximumNumberOfConcurrentAssociations');
-    if (lic != null) {
-      const n = Number(lic);
-      md.licensed_aps = Number.isFinite(n) ? n : null;
-    }
-    // Model/firmware from sysDescr: "Cisco Controller VERSION (MODEL)".
-    if (sysDescr) {
-      const m = sysDescr.match(/Cisco Controller\s+([\d.]+)\s*\(([^)]+)\)/);
-      if (m) { md.firmware_version = m[1]; md.model = m[2]; }
-    }
-    // Redundancy: 1=active, 2=standby-hot.
-    const red = await probeOid(session, '1.3.6.1.4.1.14179.2.6.3.34.0', 'cLWlanRedundancyState');
-    if (red != null) {
-      const code = Number(red);
-      if (code === 1) { md.ha_mode = 'active'; md.ha_sync_status = 'synced'; }
-      else if (code === 2) { md.ha_mode = 'standby'; md.ha_sync_status = 'synced'; }
-      else { md.ha_mode = 'unknown'; }
-    }
-    // ha_peer_ip not available via SNMP on Cisco WLC.
-  } else if (vendor === 'ruckus') {
-    // ZoneDirector max supported AP count.
-    const lic = await probeOid(session, '1.3.6.1.4.1.25053.1.2.2.1.1.1.1.16.0', 'ruckusZDSystemMaxSupportedAP');
-    if (lic != null) {
-      const n = Number(lic);
-      md.licensed_aps = Number.isFinite(n) ? n : null;
-    }
-    // Model/firmware best-effort from sysDescr (left null if unsure).
-    // HA not supported via SNMP.
-  } else if (vendor === 'mikrotik') {
-    // No license / HA concept; model best-effort from sysDescr.
-    if (sysDescr) md.model = sysDescr;
-  } else if (vendor === 'hpe') {
-    // No license / HA concept; model best-effort from sysDescr.
-    if (sysDescr) md.model = sysDescr;
   }
-  // Other vendors (grandstream/ubiquiti/omada/unknown) are API-based: all-null.
+  if (caps.firmware) {
+    md.firmware_version = asStr(await getOid(session, caps.firmware));
+  }
+  if (caps.licensed_aps) {
+    const lic = await getOid(session, caps.licensed_aps);
+    if (lic != null) {
+      const n = Number(lic);
+      md.licensed_aps = Number.isFinite(n) ? n : null;
+    }
+  }
+  if (caps.ha_role) {
+    const role = await getOid(session, caps.ha_role);
+    if (role != null) md.ha_mode = HA_ROLE_MAP[String(role)] || 'unknown';
+  }
+  if (caps.ha_peer_name) {
+    md.ha_peer_ip = asStr(await getOid(session, caps.ha_peer_name));
+  }
+  if (caps.ha_sync) {
+    const sync = await getOid(session, caps.ha_sync);
+    if (sync != null) md.ha_sync_status = HA_SYNC_MAP[String(sync)] || 'unknown';
+  }
 
   return md;
 }
@@ -241,7 +215,7 @@ async function pollSnmpController(pool, controller) {
       try { ssids = parser.parseSsids(walked) || []; } catch (_e) { ssids = []; }
     }
     let metadata = {};
-    try { metadata = await pollControllerMetadata(session, controller.vendor); }
+    try { metadata = await pollControllerMetadata(session, controller); }
     catch (_e) { metadata = {}; }
     return { aps, ssids, metadata };
   } finally {
@@ -506,6 +480,12 @@ async function pollController(pool, controller) {
     let ssids = [];
     let metadata = {};
     if (controller.snmp_device_id) {
+      // One-time capability discovery: probe OIDs once, then reuse stored OIDs.
+      if (!controller.capabilities || !controller.capabilities.probe_done) {
+        await probeControllerCapabilities(pool, controller);
+        const rq = await pool.query('SELECT * FROM wireless_controllers WHERE id = $1', [controller.id]);
+        if (rq.rows[0]) controller = rq.rows[0];
+      }
       ({ aps, ssids, metadata = {} } = await pollSnmpController(pool, controller));
     } else if (controller.controller_url) {
       ({ aps, ssids } = await pollApiController(controller));
@@ -953,5 +933,5 @@ function startWirelessCollector(pool) {
 module.exports = {
   startWirelessCollector, pollAll, pollController, upsertAp, upsertSsid,
   autoDetectControllers, cleanupBadAutoControllers, testController, debugWalk,
-  walkOid, pollClients, pollAllClients,
+  walkOid, pollClients, pollAllClients, probeControllerCapabilities,
 };

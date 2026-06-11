@@ -165,6 +165,8 @@ interface Controller {
   ha_peer_ip?: string | null;
   ha_sync_status?: string | null;
   ap_disconnects_24h?: number | null;
+  capabilities_probed_at?: string | null;
+  has_capabilities?: boolean;
 }
 
 // ── Enhanced controllers overview/events contracts ────────────
@@ -2506,15 +2508,27 @@ function CtlStatCard({ num, sub, label, color }: {
 
 // ── Compact controller card (top-level) ───────────────────────
 function ControllerCard({
-  controller, canEdit, onEdit, onTest, onDelete,
+  controller, canEdit, canProbe, onEdit, onTest, onDelete, onProbe,
 }: {
   controller: Controller;
   canEdit: boolean;
+  canProbe: boolean;
   onEdit: () => void;
   onTest: () => void;
   onDelete: () => void;
+  onProbe: () => Promise<void>;
 }) {
   const statusColor = ctlStatusColor(controller.status);
+  const [probing, setProbing] = useState(false);
+  const isSnmp = controller.snmp_device_id != null;
+
+  async function handleProbe() {
+    if (probing) return;
+    setProbing(true);
+    try { await onProbe(); }
+    finally { setProbing(false); }
+  }
+
   return (
     <div className="sv-card" style={{ borderLeftColor: statusColor, padding: 14 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -2537,6 +2551,34 @@ function ControllerCard({
           <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>Clients</div>
         </div>
       </div>
+      {isSnmp && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, fontSize: 11 }}>
+          {probing ? (
+            <span style={{ color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <span className="sv-spinner-sm" />Detecting…
+            </span>
+          ) : controller.has_capabilities ? (
+            <>
+              <span style={{ color: 'var(--text-muted)' }}>Capabilities detected</span>
+              {canProbe && (
+                <button
+                  className="sv-btn ghost sm"
+                  title="Re-detect capabilities"
+                  style={{ padding: '0 6px', lineHeight: '18px' }}
+                  onClick={handleProbe}
+                >↻</button>
+              )}
+            </>
+          ) : (
+            <>
+              <span style={{ color: 'var(--orange)', fontWeight: 600 }}>⚡ Capabilities not detected</span>
+              {canProbe && (
+                <button className="sv-btn ghost sm" onClick={handleProbe}>Detect Capabilities</button>
+              )}
+            </>
+          )}
+        </div>
+      )}
       {canEdit && (
         <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
           <button className="sv-btn ghost sm" onClick={onEdit}>Edit</button>
@@ -2849,6 +2891,20 @@ function ControllersTab({ onViewEvents }: { onViewEvents?: () => void }) {
     overview.reload();
   }
 
+  async function handleProbe(c: Controller) {
+    try {
+      await apiSend(`/api/wireless/controllers/${c.id}/probe`, 'POST', {});
+      setToast(`✓ ${c.name}: capability probe complete`);
+    } catch (e: any) {
+      setToast(`✗ ${c.name}: ${e?.message || 'Probe failed'}`);
+    }
+    setTimeout(() => setToast(null), 6000);
+    await controllers.reload();
+    overview.reload();
+  }
+
+  const canProbe = role === 'admin' || role === 'super_admin';
+
   const ov = overview.data;
   const ovCtls: OverviewController[] = ov?.controllers || [];
   const siteCount = new Set(ovCtls.map((c) => c.site_name).filter(Boolean)).size;
@@ -2885,9 +2941,11 @@ function ControllersTab({ onViewEvents }: { onViewEvents?: () => void }) {
               key={c.id}
               controller={c}
               canEdit={canEdit}
+              canProbe={canProbe}
               onEdit={() => { setEditing(c); setShowModal(true); }}
               onTest={() => handleTest(c)}
               onDelete={() => handleDelete(c)}
+              onProbe={() => handleProbe(c)}
             />
           ))}
         </div>
@@ -2955,244 +3013,12 @@ function ControllersTab({ onViewEvents }: { onViewEvents?: () => void }) {
         )}
       </div>
 
-      {/* SECTION 5 — OID Discovery (admin only) */}
-      {(role === 'admin' || role === 'super_admin') && (
-        <OidWalkTool controllers={controllers.data || []} />
-      )}
-
       {showModal && (
         <ControllerModal
           existing={editing}
           onClose={() => setShowModal(false)}
           onSaved={() => { setShowModal(false); controllers.reload(); overview.reload(); }}
         />
-      )}
-    </div>
-  );
-}
-
-// ════════════════════════════════════════════════════════════
-// OID Discovery (SNMP Walk) — admin-only debug tool
-// ════════════════════════════════════════════════════════════
-
-interface OidPreset { label: string; oid: string; }
-
-const OID_PRESETS: Record<string, OidPreset[]> = {
-  _common: [{ label: 'System group', oid: '1.3.6.1.2.1.1' }],
-  aruba: [
-    { label: 'License/HA branch', oid: '1.3.6.1.4.1.14823.2.2.1.2.1' },
-    { label: 'SysExt', oid: '1.3.6.1.4.1.14823.2.2.1.1.1' },
-  ],
-  cisco: [
-    { label: 'agentInventory', oid: '1.3.6.1.4.1.14179.1.1.1' },
-    { label: 'agentSwitchInfo', oid: '1.3.6.1.4.1.14179.1.1.5' },
-    { label: 'RF redundancy', oid: '1.3.6.1.4.1.9.9.176.1.1' },
-  ],
-  ruckus: [
-    { label: 'ZD system info', oid: '1.3.6.1.4.1.25053.1.2.1.1.1.1' },
-    { label: 'ZD stats', oid: '1.3.6.1.4.1.25053.1.2.1.1.1.15' },
-    { label: 'SmartZone', oid: '1.3.6.1.4.1.25053.1.4.1.1.1' },
-  ],
-  mikrotik: [
-    { label: 'mtxrSystem', oid: '1.3.6.1.4.1.14988.1.1.7' },
-    { label: 'mtxrLicense', oid: '1.3.6.1.4.1.14988.1.1.4' },
-  ],
-  hpe: [
-    { label: 'Instant VC info', oid: '1.3.6.1.4.1.14823.2.3.3.1.1' },
-    { label: 'Instant AP table', oid: '1.3.6.1.4.1.14823.2.3.3.1.2.1.1' },
-  ],
-};
-
-interface WalkRow { oid: string; value: any; }
-interface WalkResult {
-  ok: boolean;
-  oid?: string;
-  vendor?: string;
-  device_ip?: string;
-  count?: number;
-  truncated?: boolean;
-  rows?: WalkRow[];
-  message?: string;
-}
-
-function renderSnmpValue(v: any) {
-  if (v != null && typeof v === 'object' && ('hex' in v || 'ascii' in v)) {
-    const ascii = (v as any).ascii;
-    const hex = (v as any).hex;
-    return (
-      <div>
-        <div style={{ fontFamily: 'monospace', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
-          {ascii != null && String(ascii).length ? String(ascii) : <span style={{ color: 'var(--text-muted)' }}>(binary)</span>}
-        </div>
-        {hex != null && (
-          <div style={{ fontFamily: 'monospace', fontSize: 11, color: 'var(--text-muted)', wordBreak: 'break-all', marginTop: 2 }}>
-            {String(hex)}
-          </div>
-        )}
-      </div>
-    );
-  }
-  return (
-    <span style={{ fontFamily: 'monospace', wordBreak: 'break-all' }}>{String(v)}</span>
-  );
-}
-
-function OidWalkTool({ controllers }: { controllers: Controller[] }) {
-  const snmpControllers = (controllers || []).filter((c) => c && c.snmp_device_id != null);
-  const [controllerId, setControllerId] = useState<number | null>(
-    snmpControllers.length ? snmpControllers[0].id : null,
-  );
-  const [oid, setOid] = useState<string>('1.3.6.1.2.1.1');
-  const [result, setResult] = useState<WalkResult | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const selected = snmpControllers.find((c) => c.id === controllerId) || null;
-  const vendorKey = (selected?.vendor || '').toLowerCase();
-  const presets: OidPreset[] = [
-    ...OID_PRESETS._common,
-    ...(OID_PRESETS[vendorKey] || []),
-  ];
-
-  async function walk() {
-    if (controllerId == null) { setError('Select an SNMP controller first.'); return; }
-    if (!oid.trim()) { setError('Enter an OID to walk.'); return; }
-    setLoading(true);
-    setError(null);
-    try {
-      const r = await apiGet<WalkResult>(
-        `/api/wireless/debug/walk-oid?controller_id=${controllerId}&oid=${encodeURIComponent(oid.trim())}`,
-      );
-      if (r && r.ok) {
-        setResult(r);
-      } else {
-        setResult(null);
-        setError((r && r.message) || 'Walk failed.');
-      }
-    } catch (e: any) {
-      setResult(null);
-      setError(e?.message || 'Walk request failed.');
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  const rows: WalkRow[] = result?.rows || [];
-
-  return (
-    <div className="sv-panel" style={{ marginTop: 24, padding: 18 }}>
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
-        <h3 style={{ margin: 0, fontSize: 16 }}>OID Discovery — SNMP Walk</h3>
-        <span className="sv-badge" style={{ background: 'var(--accent)', color: '#fff' }}>Admin only</span>
-      </div>
-      <p style={{ color: 'var(--text-muted)', fontSize: 13, margin: '6px 0 14px' }}>
-        Walk any SNMP OID on a controller to find the right OID for a metric. Admin only.
-      </p>
-
-      {snmpControllers.length === 0 ? (
-        <div style={{
-          border: '1px dashed var(--border, #ccc)', borderRadius: 8, padding: 16,
-          color: 'var(--text-muted)', fontSize: 13,
-        }}>
-          No SNMP-based controllers available. Only controllers configured with an SNMP device can be walked
-          (API-based controllers cannot).
-        </div>
-      ) : (
-        <>
-          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-              <label style={{ fontSize: 12, color: 'var(--text-muted)' }}>Controller</label>
-              <select
-                value={controllerId ?? ''}
-                onChange={(e) => setControllerId(e.target.value ? Number(e.target.value) : null)}
-                style={{ padding: '7px 10px', borderRadius: 6, minWidth: 260 }}
-              >
-                {snmpControllers.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name} · {c.vendor}{c.site_name ? ` · ${c.site_name}` : ''}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1, minWidth: 240 }}>
-              <label style={{ fontSize: 12, color: 'var(--text-muted)' }}>OID</label>
-              <input
-                value={oid}
-                onChange={(e) => setOid(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter') walk(); }}
-                placeholder="1.3.6.1.2.1.1"
-                style={{ padding: '7px 10px', borderRadius: 6, fontFamily: 'monospace', width: '100%' }}
-              />
-            </div>
-
-            <button className="sv-btn" onClick={walk} disabled={loading || controllerId == null}>
-              {loading ? 'Walking…' : 'Walk'}
-            </button>
-          </div>
-
-          {/* Vendor preset quick-picks */}
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12, alignItems: 'center' }}>
-            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Presets:</span>
-            {presets.map((p) => (
-              <button
-                key={p.oid + p.label}
-                className="sv-btn"
-                onClick={() => setOid(p.oid)}
-                style={{ padding: '4px 10px', fontSize: 12, background: 'transparent', color: 'var(--accent)', border: '1px solid var(--accent)' }}
-                title={p.oid}
-              >
-                {p.label}
-              </button>
-            ))}
-          </div>
-
-          {error && <div style={{ marginTop: 14 }}><ErrorBox message={error} /></div>}
-
-          {result && result.ok && (
-            <div style={{ marginTop: 16 }}>
-              <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', fontSize: 13, color: 'var(--text-muted)', marginBottom: 8 }}>
-                <span>OID: <span style={{ fontFamily: 'monospace', color: 'var(--text, inherit)' }}>{result.oid}</span></span>
-                {result.device_ip && <span>IP: <span style={{ fontFamily: 'monospace' }}>{result.device_ip}</span></span>}
-                {result.vendor && <span>Vendor: {result.vendor}</span>}
-                <span>Rows: {result.count ?? rows.length}</span>
-                {result.truncated && <span style={{ color: 'var(--red)' }}>(truncated to 500)</span>}
-              </div>
-
-              {rows.length === 0 ? (
-                <div style={{
-                  border: '1px dashed var(--border, #ccc)', borderRadius: 8, padding: 16,
-                  color: 'var(--text-muted)', fontSize: 13,
-                }}>
-                  No data returned for this OID.
-                </div>
-              ) : (
-                <div style={{ maxHeight: 420, overflow: 'auto', border: '1px solid var(--border, #e2e2e2)', borderRadius: 8 }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-                    <thead>
-                      <tr style={{ position: 'sticky', top: 0, background: 'var(--card-bg, #f7f7f8)', zIndex: 1 }}>
-                        <th style={{ textAlign: 'left', padding: '8px 10px', borderBottom: '1px solid var(--border, #e2e2e2)', width: '45%' }}>OID</th>
-                        <th style={{ textAlign: 'left', padding: '8px 10px', borderBottom: '1px solid var(--border, #e2e2e2)' }}>Value</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {rows.map((r, i) => (
-                        <tr key={(r?.oid ?? '') + i} style={{ borderBottom: '1px solid var(--border, #efefef)' }}>
-                          <td style={{ padding: '6px 10px', fontFamily: 'monospace', verticalAlign: 'top', wordBreak: 'break-all' }}>
-                            {r?.oid ?? ''}
-                          </td>
-                          <td style={{ padding: '6px 10px', verticalAlign: 'top' }}>
-                            {renderSnmpValue(r?.value)}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
-          )}
-        </>
       )}
     </div>
   );

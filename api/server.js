@@ -2207,7 +2207,8 @@ app.get('/api/wireless/controllers', wrap(async (_req, res) => {
     SELECT c.id, c.name, c.vendor, c.controller_url, c.api_username, c.snmp_device_id,
            c.site_id, c.site_name, c.active, c.last_polled_at, c.status,
            c.model, c.firmware_version, c.licensed_aps, c.ha_mode, c.ha_peer_ip,
-           c.ha_sync_status, c.ap_disconnects_24h,
+           c.ha_sync_status, c.ap_disconnects_24h, c.capabilities_probed_at,
+           (c.capabilities IS NOT NULL AND c.capabilities <> '{}') AS has_capabilities,
            (SELECT COUNT(*)::int FROM wireless_aps a WHERE a.controller_id = c.id) AS ap_count,
            (SELECT COALESCE(SUM(a.clients_total), 0)::int FROM wireless_aps a WHERE a.controller_id = c.id) AS client_count
     FROM wireless_controllers c
@@ -2730,6 +2731,23 @@ app.get('/api/wireless/debug/walk-oid', wrap(async (req, res) => {
   const controller = r.rows[0];
   if (!controller) return res.status(404).json({ error: 'Controller not found' });
   res.json(await wireless.walkOid(sv, controller, oid));
+}));
+
+// Admin-only: (re)run the one-time OID capability probe for a controller. Stores
+// the discovered capability→OID map in wireless_controllers.capabilities.
+app.post('/api/wireless/controllers/:id/probe', wrap(async (req, res) => {
+  const role = req.headers['x-user-role'];
+  if (role !== 'admin' && role !== 'super_admin') {
+    return res.status(403).json({ error: 'Admin only' });
+  }
+  const id = parseInt(req.params.id, 10);
+  if (!id) return res.status(400).json({ error: 'controller id is required' });
+  const r = await sv.query('SELECT * FROM wireless_controllers WHERE id = $1', [id]);
+  const controller = r.rows[0];
+  if (!controller) return res.status(404).json({ error: 'Controller not found' });
+  const capabilities = await wireless.probeControllerCapabilities(sv, controller);
+  const pr = await sv.query('SELECT capabilities_probed_at FROM wireless_controllers WHERE id = $1', [id]);
+  res.json({ capabilities, probed_at: pr.rows[0] ? pr.rows[0].capabilities_probed_at : null });
 }));
 
 // ── Wireless intelligence ─────────────────────────────────────
