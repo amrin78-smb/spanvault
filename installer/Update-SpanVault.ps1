@@ -138,18 +138,27 @@ Push-Location $AppRoot
 # a plain 2>&1 redirect is not enough because the merged error records still
 # surface. Assign every git invocation to $null (which fully consumes both
 # streams) and gate success on $LASTEXITCODE instead of trusting stderr.
+# Deploy with fetch + HARD RESET, never 'git pull'. A 'git pull' merge is
+# refused whenever the working tree is dirty - and 'npm install' rewrites the
+# tracked package-lock.json on every update, so from the second update onward a
+# pull would silently fail to fast-forward and the checkout would stay frozen at
+# an old commit (the in-app updater then perpetually reports "update available").
+# 'git reset --hard origin/$Branch' force-advances HEAD regardless of local
+# changes; 'git clean -fd' drops untracked cruft while preserving env files and
+# node_modules. This mirrors the DDIVault / LogVault / NetVault update scripts.
 $prevEAP = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
 $null = & $git fetch origin 2>&1
-$null = & $git checkout $Branch 2>&1
-$null = & $git pull origin $Branch 2>&1
-$pullExit = $LASTEXITCODE
+$fetchExit = $LASTEXITCODE
+$null = & $git reset --hard "origin/$Branch" 2>&1
+$resetExit = $LASTEXITCODE
+$null = & $git clean -fd --exclude=".env.local" --exclude="node_modules" 2>&1
 $null = & $git status 2>&1
 $ErrorActionPreference = $prevEAP
-if ($pullExit -eq 0) {
-    Write-Ok "On branch $Branch"
+if ($fetchExit -eq 0 -and $resetExit -eq 0) {
+    Write-Ok "Reset to origin/$Branch"
 } else {
-    Write-Warn "git pull exited with code $pullExit - verify the working tree manually."
+    Write-Warn "git fetch/reset failed (fetch=$fetchExit reset=$resetExit) - the checkout may not have advanced. Verify the working tree manually."
 }
 Pop-Location
 
