@@ -641,7 +641,7 @@ function formatChangelog(raw: string): string {
     .trim();
 }
 
-const UPDATE_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes
+const UPDATE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes — covers slow npm install + Next.js build before services are back
 // Once BOTH the API and the Next.js frontend are confirmed live, wait only this
 // short settle window before reloading. The real wait is now driven by frontend
 // liveness probes (see UpdatingOverlay), not a fixed guess.
@@ -1047,7 +1047,7 @@ function UpdatingOverlay() {
           </div>
         )}
         {phase !== 'back_up' && (
-          <p className="sv-muted" style={{ fontSize: 12 }}>(This usually takes 30-60 seconds)</p>
+          <p className="sv-muted" style={{ fontSize: 12 }}>(This usually takes 1-3 minutes)</p>
         )}
         <button
           className="sv-btn"
