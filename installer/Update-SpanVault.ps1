@@ -108,6 +108,16 @@ if (-not (Test-Path $AppRoot)) {
     throw "App directory '$AppRoot' does not exist. Clone the repo into '$AppRoot' first, then re-run."
 }
 
+# From here on every step shells out to native tools (git, npm, nssm, psql) that
+# write progress/notices to stderr. Under Windows PowerShell 5.1 over WinRM, a
+# native command's stderr is wrapped as an ErrorRecord and, with
+# $ErrorActionPreference = 'Stop', terminates the whole script even on a
+# successful (exit 0) run -- this is what aborted 'npm install' at the harmless
+# "npm notice" line. Switch to 'Continue' so stderr chatter is non-fatal; each
+# step is already gated on $LASTEXITCODE / Write-Warn, and the hard preconditions
+# above use explicit `throw` (which terminates regardless of this setting).
+$ErrorActionPreference = 'Continue'
+
 # ── 1. Stop services ───────────────────────────────────────────
 Write-Step 'Stopping services'
 # nssm status writes "Can't open service!" to stderr for a non-existent service,
