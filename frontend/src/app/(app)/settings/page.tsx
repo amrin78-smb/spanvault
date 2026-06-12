@@ -605,7 +605,7 @@ type UpdateStatus = {
   latest_commit?: string;
   up_to_date?: boolean;
   update_available?: boolean;
-  changelog?: string;
+  release_notes?: string[];
   release_date?: string;
   error?: string;
 };
@@ -618,27 +618,6 @@ function fmtReleaseDate(d?: string): string {
   const [y, m, day] = d.split('-').map(Number);
   if (!y || !m || !day) return d;
   return `${MONTHS[m - 1]} ${day}, ${y}`;
-}
-// Drop the leading "## v1.1.0 — date" header from a changelog section so the box
-// shows just the body (the version + date are rendered separately above it).
-function changelogBody(md?: string): string {
-  if (!md) return '';
-  return md.replace(/^##\s+.*$/m, '').trim();
-}
-// Turn the raw markdown changelog into plain readable text — strip heading
-// markers and convert "- " list items to bullets. No renderer library needed;
-// displayed with white-space: pre-line so line breaks survive.
-function formatChangelog(raw: string): string {
-  return raw
-    .split('\n')
-    .map((line) => {
-      if (line.startsWith('### ')) return line.replace('### ', '');
-      if (line.startsWith('## ')) return line.replace('## ', '');
-      if (line.startsWith('- ')) return '• ' + line.slice(2);
-      return line;
-    })
-    .join('\n')
-    .trim();
 }
 
 const UPDATE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes — covers slow npm install + Next.js build before services are back
@@ -767,17 +746,17 @@ function SystemUpdates() {
                 {status?.latest_commit && <> (<code>{status.latest_commit}</code>)</>}
               </p>
             )}
-            {changelogBody(status?.changelog) && (
+            {status?.release_notes && status.release_notes.length > 0 && (
               <div style={{ margin: '12px 0' }}>
-                <strong>What&apos;s new in v{status?.latest_version}:</strong>
-                <div style={{
-                  marginTop: 6, maxHeight: 200, overflowY: 'auto',
-                  border: '1px solid var(--sv-border, #e2e8f0)', borderRadius: 8,
-                  padding: '10px 14px', background: 'var(--bg-primary, #f4f6f9)',
-                  fontSize: 13, lineHeight: 1.5, whiteSpace: 'pre-line',
+                <strong>What&apos;s new in v{status?.latest_version}</strong>
+                <ul style={{
+                  marginTop: 6, marginBottom: 0, paddingLeft: 20,
+                  fontSize: 13, lineHeight: 1.6,
                 }}>
-                  {formatChangelog(changelogBody(status?.changelog))}
-                </div>
+                  {status.release_notes.map((note, i) => (
+                    <li key={i}>{note}</li>
+                  ))}
+                </ul>
               </div>
             )}
             {status?.release_date && (

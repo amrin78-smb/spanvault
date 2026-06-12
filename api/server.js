@@ -25,8 +25,23 @@ const reportScheduler = require('./reportScheduler');
 
 // App version — single source of truth is the root package.json.
 const { version } = require('../package.json');
-// Raw GitHub base for remote version/changelog checks (no auth, public repo).
+// Raw GitHub base for remote version checks (no auth, public repo).
 const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
+
+// Structured release notes keyed by version. When bumping the version, add an
+// entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
+// notes are the single source surfaced by the update-status API.
+const releaseNotes = {
+  '1.2.0': [
+    'Enterprise dashboard with health score and charts',
+    'Animated login page redesign',
+    'Server status monitoring',
+    'Automatic versioning across suite',
+  ],
+  'default': [
+    'Bug fixes and performance improvements',
+  ],
+};
 
 const IS_WIN = process.platform === 'win32';
 
@@ -292,23 +307,6 @@ function localCommitHash() {
   }
 }
 
-// Pull the latest version's section out of CHANGELOG.md — everything from the
-// first "## " header up to the next one. HTML comments (the release-process
-// block, which itself contains indented "## v..." example lines) are stripped
-// first so they cannot be mistaken for the first real section header.
-function extractLatestChangelog(md) {
-  const clean = String(md).replace(/<!--[\s\S]*?-->/g, '');
-  const header = clean.match(/^##\s+.*$/m);
-  if (!header) return { changelog: '', release_date: null };
-  const start = header.index;
-  const afterHeader = start + header[0].length;
-  const nextRel = clean.slice(afterHeader).search(/^##\s+/m);
-  const end = nextRel === -1 ? clean.length : afterHeader + nextRel;
-  const section = clean.slice(start, end).trim();
-  const date = header[0].match(/(\d{4}-\d{2}-\d{2})/);
-  return { changelog: section, release_date: date ? date[1] : null };
-}
-
 // Compares the local git commit hash against the latest commit on GitHub's main
 // branch. ANY differing commit counts as an update available — package.json
 // version is for display only. Never 500s the Settings page — a fetch failure
@@ -320,26 +318,20 @@ app.get('/api/system/update-status', wrap(async (_req, res) => {
     // Cache-bust so GitHub's raw CDN can't return a stale copy — the Settings
     // "Re-check" button must reflect a freshly pushed commit immediately.
     const bust = Date.now();
-    const [commitRes, pkgRes, clRes] = await Promise.all([
+    const [commitRes, pkgRes] = await Promise.all([
       fetch('https://api.github.com/repos/amrin78-smb/spanvault/commits/main', {
         headers: { 'Accept': 'application/vnd.github.v3+json' },
         cache: 'no-store',
       }),
       fetch(`${GH_RAW}/package.json?cb=${bust}`, { cache: 'no-store' }),
-      fetch(`${GH_RAW}/CHANGELOG.md?cb=${bust}`, { cache: 'no-store' }),
     ]);
     const commit = await commitRes.json();
     const remoteHash = commit && commit.sha ? String(commit.sha).slice(0, 7) : null;
     const remotePkg = await pkgRes.json();
     const remoteVersion = remotePkg.version;
 
-    let changelog = '';
-    let release_date = null;
-    try {
-      const parsed = extractLatestChangelog(await clRes.text());
-      changelog = parsed.changelog;
-      release_date = parsed.release_date;
-    } catch (_e) { /* changelog is best-effort */ }
+    // Release notes for the latest version, falling back to a generic message.
+    const release_notes = releaseNotes[remoteVersion] || releaseNotes['default'];
 
     // Any differing commit = update available. If either hash is missing
     // (e.g. git unavailable or API error), treat as up to date to avoid
@@ -350,10 +342,12 @@ app.get('/api/system/update-status', wrap(async (_req, res) => {
       latest_version: remoteVersion,
       current_commit: localHash,
       latest_commit: remoteHash,
+      current_hash: localHash,
+      latest_hash: remoteHash,
       up_to_date: !updateAvail,
       update_available: updateAvail,
-      changelog,
-      release_date,
+      release_notes,
+      release_date: new Date().toISOString().slice(0, 10),
     });
   } catch (e) {
     console.error('[update-status] version check failed:', e.message);
