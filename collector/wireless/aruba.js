@@ -53,6 +53,23 @@ const BSSID_BASE = '1.3.6.1.4.1.14823.2.2.1.5.2.1.7.1';
 const wlanAPESSID = BSSID_BASE + '.2';                       // wlanAPESSID (SSID name)
 const wlanAPBssidNumAssociatedStations = BSSID_BASE + '.12'; // wlanAPBssidNumAssociatedStations
 
+// Reject AP "names" that are actually a MAC address. Old/incorrect SNMP parsing
+// produced decimal-MAC names (6 decimal octets, e.g. "108.196.159.202.125.210")
+// and hex MACs (e.g. "40:e3:d6:cc:3a:16") get into the name column when the real
+// wlanAPName OID returns empty and we fell back to the index. A genuine AP name
+// always contains at least one letter (e.g. "AP-100_FL32_IR", "TH-ITCS-ACP-001").
+const DECIMAL_MAC_RE = /^\d+\.\d+\.\d+\.\d+\.\d+\.\d+$/;       // 108.196.159.202.125.210
+const HEX_MAC_RE = /^[0-9a-f]{2}([:-][0-9a-f]{2}){5}$/i;       // 40:e3:d6:cc:3a:16
+function isValidApName(name) {
+  if (!name) return false;
+  const s = String(name).trim();
+  if (!s) return false;
+  if (DECIMAL_MAC_RE.test(s) || HEX_MAC_RE.test(s)) return false;
+  // Accept only names that start with "AP" or contain at least one letter.
+  if (/^AP/i.test(s)) return true;
+  return /[A-Za-z]/.test(s);
+}
+
 function mapStatus(v) {
   const n = num(v);
   if (n === 1) return 'online';
@@ -83,9 +100,16 @@ function parseApTable(walked) {
 
     const byIndex = new Map();
     for (const idx of indexes) {
+      // The AP name comes from wlanAPName; when that OID is empty the only
+      // fallback is the table index (the AP MAC as dotted decimals), which is a
+      // MAC, not a name. Reject MAC-shaped names so stale decimal-MAC AP records
+      // are never (re)created.
+      const apName = str(names[idx]);
+      if (!isValidApName(apName)) continue;
+
       const ap = emptyAp();
       ap._index = idx;
-      ap.name = str(names[idx]) || idx;
+      ap.name = apName;
       ap.ip_address = str(ips[idx]);
       ap.model = str(models[idx]);
       ap.status = mapStatus(statuses[idx]);

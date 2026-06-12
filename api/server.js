@@ -38,6 +38,17 @@ const releaseNotes = {
     'Server status monitoring',
     'Automatic versioning across suite',
   ],
+  '1.2.3': [
+    'More reliable auto-reload after applying an update',
+    'Update deploys now advance cleanly (hard-reset deploy, WinRM-safe install)',
+    'Cleaner update screen with structured release notes',
+    'Removed the legacy CHANGELOG file',
+  ],
+  '1.2.4': [
+    'Removed duplicate access points that showed a decimal MAC address instead of a name',
+    'Aruba AP parser now rejects MAC-shaped names so stale records are not recreated',
+    'One-time wireless collector startup cleanup of legacy decimal-MAC AP records',
+  ],
   'default': [
     'Bug fixes and performance improvements',
   ],

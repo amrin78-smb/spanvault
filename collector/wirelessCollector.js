@@ -473,6 +473,26 @@ async function cleanupBadAutoControllers(pool) {
   }
 }
 
+// Remove stale AP records whose `name` is a decimal-MAC string (6 decimal octets
+// separated by dots, e.g. "108.196.159.202.125.210"). These were created by old
+// incorrect SNMP parsing before parseApTable() rejected MAC-shaped names; the
+// real APs re-appear with proper names on the next poll. Run once on startup.
+async function cleanupDecimalMacAps(pool) {
+  try {
+    const r = await pool.query(`
+      DELETE FROM wireless_aps
+      WHERE name ~ '^\\d+\\.\\d+\\.\\d+\\.\\d+\\.\\d+\\.\\d+$'
+        AND controller_id IN (SELECT id FROM wireless_controllers)
+      RETURNING name
+    `);
+    if (r.rowCount) {
+      log(`removed ${r.rowCount} stale decimal-MAC AP record(s)`);
+    }
+  } catch (err) {
+    console.error('[wireless] cleanup of decimal-MAC APs failed:', err.message);
+  }
+}
+
 // ── Per-controller poll ───────────────────────────────────────
 async function pollController(pool, controller) {
   try {
@@ -922,6 +942,8 @@ const CLIENT_POLL_INTERVAL = 15 * 60 * 1000;
 function startWirelessCollector(pool) {
   // One-shot startup cleanup of previously mis-detected (non-wireless) controllers.
   cleanupBadAutoControllers(pool).catch((e) => console.error('[wireless] startup cleanup:', e.message));
+  // One-shot startup cleanup of stale decimal-MAC AP records (old bad SNMP parsing).
+  cleanupDecimalMacAps(pool).catch((e) => console.error('[wireless] decimal-MAC cleanup:', e.message));
   setTimeout(() => pollAll(pool), 20 * 1000);
   setInterval(() => pollAll(pool), 5 * 60 * 1000);
   // Client polling on its own (slower) schedule, separate from the AP poll.
@@ -932,6 +954,6 @@ function startWirelessCollector(pool) {
 
 module.exports = {
   startWirelessCollector, pollAll, pollController, upsertAp, upsertSsid,
-  autoDetectControllers, cleanupBadAutoControllers, testController, debugWalk,
+  autoDetectControllers, cleanupBadAutoControllers, cleanupDecimalMacAps, testController, debugWalk,
   walkOid, pollClients, pollAllClients, probeControllerCapabilities,
 };
