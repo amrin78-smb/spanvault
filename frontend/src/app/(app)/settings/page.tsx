@@ -44,7 +44,7 @@ export default function SettingsPage() {
   return (
     <div>
       <PageHeader title="Settings" subtitle="Polling, thresholds, notifications, and alert rules." />
-      <div className="sv-tabs">
+      <div className="sv-tabs sticky">
         {TABS.map((t) => (
           <button key={t.key} className={`sv-tab ${tab === t.key ? 'active' : ''}`} onClick={() => setTab(t.key)}>
             {t.label}

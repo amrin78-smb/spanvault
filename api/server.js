@@ -32,6 +32,11 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.5.1': [
+    'Tab pages now keep their tab bar pinned to the top while you scroll (Wireless, Intelligence, Settings, Topology)',
+    'Compact single-line page headers (title · subtitle) free up vertical space for data',
+    'Consistent header styling across all tabbed pages',
+  ],
   '1.5.0': [
     'Renamed the wireless Overview tab to "Wireless Insights" with a consolidated controller-status strip',
     'AP capacity now breaks down per controller as a clustered licensed-vs-used bar chart instead of one aggregate donut',

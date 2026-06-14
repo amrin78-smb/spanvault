@@ -181,7 +181,7 @@ export default function TopologyPage() {
       {toast && <div className="sv-toast ok" onClick={() => setToast(null)}>{toast}</div>}
       {status.error && <ErrorBox message={status.error} />}
 
-      <div className="sv-tabs" style={{ margin: 0 }}>
+      <div className="sv-tabs sticky" style={{ marginBottom: 0 }}>
         <button className={`sv-tab ${tab === 'map' ? 'active' : ''}`} onClick={() => setTab('map')}>
           Visual Map
         </button>

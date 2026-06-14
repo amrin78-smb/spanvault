@@ -7,7 +7,7 @@ import {
 } from 'recharts';
 import { useApi, apiSend, apiGet } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
-import { Loading, ErrorBox, Empty, fmtRel, fmtTime, UtilBar, pctColor } from '@/components/ui';
+import { Loading, ErrorBox, Empty, fmtRel, fmtTime, UtilBar, pctColor, PageHeader } from '@/components/ui';
 import { StatusDot } from '@/components/StatusDot';
 
 // ════════════════════════════════════════════════════════════
@@ -620,10 +620,9 @@ export default function WirelessPage() {
 
   return (
     <div>
-      <h1 className="sv-page-title" style={{ margin: 0 }}>Wireless</h1>
-      <p className="sv-page-sub">Access points and wireless controllers.</p>
+      <PageHeader title="Wireless" subtitle="Access points and wireless controllers" />
 
-      <div className="sv-tabs">
+      <div className="sv-tabs sticky">
         <button
           className={`sv-tab ${tab === 'overview' ? 'active' : ''}`}
           onClick={() => setTab('overview')}

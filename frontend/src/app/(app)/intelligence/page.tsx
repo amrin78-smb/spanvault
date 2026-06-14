@@ -110,7 +110,7 @@ export default function IntelligencePage() {
     <div>
       <PageHeader title="Network Intelligence" subtitle="Statistical analytics across your monitored network — baselines, anomalies, health, capacity, incidents." />
 
-      <div className="sv-tabs">
+      <div className="sv-tabs sticky">
         {TABS.map((t) => (
           <button
             key={t.key}
