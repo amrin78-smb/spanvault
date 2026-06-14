@@ -277,22 +277,22 @@ export default function DashboardPage() {
         <NocViewButton />
       </PageHeader>
 
-      {/* ── ROW 1: 7 KPI stat cards ─────────────────────── */}
+      {/* ── KPI strip: status + operational metrics in a single row ── */}
       {summary.error && <ErrorBox message={summary.error} />}
       {summary.loading && !s ? (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 12, marginBottom: 12 }}>
-          {Array.from({ length: 7 }).map((_, i) => (
-            <div key={i} style={{ ...CARD_STYLE, height: 75, padding: '12px 16px' }}>
-              <Skeleton height={24} width="50%" />
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(11, 1fr)', gap: 8, marginBottom: 10 }}>
+          {Array.from({ length: 11 }).map((_, i) => (
+            <div key={i} style={{ ...CARD_STYLE, height: 66, padding: '10px 13px' }}>
+              <Skeleton height={20} width="55%" />
               <div style={{ height: 6 }} />
-              <Skeleton height={10} width="70%" />
+              <Skeleton height={9} width="75%" />
             </div>
           ))}
         </div>
       ) : s ? (
         <>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 12, marginBottom: 12 }}>
-            <StatTile href="/devices" color="var(--text-primary)" value={s.total} label="Total Devices" />
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(11, 1fr)', gap: 8, marginBottom: 10 }}>
+            <StatTile href="/devices" color="var(--text-primary)" value={s.total} label="Total" />
             <StatTile href="/devices?status=up" color="var(--green)" value={s.up} label="Up"
               trend={upTrend} arrow={upArrow} />
             <StatTile href="/devices?status=down" color="var(--red)" value={s.down} label="Down"
@@ -300,25 +300,21 @@ export default function DashboardPage() {
             <StatTile href="/devices?status=warning" color="var(--yellow)" value={s.warning} label="Warning"
               pulse={s.warning > 0} />
             <StatTile href="/devices?status=unknown" color="var(--text-muted)" value={s.unknown} label="Unknown" />
-            <StatTile href="/alerts?status=active" color="var(--red)" value={s.active_alerts} label="Active Alerts" />
+            <StatTile href="/alerts?status=active" color="var(--red)" value={s.active_alerts} label="Alerts" />
             <HealthScoreTile data={intel.data} />
-          </div>
-
-          {/* Secondary tiles (wireless / agents) — preserved, shown only when present. */}
-          <SecondaryTiles canManageAgents={canManageAgents} agentsOnline={s.agents_online} agentsTotal={s.agents_total} />
-
-          {/* ── Operational band: SLA / MTTR / MTTA / Unacknowledged ── */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 12 }}>
             <SlaTile api={sla} />
-            <OpsTile color="var(--text-primary)" value={fmtMins(ops.data ? ops.data.mttr_minutes : null)} label="MTTR (30d)" />
-            <OpsTile color="var(--text-primary)" value={fmtMins(ops.data ? ops.data.mtta_minutes : null)} label="MTTA (30d)" />
+            <OpsTile color="var(--text-primary)" value={fmtMins(ops.data ? ops.data.mttr_minutes : null)} label="MTTR 30d" />
+            <OpsTile color="var(--text-primary)" value={fmtMins(ops.data ? ops.data.mtta_minutes : null)} label="MTTA 30d" />
             <OpsTile
               color={ops.data && ops.data.unacked_count > 0 ? 'var(--red)' : 'var(--green)'}
               value={ops.data ? ops.data.unacked_count : 0}
-              label="Unacknowledged"
+              label="Unack'd"
               alert={!!(ops.data && ops.data.unacked_count > 0)}
             />
           </div>
+
+          {/* Secondary tiles (wireless / agents) — compact, shown only when present. */}
+          <SecondaryTiles canManageAgents={canManageAgents} agentsOnline={s.agents_online} agentsTotal={s.agents_total} />
         </>
       ) : null}
 
@@ -328,8 +324,8 @@ export default function DashboardPage() {
       {/* ── Maintenance windows (planned — active now or within 7 days) ── */}
       <MaintenanceGroup api={maintenance} />
 
-      {/* ── Active problems (55%) + open incidents (45%) ── */}
-      <div style={{ display: 'grid', gridTemplateColumns: '55fr 45fr', gap: 12, alignItems: 'stretch', marginBottom: 12 }}>
+      {/* ── Hero row: active problems + open incidents (kept wide) ── */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, alignItems: 'stretch', marginBottom: 10 }}>
         <ActiveProblems api={problems} />
         <OpenIncidents api={incidents} />
       </div>
@@ -337,40 +333,36 @@ export default function DashboardPage() {
       {/* ── Agent-offline group (devices unreachable via an offline agent) ── */}
       <AgentOfflineGroup api={agentOffline} />
 
-      {/* ── Performance: slowest devices + top talkers ── */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, alignItems: 'stretch', marginBottom: 12 }}>
+      {/* ── Performance / reliability (3-up): slowest · top talkers · least reliable ── */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, alignItems: 'stretch', marginBottom: 10 }}>
         <SlowestDevices api={worst} />
         <TopTalkers api={topTalkers} />
+        <LeastReliableDevices api={leastReliable} />
       </div>
 
-      {/* ── Site health (55%) + availability trend (45%) ── */}
-      <div style={{ display: 'grid', gridTemplateColumns: '55fr 45fr', gap: 12, alignItems: 'stretch', marginBottom: 12 }}>
+      {/* ── Availability (3-up): site health · trend · SLA breaches ── */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, alignItems: 'stretch', marginBottom: 10 }}>
         <SiteHealthCard api={sites} />
         <NetworkAvailabilityCard api={trend} />
+        <SlaBreaches api={sla} />
       </div>
 
-      {/* ── Reliability: SLA breaches + least reliable (+ wireless sidecar when present) ── */}
-      <div style={{ display: 'flex', gap: 12, alignItems: 'stretch', marginBottom: 12 }}>
-        <div style={{ flex: 1, minWidth: 0 }}><SlaBreaches api={sla} /></div>
-        <div style={{ flex: 1, minWidth: 0 }}><LeastReliableDevices api={leastReliable} /></div>
-        <WirelessHealthCard />
-      </div>
-
-      {/* ── Predictive: approaching capacity + recurring patterns ── */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, alignItems: 'stretch', marginBottom: 12 }}>
+      {/* ── Predictive (3-up): approaching capacity · recurring patterns · at-risk ── */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, alignItems: 'stretch', marginBottom: 10 }}>
         <ApproachingCapacity api={capacity} />
         <RecurringPatterns api={patterns} />
+        <AtRiskDevices data={intel.data} />
       </div>
 
-      {/* ── At-risk (55%) + recent events (45%) — equal 200px height ── */}
-      <div style={{ display: 'grid', gridTemplateColumns: '55fr 45fr', gap: 12, alignItems: 'stretch', marginBottom: 18 }}>
-        <AtRiskDevices data={intel.data} />
-        <div style={{ ...CARD_STYLE, height: 200, display: 'flex', flexDirection: 'column' }}>
+      {/* ── Recent events + wireless health (wireless self-hides → events fills) ── */}
+      <div style={{ display: 'flex', gap: 10, alignItems: 'stretch', marginBottom: 16 }}>
+        <div style={{ ...CARD_STYLE, flex: 1, minWidth: 0, height: 220 }}>
           <div style={SECTION_HEADING}>Recent Events</div>
-          <div style={{ flex: 1, overflowY: 'auto', margin: '0 -4px' }}>
+          <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', margin: '0 -4px' }}>
             <RecentEvents api={events} />
           </div>
         </div>
+        <WirelessHealthCard />
       </div>
     </div>
   );
@@ -450,16 +442,16 @@ function StatTile({
       className={pulse ? 'sv-stat pulse' : undefined}
       style={{
         display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 2,
-        height: 75, padding: '12px 16px', borderRadius: 'var(--radius-sm)',
+        height: 66, padding: '10px 13px', borderRadius: 'var(--radius-sm)',
         background: 'var(--bg-card)', border: '1px solid var(--border)',
         borderLeft: `3px solid ${color}`, textDecoration: 'none', minWidth: 0,
       }}
     >
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-        <span style={{ fontSize: 24, fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1 }}>{value}</span>
+        <span style={{ fontSize: 21, fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1 }}>{value}</span>
         {trend && arrow ? <span style={{ fontSize: 13, fontWeight: 700, color: trendColor }}>{arrow}</span> : null}
       </div>
-      <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', fontWeight: 600 }}>
+      <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', fontWeight: 600 }}>
         {label}
       </div>
     </Link>
@@ -475,19 +467,19 @@ function HealthScoreTile({ data }: { data: Overview | null }) {
       href="/intelligence"
       style={{
         display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 2,
-        height: 75, padding: '12px 16px', borderRadius: 'var(--radius-sm)',
+        height: 66, padding: '10px 13px', borderRadius: 'var(--radius-sm)',
         background: 'var(--bg-card)', border: '1px solid var(--border)',
         borderLeft: `3px solid ${c}`, textDecoration: 'none', minWidth: 0,
       }}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-        <span style={{ fontSize: 24, fontWeight: 800, color: c, lineHeight: 1 }}>
+        <span style={{ fontSize: 21, fontWeight: 800, color: c, lineHeight: 1 }}>
           {score != null ? Math.round(score) : '—'}
         </span>
         {data && <GradeBadge grade={data.overall_grade} />}
       </div>
-      <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', fontWeight: 600 }}>
-        Health Score
+      <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', fontWeight: 600 }}>
+        Health
       </div>
     </Link>
   );
@@ -519,15 +511,15 @@ function SecondaryTiles({ canManageAgents, agentsOnline, agentsTotal }: {
           className={w.offline_aps > 0 ? 'sv-stat pulse' : undefined}
           style={{
             display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 2,
-            minWidth: 220, height: 75, padding: '12px 16px', borderRadius: 'var(--radius-sm)',
+            minWidth: 220, height: 66, padding: '10px 13px', borderRadius: 'var(--radius-sm)',
             background: 'var(--bg-card)', border: '1px solid var(--border)',
             borderLeft: `3px solid ${wifiColor}`, textDecoration: 'none',
           }}
         >
-          <span style={{ fontSize: 24, fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1 }}>
+          <span style={{ fontSize: 21, fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1 }}>
             {w.online_aps}/{w.total_aps}
           </span>
-          <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', fontWeight: 600 }}>
+          <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', fontWeight: 600 }}>
             Wireless APs Online
           </div>
           <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
@@ -541,16 +533,16 @@ function SecondaryTiles({ canManageAgents, agentsOnline, agentsTotal }: {
           className={agentsOnline < agentsTotal ? 'sv-stat pulse' : undefined}
           style={{
             display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 2,
-            minWidth: 220, height: 75, padding: '12px 16px', borderRadius: 'var(--radius-sm)',
+            minWidth: 220, height: 66, padding: '10px 13px', borderRadius: 'var(--radius-sm)',
             background: 'var(--bg-card)', border: '1px solid var(--border)',
             borderLeft: `3px solid ${agentsOnline < agentsTotal ? 'var(--red)' : 'var(--green)'}`,
             textDecoration: 'none',
           }}
         >
-          <span style={{ fontSize: 24, fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1 }}>
+          <span style={{ fontSize: 21, fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1 }}>
             {agentsOnline}/{agentsTotal}
           </span>
-          <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', fontWeight: 600 }}>
+          <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', fontWeight: 600 }}>
             Agents Online
           </div>
         </Link>
@@ -587,7 +579,7 @@ function AtRiskDevices({ data }: { data: Overview | null }) {
   const atRisk = (data && data.at_risk_devices ? data.at_risk_devices : [])
     .filter((d: HealthRow) => { const s = intelNum(d.score); return s != null && s < 70; });
   return (
-    <div style={{ ...CARD_STYLE, borderLeft: '3px solid var(--yellow)', height: 200, display: 'flex', flexDirection: 'column' }}>
+    <div style={{ ...CARD_STYLE, borderLeft: '3px solid var(--yellow)', height: 220, display: 'flex', flexDirection: 'column' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
         <StatusDot status="warning" size={11} />
         <span style={SECTION_HEADING}>At Risk</span>
@@ -643,7 +635,7 @@ function ActiveProblems({ api }: { api: Api<Problem[]> }) {
   const hasProblems = sorted.length > 0;
 
   return (
-    <div style={{ ...CARD_STYLE, height: 240 }}>
+    <div style={{ ...CARD_STYLE, height: 220 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
         {hasProblems && <StatusDot status="down" size={11} />}
         <span style={SECTION_HEADING}>Active Problems</span>
@@ -715,7 +707,7 @@ function ActiveProblems({ api }: { api: Api<Problem[]> }) {
 function SlowestDevices({ api }: { api: Api<Worst[]> }) {
   const rows = (api.data || []).slice(0, 5);
   return (
-    <div style={{ ...CARD_STYLE, height: 240 }}>
+    <div style={{ ...CARD_STYLE, height: 220 }}>
       <div style={SECTION_HEADING}>Slowest Devices (Last 1h)</div>
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', margin: '0 -4px' }}>
         {api.loading && !api.data ? (
@@ -1001,13 +993,13 @@ function OpsTile({ value, label, color, alert }: {
       className={alert ? 'sv-stat pulse' : undefined}
       style={{
         display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 2,
-        height: 75, padding: '12px 16px', borderRadius: 'var(--radius-sm)',
+        height: 66, padding: '10px 13px', borderRadius: 'var(--radius-sm)',
         background: 'var(--bg-card)', border: '1px solid var(--border)',
         borderLeft: `3px solid ${color}`, minWidth: 0,
       }}
     >
-      <span style={{ fontSize: 24, fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1 }}>{value}</span>
-      <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', fontWeight: 600 }}>
+      <span style={{ fontSize: 21, fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1 }}>{value}</span>
+      <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', fontWeight: 600 }}>
         {label}
       </div>
     </div>
@@ -1024,7 +1016,7 @@ function OpenIncidents({ api }: { api: Api<OpenIncident[]> }) {
   const rows = api.data || [];
   const has = rows.length > 0;
   return (
-    <div style={{ ...CARD_STYLE, height: 240 }}>
+    <div style={{ ...CARD_STYLE, height: 220 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
         {has && <StatusDot status="down" size={11} />}
         <span style={SECTION_HEADING}>Open Incidents</span>
@@ -1077,16 +1069,16 @@ function SlaTile({ api }: { api: Api<Sla> }) {
     <div
       style={{
         display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 2,
-        height: 75, padding: '12px 16px', borderRadius: 'var(--radius-sm)',
+        height: 66, padding: '10px 13px', borderRadius: 'var(--radius-sm)',
         background: 'var(--bg-card)', border: '1px solid var(--border)',
         borderLeft: `3px solid ${c}`, minWidth: 0,
       }}
     >
-      <span style={{ fontSize: 24, fontWeight: 800, color: c, lineHeight: 1 }}>
+      <span style={{ fontSize: 21, fontWeight: 800, color: c, lineHeight: 1 }}>
         {pct != null ? `${pct.toFixed(1)}%` : '—'}
       </span>
-      <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', fontWeight: 600 }}>
-        30-day SLA
+      <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', fontWeight: 600 }}>
+        SLA 30d
       </div>
       <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
         Target {target != null ? `${Number(target).toFixed(1)}%` : '—'}
@@ -1101,7 +1093,7 @@ function SlaBreaches({ api }: { api: Api<Sla> }) {
   const target = api.data ? api.data.sla_target : null;
   const hasBreaches = rows.length > 0;
   return (
-    <div style={{ ...CARD_STYLE, height: 240 }}>
+    <div style={{ ...CARD_STYLE, height: 220 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
         <span style={SECTION_HEADING}>SLA Breaches (30d)</span>
         {target != null && (
@@ -1165,7 +1157,7 @@ function ApproachingCapacity({ api }: { api: Api<CapacityRow[]> }) {
   const rows = api.data || [];
   const hasRows = rows.length > 0;
   return (
-    <div style={{ ...CARD_STYLE, borderLeft: '3px solid var(--yellow)', height: 240 }}>
+    <div style={{ ...CARD_STYLE, borderLeft: '3px solid var(--yellow)', height: 220 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
         {hasRows && <StatusDot status="warning" size={11} />}
         <span style={SECTION_HEADING}>Approaching Capacity</span>
@@ -1254,7 +1246,7 @@ function confColor(c: number): string {
 function RecurringPatterns({ api }: { api: Api<PatternRow[]> }) {
   const rows = api.data || [];
   return (
-    <div style={{ ...CARD_STYLE, height: 240 }}>
+    <div style={{ ...CARD_STYLE, height: 220 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
         <span style={SECTION_HEADING}>Recurring Patterns</span>
         {rows.length > 0 && <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--text-muted)' }}>{rows.length}</span>}
@@ -1304,7 +1296,7 @@ function RecurringPatterns({ api }: { api: Api<PatternRow[]> }) {
 function LeastReliableDevices({ api }: { api: Api<LeastReliable[]> }) {
   const rows = (api.data || []).slice(0, 10);
   return (
-    <div style={{ ...CARD_STYLE, height: 240 }}>
+    <div style={{ ...CARD_STYLE, height: 220 }}>
       <div style={SECTION_HEADING}>Least Reliable (30d)</div>
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', margin: '0 -4px' }}>
         {api.loading && !api.data ? (
@@ -1362,7 +1354,7 @@ function fmtBps(n: number | null | undefined): string {
 function TopTalkers({ api }: { api: Api<TopTalker[]> }) {
   const rows = api.data || [];
   return (
-    <div style={{ ...CARD_STYLE, height: 240 }}>
+    <div style={{ ...CARD_STYLE, height: 220 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
         <span style={SECTION_HEADING}>Top Talkers</span>
         {rows.length > 0 && (
@@ -1454,13 +1446,13 @@ function WirelessHealthCard() {
   if (!d || !d.has_data || d.total_controllers === 0) return null;
   const c = scoreColor(d.overall_score);
   return (
-    <div style={{ ...CARD_STYLE, width: 260, minWidth: 260, flexShrink: 0, borderLeft: `3px solid ${c}`, height: 240 }}>
+    <div style={{ ...CARD_STYLE, flex: 1, minWidth: 0, borderLeft: `3px solid ${c}`, height: 220, overflow: 'hidden' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
         <span style={SECTION_HEADING}>Wireless Health</span>
         <Link href="/wireless" className="sv-dash-link" style={{ marginLeft: 'auto', fontSize: 12 }}>View →</Link>
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
-        <span style={{ fontSize: 34, fontWeight: 800, color: c, lineHeight: 1 }}>{d.overall_score}</span>
+        <span style={{ fontSize: 26, fontWeight: 800, color: c, lineHeight: 1 }}>{d.overall_score}</span>
         <GradeBadge grade={d.overall_grade} />
         <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
           {d.controllers_with_intel} controller{d.controllers_with_intel === 1 ? '' : 's'}

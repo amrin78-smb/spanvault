@@ -32,6 +32,12 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.3.1': [
+    'Denser dashboard: status and operational KPIs consolidated into a single top row',
+    'SLA breaches now sit alongside site health and the availability trend',
+    'Lower panels regrouped into 3-up rows to cut scrolling',
+    'Fixed the wireless health card overflowing its container',
+  ],
   '1.3.0': [
     'Enterprise dashboard: operational band with MTTR, MTTA and unacknowledged-alert KPIs',
     'Open Incidents panel plus a 30-day SLA tile and SLA-breach watchlist',
