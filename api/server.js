@@ -32,6 +32,13 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.5.0': [
+    'Renamed the wireless Overview tab to "Wireless Insights" with a consolidated controller-status strip',
+    'AP capacity now breaks down per controller as a clustered licensed-vs-used bar chart instead of one aggregate donut',
+    'Edit a controller\'s SNMP community/version/port inline — no need to open the Devices page',
+    'Controller Capabilities (edit/test/probe) panel moved to the top of the Controllers tab and expanded by default',
+    'Removed duplicated AP/Client KPI tiles from the Controllers tab (Wireless Insights owns the headline totals)',
+  ],
   '1.4.1': [
     'Decimal-MAC access points are now blocked at the shared write path for every vendor (not just Aruba)',
   ],
@@ -2597,9 +2604,13 @@ app.get('/api/wireless/controllers', wrap(async (_req, res) => {
            c.model, c.firmware_version, c.licensed_aps, c.ha_mode, c.ha_peer_ip,
            c.ha_sync_status, c.ap_disconnects_24h, c.capabilities_probed_at,
            (c.capabilities IS NOT NULL AND c.capabilities <> '{}') AS has_capabilities,
+           d.snmp_community AS snmp_community,
+           d.snmp_version AS snmp_version,
+           d.snmp_port AS snmp_port,
            (SELECT COUNT(*)::int FROM wireless_aps a WHERE a.controller_id = c.id) AS ap_count,
            (SELECT COALESCE(SUM(a.clients_total), 0)::int FROM wireless_aps a WHERE a.controller_id = c.id) AS client_count
     FROM wireless_controllers c
+    LEFT JOIN monitored_devices d ON d.id = c.snmp_device_id
     ORDER BY c.name
   `);
   res.json(r.rows);
@@ -2902,16 +2913,83 @@ app.put('/api/wireless/controllers/:id', wrap(async (req, res) => {
   for (const k of allowed) {
     if (b[k] !== undefined) { params.push(b[k]); sets.push(`${k} = $${params.length}`); }
   }
-  if (!sets.length) return res.status(400).json({ error: 'No valid fields to update' });
-  params.push(id);
-  const r = await sv.query(
-    `UPDATE wireless_controllers SET ${sets.join(', ')} WHERE id = $${params.length}
-     RETURNING id, name, vendor, controller_url, api_username, snmp_device_id,
-               site_id, site_name, active, last_polled_at, status`,
-    params
-  );
-  if (!r.rows[0]) return res.status(404).json({ error: 'Controller not found' });
-  res.json(r.rows[0]);
+
+  // SNMP credentials live on the linked monitored_devices row, not on the
+  // controller. Collect any SNMP fields present in the body so we can push them
+  // through to that device inside the same transaction.
+  const snmpFields = ['snmp_community', 'snmp_version', 'snmp_port',
+                      'snmp_v3_user', 'snmp_v3_auth_pass', 'snmp_v3_priv_pass'];
+  const snmpSets = {};
+  for (const k of snmpFields) {
+    if (b[k] !== undefined) snmpSets[k] = b[k];
+  }
+  const hasSnmp = Object.keys(snmpSets).length > 0;
+
+  if (!sets.length && !hasSnmp) {
+    return res.status(400).json({ error: 'No valid fields to update' });
+  }
+
+  const client = await sv.connect();
+  let controllerRow = null;
+  try {
+    await client.query('BEGIN');
+
+    // Always look up snmp_device_id so we can route SNMP updates to the device.
+    const cur = await client.query(`SELECT snmp_device_id FROM wireless_controllers WHERE id = $1`, [id]);
+    if (!cur.rows[0]) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Controller not found' });
+    }
+    const snmpDeviceId = cur.rows[0].snmp_device_id;
+
+    if (sets.length) {
+      const p = params.slice();
+      p.push(id);
+      const r = await client.query(
+        `UPDATE wireless_controllers SET ${sets.join(', ')} WHERE id = $${p.length}
+         RETURNING id, name, vendor, controller_url, api_username, snmp_device_id,
+                   site_id, site_name, active, last_polled_at, status`,
+        p
+      );
+      controllerRow = r.rows[0];
+    } else {
+      const r = await client.query(
+        `SELECT id, name, vendor, controller_url, api_username, snmp_device_id,
+                site_id, site_name, active, last_polled_at, status
+         FROM wireless_controllers WHERE id = $1`,
+        [id]
+      );
+      controllerRow = r.rows[0];
+    }
+
+    // Only update monitored_devices when SNMP fields were sent and the
+    // controller is actually linked to a device.
+    if (hasSnmp && snmpDeviceId != null) {
+      const dSets = [];
+      const dParams = [];
+      for (const k of snmpFields) {
+        if (snmpSets[k] !== undefined) {
+          dParams.push(snmpSets[k]);
+          dSets.push(`${k} = $${dParams.length}`);
+        }
+      }
+      dParams.push(snmpDeviceId);
+      await client.query(
+        `UPDATE monitored_devices SET ${dSets.join(', ')} WHERE id = $${dParams.length}`,
+        dParams
+      );
+    }
+
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
+
+  if (!controllerRow) return res.status(404).json({ error: 'Controller not found' });
+  res.json(controllerRow);
 }));
 
 app.delete('/api/wireless/controllers/:id', wrap(async (req, res) => {

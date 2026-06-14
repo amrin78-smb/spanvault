@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend,
-  BarChart, Bar, ReferenceLine, Cell, PieChart, Pie,
+  BarChart, Bar, ReferenceLine, Cell,
 } from 'recharts';
 import { useApi, apiSend, apiGet } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
@@ -167,6 +167,11 @@ interface Controller {
   ap_disconnects_24h?: number | null;
   capabilities_probed_at?: string | null;
   has_capabilities?: boolean;
+  // SNMP credentials of the linked monitored device (present on GET responses);
+  // used to pre-fill the edit modal so polling creds can be tweaked in place.
+  snmp_community?: string | null;
+  snmp_version?: string | null;
+  snmp_port?: number | null;
 }
 
 // ── Enhanced controllers overview/events contracts ────────────
@@ -622,7 +627,7 @@ export default function WirelessPage() {
         <button
           className={`sv-tab ${tab === 'overview' ? 'active' : ''}`}
           onClick={() => setTab('overview')}
-        >Overview</button>
+        >Wireless Insights</button>
         <button
           className={`sv-tab ${tab === 'aps' ? 'active' : ''}`}
           onClick={() => setTab('aps')}
@@ -719,6 +724,41 @@ function IntelBanner({ onView, coChannel, band5Pct }: {
 
 function apUtil(ap: AccessPoint): number {
   return Math.max(ap.radio_2g_util_pct || 0, ap.radio_5g_util_pct || 0);
+}
+
+// ── Controller status strip (Insights tab) (top-level) ────────
+// Compact per-controller rows: status dot, name, AP count, client count, CPU%.
+// Sourced from the already-fetched /api/wireless/controllers payload — no new fetch.
+function ControllerStatusCard({ controllers }: { controllers: Controller[] }) {
+  if (!controllers.length) return <Empty message="No controllers." />;
+  return (
+    <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+      <thead><tr>
+        <th style={TH_STYLE}>Controller</th><th style={TH_STYLE}>APs</th>
+        <th style={TH_STYLE}>Clients</th><th style={TH_STYLE}>CPU</th>
+      </tr></thead>
+      <tbody>
+        {controllers.map((c) => {
+          const cpu = (c as { cpu_pct?: number | null }).cpu_pct;
+          return (
+            <tr key={c.id}>
+              <td style={{ ...TD_STYLE, fontWeight: 600 }}>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                  <StatusDot status={c.status === 'ok' ? 'up' : (c.status ? 'down' : 'unknown')} />
+                  {c.name}
+                </span>
+              </td>
+              <td style={TD_STYLE}>{fmtInt(c.ap_count)}</td>
+              <td style={TD_STYLE}>{fmtInt(c.client_count)}</td>
+              <td style={{ ...TD_STYLE, color: cpu != null ? pctColor(cpu) : 'var(--text-muted)', fontWeight: 600 }}>
+                {cpu != null ? fmtPct(cpu) : '—'}
+              </td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  );
 }
 
 function OverviewTab({
@@ -907,7 +947,16 @@ function OverviewTab({
         </SectionCard>
       </EqualRow>
 
-      {/* Row 4 — Slim intelligence banner */}
+      {/* Row 4 — Controller status strip (from already-fetched controllers) */}
+      {controllers.data && controllers.data.length > 0 && (
+        <EqualRow>
+          <SectionCard title="Controller Status" maxHeight={200} minWidth={280}>
+            <ControllerStatusCard controllers={controllers.data} />
+          </SectionCard>
+        </EqualRow>
+      )}
+
+      {/* Row 5 — Slim intelligence banner */}
       <IntelBanner onView={onViewIntelligence} coChannel={coChannelCount} band5Pct={band5Pct} />
     </div>
   );
@@ -2672,40 +2721,42 @@ function ControllerInventoryTable({ controllers, capsById }: {
   );
 }
 
-// ── AP capacity chart (donut if licensed, else bar) (top-level) ─
-const CAP_COLORS = ['var(--green)', 'var(--border)'];
+// ── AP capacity chart (per-controller clustered bars if licensed, else bar) ─
 function ApCapacityChart({ controllers }: { controllers: OverviewController[] }) {
   const withLic = controllers.filter((c) => c.licensed_aps != null && Number(c.licensed_aps) > 0);
   if (withLic.length) {
-    const usedTotal = withLic.reduce((s, c) => s + Number(c.ap_count || 0), 0);
-    const licTotal = withLic.reduce((s, c) => s + Number(c.licensed_aps || 0), 0);
-    const available = Math.max(0, licTotal - usedTotal);
-    const pct = licTotal > 0 ? Math.round((usedTotal / licTotal) * 100) : 0;
-    const data = [
-      { name: 'Used', value: usedTotal },
-      { name: 'Available', value: available },
-    ];
+    // Per-controller clustered bars: Licensed vs Used (ap_count).
+    const capData = withLic.map((c) => ({
+      name: c.name,
+      licensed: Number(c.licensed_aps || 0),
+      used: Number(c.ap_count || 0),
+    }));
+    // Several controllers read more cleanly on a vertical (horizontal-bar) layout.
+    const vertical = capData.length > 3;
     return (
-      <div style={{ position: 'relative' }}>
-        <ResponsiveContainer width="100%" height={180}>
-          <PieChart>
-            <Pie data={data} dataKey="value" nameKey="name" innerRadius={52} outerRadius={75} paddingAngle={2}>
-              {data.map((_, i) => <Cell key={i} fill={CAP_COLORS[i % CAP_COLORS.length]} />)}
-            </Pie>
+      <ResponsiveContainer width="100%" height={Math.max(180, vertical ? capData.length * 44 : 180)}>
+        {vertical ? (
+          <BarChart data={capData} layout="vertical" margin={{ left: 8, right: 8, top: 4, bottom: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+            <XAxis type="number" fontSize={11} allowDecimals={false} />
+            <YAxis type="category" dataKey="name" width={100} fontSize={11} />
             <Tooltip />
-          </PieChart>
-        </ResponsiveContainer>
-        <div style={{
-          position: 'absolute', top: '50%', left: 0, right: 0, transform: 'translateY(-50%)',
-          textAlign: 'center', pointerEvents: 'none',
-        }}>
-          <div style={{ fontSize: 20, fontWeight: 800 }}>{pct}%</div>
-          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Used</div>
-        </div>
-        <div style={{ fontSize: 11, color: 'var(--text-muted)', textAlign: 'center', marginTop: 4 }}>
-          {fmtInt(usedTotal)} / {fmtInt(licTotal)} licensed
-        </div>
-      </div>
+            <Legend wrapperStyle={{ fontSize: 11 }} />
+            <Bar dataKey="licensed" name="Licensed" fill="var(--border)" />
+            <Bar dataKey="used" name="Used" fill="var(--green)" />
+          </BarChart>
+        ) : (
+          <BarChart data={capData} margin={{ top: 4, right: 8, bottom: 0, left: -8 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+            <XAxis dataKey="name" fontSize={11} />
+            <YAxis fontSize={11} allowDecimals={false} />
+            <Tooltip />
+            <Legend wrapperStyle={{ fontSize: 11 }} />
+            <Bar dataKey="licensed" name="Licensed" fill="var(--border)" />
+            <Bar dataKey="used" name="Used" fill="var(--green)" />
+          </BarChart>
+        )}
+      </ResponsiveContainer>
     );
   }
   const barData = controllers.map((c) => ({ name: c.name, aps: Number(c.ap_count || 0) }));
@@ -2850,7 +2901,7 @@ function CapabilitiesAccordion({
   onTest: (c: Controller) => void;
   onDelete: (c: Controller) => void;
 }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(true);
   return (
     <div style={{
       marginTop: 16, background: 'var(--bg-card)', border: '1px solid var(--border)',
@@ -3061,13 +3112,24 @@ function ControllersTab({ onViewEvents }: { onViewEvents?: () => void }) {
                 label="Controllers"
                 color={ov.online_controllers === ov.total_controllers ? 'var(--green)' : 'var(--yellow)'}
               />
-              <StatCard value={fmtInt(ov.total_aps)} label="APs Managed" />
-              <StatCard value={fmtInt(ov.total_clients)} label="Clients" />
               <StatCard value={fmtPct(ov.avg_cpu_pct)} label="Avg CPU" />
               <StatCard value={apCapValue} label="AP Capacity" />
               <StatCard value={haText} valueColor={haColor} label="HA Status" color={haColor} />
             </StatRow>
           )}
+
+          {/* Controller Capabilities — shown above the overview rows so the
+              edit/test controls stay visible while the overview API loads. */}
+          <CapabilitiesAccordion
+            controllers={ctlList}
+            canProbe={canProbe}
+            canEdit={canEdit}
+            probingId={probingId}
+            onProbe={handleProbe}
+            onEdit={(c) => { setEditing(c); setShowModal(true); }}
+            onTest={handleTest}
+            onDelete={handleDelete}
+          />
 
           {overview.loading && !ov ? (
             <div className="sv-panel"><Loading /></div>
@@ -3105,18 +3167,6 @@ function ControllersTab({ onViewEvents }: { onViewEvents?: () => void }) {
               {events.loading && !events.data ? <Loading /> : <ControllerEventsTimeline events={evList} />}
             </SectionCard>
           </div>
-
-          {/* Row 5 — Capabilities detection accordion (collapsed) */}
-          <CapabilitiesAccordion
-            controllers={ctlList}
-            canProbe={canProbe}
-            canEdit={canEdit}
-            probingId={probingId}
-            onProbe={handleProbe}
-            onEdit={(c) => { setEditing(c); setShowModal(true); }}
-            onTest={handleTest}
-            onDelete={handleDelete}
-          />
         </>
       )}
 
@@ -3155,9 +3205,9 @@ function ControllerModal({
     // is already provisioned). Provision-new is only offered for fresh adds.
     snmp_source: 'existing',
     ip_address: '',
-    snmp_version: '2c',
-    snmp_community: 'public',
-    snmp_port: '161',
+    snmp_version: (existing?.snmp_version === '3' ? '3' : '2c'),
+    snmp_community: existing?.snmp_community ?? 'public',
+    snmp_port: existing?.snmp_port != null ? String(existing.snmp_port) : '161',
     snmp_v3_user: '',
     snmp_v3_auth_pass: '',
     snmp_v3_priv_pass: '',
@@ -3193,6 +3243,19 @@ function ControllerModal({
       if (form.snmp_source === 'existing') {
         // (a) link existing monitored device
         body.snmp_device_id = form.snmp_device_id;
+        // When editing an existing SNMP controller, allow adjusting the linked
+        // device's polling credentials inline (sent through to the backend).
+        if (existing && existing.snmp_device_id != null) {
+          body.snmp_version = form.snmp_version;
+          body.snmp_port = parseInt(form.snmp_port, 10) || 161;
+          if (form.snmp_version === '3') {
+            if (form.snmp_v3_user.trim()) body.snmp_v3_user = form.snmp_v3_user.trim();
+            if (form.snmp_v3_auth_pass) body.snmp_v3_auth_pass = form.snmp_v3_auth_pass;
+            if (form.snmp_v3_priv_pass) body.snmp_v3_priv_pass = form.snmp_v3_priv_pass;
+          } else {
+            body.snmp_community = form.snmp_community.trim() || 'public';
+          }
+        }
       } else {
         // (b) provision new — backend creates/reuses the device from these fields
         body.snmp_device_id = null;
@@ -3277,13 +3340,62 @@ function ControllerModal({
               </label>
 
               {form.snmp_source === 'existing' ? (
-                <div className="sv-field" style={{ gridColumn: '1 / -1' }}>
-                  <span>Monitored device (SNMP)</span>
-                  <DeviceSelector
-                    selectedId={form.snmp_device_id}
-                    onSelect={(id) => patch({ snmp_device_id: id })}
-                  />
-                </div>
+                <>
+                  <div className="sv-field" style={{ gridColumn: '1 / -1' }}>
+                    <span>Monitored device (SNMP)</span>
+                    <DeviceSelector
+                      selectedId={form.snmp_device_id}
+                      onSelect={(id) => patch({ snmp_device_id: id })}
+                    />
+                  </div>
+                  {/* When editing an existing SNMP controller, expose the linked
+                      device's polling credentials so they can be adjusted inline. */}
+                  {existing && existing.snmp_device_id != null && (
+                    <>
+                      <label className="sv-field">SNMP version
+                        <select className="sv-select" value={form.snmp_version}
+                          onChange={(e) => patch({ snmp_version: e.target.value as '2c' | '3' })}>
+                          <option value="2c">v2c</option>
+                          <option value="3">v3</option>
+                        </select>
+                      </label>
+                      <label className="sv-field">SNMP port
+                        <input className="sv-input" value={form.snmp_port}
+                          onChange={(e) => patch({ snmp_port: e.target.value })}
+                          placeholder="161" />
+                      </label>
+                      {form.snmp_version === '2c' ? (
+                        <label className="sv-field" style={{ gridColumn: '1 / -1' }}>Community
+                          <input className="sv-input" value={form.snmp_community}
+                            onChange={(e) => patch({ snmp_community: e.target.value })}
+                            placeholder="public" />
+                        </label>
+                      ) : (
+                        <>
+                          <label className="sv-field" style={{ gridColumn: '1 / -1' }}>v3 username
+                            <input className="sv-input" value={form.snmp_v3_user}
+                              onChange={(e) => patch({ snmp_v3_user: e.target.value })} />
+                          </label>
+                          <label className="sv-field">v3 auth password
+                            <input className="sv-input" type="password" value={form.snmp_v3_auth_pass}
+                              onChange={(e) => patch({ snmp_v3_auth_pass: e.target.value })}
+                              placeholder="(unchanged)" />
+                          </label>
+                          <label className="sv-field">v3 priv password
+                            <input className="sv-input" type="password" value={form.snmp_v3_priv_pass}
+                              onChange={(e) => patch({ snmp_v3_priv_pass: e.target.value })}
+                              placeholder="(unchanged)" />
+                          </label>
+                        </>
+                      )}
+                      <div style={{
+                        gridColumn: '1 / -1', fontSize: 11, color: 'var(--text-muted)', marginTop: -4,
+                      }}>
+                        Editing SNMP credentials changes polling for the linked monitored device.
+                      </div>
+                    </>
+                  )}
+                </>
               ) : (
                 <>
                   <label className="sv-field" style={{ gridColumn: '1 / -1' }}>IP address
