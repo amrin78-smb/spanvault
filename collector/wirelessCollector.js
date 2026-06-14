@@ -286,7 +286,16 @@ function deriveThroughput(key, curRx, curTx, nowMs) {
 }
 
 // Upsert one AP (keyed by controller_id + name) and append a history sample.
+// Decimal-MAC AP name guard (e.g. "108.196.159.202.125.210"). Aruba's parser
+// already rejects these, but this protects the shared write path for ALL vendors.
+const DECIMAL_MAC_RE = /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/;
+
 async function upsertAp(pool, controller, ap) {
+  // Skip before any DB write: unnamed APs and decimal-MAC names are bad parses.
+  if (!ap.name || DECIMAL_MAC_RE.test(ap.name)) {
+    console.log('[wireless] skipped decimal-MAC AP:', ap.name);
+    return;
+  }
   const name = ap.name || ap.mac_address || ap.ip_address || 'AP';
   const monitoredId = await matchMonitoredDevice(pool, ap);
   const clientsTotal = intOrNull(ap.clients_total) || 0;

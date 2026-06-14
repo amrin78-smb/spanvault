@@ -32,6 +32,9 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.4.1': [
+    'Decimal-MAC access points are now blocked at the shared write path for every vendor (not just Aruba)',
+  ],
   '1.4.0': [
     'Add a wireless controller in one step — the SNMP path can now create its monitored device inline, no more adding it under Devices first',
     '"Scan for controllers" button auto-detects SNMP controllers from already-monitored wireless devices on demand',
