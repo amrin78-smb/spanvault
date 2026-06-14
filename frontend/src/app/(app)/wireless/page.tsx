@@ -239,6 +239,15 @@ interface ControllerForm {
   snmp_device_id: number | null;
   site_id: number | null;
   site_name: string | null;
+  // SNMP source: link an existing monitored device vs provision a new one inline.
+  snmp_source: 'existing' | 'new';
+  ip_address: string;
+  snmp_version: '2c' | '3';
+  snmp_community: string;
+  snmp_port: string;          // kept as string for the input; coerced to int on submit
+  snmp_v3_user: string;
+  snmp_v3_auth_pass: string;
+  snmp_v3_priv_pass: string;
 }
 
 type TabKey = 'overview' | 'aps' | 'ssids' | 'intelligence' | 'clients' | 'controllers';
@@ -2923,6 +2932,7 @@ function ControllersTab({ onViewEvents }: { onViewEvents?: () => void }) {
   const [showModal, setShowModal] = useState(false);
   const [editing, setEditing] = useState<Controller | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [rescanning, setRescanning] = useState(false);
 
   async function handleTest(c: Controller) {
     try {
@@ -2956,6 +2966,22 @@ function ControllersTab({ onViewEvents }: { onViewEvents?: () => void }) {
     await controllers.reload();
     overview.reload();
     setProbingId(null);
+  }
+
+  async function handleRescan() {
+    setRescanning(true);
+    try {
+      const r = await apiSend<{ created: number; controllers: any[] }>(
+        '/api/wireless/controllers/rescan', 'POST', {});
+      const n = r.created ?? 0;
+      setToast(n > 0 ? `✓ Found ${n} new controller${n === 1 ? '' : 's'}` : 'No new controllers found');
+    } catch (e: any) {
+      setToast(`✗ Scan failed: ${e?.message || 'unknown error'}`);
+    }
+    setTimeout(() => setToast(null), 6000);
+    await controllers.reload();
+    overview.reload();
+    setRescanning(false);
   }
 
   const canProbe = role === 'admin' || role === 'super_admin';
@@ -3002,6 +3028,11 @@ function ControllersTab({ onViewEvents }: { onViewEvents?: () => void }) {
       {/* Add controller bar */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14 }}>
         <div style={{ flex: 1 }} />
+        {canEdit && (
+          <button className="sv-btn ghost" onClick={handleRescan} disabled={rescanning}>
+            {rescanning ? 'Scanning…' : 'Scan for controllers'}
+          </button>
+        )}
         {canEdit && (
           <button className="sv-btn" onClick={() => { setEditing(null); setShowModal(true); }}>
             + Add Controller
@@ -3120,6 +3151,16 @@ function ControllerModal({
     snmp_device_id: existing?.snmp_device_id ?? null,
     site_id: existing?.site_id ?? null,
     site_name: existing?.site_name ?? null,
+    // Editing an existing controller always defaults to link-existing (its device
+    // is already provisioned). Provision-new is only offered for fresh adds.
+    snmp_source: 'existing',
+    ip_address: '',
+    snmp_version: '2c',
+    snmp_community: 'public',
+    snmp_port: '161',
+    snmp_v3_user: '',
+    snmp_v3_auth_pass: '',
+    snmp_v3_priv_pass: '',
   }));
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -3130,8 +3171,11 @@ function ControllerModal({
 
   async function save() {
     if (!form.name.trim()) { setErr('Name is required'); return; }
-    if (form.conn_type === 'snmp' && form.snmp_device_id == null) {
+    if (form.conn_type === 'snmp' && form.snmp_source === 'existing' && form.snmp_device_id == null) {
       setErr('Select a monitored device for SNMP'); return;
+    }
+    if (form.conn_type === 'snmp' && form.snmp_source === 'new' && !form.ip_address.trim()) {
+      setErr('IP address is required to create a new SNMP device'); return;
     }
     if (form.conn_type === 'api' && !form.controller_url.trim()) {
       setErr('Controller URL is required for API'); return;
@@ -3145,8 +3189,26 @@ function ControllerModal({
       site_name: form.site_name,
     };
     if (form.conn_type === 'snmp') {
-      body.snmp_device_id = form.snmp_device_id;
       body.controller_url = null;
+      if (form.snmp_source === 'existing') {
+        // (a) link existing monitored device
+        body.snmp_device_id = form.snmp_device_id;
+      } else {
+        // (b) provision new — backend creates/reuses the device from these fields
+        body.snmp_device_id = null;
+        body.ip_address = form.ip_address.trim();
+        body.snmp_version = form.snmp_version;
+        body.snmp_port = parseInt(form.snmp_port, 10) || 161;
+        body.device_name = form.name.trim();
+        body.device_type = 'Wireless Controller';
+        if (form.snmp_version === '3') {
+          body.snmp_v3_user = form.snmp_v3_user.trim() || null;
+          if (form.snmp_v3_auth_pass) body.snmp_v3_auth_pass = form.snmp_v3_auth_pass;
+          if (form.snmp_v3_priv_pass) body.snmp_v3_priv_pass = form.snmp_v3_priv_pass;
+        } else {
+          body.snmp_community = form.snmp_community.trim() || 'public';
+        }
+      }
     } else {
       body.snmp_device_id = null;
       body.controller_url = form.controller_url.trim();
@@ -3205,13 +3267,67 @@ function ControllerModal({
           </label>
 
           {form.conn_type === 'snmp' ? (
-            <div className="sv-field" style={{ gridColumn: '1 / -1' }}>
-              <span>Monitored device (SNMP)</span>
-              <DeviceSelector
-                selectedId={form.snmp_device_id}
-                onSelect={(id) => patch({ snmp_device_id: id })}
-              />
-            </div>
+            <>
+              <label className="sv-field" style={{ gridColumn: '1 / -1' }}>SNMP device source
+                <select className="sv-select" value={form.snmp_source}
+                  onChange={(e) => patch({ snmp_source: e.target.value as 'existing' | 'new' })}>
+                  <option value="existing">Link existing monitored device</option>
+                  <option value="new">Create new device</option>
+                </select>
+              </label>
+
+              {form.snmp_source === 'existing' ? (
+                <div className="sv-field" style={{ gridColumn: '1 / -1' }}>
+                  <span>Monitored device (SNMP)</span>
+                  <DeviceSelector
+                    selectedId={form.snmp_device_id}
+                    onSelect={(id) => patch({ snmp_device_id: id })}
+                  />
+                </div>
+              ) : (
+                <>
+                  <label className="sv-field" style={{ gridColumn: '1 / -1' }}>IP address
+                    <input className="sv-input" value={form.ip_address}
+                      onChange={(e) => patch({ ip_address: e.target.value })}
+                      placeholder="e.g. 10.0.0.5" />
+                  </label>
+                  <label className="sv-field">SNMP version
+                    <select className="sv-select" value={form.snmp_version}
+                      onChange={(e) => patch({ snmp_version: e.target.value as '2c' | '3' })}>
+                      <option value="2c">v2c</option>
+                      <option value="3">v3</option>
+                    </select>
+                  </label>
+                  <label className="sv-field">SNMP port
+                    <input className="sv-input" value={form.snmp_port}
+                      onChange={(e) => patch({ snmp_port: e.target.value })}
+                      placeholder="161" />
+                  </label>
+                  {form.snmp_version === '2c' ? (
+                    <label className="sv-field" style={{ gridColumn: '1 / -1' }}>Community
+                      <input className="sv-input" value={form.snmp_community}
+                        onChange={(e) => patch({ snmp_community: e.target.value })}
+                        placeholder="public" />
+                    </label>
+                  ) : (
+                    <>
+                      <label className="sv-field" style={{ gridColumn: '1 / -1' }}>v3 username
+                        <input className="sv-input" value={form.snmp_v3_user}
+                          onChange={(e) => patch({ snmp_v3_user: e.target.value })} />
+                      </label>
+                      <label className="sv-field">v3 auth password
+                        <input className="sv-input" type="password" value={form.snmp_v3_auth_pass}
+                          onChange={(e) => patch({ snmp_v3_auth_pass: e.target.value })} />
+                      </label>
+                      <label className="sv-field">v3 priv password
+                        <input className="sv-input" type="password" value={form.snmp_v3_priv_pass}
+                          onChange={(e) => patch({ snmp_v3_priv_pass: e.target.value })} />
+                      </label>
+                    </>
+                  )}
+                </>
+              )}
+            </>
           ) : (
             <>
               <label className="sv-field" style={{ gridColumn: '1 / -1' }}>Controller URL

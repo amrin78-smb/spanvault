@@ -32,6 +32,11 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.4.0': [
+    'Add a wireless controller in one step — the SNMP path can now create its monitored device inline, no more adding it under Devices first',
+    '"Scan for controllers" button auto-detects SNMP controllers from already-monitored wireless devices on demand',
+    'Provisioning reuses an existing device when the IP already matches (no duplicates)',
+  ],
   '1.3.2': [
     'Wireless APs KPI now sits inline in the top metrics row (no more orphaned tile)',
     'Top row trimmed to the most beneficial KPIs in a single responsive strip',
@@ -2769,19 +2774,119 @@ app.get('/api/wireless/controllers/events', wrap(async (_req, res) => {
 app.post('/api/wireless/controllers', wrap(async (req, res) => {
   const b = req.body || {};
   if (!b.name || !b.vendor) return res.status(400).json({ error: 'name and vendor are required' });
-  const r = await sv.query(`
-    INSERT INTO wireless_controllers
-      (name, vendor, controller_url, api_key, api_username, api_password,
-       snmp_device_id, site_id, site_name, poll_interval_seconds, active)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
-    RETURNING id, name, vendor, controller_url, api_username, snmp_device_id,
-              site_id, site_name, active, last_polled_at, status
-  `, [
-    b.name, b.vendor, b.controller_url || null, b.api_key || null, b.api_username || null,
-    b.api_password || null, b.snmp_device_id || null, b.site_id || null, b.site_name || null,
-    safeInt(b.poll_interval_seconds, 300), b.active === undefined ? true : !!b.active,
-  ]);
-  res.status(201).json(r.rows[0]);
+
+  // Three provisioning modes:
+  //  (1) API mode          — controller_url given → poll via vendor HTTP API.
+  //  (2) SNMP link-existing — snmp_device_id given → reuse a monitored device.
+  //  (3) SNMP provision-new — ip_address given (no snmp_device_id) → create/reuse
+  //      a SpanVault-local monitored_devices row, then link the controller to it.
+  if (!b.controller_url && !b.snmp_device_id && !b.ip_address) {
+    return res.status(400).json({
+      error: 'Provide controller_url (API mode), snmp_device_id (link existing), or ip_address (provision new SNMP device)',
+    });
+  }
+
+  // Modes (1) and (2): no device provisioning — single insert, unchanged behavior.
+  if (b.controller_url || b.snmp_device_id) {
+    const r = await sv.query(`
+      INSERT INTO wireless_controllers
+        (name, vendor, controller_url, api_key, api_username, api_password,
+         snmp_device_id, site_id, site_name, poll_interval_seconds, active)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+      RETURNING id, name, vendor, controller_url, api_username, snmp_device_id,
+                site_id, site_name, active, last_polled_at, status
+    `, [
+      b.name, b.vendor, b.controller_url || null, b.api_key || null, b.api_username || null,
+      b.api_password || null, b.snmp_device_id || null, b.site_id || null, b.site_name || null,
+      safeInt(b.poll_interval_seconds, 300), b.active === undefined ? true : !!b.active,
+    ]);
+    return res.status(201).json(r.rows[0]);
+  }
+
+  // Mode (3): SNMP provision-new. Create/reuse a monitored device + link controller
+  // atomically so a half-created pair can't be left behind on error.
+  const client = await sv.connect();
+  let provisionedDeviceId = null;
+  let controllerRow = null;
+  try {
+    await client.query('BEGIN');
+
+    // 1. Create the monitored device (mirrors POST /api/devices field defaults).
+    const dev = await client.query(`
+      INSERT INTO monitored_devices
+        (name, ip_address, device_type, site_id, site_name,
+         snmp_enabled, snmp_version, snmp_community, snmp_port,
+         snmp_v3_user, snmp_v3_auth_pass, snmp_v3_priv_pass,
+         poll_interval_seconds, ping_threshold_ms, ping_failures_before_down)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+      ON CONFLICT (ip_address) DO NOTHING
+      RETURNING id
+    `, [
+      b.device_name || b.name, b.ip_address, b.device_type || 'Wireless Controller',
+      b.site_id || null, b.site_name || null,
+      true, b.snmp_version || '2c', b.snmp_community || 'public', safeInt(b.snmp_port, 161),
+      b.snmp_v3_user || null, b.snmp_v3_auth_pass || null, b.snmp_v3_priv_pass || null,
+      safeInt(b.poll_interval_seconds, 300), safeInt(b.ping_threshold_ms, 500),
+      safeInt(b.ping_failures_before_down, 3),
+    ]);
+
+    if (dev.rows[0]) {
+      provisionedDeviceId = dev.rows[0].id;
+    } else {
+      // 2. IP already monitored — reuse the existing device.
+      const ex = await client.query(`SELECT id FROM monitored_devices WHERE ip_address = $1`, [b.ip_address]);
+      if (!ex.rows[0]) throw new Error('Failed to provision or locate device for the given IP');
+      provisionedDeviceId = ex.rows[0].id;
+    }
+
+    // 3. Link the controller to that device (one controller per device — guarded
+    //    by the partial unique index idx_wctl_snmp_device).
+    const ins = await client.query(`
+      INSERT INTO wireless_controllers
+        (name, vendor, controller_url, api_key, api_username, api_password,
+         snmp_device_id, site_id, site_name, poll_interval_seconds, active)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+      ON CONFLICT (snmp_device_id) WHERE snmp_device_id IS NOT NULL DO NOTHING
+      RETURNING id, name, vendor, controller_url, api_username, snmp_device_id,
+                site_id, site_name, active, last_polled_at, status
+    `, [
+      b.name, b.vendor, null, null, null, null,
+      provisionedDeviceId, b.site_id || null, b.site_name || null,
+      safeInt(b.poll_interval_seconds, 300), b.active === undefined ? true : !!b.active,
+    ]);
+
+    if (ins.rows[0]) {
+      controllerRow = ins.rows[0];
+    } else {
+      // Device already has a controller — return the existing one.
+      const ex = await client.query(`
+        SELECT id, name, vendor, controller_url, api_username, snmp_device_id,
+               site_id, site_name, active, last_polled_at, status
+        FROM wireless_controllers WHERE snmp_device_id = $1
+      `, [provisionedDeviceId]);
+      controllerRow = ex.rows[0];
+    }
+
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
+
+  // Best-effort: assign the new device to a polling agent and push config so it
+  // starts polling (mirrors POST /api/devices).
+  if (provisionedDeviceId) {
+    try {
+      const agentId = await assignDeviceAgent(provisionedDeviceId, b.site_id || null);
+      if (agentId) await pushConfigToAgentId(agentId);
+    } catch (e) {
+      console.error('[wireless] device agent assign/push failed:', e.message);
+    }
+  }
+
+  res.status(201).json({ ...controllerRow, provisioned_device_id: provisionedDeviceId });
 }));
 
 app.put('/api/wireless/controllers/:id', wrap(async (req, res) => {
@@ -2809,6 +2914,67 @@ app.put('/api/wireless/controllers/:id', wrap(async (req, res) => {
 app.delete('/api/wireless/controllers/:id', wrap(async (req, res) => {
   await sv.query(`DELETE FROM wireless_controllers WHERE id = $1`, [parseInt(req.params.id, 10)]);
   res.json({ ok: true });
+}));
+
+// On-demand auto-detection of SNMP wireless controllers. Replicates the
+// collector's autoDetectControllers() (collector/wirelessCollector.js) so the UI
+// can trigger a rescan without waiting for the next collector cycle.
+//
+// NOTE: the vendor map below mirrors wirelessVendorFor() in
+// collector/wireless/index.js — keep the two in sync.
+app.post('/api/wireless/controllers/rescan', wrap(async (_req, res) => {
+  const wirelessVendorFor = (deviceVendor) => {
+    if (!deviceVendor) return null;
+    const v = String(deviceVendor).toLowerCase().trim();
+    const map = {
+      aruba: 'aruba',
+      cisco: 'cisco',
+      meraki: 'cisco',        // Meraki is Cisco; closest SNMP fit
+      fortinet: 'fortinet',
+      ruckus: 'ruckus',
+      mikrotik: 'mikrotik',
+      grandstream: 'grandstream',
+      'hpe-procurve': 'hpe',
+      'hpe-comware': 'hpe',
+      hpe: 'hpe',
+    };
+    if (map[v]) return map[v];
+    if (v.startsWith('hpe')) return 'hpe';   // prefix fallback
+    return null;
+  };
+
+  // device_type predicate identifying genuine wireless gear (mirror of
+  // wirelessTypeClause() in collector/wirelessCollector.js). Vendor alone is not
+  // sufficient — a Cisco/Aruba router/switch is not a wireless controller.
+  const wirelessTypeClause = `(
+       device_type ILIKE '%wireless%'
+    OR device_type ILIKE '%wifi%'
+    OR device_type ILIKE '%access point%'
+    OR device_type ILIKE '%wlc%'
+  )`;
+
+  const candidates = await sv.query(`
+    SELECT id, name, device_vendor, site_id, site_name
+    FROM monitored_devices
+    WHERE active = TRUE AND snmp_enabled = TRUE AND device_vendor IS NOT NULL
+      AND device_type IS NOT NULL AND ${wirelessTypeClause}
+      AND id NOT IN (SELECT snmp_device_id FROM wireless_controllers WHERE snmp_device_id IS NOT NULL)
+  `);
+
+  const controllers = [];
+  for (const d of candidates.rows) {
+    const wkey = wirelessVendorFor(d.device_vendor);
+    if (!wkey) continue;
+    const ins = await sv.query(`
+      INSERT INTO wireless_controllers (name, vendor, snmp_device_id, site_id, site_name)
+      VALUES ($1,$2,$3,$4,$5)
+      ON CONFLICT (snmp_device_id) WHERE snmp_device_id IS NOT NULL DO NOTHING
+      RETURNING id, name, vendor, snmp_device_id
+    `, [`${d.name} (wireless)`, wkey, d.id, d.site_id || null, d.site_name || null]);
+    if (ins.rows[0]) controllers.push(ins.rows[0]);
+  }
+
+  res.json({ created: controllers.length, controllers });
 }));
 
 // Test a controller's reachability (dry run — no DB writes).
