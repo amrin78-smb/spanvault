@@ -32,6 +32,11 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.3.2': [
+    'Wireless APs KPI now sits inline in the top metrics row (no more orphaned tile)',
+    'Top row trimmed to the most beneficial KPIs in a single responsive strip',
+    'Unknown, MTTA and wireless/agents tiles now appear only when they carry signal',
+  ],
   '1.3.1': [
     'Denser dashboard: status and operational KPIs consolidated into a single top row',
     'SLA breaches now sit alongside site health and the availability trend',

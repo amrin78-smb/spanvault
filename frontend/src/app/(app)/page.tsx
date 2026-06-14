@@ -280,8 +280,8 @@ export default function DashboardPage() {
       {/* ── KPI strip: status + operational metrics in a single row ── */}
       {summary.error && <ErrorBox message={summary.error} />}
       {summary.loading && !s ? (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(11, 1fr)', gap: 8, marginBottom: 10 }}>
-          {Array.from({ length: 11 }).map((_, i) => (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 8, marginBottom: 10 }}>
+          {Array.from({ length: 10 }).map((_, i) => (
             <div key={i} style={{ ...CARD_STYLE, height: 66, padding: '10px 13px' }}>
               <Skeleton height={20} width="55%" />
               <div style={{ height: 6 }} />
@@ -291,7 +291,10 @@ export default function DashboardPage() {
         </div>
       ) : s ? (
         <>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(11, 1fr)', gap: 8, marginBottom: 10 }}>
+          {/* Single responsive KPI strip: status + operational metrics + wireless.
+              Unknown / MTTA / Wireless / Agents are conditional — they appear only
+              when they carry signal, so the row stays clean (no orphaned tiles). */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 8, marginBottom: 10 }}>
             <StatTile href="/devices" color="var(--text-primary)" value={s.total} label="Total" />
             <StatTile href="/devices?status=up" color="var(--green)" value={s.up} label="Up"
               trend={upTrend} arrow={upArrow} />
@@ -299,22 +302,25 @@ export default function DashboardPage() {
               pulse={s.down > 0} trend={downTrend} arrow={downArrow} />
             <StatTile href="/devices?status=warning" color="var(--yellow)" value={s.warning} label="Warning"
               pulse={s.warning > 0} />
-            <StatTile href="/devices?status=unknown" color="var(--text-muted)" value={s.unknown} label="Unknown" />
+            {s.unknown > 0 && (
+              <StatTile href="/devices?status=unknown" color="var(--text-muted)" value={s.unknown} label="Unknown" />
+            )}
             <StatTile href="/alerts?status=active" color="var(--red)" value={s.active_alerts} label="Alerts" />
             <HealthScoreTile data={intel.data} />
             <SlaTile api={sla} />
             <OpsTile color="var(--text-primary)" value={fmtMins(ops.data ? ops.data.mttr_minutes : null)} label="MTTR 30d" />
-            <OpsTile color="var(--text-primary)" value={fmtMins(ops.data ? ops.data.mtta_minutes : null)} label="MTTA 30d" />
+            {ops.data && ops.data.mtta_minutes != null && (
+              <OpsTile color="var(--text-primary)" value={fmtMins(ops.data.mtta_minutes)} label="MTTA 30d" />
+            )}
             <OpsTile
               color={ops.data && ops.data.unacked_count > 0 ? 'var(--red)' : 'var(--green)'}
               value={ops.data ? ops.data.unacked_count : 0}
               label="Unack'd"
               alert={!!(ops.data && ops.data.unacked_count > 0)}
             />
+            <WirelessApsTile />
+            <AgentsTile canManageAgents={canManageAgents} agentsOnline={s.agents_online} agentsTotal={s.agents_total} />
           </div>
-
-          {/* Secondary tiles (wireless / agents) — compact, shown only when present. */}
-          <SecondaryTiles canManageAgents={canManageAgents} agentsOnline={s.agents_online} agentsTotal={s.agents_total} />
         </>
       ) : null}
 
@@ -485,69 +491,67 @@ function HealthScoreTile({ data }: { data: Overview | null }) {
   );
 }
 
-// ── Secondary tiles row (wireless + agents) ────────────────────
-// Preserved from the original dashboard but kept out of the strict 7-KPI grid.
-// Wireless self-fetches and hides until at least one AP exists; the agents tile
-// only renders for users who can manage agents and when agents are registered.
-function SecondaryTiles({ canManageAgents, agentsOnline, agentsTotal }: {
-  canManageAgents: boolean; agentsOnline: number; agentsTotal: number;
-}) {
+// ── Wireless APs tile (self-fetching; hidden on wired-only sites) ─
+// Lives inline in the KPI strip. Self-fetches and returns null until at least
+// one AP exists, so it never strands a near-empty secondary row.
+function WirelessApsTile() {
   const wifi = useApi<WirelessSummaryLite>('/api/wireless/summary', REFRESH_MS);
   const ssids = useApi<WirelessSsidLite>('/api/wireless/ssids/summary', REFRESH_MS);
   const w = wifi.data;
-  const showWifi = !!(w && w.total_aps);
-  const showAgents = canManageAgents && agentsTotal > 0;
-  if (!showWifi && !showAgents) return null;
-
-  const wifiColor = w && w.offline_aps > 0 ? 'var(--red)' : 'var(--green)';
-  const clients = w?.total_clients || 0;
+  if (!w || !w.total_aps) return null;
+  const wifiColor = w.offline_aps > 0 ? 'var(--red)' : 'var(--green)';
+  const clients = w.total_clients || 0;
   const ssidCount = ssids.data?.active_ssids ?? ssids.data?.total_ssids ?? 0;
-
   return (
-    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginBottom: 12 }}>
-      {showWifi && w && (
-        <Link
-          href="/wireless"
-          className={w.offline_aps > 0 ? 'sv-stat pulse' : undefined}
-          style={{
-            display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 2,
-            minWidth: 220, height: 66, padding: '10px 13px', borderRadius: 'var(--radius-sm)',
-            background: 'var(--bg-card)', border: '1px solid var(--border)',
-            borderLeft: `3px solid ${wifiColor}`, textDecoration: 'none',
-          }}
-        >
-          <span style={{ fontSize: 21, fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1 }}>
-            {w.online_aps}/{w.total_aps}
-          </span>
-          <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', fontWeight: 600 }}>
-            Wireless APs Online
-          </div>
-          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-            {clients} client{clients === 1 ? '' : 's'} · {ssidCount} SSID{ssidCount === 1 ? '' : 's'}
-          </div>
-        </Link>
-      )}
-      {showAgents && (
-        <Link
-          href="/agents"
-          className={agentsOnline < agentsTotal ? 'sv-stat pulse' : undefined}
-          style={{
-            display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 2,
-            minWidth: 220, height: 66, padding: '10px 13px', borderRadius: 'var(--radius-sm)',
-            background: 'var(--bg-card)', border: '1px solid var(--border)',
-            borderLeft: `3px solid ${agentsOnline < agentsTotal ? 'var(--red)' : 'var(--green)'}`,
-            textDecoration: 'none',
-          }}
-        >
-          <span style={{ fontSize: 21, fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1 }}>
-            {agentsOnline}/{agentsTotal}
-          </span>
-          <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', fontWeight: 600 }}>
-            Agents Online
-          </div>
-        </Link>
-      )}
-    </div>
+    <Link
+      href="/wireless"
+      className={w.offline_aps > 0 ? 'sv-stat pulse' : undefined}
+      style={{
+        display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 2,
+        height: 66, padding: '10px 13px', borderRadius: 'var(--radius-sm)',
+        background: 'var(--bg-card)', border: '1px solid var(--border)',
+        borderLeft: `3px solid ${wifiColor}`, textDecoration: 'none', minWidth: 0,
+      }}
+    >
+      <span style={{ fontSize: 21, fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1 }}>
+        {w.online_aps}/{w.total_aps}
+      </span>
+      <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', fontWeight: 600 }}>
+        Wireless APs
+      </div>
+      <div style={{ fontSize: 9, color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+        {clients} client{clients === 1 ? '' : 's'} · {ssidCount} SSID{ssidCount === 1 ? '' : 's'}
+      </div>
+    </Link>
+  );
+}
+
+// ── Agents tile (manage-agents users; hidden when none registered) ─
+// Inline strip tile; returns null unless the viewer can manage agents and at
+// least one agent is registered.
+function AgentsTile({ canManageAgents, agentsOnline, agentsTotal }: {
+  canManageAgents: boolean; agentsOnline: number; agentsTotal: number;
+}) {
+  if (!canManageAgents || agentsTotal <= 0) return null;
+  const down = agentsOnline < agentsTotal;
+  return (
+    <Link
+      href="/agents"
+      className={down ? 'sv-stat pulse' : undefined}
+      style={{
+        display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 2,
+        height: 66, padding: '10px 13px', borderRadius: 'var(--radius-sm)',
+        background: 'var(--bg-card)', border: '1px solid var(--border)',
+        borderLeft: `3px solid ${down ? 'var(--red)' : 'var(--green)'}`, textDecoration: 'none', minWidth: 0,
+      }}
+    >
+      <span style={{ fontSize: 21, fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1 }}>
+        {agentsOnline}/{agentsTotal}
+      </span>
+      <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', fontWeight: 600 }}>
+        Agents
+      </div>
+    </Link>
   );
 }
 
