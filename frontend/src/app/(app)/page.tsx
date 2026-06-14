@@ -46,6 +46,61 @@ type EventRow = {
   site_name: string | null; alert_type: string; severity: string; status: string; message: string | null;
   triggered_at: string; resolved_at: string | null; event_at: string;
 };
+// ── Enterprise panel types ─────────────────────────────────────
+type OpsSummary = {
+  mttr_minutes: number | string | null;
+  mtta_minutes: number | string | null;
+  unacked_count: number;
+  open_incidents: number;
+};
+type OpenIncident = {
+  id: number; title: string; affected_count: number; severity: string;
+  started_at: string; root_cause_device_id: number | null;
+  root_cause_device_name: string | null;
+};
+type SlaBreach = {
+  id: number; name: string; site_id: number | null; site_name: string | null;
+  uptime_pct: number | string | null;
+};
+type Sla = { overall_pct: number | null; sla_target: number; breaching: SlaBreach[] };
+type CapacityRow = {
+  id: number; name: string; site_id: number | null; site_name: string | null;
+  metric: string; p95: number | string | null; p99: number | string | null;
+};
+type PatternRow = {
+  id: number; device_id: number; device_name: string;
+  pattern_type: string; metric: string; description: string | null;
+  confidence: number | null; occurrence_count: number;
+  hour_of_day: number | null; day_of_week: number | null;
+};
+type LeastReliable = {
+  id: number; name: string; site_id: number | null; site_name: string | null;
+  current_status: string; alert_count: number; outage_count: number;
+  last_alert_at: string | null;
+};
+type TopTalker = {
+  device_id: number; device_name: string; if_index: number; if_name: string;
+  in_bps: number; out_bps: number;
+};
+type MaintenanceRow = {
+  id: number; device_id: number; device_name: string; site_name: string | null;
+  starts_at: string; ends_at: string; reason: string | null; state: 'active' | 'upcoming';
+};
+type MaintenanceData = { active: MaintenanceRow[]; upcoming: MaintenanceRow[] };
+type WirelessIntel = {
+  has_data: boolean;
+  total_controllers: number;
+  controllers_with_intel: number;
+  overall_score: number;
+  overall_grade: string;
+  interference_score: number;
+  capacity_score: number;
+  band_steering_score: number;
+  co_channel_pairs: number;
+  overloaded_aps: number;
+  critical_util_count: number;
+  problem_clients: number;
+};
 
 const REFRESH_MS = 30000;
 
@@ -177,6 +232,14 @@ export default function DashboardPage() {
   const events = useApi<EventRow[]>('/api/dashboard/events', REFRESH_MS);
   const agentOffline = useApi<AgentOfflineRow[]>('/api/dashboard/agent-offline', REFRESH_MS);
   const intel = useApi<Overview>('/api/intelligence/overview', REFRESH_MS);
+  const ops = useApi<OpsSummary>('/api/dashboard/ops-summary', REFRESH_MS);
+  const incidents = useApi<OpenIncident[]>('/api/dashboard/incidents', REFRESH_MS);
+  const sla = useApi<Sla>('/api/dashboard/sla', REFRESH_MS);
+  const capacity = useApi<CapacityRow[]>('/api/dashboard/capacity', REFRESH_MS);
+  const patterns = useApi<PatternRow[]>('/api/dashboard/patterns', REFRESH_MS);
+  const leastReliable = useApi<LeastReliable[]>('/api/dashboard/least-reliable', REFRESH_MS);
+  const topTalkers = useApi<TopTalker[]>('/api/dashboard/top-talkers', REFRESH_MS);
+  const maintenance = useApi<MaintenanceData>('/api/dashboard/maintenance', REFRESH_MS);
 
   const updatedAt = useUpdatedAt(summary.data);
   const ago = useSecondsAgo(updatedAt);
@@ -185,7 +248,9 @@ export default function DashboardPage() {
   useRefreshKey(() => {
     summary.reload(); problems.reload(); worst.reload();
     trend.reload(); sites.reload(); events.reload(); agentOffline.reload();
-    intel.reload();
+    intel.reload(); ops.reload(); incidents.reload(); sla.reload();
+    capacity.reload(); patterns.reload(); leastReliable.reload(); topTalkers.reload();
+    maintenance.reload();
   });
 
   const s = summary.data;
@@ -241,28 +306,63 @@ export default function DashboardPage() {
 
           {/* Secondary tiles (wireless / agents) — preserved, shown only when present. */}
           <SecondaryTiles canManageAgents={canManageAgents} agentsOnline={s.agents_online} agentsTotal={s.agents_total} />
+
+          {/* ── Operational band: SLA / MTTR / MTTA / Unacknowledged ── */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 12 }}>
+            <SlaTile api={sla} />
+            <OpsTile color="var(--text-primary)" value={fmtMins(ops.data ? ops.data.mttr_minutes : null)} label="MTTR (30d)" />
+            <OpsTile color="var(--text-primary)" value={fmtMins(ops.data ? ops.data.mtta_minutes : null)} label="MTTA (30d)" />
+            <OpsTile
+              color={ops.data && ops.data.unacked_count > 0 ? 'var(--red)' : 'var(--green)'}
+              value={ops.data ? ops.data.unacked_count : 0}
+              label="Unacknowledged"
+              alert={!!(ops.data && ops.data.unacked_count > 0)}
+            />
+          </div>
         </>
       ) : null}
 
-      {/* ── ROW 2: anomaly banner (slim, only if anomalies) ── */}
+      {/* ── Anomaly banner (slim, only if anomalies) ── */}
       <AnomalyBanner data={intel.data} />
 
-      {/* ── ROW 3: active problems (55%) + slowest devices (45%) ── */}
+      {/* ── Maintenance windows (planned — active now or within 7 days) ── */}
+      <MaintenanceGroup api={maintenance} />
+
+      {/* ── Active problems (55%) + open incidents (45%) ── */}
       <div style={{ display: 'grid', gridTemplateColumns: '55fr 45fr', gap: 12, alignItems: 'stretch', marginBottom: 12 }}>
         <ActiveProblems api={problems} />
-        <SlowestDevices api={worst} />
+        <OpenIncidents api={incidents} />
       </div>
 
       {/* ── Agent-offline group (devices unreachable via an offline agent) ── */}
       <AgentOfflineGroup api={agentOffline} />
 
-      {/* ── ROW 4: site health (55%) + availability trend (45%) ── */}
+      {/* ── Performance: slowest devices + top talkers ── */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, alignItems: 'stretch', marginBottom: 12 }}>
+        <SlowestDevices api={worst} />
+        <TopTalkers api={topTalkers} />
+      </div>
+
+      {/* ── Site health (55%) + availability trend (45%) ── */}
       <div style={{ display: 'grid', gridTemplateColumns: '55fr 45fr', gap: 12, alignItems: 'stretch', marginBottom: 12 }}>
         <SiteHealthCard api={sites} />
         <NetworkAvailabilityCard api={trend} />
       </div>
 
-      {/* ── ROW 5: at-risk (55%) + recent events (45%) — equal 200px height ── */}
+      {/* ── Reliability: SLA breaches + least reliable (+ wireless sidecar when present) ── */}
+      <div style={{ display: 'flex', gap: 12, alignItems: 'stretch', marginBottom: 12 }}>
+        <div style={{ flex: 1, minWidth: 0 }}><SlaBreaches api={sla} /></div>
+        <div style={{ flex: 1, minWidth: 0 }}><LeastReliableDevices api={leastReliable} /></div>
+        <WirelessHealthCard />
+      </div>
+
+      {/* ── Predictive: approaching capacity + recurring patterns ── */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, alignItems: 'stretch', marginBottom: 12 }}>
+        <ApproachingCapacity api={capacity} />
+        <RecurringPatterns api={patterns} />
+      </div>
+
+      {/* ── At-risk (55%) + recent events (45%) — equal 200px height ── */}
       <div style={{ display: 'grid', gridTemplateColumns: '55fr 45fr', gap: 12, alignItems: 'stretch', marginBottom: 18 }}>
         <AtRiskDevices data={intel.data} />
         <div style={{ ...CARD_STYLE, height: 200, display: 'flex', flexDirection: 'column' }}>
@@ -877,6 +977,531 @@ function AgentOfflineGroup({ api }: { api: Api<AgentOfflineRow[]> }) {
         </div>
       ))}
     </div>
+  );
+}
+
+// ── Ops metrics (MTTR / MTTA / Unacknowledged) ─────────────────
+// Compact minutes → "12m" / "3h 5m" / "—".
+function fmtMins(v: number | string | null | undefined): string {
+  const m = num(v as any);
+  if (m == null) return '—';
+  if (m < 1) return '<1m';
+  if (m < 60) return `${Math.round(m)}m`;
+  const h = Math.floor(m / 60);
+  const rem = Math.round(m % 60);
+  return `${h}h ${rem}m`;
+}
+
+// Plain (non-link) KPI tile matching the StatTile visual spec.
+function OpsTile({ value, label, color, alert }: {
+  value: string | number; label: string; color: string; alert?: boolean;
+}) {
+  return (
+    <div
+      className={alert ? 'sv-stat pulse' : undefined}
+      style={{
+        display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 2,
+        height: 75, padding: '12px 16px', borderRadius: 'var(--radius-sm)',
+        background: 'var(--bg-card)', border: '1px solid var(--border)',
+        borderLeft: `3px solid ${color}`, minWidth: 0,
+      }}
+    >
+      <span style={{ fontSize: 24, fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1 }}>{value}</span>
+      <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', fontWeight: 600 }}>
+        {label}
+      </div>
+    </div>
+  );
+}
+
+// ── Open incidents (correlated alert groups) ───────────────────
+function severityDotStatus(sev: string): string {
+  if (sev === 'critical') return 'down';
+  if (sev === 'warning') return 'warning';
+  return 'unknown';
+}
+function OpenIncidents({ api }: { api: Api<OpenIncident[]> }) {
+  const rows = api.data || [];
+  const has = rows.length > 0;
+  return (
+    <div style={{ ...CARD_STYLE, height: 240 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+        {has && <StatusDot status="down" size={11} />}
+        <span style={SECTION_HEADING}>Open Incidents</span>
+        {has && <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--text-muted)' }}>{rows.length}</span>}
+      </div>
+      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', margin: '0 -4px', padding: '0 4px' }}>
+        {api.loading && !api.data ? (
+          <TableSkeleton rows={4} cols={3} />
+        ) : api.error ? (
+          <ErrorBox message={api.error} />
+        ) : !has ? (
+          <div style={{
+            height: '100%', display: 'flex', flexDirection: 'column',
+            alignItems: 'center', justifyContent: 'center', gap: 4, color: 'var(--green)',
+          }}>
+            <div style={{ fontSize: 28 }}>✓</div>
+            <div style={{ fontSize: 13, fontWeight: 600 }}>No open incidents</div>
+          </div>
+        ) : (
+          rows.map((i) => {
+            const age = durSince(i.started_at);
+            return (
+              <div key={i.id} style={{ display: 'flex', alignItems: 'center', gap: 8, height: 36, fontSize: 12.5, borderBottom: '1px solid var(--border-light)' }}>
+                <StatusDot status={severityDotStatus(i.severity)} size={10} />
+                {i.root_cause_device_id ? (
+                  <Link href={`/devices/${i.root_cause_device_id}`} style={{ fontWeight: 600, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {i.title}
+                  </Link>
+                ) : (
+                  <span style={{ fontWeight: 600, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{i.title}</span>
+                )}
+                <span style={{ color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{i.affected_count} affected</span>
+                <span style={{ flex: 1 }} />
+                {age && <span style={{ color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{age}</span>}
+              </div>
+            );
+          })
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── 30-day SLA KPI tile ────────────────────────────────────────
+function SlaTile({ api }: { api: Api<Sla> }) {
+  const pct = num(api.data ? api.data.overall_pct : null);
+  const target = api.data ? api.data.sla_target : null;
+  const c = uptimeColor(pct);
+  return (
+    <div
+      style={{
+        display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 2,
+        height: 75, padding: '12px 16px', borderRadius: 'var(--radius-sm)',
+        background: 'var(--bg-card)', border: '1px solid var(--border)',
+        borderLeft: `3px solid ${c}`, minWidth: 0,
+      }}
+    >
+      <span style={{ fontSize: 24, fontWeight: 800, color: c, lineHeight: 1 }}>
+        {pct != null ? `${pct.toFixed(1)}%` : '—'}
+      </span>
+      <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', fontWeight: 600 }}>
+        30-day SLA
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+        Target {target != null ? `${Number(target).toFixed(1)}%` : '—'}
+      </div>
+    </div>
+  );
+}
+
+// ── SLA breaches panel (rolling 30-day uptime below target) ────
+function SlaBreaches({ api }: { api: Api<Sla> }) {
+  const rows = api.data ? api.data.breaching : [];
+  const target = api.data ? api.data.sla_target : null;
+  const hasBreaches = rows.length > 0;
+  return (
+    <div style={{ ...CARD_STYLE, height: 240 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+        <span style={SECTION_HEADING}>SLA Breaches (30d)</span>
+        {target != null && (
+          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>target {Number(target).toFixed(1)}%</span>
+        )}
+        {hasBreaches && <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--text-muted)' }}>{rows.length}</span>}
+      </div>
+      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', margin: '0 -4px', padding: '0 4px' }}>
+        {api.loading && !api.data ? (
+          <TableSkeleton rows={5} cols={3} />
+        ) : api.error ? (
+          <ErrorBox message={api.error} />
+        ) : !hasBreaches ? (
+          <div style={{
+            height: '100%', display: 'flex', flexDirection: 'column',
+            alignItems: 'center', justifyContent: 'center', gap: 4, color: 'var(--green)',
+          }}>
+            <div style={{ fontSize: 28 }}>✓</div>
+            <div style={{ fontSize: 13, fontWeight: 600 }}>All devices meeting SLA</div>
+          </div>
+        ) : (
+          rows.map((d) => {
+            const pct = num(d.uptime_pct);
+            return (
+              <div key={d.id} style={{ display: 'flex', alignItems: 'center', gap: 10, height: 36, fontSize: 12.5 }}>
+                <span style={{ width: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  <Link href={`/devices/${d.id}`} style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{d.name}</Link>
+                  {d.site_name && <span style={{ color: 'var(--text-muted)' }}> · {d.site_name}</span>}
+                </span>
+                <span style={{ flex: 1, height: 4, borderRadius: 2, background: 'var(--border)', overflow: 'hidden' }}>
+                  <span style={{
+                    display: 'block', height: '100%', borderRadius: 2,
+                    width: `${pct != null ? Math.max(2, Math.min(100, pct)) : 0}%`, background: 'var(--red)',
+                  }} />
+                </span>
+                <span style={{ width: 56, textAlign: 'right', color: 'var(--red)', fontWeight: 600 }}>
+                  {pct != null ? `${pct.toFixed(1)}%` : '—'}
+                </span>
+              </div>
+            );
+          })
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Approaching capacity (CPU/memory p95 >= 80%) ───────────────
+function capacityMetricLabel(metric: string): string {
+  if (metric === 'cpu_pct') return 'CPU';
+  if (metric === 'mem_pct') return 'Memory';
+  return metric;
+}
+function capacityColor(p: number | null): string {
+  if (p == null) return 'var(--text-muted)';
+  if (p >= 90) return 'var(--red)';
+  if (p >= 80) return 'var(--yellow)';
+  return 'var(--green)';
+}
+function ApproachingCapacity({ api }: { api: Api<CapacityRow[]> }) {
+  const rows = api.data || [];
+  const hasRows = rows.length > 0;
+  return (
+    <div style={{ ...CARD_STYLE, borderLeft: '3px solid var(--yellow)', height: 240 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+        {hasRows && <StatusDot status="warning" size={11} />}
+        <span style={SECTION_HEADING}>Approaching Capacity</span>
+        {hasRows && <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--text-muted)' }}>{rows.length}</span>}
+      </div>
+      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', margin: '0 -4px', padding: '0 4px' }}>
+        {api.loading && !api.data ? (
+          <TableSkeleton rows={5} cols={3} />
+        ) : api.error ? (
+          <ErrorBox message={api.error} />
+        ) : !hasRows ? (
+          <div style={{
+            height: '100%', display: 'flex', flexDirection: 'column',
+            alignItems: 'center', justifyContent: 'center', gap: 4, color: 'var(--green)',
+          }}>
+            <div style={{ fontSize: 28 }}>✓</div>
+            <div style={{ fontSize: 13, fontWeight: 600 }}>No capacity concerns</div>
+          </div>
+        ) : (
+          rows.map((c) => {
+            const p95 = num(c.p95);
+            const color = capacityColor(p95);
+            return (
+              <div
+                key={`${c.id}-${c.metric}`}
+                style={{ display: 'flex', alignItems: 'center', gap: 10, height: 36, fontSize: 12.5, borderBottom: '1px solid var(--border-light)' }}
+              >
+                <Link
+                  href={`/devices/${c.id}`}
+                  style={{ width: 140, fontWeight: 600, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                  title={c.name}
+                >
+                  {c.name}
+                </Link>
+                <span style={{ width: 54, color: 'var(--text-muted)', flexShrink: 0 }}>{capacityMetricLabel(c.metric)}</span>
+                <span style={{ flex: 1, height: 4, borderRadius: 2, background: 'var(--border)', overflow: 'hidden' }}>
+                  <span style={{
+                    display: 'block', height: '100%', borderRadius: 2,
+                    width: `${p95 != null ? Math.min(100, Math.max(2, p95)) : 0}%`, background: color,
+                  }} />
+                </span>
+                <span style={{ width: 48, textAlign: 'right', color, fontWeight: 600, flexShrink: 0 }}>
+                  {p95 != null ? `${p95.toFixed(0)}%` : '—'}
+                </span>
+              </div>
+            );
+          })
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Recurring patterns (predictive insight) ────────────────────
+const DOW_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+function patternMetricLabel(metric: string): string {
+  switch (metric) {
+    case 'response_ms': return 'High latency';
+    case 'cpu_pct':     return 'High CPU';
+    case 'mem_pct':     return 'High memory';
+    default:            return metric.replace(/_/g, ' ');
+  }
+}
+function patternText(p: PatternRow): string {
+  if (p.description && p.description.trim()) return p.description.trim();
+  const parts: string[] = [patternMetricLabel(p.metric)];
+  if (p.day_of_week != null && DOW_NAMES[p.day_of_week]) {
+    parts.push(`every ${DOW_NAMES[p.day_of_week]}`);
+  } else if (p.pattern_type === 'daily') {
+    parts.push('daily');
+  } else if (p.pattern_type === 'weekly') {
+    parts.push('weekly');
+  }
+  if (p.hour_of_day != null) {
+    const h = String(p.hour_of_day).padStart(2, '0');
+    const h2 = String((p.hour_of_day + 1) % 24).padStart(2, '0');
+    parts.push(`${h}:00-${h2}:00`);
+  }
+  return parts.join(' ');
+}
+function confColor(c: number): string {
+  if (c >= 80) return 'var(--red)';
+  if (c >= 60) return 'var(--yellow)';
+  return 'var(--text-muted)';
+}
+function RecurringPatterns({ api }: { api: Api<PatternRow[]> }) {
+  const rows = api.data || [];
+  return (
+    <div style={{ ...CARD_STYLE, height: 240 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+        <span style={SECTION_HEADING}>Recurring Patterns</span>
+        {rows.length > 0 && <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--text-muted)' }}>{rows.length}</span>}
+      </div>
+      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', margin: '0 -4px', padding: '0 4px' }}>
+        {api.loading && !api.data ? (
+          <TableSkeleton rows={5} cols={2} />
+        ) : api.error ? (
+          <ErrorBox message={api.error} />
+        ) : !rows.length ? (
+          <Empty message="No recurring patterns detected yet" />
+        ) : (
+          rows.map((p) => {
+            const conf = num(p.confidence);
+            const pct = conf != null ? Math.round(conf * 100) : null;
+            return (
+              <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 8, height: 36, fontSize: 12.5, borderBottom: '1px solid var(--border-light)' }}>
+                <span style={{ flexShrink: 0 }}>🔁</span>
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  <Link href={`/devices/${p.device_id}`} style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
+                    {p.device_name}
+                  </Link>{' '}
+                  <span style={{ color: 'var(--text-primary)' }}>{patternText(p)}</span>
+                </span>
+                <span style={{ flex: 1 }} />
+                {pct != null && (
+                  <span
+                    title={`${p.occurrence_count} occurrence${p.occurrence_count === 1 ? '' : 's'}`}
+                    style={{
+                      flexShrink: 0, fontSize: 11, fontWeight: 700, color: '#fff',
+                      background: confColor(pct), padding: '1px 7px', borderRadius: 10, whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {pct}%
+                  </span>
+                )}
+              </div>
+            );
+          })
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Least reliable devices (worst alert offenders, 30d) ────────
+function LeastReliableDevices({ api }: { api: Api<LeastReliable[]> }) {
+  const rows = (api.data || []).slice(0, 10);
+  return (
+    <div style={{ ...CARD_STYLE, height: 240 }}>
+      <div style={SECTION_HEADING}>Least Reliable (30d)</div>
+      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', margin: '0 -4px' }}>
+        {api.loading && !api.data ? (
+          <TableSkeleton rows={5} cols={4} />
+        ) : api.error ? (
+          <ErrorBox message={api.error} />
+        ) : !rows.length ? (
+          <Empty message="No alerts in the last 30 days ✓" />
+        ) : (
+          <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
+            <thead>
+              <tr>
+                <Th style={{ width: 28, textAlign: 'left' }}>#</Th>
+                <Th style={{ textAlign: 'left' }}>Device</Th>
+                <Th style={{ textAlign: 'left' }}>Site</Th>
+                <Th style={{ width: 56, textAlign: 'right' }}>Alerts</Th>
+                <Th style={{ width: 64, textAlign: 'right' }}>Outages</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((d, i) => {
+                const alerts = num(d.alert_count);
+                const outages = num(d.outage_count);
+                return (
+                  <tr key={d.id} style={{ height: 36, cursor: 'pointer' }}>
+                    <Td style={{ color: 'var(--text-muted)' }}>{i + 1}</Td>
+                    <Td style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      <Link href={`/devices/${d.id}`} style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{d.name}</Link>
+                    </Td>
+                    <Td style={{ color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.site_name || '—'}</Td>
+                    <Td style={{ textAlign: 'right', color: 'var(--red)', fontWeight: 600 }}>{alerts != null ? alerts : '—'}</Td>
+                    <Td style={{ textAlign: 'right', color: outages && outages > 0 ? 'var(--red)' : 'var(--text-muted)' }}>
+                      {outages != null ? outages : '—'}
+                    </Td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Bandwidth top talkers (busiest interfaces, last 15m) ───────
+function fmtBps(n: number | null | undefined): string {
+  const v = num(n as number);
+  if (v == null || v < 0) return '—';
+  if (v >= 1e9) return `${(v / 1e9).toFixed(2)} Gb/s`;
+  if (v >= 1e6) return `${(v / 1e6).toFixed(2)} Mb/s`;
+  if (v >= 1e3) return `${(v / 1e3).toFixed(1)} Kb/s`;
+  return `${Math.round(v)} b/s`;
+}
+function TopTalkers({ api }: { api: Api<TopTalker[]> }) {
+  const rows = api.data || [];
+  return (
+    <div style={{ ...CARD_STYLE, height: 240 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+        <span style={SECTION_HEADING}>Top Talkers</span>
+        {rows.length > 0 && (
+          <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--text-muted)' }}>{rows.length}</span>
+        )}
+      </div>
+      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', margin: '0 -4px', padding: '0 4px' }}>
+        {api.loading && !api.data ? (
+          <TableSkeleton rows={5} cols={3} />
+        ) : api.error ? (
+          <ErrorBox message={api.error} />
+        ) : !rows.length ? (
+          <Empty message="No interface throughput data" />
+        ) : (
+          rows.map((t) => (
+            <div
+              key={`${t.device_id}-${t.if_index}`}
+              style={{ display: 'flex', alignItems: 'center', gap: 8, height: 36, fontSize: 12.5, borderBottom: '1px solid var(--border-light)' }}
+            >
+              <Link
+                href={`/devices/${t.device_id}`}
+                style={{ fontWeight: 600, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 150 }}
+              >
+                {t.device_name}
+              </Link>
+              <span style={{ color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                · {t.if_name}
+              </span>
+              <span style={{ flex: 1 }} />
+              <span title="Inbound" style={{ color: 'var(--green)', whiteSpace: 'nowrap', fontWeight: 600 }}>▼ {fmtBps(t.in_bps)}</span>
+              <span title="Outbound" style={{ color: '#C8102E', whiteSpace: 'nowrap', fontWeight: 600 }}>▲ {fmtBps(t.out_bps)}</span>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Maintenance windows group (planned, not problems) ──────────
+function MaintenanceGroup({ api }: { api: Api<MaintenanceData> }) {
+  const active = api.data?.active || [];
+  const upcoming = api.data?.upcoming || [];
+  const rows = [...active, ...upcoming];
+  if (!rows.length) return null;
+  return (
+    <div style={{ ...CARD_STYLE, borderLeft: '3px solid #2563eb', marginBottom: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+        <span aria-hidden style={{ color: '#2563eb' }}>🛠</span>
+        <span style={SECTION_HEADING}>Maintenance</span>
+        <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--text-muted)' }}>{rows.length}</span>
+      </div>
+      {rows.map((m) => {
+        const isActive = m.state === 'active';
+        return (
+          <div key={m.id} style={{ display: 'flex', alignItems: 'center', gap: 8, height: 36, fontSize: 12.5, borderBottom: '1px solid var(--border-light)' }}>
+            <span
+              style={{
+                fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.03em',
+                color: isActive ? '#fff' : 'var(--text-muted)',
+                background: isActive ? '#2563eb' : 'var(--border)',
+                padding: '1px 6px', borderRadius: 4, whiteSpace: 'nowrap', flexShrink: 0,
+              }}
+            >
+              {isActive ? 'Active' : 'Upcoming'}
+            </span>
+            <Link href={`/devices/${m.device_id}`} style={{ fontWeight: 600, color: 'var(--text-primary)', whiteSpace: 'nowrap' }}>
+              {m.device_name}
+            </Link>
+            {m.site_name && <span style={{ fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>· {m.site_name}</span>}
+            {m.reason && (
+              <span style={{ color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>— {m.reason}</span>
+            )}
+            <span style={{ flex: 1 }} />
+            <span title={`${fmtTime(m.starts_at)} → ${fmtTime(m.ends_at)}`} style={{ color: 'var(--text-muted)', whiteSpace: 'nowrap', flexShrink: 0 }}>
+              {fmtTime(m.starts_at)} → {fmtTime(m.ends_at)}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── Wireless health panel (self-fetching, hidden when no gear) ─
+function WirelessHealthCard() {
+  const wi = useApi<WirelessIntel>('/api/dashboard/wireless-intel', REFRESH_MS);
+  const d = wi.data;
+  if (!d || !d.has_data || d.total_controllers === 0) return null;
+  const c = scoreColor(d.overall_score);
+  return (
+    <div style={{ ...CARD_STYLE, width: 260, minWidth: 260, flexShrink: 0, borderLeft: `3px solid ${c}`, height: 240 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+        <span style={SECTION_HEADING}>Wireless Health</span>
+        <Link href="/wireless" className="sv-dash-link" style={{ marginLeft: 'auto', fontSize: 12 }}>View →</Link>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+        <span style={{ fontSize: 34, fontWeight: 800, color: c, lineHeight: 1 }}>{d.overall_score}</span>
+        <GradeBadge grade={d.overall_grade} />
+        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+          {d.controllers_with_intel} controller{d.controllers_with_intel === 1 ? '' : 's'}
+        </span>
+      </div>
+      <IntelBar label="Interference" score={d.interference_score} />
+      <IntelBar label="Capacity" score={d.capacity_score} />
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 'auto', paddingTop: 10, fontSize: 11.5 }}>
+        <WirelessChip n={d.overloaded_aps} label="overloaded AP" color="var(--yellow)" />
+        <WirelessChip n={d.co_channel_pairs} label="co-channel pair" color="var(--yellow)" />
+        <WirelessChip n={d.problem_clients} label="problem client" color="var(--red)" />
+      </div>
+    </div>
+  );
+}
+function IntelBar({ label, score }: { label: string; score: number }) {
+  const c = scoreColor(score);
+  const pct = Math.max(0, Math.min(100, score));
+  return (
+    <div style={{ marginBottom: 8 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11.5, marginBottom: 3 }}>
+        <span style={{ color: 'var(--text-muted)' }}>{label}</span>
+        <span style={{ color: c, fontWeight: 600 }}>{score}</span>
+      </div>
+      <span style={{ display: 'block', height: 4, borderRadius: 2, background: 'var(--border)', overflow: 'hidden' }}>
+        <span style={{ display: 'block', height: '100%', borderRadius: 2, width: `${Math.max(2, pct)}%`, background: c }} />
+      </span>
+    </div>
+  );
+}
+function WirelessChip({ n, label, color }: { n: number; label: string; color: string }) {
+  const active = n > 0;
+  return (
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 7px', borderRadius: 4,
+      background: active ? 'var(--bg-card)' : 'transparent',
+      border: `1px solid ${active ? color : 'var(--border)'}`,
+      color: active ? color : 'var(--text-muted)', fontWeight: 600, whiteSpace: 'nowrap',
+    }}>
+      {n} {label}{n === 1 ? '' : 's'}
+    </span>
   );
 }
 

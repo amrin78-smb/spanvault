@@ -32,6 +32,12 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.3.0': [
+    'Enterprise dashboard: operational band with MTTR, MTTA and unacknowledged-alert KPIs',
+    'Open Incidents panel plus a 30-day SLA tile and SLA-breach watchlist',
+    'Capacity planning (CPU/memory p95), recurring-pattern prediction and least-reliable device ranking',
+    'Bandwidth top-talkers, planned-maintenance awareness, and a network-wide wireless health panel',
+  ],
   '1.2.0': [
     'Enterprise dashboard with health score and charts',
     'Animated login page redesign',
@@ -677,6 +683,332 @@ app.get('/api/dashboard/events', wrap(async (_req, res) => {
     LIMIT 20
   `);
   res.json(r.rows);
+}));
+
+// ══════════════════════════════════════════════════════════════
+// Dashboard — enterprise panels (ops metrics, SLA, capacity,
+// patterns, reliability, top-talkers, maintenance, wireless)
+// ══════════════════════════════════════════════════════════════
+
+// ── Operational metrics: MTTR / MTTA / unacknowledged + open incident count ──
+// MTTR/MTTA are averaged over the last 30 days. unacked_count = active alerts
+// never acknowledged. open_incidents guarded for DBs predating the incidents table.
+app.get('/api/dashboard/ops-summary', wrap(async (req, res) => {
+  const siteFilter = getSiteFilter(req);
+
+  const p1 = [];
+  const sc1 = siteFilterClause(siteFilter, p1, 'd.site_id');
+  const agg = await sv.query(`
+    SELECT
+      ROUND(AVG(EXTRACT(EPOCH FROM (a.resolved_at - a.triggered_at)) / 60.0)
+            FILTER (WHERE a.resolved_at IS NOT NULL
+                      AND a.resolved_at >= NOW() - INTERVAL '30 days')::numeric, 1) AS mttr_minutes,
+      ROUND(AVG(EXTRACT(EPOCH FROM (a.acknowledged_at - a.triggered_at)) / 60.0)
+            FILTER (WHERE a.acknowledged_at IS NOT NULL
+                      AND a.acknowledged_at >= NOW() - INTERVAL '30 days')::numeric, 1) AS mtta_minutes
+    FROM alerts a
+    JOIN monitored_devices d ON d.id = a.device_id
+    ${sc1 ? `WHERE ${sc1}` : ''}
+  `, p1);
+
+  const p2 = [];
+  const sc2 = siteFilterClause(siteFilter, p2, 'd.site_id');
+  const unack = await sv.query(`
+    SELECT COUNT(*)::int AS c
+    FROM alerts a
+    JOIN monitored_devices d ON d.id = a.device_id
+    WHERE a.status = 'active' AND a.acknowledged_at IS NULL${sc2 ? ` AND ${sc2}` : ''}
+  `, p2);
+
+  let openIncidents = 0;
+  const caps = await getAlertCaps();
+  if (caps.has_incidents) {
+    try {
+      const inc = await sv.query(`SELECT COUNT(*)::int AS c FROM incidents WHERE status = 'active'`);
+      openIncidents = inc.rows[0] ? inc.rows[0].c : 0;
+    } catch (_e) { openIncidents = 0; }
+  }
+
+  res.json({
+    mttr_minutes: agg.rows[0] ? agg.rows[0].mttr_minutes : null,
+    mtta_minutes: agg.rows[0] ? agg.rows[0].mtta_minutes : null,
+    unacked_count: unack.rows[0] ? unack.rows[0].c : 0,
+    open_incidents: openIncidents,
+  });
+}));
+
+// ── Open incidents (latest 10) with root-cause device name ──
+app.get('/api/dashboard/incidents', wrap(async (_req, res) => {
+  const caps = await getAlertCaps();
+  if (!caps.has_incidents) return res.json([]);
+  try {
+    const r = await sv.query(`
+      SELECT i.id, i.title, i.affected_count, i.severity, i.started_at,
+             i.root_cause_device_id, d.name AS root_cause_device_name
+      FROM incidents i
+      LEFT JOIN monitored_devices d ON d.id = i.root_cause_device_id
+      WHERE i.status = 'active'
+      ORDER BY i.started_at DESC
+      LIMIT 10
+    `);
+    res.json(r.rows);
+  } catch (_e) {
+    res.json([]);
+  }
+}));
+
+// ── 30-day SLA compliance: rolling availability + per-device breaches ──
+app.get('/api/dashboard/sla', wrap(async (req, res) => {
+  const siteFilter = getSiteFilter(req);
+
+  // No dedicated app_settings key today; default 99.5%, but honour an optional
+  // 'sla_target_pct' key if one is ever added.
+  let slaTarget = 99.5;
+  try {
+    const st = await sv.query(`SELECT value FROM app_settings WHERE key = 'sla_target_pct'`);
+    if (st.rows[0] && st.rows[0].value != null && st.rows[0].value !== '') {
+      const v = parseFloat(st.rows[0].value);
+      if (!isNaN(v)) slaTarget = v;
+    }
+  } catch (_e) { /* key absent — keep default */ }
+
+  const pOv = [];
+  const scOv = siteFilterClause(siteFilter, pOv, 'd.site_id');
+  const ov = await sv.query(`
+    SELECT 100.0 * SUM(a.total_checks - a.failed_checks)
+                 / NULLIF(SUM(a.total_checks), 0) AS overall_pct
+    FROM availability_summary a
+    JOIN monitored_devices d ON d.id = a.device_id
+    WHERE d.active = TRUE
+      AND a.date >= (CURRENT_DATE - INTERVAL '30 days')${scOv ? ` AND ${scOv}` : ''}
+  `, pOv);
+  const overallPct = ov.rows[0] && ov.rows[0].overall_pct != null
+    ? Math.round(Number(ov.rows[0].overall_pct) * 10) / 10
+    : null;
+
+  const pBr = [slaTarget];
+  const scBr = siteFilterClause(siteFilter, pBr, 'd.site_id');
+  const br = await sv.query(`
+    SELECT d.id, d.name, d.site_id, d.site_name,
+           ROUND(100.0 * SUM(a.total_checks - a.failed_checks)
+                      / NULLIF(SUM(a.total_checks), 0), 2) AS uptime_pct
+    FROM availability_summary a
+    JOIN monitored_devices d ON d.id = a.device_id
+    WHERE d.active = TRUE
+      AND a.date >= (CURRENT_DATE - INTERVAL '30 days')${scBr ? ` AND ${scBr}` : ''}
+    GROUP BY d.id, d.name, d.site_id, d.site_name
+    HAVING SUM(a.total_checks) > 0
+       AND (100.0 * SUM(a.total_checks - a.failed_checks)
+                  / NULLIF(SUM(a.total_checks), 0)) < $1
+    ORDER BY uptime_pct ASC
+    LIMIT 10
+  `, pBr);
+
+  res.json({ overall_pct: overallPct, sla_target: slaTarget, breaching: br.rows });
+}));
+
+// ── Approaching capacity — CPU/memory baselines (p95 >= 80%) ──
+app.get('/api/dashboard/capacity', wrap(async (req, res) => {
+  const params = [];
+  const sc = siteFilterClause(getSiteFilter(req), params, 'd.site_id');
+  const r = await sv.query(`
+    SELECT DISTINCT ON (b.device_id, b.metric)
+           d.id, d.name, d.site_id, d.site_name, b.metric,
+           ROUND(b.p95::numeric, 1) AS p95,
+           ROUND(b.p99::numeric, 1) AS p99
+    FROM device_baselines b
+    JOIN monitored_devices d ON d.id = b.device_id
+    WHERE d.active = TRUE
+      AND b.metric IN ('cpu_pct', 'mem_pct')
+      AND b.p95 IS NOT NULL${sc ? ` AND ${sc}` : ''}
+    ORDER BY b.device_id, b.metric, b.period_days DESC
+  `, params);
+  // p95 >= 80 flag + p95 DESC + limit 10 applied after picking the largest-period
+  // row per device/metric (can't ORDER BY p95 alongside DISTINCT ON).
+  const rows = r.rows
+    .filter((row) => row.p95 != null && Number(row.p95) >= 80)
+    .sort((a, b) => Number(b.p95) - Number(a.p95))
+    .slice(0, 10);
+  res.json(rows);
+}));
+
+// ── Recurring patterns (predictive) — top by confidence/frequency ──
+app.get('/api/dashboard/patterns', wrap(async (req, res) => {
+  const params = [];
+  const sc = siteFilterClause(getSiteFilter(req), params, 'd.site_id');
+  const r = await sv.query(`
+    SELECT p.id, p.device_id, d.name AS device_name,
+           p.pattern_type, p.metric, p.description,
+           p.confidence, p.occurrence_count, p.hour_of_day, p.day_of_week
+    FROM device_patterns p
+    JOIN monitored_devices d ON d.id = p.device_id
+    WHERE d.active = TRUE${sc ? ` AND ${sc}` : ''}
+    ORDER BY p.confidence DESC, p.occurrence_count DESC
+    LIMIT 6
+  `, params);
+  res.json(r.rows);
+}));
+
+// ── Least reliable devices — worst alert offenders over the last 30 days ──
+app.get('/api/dashboard/least-reliable', wrap(async (req, res) => {
+  const params = [];
+  const sc = siteFilterClause(getSiteFilter(req), params, 'd.site_id');
+  const r = await sv.query(`
+    SELECT d.id, d.name, d.site_id, d.site_name, d.current_status,
+           COUNT(*)::int AS alert_count,
+           COUNT(*) FILTER (WHERE a.alert_type = 'device_down')::int AS outage_count,
+           MAX(a.triggered_at) AS last_alert_at
+    FROM alerts a
+    JOIN monitored_devices d ON d.id = a.device_id
+    WHERE a.triggered_at >= NOW() - INTERVAL '30 days'
+      AND d.active = TRUE${sc ? ` AND ${sc}` : ''}
+    GROUP BY d.id, d.name, d.site_id, d.site_name, d.current_status
+    HAVING COUNT(*) > 0
+    ORDER BY COUNT(*) DESC, MAX(a.triggered_at) DESC
+    LIMIT 10
+  `, params);
+  res.json(r.rows);
+}));
+
+// ── Bandwidth top talkers — busiest interfaces by recent throughput ──
+// Matches BOTH backward-compat shared metric names (if_in_bps / if_out_bps) and
+// selective per-interface names (if_<idx>_in_bps / if_<idx>_out_bps); both carry
+// if_index, so the latest sample is grouped per (device_id, if_index). Last ~15m.
+app.get('/api/dashboard/top-talkers', wrap(async (req, res) => {
+  const params = [];
+  const sc = siteFilterClause(getSiteFilter(req), params, 'd.site_id');
+  const r = await sv.query(`
+    WITH latest AS (
+      SELECT DISTINCT ON (s.device_id, s.if_index, kind)
+             s.device_id, s.if_index, s.if_name,
+             CASE WHEN s.metric_name = 'if_in_bps'  OR s.metric_name ~ '^if_[0-9]+_in_bps$'  THEN 'in'
+                  ELSE 'out' END AS kind,
+             s.value
+      FROM snmp_results s
+      WHERE s.if_index IS NOT NULL
+        AND s.value IS NOT NULL
+        AND s.ts >= NOW() - INTERVAL '15 minutes'
+        AND (s.metric_name IN ('if_in_bps', 'if_out_bps')
+             OR s.metric_name ~ '^if_[0-9]+_(in|out)_bps$')
+      ORDER BY s.device_id, s.if_index, kind, s.ts DESC
+    ),
+    paired AS (
+      SELECT device_id, if_index,
+             MAX(if_name)                                            AS if_name,
+             COALESCE(MAX(value) FILTER (WHERE kind = 'in'),  0)     AS in_bps,
+             COALESCE(MAX(value) FILTER (WHERE kind = 'out'), 0)     AS out_bps
+      FROM latest
+      GROUP BY device_id, if_index
+    )
+    SELECT d.id AS device_id, d.name AS device_name, p.if_index, p.if_name,
+           p.in_bps, p.out_bps
+    FROM paired p
+    JOIN monitored_devices d ON d.id = p.device_id
+    WHERE d.active = TRUE${sc ? ` AND ${sc}` : ''}
+    ORDER BY (p.in_bps + p.out_bps) DESC
+    LIMIT 8
+  `, params);
+  res.json(r.rows.map((row) => ({
+    device_id: row.device_id,
+    device_name: row.device_name,
+    if_index: Number(row.if_index),
+    if_name: row.if_name || `if${row.if_index}`,
+    in_bps: row.in_bps == null ? 0 : Number(row.in_bps),
+    out_bps: row.out_bps == null ? 0 : Number(row.out_bps),
+  })));
+}));
+
+// ── Maintenance windows — active now + upcoming within 7 days ──
+app.get('/api/dashboard/maintenance', wrap(async (req, res) => {
+  const params = [];
+  const sc = siteFilterClause(getSiteFilter(req), params, 'd.site_id');
+  const r = await sv.query(`
+    SELECT m.id, m.device_id, d.name AS device_name, d.site_name,
+           m.starts_at, m.ends_at, m.reason,
+           CASE WHEN NOW() BETWEEN m.starts_at AND m.ends_at THEN 'active'
+                ELSE 'upcoming' END AS state
+    FROM maintenance_windows m
+    JOIN monitored_devices d ON d.id = m.device_id AND d.active = TRUE
+    WHERE (
+            (NOW() BETWEEN m.starts_at AND m.ends_at)
+            OR (m.starts_at > NOW() AND m.starts_at <= NOW() + INTERVAL '7 days')
+          )${sc ? ` AND ${sc}` : ''}
+    ORDER BY m.starts_at
+  `, params);
+  const active = [];
+  const upcoming = [];
+  for (const row of r.rows) {
+    if (row.state === 'active') active.push(row);
+    else upcoming.push(row);
+  }
+  res.json({ active, upcoming });
+}));
+
+// ── Network-level wireless intelligence rollup for the dashboard ──
+// Complements the small "APs online" tile. Returns has_data:false (zeros) when no
+// wireless intelligence has been computed yet so the panel can render nothing.
+app.get('/api/dashboard/wireless-intel', wrap(async (req, res) => {
+  const filter = getSiteFilter(req);
+
+  const p1 = [];
+  const sc1 = siteFilterClause(filter, p1, 'c.site_id');
+  const agg = await sv.query(`
+    SELECT
+      COUNT(*)::int                                        AS controllers_with_intel,
+      COALESCE(SUM(wi.co_channel_pairs), 0)::int           AS co_channel_pairs,
+      COALESCE(SUM(wi.overloaded_aps), 0)::int             AS overloaded_aps,
+      COALESCE(SUM(wi.critical_util_count), 0)::int        AS critical_util_count,
+      COALESCE(AVG(wi.interference_score), 0)::numeric     AS interference_score,
+      COALESCE(AVG(wi.capacity_score), 0)::numeric         AS capacity_score,
+      COALESCE(AVG(wi.band_steering_score), 0)::numeric    AS band_steering_score,
+      COALESCE(SUM(wi.overall_score * ap.cnt), 0)::numeric AS weighted_score_sum,
+      COALESCE(SUM(ap.cnt), 0)::int                        AS weighted_ap_total,
+      COALESCE(AVG(wi.overall_score), 0)::numeric          AS mean_score
+    FROM wireless_intelligence wi
+    JOIN wireless_controllers c ON c.id = wi.controller_id
+    LEFT JOIN LATERAL (
+      SELECT COUNT(*)::int AS cnt FROM wireless_aps a WHERE a.controller_id = wi.controller_id
+    ) ap ON TRUE
+    ${sc1 ? `WHERE ${sc1}` : ''}
+  `, p1);
+  const a = agg.rows[0];
+
+  const p2 = [];
+  const sc2 = siteFilterClause(filter, p2, 'c.site_id');
+  const ctl = await sv.query(
+    `SELECT COUNT(*)::int AS c FROM wireless_controllers c ${sc2 ? `WHERE ${sc2}` : ''}`, p2);
+  const total_controllers = ctl.rows[0].c;
+
+  const p3 = [];
+  const sc3 = siteFilterClause(filter, p3, 'c.site_id');
+  const prob = await sv.query(`
+    SELECT COUNT(*)::int AS c
+    FROM wireless_clients cl
+    JOIN wireless_controllers c ON c.id = cl.controller_id
+    WHERE cl.is_problem = TRUE${sc3 ? ` AND ${sc3}` : ''}
+  `, p3);
+
+  const hasIntel = (a.controllers_with_intel || 0) > 0;
+  const overall_score = Math.round(
+    a.weighted_ap_total > 0
+      ? Number(a.weighted_score_sum) / Number(a.weighted_ap_total)
+      : Number(a.mean_score)
+  );
+
+  res.json({
+    has_data: hasIntel,
+    total_controllers,
+    controllers_with_intel: a.controllers_with_intel,
+    overall_score: hasIntel ? overall_score : 0,
+    overall_grade: hasIntel ? scoreGrade(overall_score) : 'A',
+    interference_score: Math.round(Number(a.interference_score)),
+    capacity_score: Math.round(Number(a.capacity_score)),
+    band_steering_score: Math.round(Number(a.band_steering_score)),
+    co_channel_pairs: a.co_channel_pairs,
+    overloaded_aps: a.overloaded_aps,
+    critical_util_count: a.critical_util_count,
+    problem_clients: prob.rows[0].c,
+  });
 }));
 
 // ══════════════════════════════════════════════════════════════
