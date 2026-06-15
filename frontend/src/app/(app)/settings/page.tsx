@@ -206,16 +206,48 @@ function EmailAlertSettings({ settings, form, set, save, saving, saved, saveErr 
 }
 
 // ── About ──────────────────────────────────────────────────────
+const ABOUT_TOP_ROWS = [
+  { label: 'Product', value: 'SpanVault — Network Monitoring' },
+  { label: 'Family', value: 'NocVault Network Intelligence Suite' },
+];
+const ABOUT_TECH_ROWS = [
+  { label: 'App Port', value: '3008' },
+  { label: 'API Port', value: '3009 (internal)' },
+  { label: 'Collector', value: 'ICMP + SNMP polling' },
+  { label: 'Database', value: 'PostgreSQL 16' },
+  { label: 'Runtime', value: 'Node.js 20 · Next.js 14' },
+];
+
 function AboutSettings() {
   const health = useApi<{ version?: string }>('/api/health');
+  const version = health.data?.version || '—';
   return (
     <div>
       <div className="sv-panel">
         <h2>About</h2>
-        <div style={{ lineHeight: 1.7 }}>
-          <div style={{ fontWeight: 600 }}>SpanVault Network Monitoring</div>
-          <div>Version: <code>v{health.data?.version || '—'}</code></div>
-          <div className="sv-muted">Part of the NocVault Intelligence Suite</div>
+        <table className="sv-table" style={{ maxWidth: 520 }}>
+          <tbody>
+            {ABOUT_TOP_ROWS.map((r) => (
+              <tr key={r.label}>
+                <td className="sv-muted" style={{ width: 140 }}>{r.label}</td>
+                <td>{r.value}</td>
+              </tr>
+            ))}
+            <tr>
+              <td className="sv-muted" style={{ width: 140 }}>Version</td>
+              <td><code>v{version}</code></td>
+            </tr>
+            {ABOUT_TECH_ROWS.map((r) => (
+              <tr key={r.label}>
+                <td className="sv-muted" style={{ width: 140 }}>{r.label}</td>
+                <td>{r.value}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <div style={{ marginTop: 16, lineHeight: 1.7 }}>
+          <div style={{ fontWeight: 600 }}>SpanVault v{version}</div>
+          <div className="sv-muted">Part of the NocVault Network Intelligence Suite</div>
           <div className="sv-muted">© 2026 NocVault</div>
         </div>
       </div>
@@ -763,7 +795,7 @@ function SystemUpdates() {
   return (
     <div>
       <div className="sv-panel">
-        <h2>System Updates</h2>
+        <h2>Software Updates</h2>
 
         {checking ? (
           <p className="sv-muted"><span className="sv-spinner-sm" /> Checking for updates…</p>
@@ -771,7 +803,7 @@ function SystemUpdates() {
           <div style={{ marginTop: 8 }}>
             <p style={{ color: 'var(--sv-down, #C8102E)', fontWeight: 600 }}>{errText}</p>
             {status?.current_version && (
-              <p className="sv-muted">Version: <code>v{status.current_version}</code></p>
+              <p className="sv-muted">Current version: <code>v{status.current_version}</code></p>
             )}
             <CheckButton busy={rechecking} onClick={() => check(true)} label="Check for Updates" />
           </div>
@@ -779,7 +811,7 @@ function SystemUpdates() {
           <div style={{ marginTop: 8 }}>
             <p style={{ color: 'var(--sv-up, #16a34a)', fontWeight: 600 }}>✓ SpanVault is up to date</p>
             <div className="sv-toolbar">
-              <span className="sv-muted">Version: <code>v{status?.current_version}</code></span>
+              <span className="sv-muted">Current version: <code>v{status?.current_version}</code></span>
               <CheckButton busy={rechecking} onClick={() => check(true)} label="Re-check" ghost />
             </div>
           </div>
@@ -818,7 +850,7 @@ function SystemUpdates() {
               </p>
             )}
             <p style={{ color: 'var(--sv-warn, #d97706)', fontWeight: 600 }}>
-              ⚠ Services will restart (30-60 seconds)
+              ⚠ Services will restart during the update — you may lose connection for 30–60 seconds.
             </p>
             <div className="sv-toolbar">
               <button
@@ -842,7 +874,7 @@ function SystemUpdates() {
             )}
             {licenseState.mode === 'disabled' && (
               <p style={{ marginTop: 10, color: 'var(--sv-down, #C8102E)', fontWeight: 600 }}>
-                🔒 License expired — please renew to get updates.{' '}
+                🔒 License expired — updates disabled. Renew your license to receive updates.{' '}
                 <a href={`${hubUrl}/settings/license`} target="_blank" rel="noopener noreferrer"
                   style={{ color: 'var(--sv-down, #C8102E)', textDecoration: 'underline' }}>
                   Manage License →
@@ -883,7 +915,7 @@ function UpdateConfirmModal({ onCancel, onConfirm }: { onCancel: () => void; onC
     <div className="sv-modal-backdrop" onMouseDown={onCancel}>
       <div className="sv-modal" style={{ maxWidth: 460 }} onMouseDown={(e) => e.stopPropagation()}>
         <h2>Start Update?</h2>
-        <p>Start update? Services will restart and you will lose connection for 30-60 seconds.</p>
+        <p>Services will restart and you&apos;ll lose connection for 30–60 seconds. The page reloads automatically when the update completes.</p>
         <div className="sv-modal-actions">
           <button className="sv-btn ghost" onClick={onCancel}>Cancel</button>
           <button className="sv-btn" onClick={onConfirm}>Start Update</button>
@@ -1055,7 +1087,7 @@ function UpdatingOverlay() {
   if (phase === 'down') statusLine = 'Services restarting… ⟳';
   else if (phase === 'api_up') statusLine = 'API is back. Waiting for the web app to start…';
   else if (phase === 'back_up') {
-    statusLine = `✓ Web app is online. Reloading in ${countdown} second${countdown === 1 ? '' : 's'}…`;
+    statusLine = `✓ Services are back online. Reloading in ${countdown} second${countdown === 1 ? '' : 's'}…`;
   } else if (phase === 'timeout') statusLine = 'Update is taking longer than expected. Try refreshing the page manually.';
 
   return (
