@@ -32,6 +32,11 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.5.3': [
+    'Fixed Radio Performance always showing "Poor" — unreported noise floor was being stored as 0 (Number(null)===0) and misclassified; absent metrics now stay NULL',
+    'Retry rate and RX/TX errors no longer show a misleading 0 when the vendor does not report them',
+    'AP detail drawer shows "No data" / "—" for noise floor when there is no real (negative dBm) reading',
+  ],
   '1.5.2': [
     'Fixed the "View all clients" link in the access-point detail drawer — it now opens the Clients tab filtered to that AP',
   ],

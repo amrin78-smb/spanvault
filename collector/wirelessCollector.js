@@ -235,10 +235,15 @@ async function pollApiController(controller) {
 
 // ── Persistence ───────────────────────────────────────────────
 function intOrNull(v) {
+  // Number(null) === 0, so guard absent values explicitly — otherwise an
+  // unreported metric (e.g. noise floor) would be stored as a misleading 0
+  // instead of NULL. A genuine numeric 0 is still preserved.
+  if (v === null || v === undefined || v === '') return null;
   const n = Number(v);
   return Number.isFinite(n) ? Math.round(n) : null;
 }
 function numOrNull(v) {
+  if (v === null || v === undefined || v === '') return null;
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
 }

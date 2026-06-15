@@ -387,10 +387,16 @@ function fmtBps(n: number | null): string {
   return `${(n / 1e6).toFixed(1)} Mbps`;
 }
 
+// A real noise floor is always strongly negative dBm. Null/0/positive means the
+// vendor did not report it — show "No data" rather than misclassifying it as Poor.
+function noiseFloorValid(dbm: number | null): boolean {
+  return dbm != null && !isNaN(dbm) && dbm < 0;
+}
+
 function noiseBadge(dbm: number | null): { label: string; color: string } {
-  if (dbm == null || isNaN(dbm)) return { label: '—', color: 'var(--text-muted)' };
-  if (dbm <= -85) return { label: 'Excellent', color: 'var(--green)' };
-  if (dbm <= -75) return { label: 'Fair', color: 'var(--yellow)' };
+  if (!noiseFloorValid(dbm)) return { label: 'No data', color: 'var(--text-muted)' };
+  if (dbm! <= -85) return { label: 'Excellent', color: 'var(--green)' };
+  if (dbm! <= -75) return { label: 'Fair', color: 'var(--yellow)' };
   return { label: 'Poor', color: 'var(--red)' };
 }
 
@@ -1526,7 +1532,7 @@ function RadioBandStats({
       }}>
         <span style={{ color: 'var(--text-muted)' }}>Noise Floor</span>
         <span>
-          {noiseFloor ?? '—'} dBm{' '}
+          {noiseFloorValid(noiseFloor) ? `${noiseFloor} dBm ` : '— '}
           <span className="sv-badge" style={{ color: nb.color, borderColor: nb.color }}>
             {nb.label}
           </span>
