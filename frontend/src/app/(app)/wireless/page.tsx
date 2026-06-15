@@ -438,21 +438,33 @@ const CHART_COLORS = {
 // ════════════════════════════════════════════════════════════
 
 // Compact stat card: ~75px tall, 24px bold value, 11px uppercase label.
-function StatCard({ value, label, sub, color, valueColor }: {
+// When `onClick` is supplied the tile becomes clickable (cursor + hover lift).
+function StatCard({ value, label, sub, color, valueColor, onClick, title }: {
   value: React.ReactNode;
   label: string;
   sub?: React.ReactNode;
   color?: string;          // left border accent
   valueColor?: string;     // value text color
+  onClick?: () => void;    // optional drill-down
+  title?: string;          // tooltip when clickable
 }) {
+  const clickable = typeof onClick === 'function';
   return (
     <div
+      onClick={onClick}
+      title={clickable ? title : undefined}
+      role={clickable ? 'button' : undefined}
+      tabIndex={clickable ? 0 : undefined}
+      onKeyDown={clickable ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick!(); } } : undefined}
+      className={clickable ? 'sv-statcard-clickable' : undefined}
       style={{
         flex: '1 1 0', minWidth: 120, minHeight: 75, boxSizing: 'border-box',
         padding: '12px 16px', background: 'var(--bg-card)',
         border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
         borderLeft: `3px solid ${color || 'var(--border)'}`,
         display: 'flex', flexDirection: 'column', justifyContent: 'center',
+        cursor: clickable ? 'pointer' : undefined,
+        transition: clickable ? 'box-shadow .12s, transform .12s' : undefined,
       }}
     >
       <div style={{ fontSize: 24, fontWeight: 700, lineHeight: 1.1, color: valueColor }}>
@@ -516,6 +528,17 @@ function EqualRow({ children, marginTop }: { children: React.ReactNode; marginTo
       display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'stretch',
       marginTop: marginTop ?? 16,
     }}>{children}</div>
+  );
+}
+
+// Subtle muted caption shown in a clickable container's header area, hinting
+// that rows can be drilled into. Understated, matches existing muted styling.
+function DrillHint({ label }: { label?: string }) {
+  return (
+    <span style={{
+      fontSize: 10.5, color: 'var(--text-muted)', fontWeight: 400,
+      textTransform: 'none', letterSpacing: 0, whiteSpace: 'nowrap',
+    }}>{label || 'Click a row to drill in'}</span>
   );
 }
 
@@ -593,19 +616,42 @@ export default function WirelessPage() {
   const [tab, setTab] = useState<TabKey>('overview');
   const [siteFilter, setSiteFilter] = useState<number | null>(null);
   const [controllerFilter, setControllerFilter] = useState<number | null>(null);
+  const [apStatusFilter, setApStatusFilter] = useState<string>('');
   const [clientApFilter, setClientApFilter] = useState<number | null>(null);
   const [clientProblemOnly, setClientProblemOnly] = useState(false);
+  const [ssidControllerFilter, setSsidControllerFilter] = useState<number | null>(null);
 
   function gotoApsForSite(siteId: number | null) {
     setSiteFilter(siteId);
     setControllerFilter(null);
+    setApStatusFilter('');
     setTab('aps');
   }
 
   function gotoApsForController(controllerId: number | null) {
     setControllerFilter(controllerId);
     setSiteFilter(null);
+    setApStatusFilter('');
     setTab('aps');
+  }
+
+  function gotoAllAps() {
+    setSiteFilter(null);
+    setControllerFilter(null);
+    setApStatusFilter('');
+    setTab('aps');
+  }
+
+  function gotoApsOffline() {
+    setApStatusFilter('offline');
+    setSiteFilter(null);
+    setControllerFilter(null);
+    setTab('aps');
+  }
+
+  function gotoSsidsForController(controllerId: number | null) {
+    setSsidControllerFilter(controllerId);
+    setTab('ssids');
   }
 
   function gotoIntelligence() {
@@ -655,18 +701,38 @@ export default function WirelessPage() {
         >Controllers</button>
       </div>
 
-      {tab === 'overview' && <OverviewTab onSelectSite={gotoApsForSite} onViewIntelligence={gotoIntelligence} onViewProblemClients={gotoProblemClients} />}
+      {tab === 'overview' && (
+        <OverviewTab
+          onSelectSite={gotoApsForSite}
+          onViewIntelligence={gotoIntelligence}
+          onViewProblemClients={gotoProblemClients}
+          onViewApClients={gotoClientsForAp}
+          onFilterController={gotoApsForController}
+          onSsidsForController={gotoSsidsForController}
+          onViewAllAps={gotoAllAps}
+          onViewOfflineAps={gotoApsOffline}
+          onViewClients={() => setTab('clients')}
+          onViewControllers={() => setTab('controllers')}
+        />
+      )}
       {tab === 'aps' && (
         <AccessPointsTab
           siteFilter={siteFilter}
           setSiteFilter={setSiteFilter}
           controllerFilter={controllerFilter}
           setControllerFilter={setControllerFilter}
+          statusFilter={apStatusFilter}
+          setStatusFilter={setApStatusFilter}
           onFilterController={gotoApsForController}
           onViewAllClients={gotoClientsForAp}
         />
       )}
-      {tab === 'ssids' && <SsidsTab />}
+      {tab === 'ssids' && (
+        <SsidsTab
+          controllerFilter={ssidControllerFilter}
+          setControllerFilter={setSsidControllerFilter}
+        />
+      )}
       {tab === 'intelligence' && <IntelligenceTab onViewApClients={gotoClientsForAp} />}
       {tab === 'clients' && (
         <ClientsTab
@@ -735,7 +801,7 @@ function apUtil(ap: AccessPoint): number {
 // ── Controller status strip (Insights tab) (top-level) ────────
 // Compact per-controller rows: status dot, name, AP count, client count, CPU%.
 // Sourced from the already-fetched /api/wireless/controllers payload — no new fetch.
-function ControllerStatusCard({ controllers }: { controllers: Controller[] }) {
+function ControllerStatusCard({ controllers, onSelect }: { controllers: Controller[]; onSelect?: (controllerId: number) => void }) {
   if (!controllers.length) return <Empty message="No controllers." />;
   return (
     <table style={{ width: '100%', borderCollapse: 'collapse' }}>
@@ -747,7 +813,10 @@ function ControllerStatusCard({ controllers }: { controllers: Controller[] }) {
         {controllers.map((c) => {
           const cpu = (c as { cpu_pct?: number | null }).cpu_pct;
           return (
-            <tr key={c.id}>
+            <tr key={c.id}
+              style={onSelect ? { cursor: 'pointer' } : undefined}
+              onClick={onSelect ? () => onSelect(c.id) : undefined}
+              title={onSelect ? 'View access points for this controller' : undefined}>
               <td style={{ ...TD_STYLE, fontWeight: 600 }}>
                 <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                   <StatusDot status={c.status === 'ok' ? 'up' : (c.status ? 'down' : 'unknown')} />
@@ -768,12 +837,22 @@ function ControllerStatusCard({ controllers }: { controllers: Controller[] }) {
 }
 
 function OverviewTab({
-  onSelectSite, onViewIntelligence, onViewProblemClients,
+  onSelectSite, onViewIntelligence, onViewProblemClients, onViewApClients,
+  onFilterController, onSsidsForController, onViewAllAps, onViewOfflineAps,
+  onViewClients, onViewControllers,
 }: {
   onSelectSite: (siteId: number | null) => void;
   onViewIntelligence: () => void;
   onViewProblemClients: () => void;
+  onViewApClients: (apId: number | null) => void;
+  onFilterController: (controllerId: number | null) => void;
+  onSsidsForController: (controllerId: number | null) => void;
+  onViewAllAps: () => void;
+  onViewOfflineAps: () => void;
+  onViewClients: () => void;
+  onViewControllers: () => void;
 }) {
+  const [selectedApId, setSelectedApId] = useState<number | null>(null);
   const summary = useApi<WirelessSummary>('/api/wireless/summary', 30000);
   const apsApi = useApi<AccessPoint[]>('/api/wireless/aps', 30000);
   const ssidSummary = useApi<SsidSummary>('/api/wireless/ssids/summary', 30000);
@@ -828,13 +907,17 @@ function OverviewTab({
 
   return (
     <div>
-      {/* Row 1 — 6 compact stat cards */}
+      {/* Row 1 — 6 compact stat cards (clickable tiles drill into their tab) */}
       <StatRow>
-        <StatCard value={fmtInt(s.total_aps)} label="Total APs" color="var(--primary)" />
+        <StatCard value={fmtInt(s.total_aps)} label="Total APs" color="var(--primary)"
+          onClick={onViewAllAps} title="View all access points" />
         <StatCard value={fmtInt(s.online_aps)} valueColor="var(--green)" label="Online" color="var(--green)" />
-        <StatCard value={fmtInt(s.offline_aps)} valueColor={s.offline_aps > 0 ? 'var(--red)' : undefined} label="Offline" color="var(--red)" />
-        <StatCard value={fmtInt(s.total_clients)} label="Clients" />
-        <StatCard value={fmtInt(ctlCount)} label="Controllers" />
+        <StatCard value={fmtInt(s.offline_aps)} valueColor={s.offline_aps > 0 ? 'var(--red)' : undefined} label="Offline" color="var(--red)"
+          onClick={onViewOfflineAps} title="View offline access points" />
+        <StatCard value={fmtInt(s.total_clients)} label="Clients"
+          onClick={onViewClients} title="View wireless clients" />
+        <StatCard value={fmtInt(ctlCount)} label="Controllers"
+          onClick={onViewControllers} title="View wireless controllers" />
         <StatCard value={fmtPct(avgUtil)} valueColor={pctColor(avgUtil)} label="Avg Utilization" />
       </StatRow>
 
@@ -863,7 +946,7 @@ function OverviewTab({
           ) : <Empty message="No site data." />}
         </SectionCard>
 
-        <SectionCard title="Top APs by Clients" maxHeight={200} minWidth={240}>
+        <SectionCard title="Top APs by Clients" action={<DrillHint />} maxHeight={200} minWidth={240}>
           {topApsByClients.length ? (
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead><tr>
@@ -871,7 +954,8 @@ function OverviewTab({
               </tr></thead>
               <tbody>
                 {topApsByClients.map((ap) => (
-                  <tr key={ap.id}>
+                  <tr key={ap.id} style={{ cursor: 'pointer' }}
+                    onClick={() => setSelectedApId(ap.id)} title="View access point details">
                     <td style={{ ...TD_STYLE, fontWeight: 600 }}>{ap.name}</td>
                     <td style={TD_STYLE}>{ap.clients_total}</td>
                     <td style={{ ...TD_STYLE, color: pctColor(apUtil(ap)), fontWeight: 600 }}>{fmtPct(apUtil(ap))}</td>
@@ -882,7 +966,7 @@ function OverviewTab({
           ) : <Empty message="No AP data." />}
         </SectionCard>
 
-        <SectionCard title="Top SSIDs by Clients" maxHeight={200} minWidth={240}>
+        <SectionCard title="Top SSIDs by Clients" action={<DrillHint />} maxHeight={200} minWidth={240}>
           {ssidSummary.data && ssidSummary.data.top_ssids.length ? (
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead><tr>
@@ -890,7 +974,9 @@ function OverviewTab({
               </tr></thead>
               <tbody>
                 {ssidSummary.data.top_ssids.slice(0, 5).map((row: Ssid) => (
-                  <tr key={row.id}>
+                  <tr key={row.id} style={{ cursor: 'pointer' }}
+                    onClick={() => onSsidsForController(row.controller_id)}
+                    title="View SSIDs for this controller">
                     <td style={{ ...TD_STYLE, fontWeight: 600 }}>{row.ssid_name}</td>
                     <td style={{ ...TD_STYLE, color: 'var(--text-muted)' }}>{row.controller_name || '—'}</td>
                     <td style={TD_STYLE}>{row.clients_total}</td>
@@ -904,7 +990,20 @@ function OverviewTab({
 
       {/* Row 3 — Offline APs | High utilization APs */}
       <EqualRow>
-        <SectionCard title="Offline APs" maxHeight={160} minWidth={280}>
+        <SectionCard
+          title="Offline APs"
+          action={(
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10 }}>
+              {offlineAps.length > 0 && <DrillHint />}
+              <button className="sv-btn ghost sm" onClick={onViewProblemClients}
+                title="View clients with connectivity / performance problems">
+                View problem clients →
+              </button>
+            </span>
+          )}
+          maxHeight={160}
+          minWidth={280}
+        >
           {offlineAps.length ? (
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead><tr>
@@ -913,7 +1012,8 @@ function OverviewTab({
               </tr></thead>
               <tbody>
                 {offlineAps.map((ap) => (
-                  <tr key={ap.id}>
+                  <tr key={ap.id} style={{ cursor: 'pointer' }}
+                    onClick={() => setSelectedApId(ap.id)} title="View access point details">
                     <td style={{ ...TD_STYLE, fontWeight: 600 }}>
                       <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                         <StatusDot status="down" />{ap.name}
@@ -931,7 +1031,9 @@ function OverviewTab({
           )}
         </SectionCard>
 
-        <SectionCard title="High Utilization APs (>70%)" maxHeight={160} minWidth={280}>
+        <SectionCard title="High Utilization APs (>70%)"
+          action={highUtilAps.length > 0 ? <DrillHint /> : undefined}
+          maxHeight={160} minWidth={280}>
           {highUtilAps.length ? (
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead><tr>
@@ -939,7 +1041,8 @@ function OverviewTab({
               </tr></thead>
               <tbody>
                 {highUtilAps.map((ap) => (
-                  <tr key={ap.id}>
+                  <tr key={ap.id} style={{ cursor: 'pointer' }}
+                    onClick={() => setSelectedApId(ap.id)} title="View access point details">
                     <td style={{ ...TD_STYLE, fontWeight: 600 }}>{ap.name}</td>
                     <td style={{ ...TD_STYLE, color: pctColor(apUtil(ap)), fontWeight: 600 }}>{fmtPct(apUtil(ap))}</td>
                     <td style={TD_STYLE}>{ap.clients_total}</td>
@@ -956,14 +1059,23 @@ function OverviewTab({
       {/* Row 4 — Controller status strip (from already-fetched controllers) */}
       {controllers.data && controllers.data.length > 0 && (
         <EqualRow>
-          <SectionCard title="Controller Status" maxHeight={200} minWidth={280}>
-            <ControllerStatusCard controllers={controllers.data} />
+          <SectionCard title="Controller Status" action={<DrillHint />} maxHeight={200} minWidth={280}>
+            <ControllerStatusCard controllers={controllers.data} onSelect={onFilterController} />
           </SectionCard>
         </EqualRow>
       )}
 
       {/* Row 5 — Slim intelligence banner */}
       <IntelBanner onView={onViewIntelligence} coChannel={coChannelCount} band5Pct={band5Pct} />
+
+      {/* AP detail drawer (opened from Top/Offline/High-Util AP rows) */}
+      {selectedApId != null && (
+        <IntelApDrawer
+          apId={selectedApId}
+          onClose={() => setSelectedApId(null)}
+          onViewAllClients={(apId) => { setSelectedApId(null); onViewApClients(apId); }}
+        />
+      )}
     </div>
   );
 }
@@ -1145,16 +1257,20 @@ function groupByController<T extends { controller_id: number | null; controller_
 }
 
 function AccessPointsTab({
-  siteFilter, setSiteFilter, controllerFilter, setControllerFilter, onFilterController, onViewAllClients,
+  siteFilter, setSiteFilter, controllerFilter, setControllerFilter,
+  statusFilter, setStatusFilter, onFilterController, onViewAllClients,
 }: {
   siteFilter: number | null;
   setSiteFilter: (v: number | null) => void;
   controllerFilter: number | null;
   setControllerFilter: (v: number | null) => void;
+  statusFilter: string;
+  setStatusFilter: (v: string) => void;
   onFilterController: (controllerId: number | null) => void;
   onViewAllClients: (apId: number | null) => void;
 }) {
-  const [status, setStatus] = useState('');
+  const status = statusFilter;
+  const setStatus = setStatusFilter;
   const [vendor, setVendor] = useState('');
   const [selectedAp, setSelectedAp] = useState<AccessPoint | null>(null);
 
@@ -1190,7 +1306,7 @@ function AccessPointsTab({
     return groupByController(vendorFiltered, controllers.data || []);
   }, [allAps, vendor, controllers.data]);
 
-  const hasActiveLifted = siteFilter != null || controllerFilter != null;
+  const hasActiveLifted = siteFilter != null || controllerFilter != null || status !== '';
 
   return (
     <div>
@@ -1233,7 +1349,7 @@ function AccessPointsTab({
         {hasActiveLifted && (
           <button
             className="sv-btn ghost sm"
-            onClick={() => { setSiteFilter(null); setControllerFilter(null); }}
+            onClick={() => { setSiteFilter(null); setControllerFilter(null); setStatus(''); }}
           >Clear filter</button>
         )}
       </div>
@@ -1649,9 +1765,11 @@ function SsidControllerGroup({
   );
 }
 
-function SsidsTab() {
+function SsidsTab({ controllerFilter, setControllerFilter }: {
+  controllerFilter: number | null;
+  setControllerFilter: (v: number | null) => void;
+}) {
   const controllers = useApi<Controller[]>('/api/wireless/controllers', 30000);
-  const [controllerFilter, setControllerFilter] = useState<number | null>(null);
   const [siteFilter, setSiteFilter] = useState<number | null>(null);
 
   const qs = useMemo(() => {

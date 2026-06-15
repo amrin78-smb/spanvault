@@ -692,6 +692,17 @@ a { color: inherit; text-decoration: none; }
 .sv-table tbody tr:hover td { background: var(--bg-primary); }
 [data-theme="dark"] .sv-table tbody tr:hover td { background: rgba(255,255,255,0.03); }
 
+/* Clickable KPI stat tiles (Wireless Insights drill-downs) */
+.sv-statcard-clickable:hover {
+  box-shadow: var(--shadow-md, 0 2px 8px rgba(0,0,0,0.12));
+  transform: translateY(-1px);
+  border-color: var(--primary);
+}
+.sv-statcard-clickable:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
+
 .sv-badge {
   display: inline-flex; align-items: center; gap: 5px;
   padding: 3px 9px; border-radius: 20px; font-size: 11px; font-weight: 600; letter-spacing: 0.02em;

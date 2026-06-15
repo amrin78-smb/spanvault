@@ -32,6 +32,13 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.6.0': [
+    'Wireless Insights tab is now interactive — KPI tiles (Total APs, Offline, Clients, Controllers) deep-link straight into their tab',
+    'Click any Top AP, Offline AP, or High-Utilization AP row to open that access point\'s detail drawer',
+    'Top SSID rows jump to the SSIDs tab scoped to that controller; Controller Status rows open that controller\'s access points',
+    'The Offline tile now deep-links to access points filtered to offline (status filter lifted to the page), and a "View problem clients" shortcut was added',
+    'Subtle "click a row to drill in" hints and pointer/hover affordances added to the now-clickable containers',
+  ],
   '1.5.8': [
     'Standardized Updates and About tabs to NocVault suite spec',
   ],
