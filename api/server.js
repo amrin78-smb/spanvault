@@ -32,6 +32,9 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.5.4': [
+    'Fixed clipped third line on the dashboard KPI cards (Wireless APs "X clients · Y SSIDs" and SLA "Target") — increased the KPI strip tile height so 3-line tiles fit',
+  ],
   '1.5.3': [
     'Fixed Radio Performance always showing "Poor" — unreported noise floor was being stored as 0 (Number(null)===0) and misclassified; absent metrics now stay NULL',
     'Retry rate and RX/TX errors no longer show a misleading 0 when the vendor does not report them',

@@ -282,7 +282,7 @@ export default function DashboardPage() {
       {summary.loading && !s ? (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 8, marginBottom: 10 }}>
           {Array.from({ length: 10 }).map((_, i) => (
-            <div key={i} style={{ ...CARD_STYLE, height: 66, padding: '10px 13px' }}>
+            <div key={i} style={{ ...CARD_STYLE, height: 74, padding: '10px 13px' }}>
               <Skeleton height={20} width="55%" />
               <div style={{ height: 6 }} />
               <Skeleton height={9} width="75%" />
@@ -448,7 +448,7 @@ function StatTile({
       className={pulse ? 'sv-stat pulse' : undefined}
       style={{
         display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 2,
-        height: 66, padding: '10px 13px', borderRadius: 'var(--radius-sm)',
+        height: 74, padding: '10px 13px', borderRadius: 'var(--radius-sm)',
         background: 'var(--bg-card)', border: '1px solid var(--border)',
         borderLeft: `3px solid ${color}`, textDecoration: 'none', minWidth: 0,
       }}
@@ -473,7 +473,7 @@ function HealthScoreTile({ data }: { data: Overview | null }) {
       href="/intelligence"
       style={{
         display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 2,
-        height: 66, padding: '10px 13px', borderRadius: 'var(--radius-sm)',
+        height: 74, padding: '10px 13px', borderRadius: 'var(--radius-sm)',
         background: 'var(--bg-card)', border: '1px solid var(--border)',
         borderLeft: `3px solid ${c}`, textDecoration: 'none', minWidth: 0,
       }}
@@ -508,7 +508,7 @@ function WirelessApsTile() {
       className={w.offline_aps > 0 ? 'sv-stat pulse' : undefined}
       style={{
         display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 2,
-        height: 66, padding: '10px 13px', borderRadius: 'var(--radius-sm)',
+        height: 74, padding: '10px 13px', borderRadius: 'var(--radius-sm)',
         background: 'var(--bg-card)', border: '1px solid var(--border)',
         borderLeft: `3px solid ${wifiColor}`, textDecoration: 'none', minWidth: 0,
       }}
@@ -540,7 +540,7 @@ function AgentsTile({ canManageAgents, agentsOnline, agentsTotal }: {
       className={down ? 'sv-stat pulse' : undefined}
       style={{
         display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 2,
-        height: 66, padding: '10px 13px', borderRadius: 'var(--radius-sm)',
+        height: 74, padding: '10px 13px', borderRadius: 'var(--radius-sm)',
         background: 'var(--bg-card)', border: '1px solid var(--border)',
         borderLeft: `3px solid ${down ? 'var(--red)' : 'var(--green)'}`, textDecoration: 'none', minWidth: 0,
       }}
@@ -997,7 +997,7 @@ function OpsTile({ value, label, color, alert }: {
       className={alert ? 'sv-stat pulse' : undefined}
       style={{
         display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 2,
-        height: 66, padding: '10px 13px', borderRadius: 'var(--radius-sm)',
+        height: 74, padding: '10px 13px', borderRadius: 'var(--radius-sm)',
         background: 'var(--bg-card)', border: '1px solid var(--border)',
         borderLeft: `3px solid ${color}`, minWidth: 0,
       }}
@@ -1073,7 +1073,7 @@ function SlaTile({ api }: { api: Api<Sla> }) {
     <div
       style={{
         display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 2,
-        height: 66, padding: '10px 13px', borderRadius: 'var(--radius-sm)',
+        height: 74, padding: '10px 13px', borderRadius: 'var(--radius-sm)',
         background: 'var(--bg-card)', border: '1px solid var(--border)',
         borderLeft: `3px solid ${c}`, minWidth: 0,
       }}
