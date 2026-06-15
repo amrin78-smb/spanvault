@@ -42,7 +42,7 @@ export default function SettingsPage() {
   }
 
   return (
-    <div>
+    <div className="sv-settings">
       <PageHeader title="Settings" subtitle="Polling, thresholds, notifications, and alert rules." />
       <div className="sv-tabs sticky">
         {TABS.map((t) => (
