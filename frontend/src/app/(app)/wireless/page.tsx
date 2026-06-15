@@ -657,6 +657,7 @@ export default function WirelessPage() {
           controllerFilter={controllerFilter}
           setControllerFilter={setControllerFilter}
           onFilterController={gotoApsForController}
+          onViewAllClients={gotoClientsForAp}
         />
       )}
       {tab === 'ssids' && <SsidsTab />}
@@ -1138,13 +1139,14 @@ function groupByController<T extends { controller_id: number | null; controller_
 }
 
 function AccessPointsTab({
-  siteFilter, setSiteFilter, controllerFilter, setControllerFilter, onFilterController,
+  siteFilter, setSiteFilter, controllerFilter, setControllerFilter, onFilterController, onViewAllClients,
 }: {
   siteFilter: number | null;
   setSiteFilter: (v: number | null) => void;
   controllerFilter: number | null;
   setControllerFilter: (v: number | null) => void;
   onFilterController: (controllerId: number | null) => void;
+  onViewAllClients: (apId: number | null) => void;
 }) {
   const [status, setStatus] = useState('');
   const [vendor, setVendor] = useState('');
@@ -1254,6 +1256,7 @@ function AccessPointsTab({
           ap={selectedAp}
           onClose={() => setSelectedAp(null)}
           onFilterController={(cid) => { setSelectedAp(null); onFilterController(cid); }}
+          onViewAllClients={(id) => { setSelectedAp(null); onViewAllClients(id); }}
         />
       )}
     </div>
@@ -1268,11 +1271,12 @@ function statusToDot(status: string): string {
 
 // ── AP detail side drawer (top-level component) ───────────────
 function ApDetailDrawer({
-  ap, onClose, onFilterController,
+  ap, onClose, onFilterController, onViewAllClients,
 }: {
   ap: AccessPoint;
   onClose: () => void;
   onFilterController: (controllerId: number | null) => void;
+  onViewAllClients: (apId: number) => void;
 }) {
   const [history, setHistory] = useState<ApHistoryRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1441,9 +1445,17 @@ function ApDetailDrawer({
               </div>
             ))}
             {apClients.length > 10 && (
-              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 6 }}>
-                View all {apClients.length} clients
-              </div>
+              <button
+                type="button"
+                className="sv-link-btn"
+                onClick={() => onViewAllClients(ap.id)}
+                style={{
+                  marginTop: 8, background: 'none', border: 'none', padding: 0,
+                  color: 'var(--primary)', fontSize: 13, fontWeight: 600, cursor: 'pointer',
+                }}
+              >
+                View all {apClients.length} clients →
+              </button>
             )}
           </div>
         ) : (
@@ -1788,7 +1800,7 @@ function ScoreBar({ label, value }: { label: string; value: number }) {
 }
 
 // ── Worst-AP drawer loader (top-level component) ──────────────
-function IntelApDrawer({ apId, onClose }: { apId: number; onClose: () => void }) {
+function IntelApDrawer({ apId, onClose, onViewAllClients }: { apId: number; onClose: () => void; onViewAllClients: (apId: number) => void }) {
   const [ap, setAp] = useState<AccessPoint | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
@@ -1822,7 +1834,7 @@ function IntelApDrawer({ apId, onClose }: { apId: number; onClose: () => void })
   }
   if (!ap) return null;
   return (
-    <ApDetailDrawer ap={ap} onClose={onClose} onFilterController={() => {}} />
+    <ApDetailDrawer ap={ap} onClose={onClose} onFilterController={() => {}} onViewAllClients={onViewAllClients} />
   );
 }
 
@@ -2150,7 +2162,11 @@ function IntelligenceTab({ onViewApClients }: { onViewApClients?: (apId: number)
       </EqualRow>
 
       {drawerApId != null && (
-        <IntelApDrawer apId={drawerApId} onClose={() => setDrawerApId(null)} />
+        <IntelApDrawer
+          apId={drawerApId}
+          onClose={() => setDrawerApId(null)}
+          onViewAllClients={(id) => { setDrawerApId(null); if (onViewApClients) onViewApClients(id); }}
+        />
       )}
     </div>
   );
