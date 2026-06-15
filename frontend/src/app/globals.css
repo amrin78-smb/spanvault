@@ -1051,6 +1051,14 @@ body.sv-noc .sv-status-dot { transform: scale(1.5); }
   margin-left: -28px; margin-right: -28px; padding-left: 28px; padding-right: 28px;
 }
 body.sv-noc .sv-tabs.sticky { margin-left: -36px; margin-right: -36px; padding-left: 36px; padding-right: 36px; }
+/* On pages with a sticky tab bar, the scroll container's top padding would leave a
+   gap above the pinned bar where scrolling content shows through. Drop the top padding
+   here and restore the breathing room on the page's first child, so the bar pins flush
+   to the top and fully covers content scrolling underneath. */
+.sv-content:has(.sv-tabs.sticky) { padding-top: 0; }
+.sv-content:has(.sv-tabs.sticky) > :first-child { padding-top: 24px; }
+body.sv-noc .sv-content:has(.sv-tabs.sticky) { padding-top: 0; }
+body.sv-noc .sv-content:has(.sv-tabs.sticky) > :first-child { padding-top: 28px; }
 .sv-tab {
   padding: 9px 16px; cursor: pointer; font-size: 14px; font-weight: 600;
   color: var(--text-muted); border-bottom: 2px solid transparent; background: none; border-top: none; border-left: none; border-right: none;

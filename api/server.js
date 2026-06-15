@@ -32,6 +32,10 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.5.5': [
+    'Fixed sticky tab bars not covering content while scrolling — the scroll container\'s top padding left a gap above the pinned bar where rows showed through (Wireless, Topology, Settings, Intelligence)',
+    'Intelligence table column headers now stick just below the tab bar instead of behind it, so they stay visible while scrolling',
+  ],
   '1.5.4': [
     'Fixed clipped third line on the dashboard KPI cards (Wireless APs "X clients · Y SSIDs" and SLA "Target") — increased the KPI strip tile height so 3-line tiles fit',
   ],

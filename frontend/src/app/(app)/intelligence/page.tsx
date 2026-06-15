@@ -309,7 +309,7 @@ const ROW_STYLE: React.CSSProperties = { height: 36 };
 const TH_STYLE: React.CSSProperties = {
   fontSize: 11, textTransform: 'uppercase', color: 'var(--text-muted)', fontWeight: 600,
   letterSpacing: '0.06em', padding: '8px 12px', textAlign: 'left', whiteSpace: 'nowrap',
-  borderBottom: '1px solid var(--border)', position: 'sticky', top: 0,
+  borderBottom: '1px solid var(--border)', position: 'sticky', top: 44,
   background: 'var(--bg-card)', zIndex: 1,
 };
 const TD_STYLE: React.CSSProperties = {
