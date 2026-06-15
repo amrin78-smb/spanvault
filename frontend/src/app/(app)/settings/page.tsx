@@ -9,9 +9,11 @@ import { useLicense } from '@/components/LicenseGuard';
 
 const TABS = [
   { key: 'general', label: 'General' },
+  { key: 'email', label: 'Email Alerts' },
   { key: 'rules', label: 'Alert Rules' },
   { key: 'maintenance', label: 'Maintenance' },
   { key: 'updates', label: 'Updates' },
+  { key: 'about', label: 'About' },
 ];
 
 export default function SettingsPage() {
@@ -21,6 +23,37 @@ export default function SettingsPage() {
   // Highlight the Updates tab with a red dot when a new version is available.
   const updates = useApi<{ available?: boolean }>('/api/system/update-available');
   const updateAvail = !!updates.data?.available;
+
+  // Shared settings state (load/save lifted into the parent). General and Email
+  // Alerts render different sections of the SAME form and both call the same
+  // save(), so a save from either tab persists ALL settings fields and no field
+  // is ever dropped. (The backend PUT /api/settings upserts per key, so subset
+  // saves would be safe too — but a single shared state keeps it foolproof and
+  // avoids two competing loads of /api/settings.)
+  const settings = useApi<Record<string, string>>('/api/settings');
+  const [form, setForm] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [saveErr, setSaveErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (settings.data) setForm(settings.data);
+  }, [settings.data]);
+
+  function set(k: string, v: string) { setForm((f) => ({ ...f, [k]: v })); setSaved(false); }
+
+  async function save() {
+    setSaving(true);
+    setSaveErr(null);
+    try {
+      await apiSend('/api/settings', 'PUT', form);
+      setSaved(true);
+    } catch (e: any) {
+      setSaveErr(e?.message || 'Save failed');
+    } finally {
+      setSaving(false);
+    }
+  }
 
   // Deep-link support: /settings?tab=updates opens the Updates tab (used by the
   // update-notifier banner).
@@ -41,6 +74,10 @@ export default function SettingsPage() {
     return <div className="sv-panel" style={{ marginTop: 20 }}><Loading /></div>;
   }
 
+  const formProps = {
+    settings, form, set, save, saving, saved, saveErr,
+  };
+
   return (
     <div className="sv-settings">
       <PageHeader title="Settings" subtitle="Polling, thresholds, notifications, and alert rules." />
@@ -60,10 +97,36 @@ export default function SettingsPage() {
           </button>
         ))}
       </div>
-      {tab === 'general' && <GeneralSettings />}
+      {tab === 'general' && <GeneralSettings {...formProps} />}
+      {tab === 'email' && <EmailAlertSettings {...formProps} />}
       {tab === 'rules' && <AlertRules />}
       {tab === 'maintenance' && <Maintenance />}
       {tab === 'updates' && <SystemUpdates />}
+      {tab === 'about' && <AboutSettings />}
+    </div>
+  );
+}
+
+// ── Shared settings form (lifted to parent) ────────────────────
+type SettingsFormProps = {
+  settings: { loading: boolean; error: string | null; data: Record<string, string> | null };
+  form: Record<string, string>;
+  set: (k: string, v: string) => void;
+  save: () => Promise<void>;
+  saving: boolean;
+  saved: boolean;
+  saveErr: string | null;
+};
+
+// Shared Save toolbar — a save from either General or Email Alerts persists ALL
+// settings fields (single shared form state in the parent).
+function SaveBar({ save, saving, saved }: Pick<SettingsFormProps, 'save' | 'saving' | 'saved'>) {
+  return (
+    <div className="sv-toolbar">
+      <button className="sv-btn" onClick={save} disabled={saving}>
+        {saving ? 'Saving…' : 'Save Settings'}
+      </button>
+      {saved && <span style={{ color: 'var(--sv-up)', fontWeight: 600 }}>Saved ✓</span>}
     </div>
   );
 }
@@ -87,39 +150,13 @@ const SMTP_FIELDS = [
   { key: 'alert_email_to', label: 'Alert Recipients' },
 ];
 
-function GeneralSettings() {
-  const settings = useApi<Record<string, string>>('/api/settings');
-  const health = useApi<{ version?: string }>('/api/health');
-  const [form, setForm] = useState<Record<string, string>>({});
-  const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (settings.data) setForm(settings.data);
-  }, [settings.data]);
-
-  function set(k: string, v: string) { setForm((f) => ({ ...f, [k]: v })); setSaved(false); }
-
-  async function save() {
-    setSaving(true);
-    setErr(null);
-    try {
-      await apiSend('/api/settings', 'PUT', form);
-      setSaved(true);
-    } catch (e: any) {
-      setErr(e?.message || 'Save failed');
-    } finally {
-      setSaving(false);
-    }
-  }
-
+function GeneralSettings({ settings, form, set, save, saving, saved, saveErr }: SettingsFormProps) {
   if (settings.loading && !settings.data) return <Loading />;
   if (settings.error) return <ErrorBox message={settings.error} />;
 
   return (
     <div>
-      {err && <ErrorBox message={err} />}
+      {saveErr && <ErrorBox message={saveErr} />}
       <div className="sv-panel">
         <h2>Polling &amp; Thresholds</h2>
         <div className="sv-form-grid">
@@ -132,6 +169,19 @@ function GeneralSettings() {
         </div>
       </div>
 
+      <SaveBar save={save} saving={saving} saved={saved} />
+    </div>
+  );
+}
+
+// ── Email Alerts settings ──────────────────────────────────────
+function EmailAlertSettings({ settings, form, set, save, saving, saved, saveErr }: SettingsFormProps) {
+  if (settings.loading && !settings.data) return <Loading />;
+  if (settings.error) return <ErrorBox message={settings.error} />;
+
+  return (
+    <div>
+      {saveErr && <ErrorBox message={saveErr} />}
       <div className="sv-panel">
         <h2>Email Notifications</h2>
         <label className="sv-field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 14 }}>
@@ -150,13 +200,16 @@ function GeneralSettings() {
         </div>
       </div>
 
-      <div className="sv-toolbar">
-        <button className="sv-btn" onClick={save} disabled={saving}>
-          {saving ? 'Saving…' : 'Save Settings'}
-        </button>
-        {saved && <span style={{ color: 'var(--sv-up)', fontWeight: 600 }}>Saved ✓</span>}
-      </div>
+      <SaveBar save={save} saving={saving} saved={saved} />
+    </div>
+  );
+}
 
+// ── About ──────────────────────────────────────────────────────
+function AboutSettings() {
+  const health = useApi<{ version?: string }>('/api/health');
+  return (
+    <div>
       <div className="sv-panel">
         <h2>About</h2>
         <div style={{ lineHeight: 1.7 }}>

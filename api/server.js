@@ -32,6 +32,9 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.5.7': [
+    'Standardized Settings menu (split Email Alerts and About into own tabs)',
+  ],
   '1.5.6': [
     'Standardized Settings page styling to match NocVault suite',
   ],
