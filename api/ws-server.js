@@ -183,6 +183,17 @@ async function pushConfigToAgentId(agentId) {
   if (ws) await pushConfigToAgent(ws, agentId);
 }
 
+// Send an arbitrary control message to a connected agent by id. Returns whether
+// the agent was online to receive it (e.g. a "discover" command).
+async function sendToAgentId(agentId, msg) {
+  const r = await sv.query(`SELECT api_key FROM agents WHERE id=$1`, [agentId]);
+  const key = r.rows[0] && r.rows[0].api_key;
+  if (!key) return false;
+  const ws = connectedAgents.get(key);
+  if (ws && ws.readyState === 1) { ws.send(JSON.stringify(msg)); return true; }
+  return false;
+}
+
 async function handleAgentMessage(agent, msg) {
   if (!msg || typeof msg !== 'object') return;
   switch (msg.type) {
@@ -220,6 +231,24 @@ async function handleAgentMessage(agent, msg) {
       );
       break;
 
+    case 'discovery':
+      // Candidates the agent found by sweeping its local subnet(s).
+      if (Array.isArray(msg.hosts)) {
+        for (const h of msg.hosts) {
+          if (!h || !h.ip_address) continue;
+          await sv.query(`
+            INSERT INTO agent_discovered_devices
+              (agent_id, ip_address, sys_name, sys_descr, snmp_ok, last_seen_at)
+            VALUES ($1,$2,$3,$4,$5,NOW())
+            ON CONFLICT (agent_id, ip_address) DO UPDATE SET
+              sys_name = EXCLUDED.sys_name, sys_descr = EXCLUDED.sys_descr,
+              snmp_ok = EXCLUDED.snmp_ok, last_seen_at = NOW()`,
+            [agent.id, h.ip_address, h.sys_name || null, h.sys_descr || null, !!h.snmp_ok]);
+        }
+        console.log(`[WS] Discovery from ${agent.name}: ${msg.hosts.length} host(s)`);
+      }
+      break;
+
     case 'batch':
       // Buffered results flushed on reconnect.
       if (Array.isArray(msg.results)) {
@@ -232,4 +261,4 @@ async function handleAgentMessage(agent, msg) {
   }
 }
 
-module.exports = { startWsServer, connectedAgents, pushConfigToAgent, pushConfigToAgentId, disconnectAgent };
+module.exports = { startWsServer, connectedAgents, pushConfigToAgent, pushConfigToAgentId, disconnectAgent, sendToAgentId };

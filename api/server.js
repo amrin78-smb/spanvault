@@ -18,7 +18,7 @@ const { Pool } = require('pg');
 const { discoverDevice, snmpTest } = require('../collector/discovery');
 const topology = require('../collector/topology');
 const wireless = require('../collector/wirelessCollector');
-const { startWsServer, connectedAgents, pushConfigToAgent, pushConfigToAgentId, disconnectAgent } = require('./ws-server');
+const { startWsServer, connectedAgents, pushConfigToAgent, pushConfigToAgentId, disconnectAgent, sendToAgentId } = require('./ws-server');
 const intelligence = require('./intelligence');
 const { getLicense, getLicenseState } = require('./licenseCheck');
 const reportScheduler = require('./reportScheduler');
@@ -32,6 +32,12 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.9.0': [
+    'Zero-touch discovery: an agent can sweep its own local network (ICMP + SNMP) and report every device it finds — drop an agent at a site and it discovers everything, no manual entry',
+    'New "Discover Devices" panel on the agent detail page: click Scan, then one-click adopt found devices straight into monitoring (assigned to that agent)',
+    'Discovered devices already being monitored are flagged so you never create duplicates',
+    'Adopted devices are placed in one of the agent\'s assigned sites so they stay owned by the agent',
+  ],
   '1.8.0': [
     'Agents now authenticate with the API key in an Authorization header instead of the URL, so the secret no longer lands in proxy/access logs (server still accepts the old form during upgrade)',
     'Optional TLS (wss://) for the agent WebSocket via SV_WS_TLS_CERT / SV_WS_TLS_KEY',
@@ -2056,6 +2062,82 @@ app.post('/api/agents/:id/sites', wrap(async (req, res) => {
   const sites = await sv.query(
     `SELECT site_id, site_name FROM agent_sites WHERE agent_id = $1 ORDER BY site_name`, [id]);
   res.json({ ok: true, sites: sites.rows });
+}));
+
+// ── Zero-touch discovery ──────────────────────────────────────
+// Trigger a subnet sweep on the agent. Requires the agent to be online.
+app.post('/api/agents/:id/discover', wrap(async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const exists = await sv.query(`SELECT id FROM agents WHERE id = $1`, [id]);
+  if (!exists.rows[0]) return res.status(404).json({ error: 'Agent not found' });
+  const communities = Array.isArray(req.body && req.body.communities) ? req.body.communities : undefined;
+  const sent = await sendToAgentId(id, { type: 'discover', communities });
+  if (!sent) return res.status(409).json({ error: 'Agent is offline — it must be connected to run a discovery sweep.' });
+  res.json({ ok: true, scanning: true });
+}));
+
+// List what the agent discovered, flagging anything already monitored.
+app.get('/api/agents/:id/discovered', wrap(async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  try {
+    const r = await sv.query(`
+      SELECT dd.id, dd.ip_address, dd.sys_name, dd.sys_descr, dd.snmp_ok,
+             dd.adopted, dd.first_seen_at, dd.last_seen_at,
+             EXISTS (SELECT 1 FROM monitored_devices m WHERE m.ip_address = dd.ip_address) AS already_monitored
+        FROM agent_discovered_devices dd
+       WHERE dd.agent_id = $1
+       ORDER BY dd.snmp_ok DESC, dd.ip_address`, [id]);
+    res.json(r.rows);
+  } catch (e) {
+    // Table is a later migration — degrade to empty rather than 500.
+    if (/agent_discovered_devices/.test(e.message)) return res.json([]);
+    throw e;
+  }
+}));
+
+// Adopt discovered candidates into monitored_devices, owned by this agent. The
+// devices are placed in one of the agent's assigned sites so the collector's
+// site-based reassignment keeps them on the agent.
+app.post('/api/agents/:id/discovered/adopt', wrap(async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const b = req.body || {};
+  const ips = Array.isArray(b.ips) ? b.ips.filter((x) => typeof x === 'string' && x) : [];
+  if (!ips.length) return res.status(400).json({ error: 'No devices selected.' });
+
+  const agentSites = await sv.query(
+    `SELECT site_id, site_name FROM agent_sites WHERE agent_id = $1 ORDER BY site_id`, [id]);
+  if (!agentSites.rows.length) {
+    return res.status(400).json({ error: 'Assign a site to this agent before adopting devices (Edit sites).' });
+  }
+  // Default to the first owned site; honour an explicit owned site_id if given.
+  let target = agentSites.rows[0];
+  if (b.site_id != null) {
+    const m = agentSites.rows.find((s) => s.site_id === parseInt(b.site_id, 10));
+    if (m) target = m;
+  }
+
+  const disc = await sv.query(
+    `SELECT ip_address, sys_name, snmp_ok FROM agent_discovered_devices
+      WHERE agent_id = $1 AND ip_address = ANY($2::text[])`, [id, ips]);
+
+  let adopted = 0;
+  for (const d of disc.rows) {
+    const name = (d.sys_name && d.sys_name.trim()) ? d.sys_name.trim() : d.ip_address;
+    const ins = await sv.query(`
+      INSERT INTO monitored_devices
+        (name, ip_address, site_id, site_name, agent_id,
+         snmp_enabled, snmp_version, snmp_community)
+      VALUES ($1,$2,$3,$4,$5,$6,'2c','public')
+      ON CONFLICT (ip_address) DO NOTHING
+      RETURNING id`,
+      [name, d.ip_address, target.site_id, target.site_name, id, !!d.snmp_ok]);
+    if (ins.rows[0]) adopted++;
+    await sv.query(
+      `UPDATE agent_discovered_devices SET adopted = TRUE WHERE agent_id = $1 AND ip_address = $2`,
+      [id, d.ip_address]);
+  }
+  try { await pushConfigToAgentId(id); } catch (e) { console.error('[adopt] push config failed:', e.message); }
+  res.json({ ok: true, adopted });
 }));
 
 // ══════════════════════════════════════════════════════════════

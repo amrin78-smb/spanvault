@@ -87,6 +87,9 @@ function connect() {
     try {
       const msg = JSON.parse(raw);
       if (msg.type === 'config') applyConfig(msg);
+      else if (msg.type === 'discover') {
+        runDiscovery(msg).catch((e) => console.error('[Agent] Discovery error:', e.message));
+      }
     } catch (e) { console.error('[Agent] Message error:', e.message); }
   });
 
@@ -237,6 +240,98 @@ async function doSnmp(device) {
     console.error(`[Agent] SNMP error for ${device.ip_address}:`, e.message);
   } finally {
     try { session.close(); } catch (_e) { /* ignore */ }
+  }
+}
+
+// ── Zero-touch discovery ──────────────────────────────────────
+// On a server "discover" command, sweep the agent's local /24(s) with ICMP, then
+// SNMP-probe responders for sysName/sysDescr and report candidates. This is what
+// lets an operator drop an agent at a site and adopt everything it finds — no
+// manual device entry. Self-contained (ping + net-snmp only).
+let discovering = false;
+
+function localSubnets() {
+  const seen = new Set();
+  const out = [];
+  const ifaces = os.networkInterfaces();
+  for (const name of Object.keys(ifaces)) {
+    for (const a of ifaces[name] || []) {
+      if (a.family !== 'IPv4' || a.internal) continue;
+      const parts = String(a.address).split('.');
+      if (parts.length !== 4) continue;
+      const base = `${parts[0]}.${parts[1]}.${parts[2]}`; // bound the sweep to the /24
+      if (!seen.has(base)) { seen.add(base); out.push({ base, self: a.address }); }
+    }
+  }
+  return out;
+}
+
+function pingHost(ip) {
+  return ping.promise.probe(ip, { timeout: 1, extra: [IS_WIN ? '-n' : '-c', '1'] })
+    .then((r) => !!r.alive).catch(() => false);
+}
+
+function snmpProbe(ip, communities) {
+  const tries = (communities && communities.length) ? communities : ['public'];
+  return tryCommunity(ip, tries, 0);
+}
+function tryCommunity(ip, tries, i) {
+  if (i >= tries.length) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    let session;
+    try {
+      session = snmp.createSession(ip, tries[i], { timeout: 1500, retries: 0, version: snmp.Version2c });
+    } catch (_e) { return resolve(null); }
+    let done = false;
+    const finish = (v) => { if (done) return; done = true; try { session.close(); } catch (_e) {} resolve(v); };
+    const timer = setTimeout(() => finish(null), 2500);
+    // sysName (1.3.6.1.2.1.1.5.0), sysDescr (1.3.6.1.2.1.1.1.0)
+    session.get(['1.3.6.1.2.1.1.5.0', '1.3.6.1.2.1.1.1.0'], (err, vbs) => {
+      clearTimeout(timer);
+      if (err || !vbs) return finish(null);
+      const val = (k) => (vbs[k] && !snmp.isVarbindError(vbs[k])) ? String(vbs[k].value) : '';
+      const sysName = val(0), sysDescr = val(1);
+      if (!sysName && !sysDescr) return finish(null);
+      finish({ sys_name: sysName, sys_descr: sysDescr, community: tries[i] });
+    });
+  }).then((v) => v || tryCommunity(ip, tries, i + 1));
+}
+
+async function mapLimit(items, limit, fn) {
+  const ret = new Array(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length || 1) }, async () => {
+    while (next < items.length) { const idx = next++; ret[idx] = await fn(items[idx]); }
+  });
+  await Promise.all(workers);
+  return ret;
+}
+
+async function runDiscovery(msg) {
+  if (discovering) { console.log('[Agent] Discovery already running — ignoring'); return; }
+  discovering = true;
+  try {
+    const communities = (msg && Array.isArray(msg.communities) && msg.communities.length) ? msg.communities : ['public'];
+    const subnets = localSubnets();
+    console.log(`[Agent] Discovery: sweeping ${subnets.length} subnet(s)`);
+    const hosts = [];
+    for (const sn of subnets) {
+      const ips = [];
+      for (let h = 1; h <= 254; h++) ips.push(`${sn.base}.${h}`);
+      const alive = (await mapLimit(ips, 32, async (ip) => (await pingHost(ip)) ? ip : null)).filter(Boolean);
+      const probed = await mapLimit(alive, 16, async (ip) => {
+        const info = await snmpProbe(ip, communities);
+        return {
+          ip_address: ip, snmp_ok: !!info,
+          sys_name: info ? info.sys_name : '', sys_descr: info ? info.sys_descr : '',
+        };
+      });
+      hosts.push(...probed);
+    }
+    console.log(`[Agent] Discovery: ${hosts.length} live host(s) found`);
+    send({ type: 'discovery', hosts });
+  } finally {
+    discovering = false;
   }
 }
 

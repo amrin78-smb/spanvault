@@ -254,6 +254,24 @@ CREATE TABLE IF NOT EXISTS agent_sites (
 );
 CREATE INDEX IF NOT EXISTS idx_agent_sites_site ON agent_sites(site_id);
 
+-- Zero-touch discovery: candidates the agent found by sweeping its local subnet
+-- (ping + SNMP sysName/sysDescr). Operators adopt these into monitored_devices.
+CREATE TABLE IF NOT EXISTS agent_discovered_devices (
+  id            SERIAL PRIMARY KEY,
+  agent_id      INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  ip_address    TEXT NOT NULL,
+  sys_name      TEXT,
+  sys_descr     TEXT,
+  mac           TEXT,
+  vendor        TEXT,
+  snmp_ok       BOOLEAN NOT NULL DEFAULT FALSE,
+  adopted       BOOLEAN NOT NULL DEFAULT FALSE,
+  first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  last_seen_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (agent_id, ip_address)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_disc_agent ON agent_discovered_devices(agent_id);
+
 -- agent_id on monitored_devices: NULL = polled locally by the collector;
 -- non-NULL = polled by the referenced remote agent.
 ALTER TABLE monitored_devices ADD COLUMN IF NOT EXISTS

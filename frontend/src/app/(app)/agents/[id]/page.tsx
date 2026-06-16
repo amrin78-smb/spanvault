@@ -8,7 +8,7 @@ import {
   ErrorBox, Loading, Empty, fmtRel, fmtTime, PageHeader, useRefreshKey,
 } from '@/components/ui';
 import { StatusDot } from '@/components/StatusDot';
-import { AgentStatusPill, AgentInstall, SiteMultiSelect } from '@/components/AgentBits';
+import { AgentStatusPill, AgentInstall, AgentDiscovery, SiteMultiSelect } from '@/components/AgentBits';
 
 type AgentSite = { site_id: number; site_name: string | null };
 type AgentDevice = {
@@ -192,6 +192,12 @@ export default function AgentDetailPage({ params }: { params: { id: string } }) 
             <Empty message="No sites assigned. Edit sites to assign devices to this agent." />
           )}
         </div>
+      </div>
+
+      {/* Row 2.5 — Zero-touch discovery, full width */}
+      <div style={{ ...CARD_STYLE, marginBottom: 12 }}>
+        <div style={SECTION_TITLE_STYLE}>Discover Devices on the Agent’s Network</div>
+        <AgentDiscovery agentId={a.id} online={a.status === 'online'} />
       </div>
 
       {/* Row 3 — Devices grouped by site, full width */}
