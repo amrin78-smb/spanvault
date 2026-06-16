@@ -142,9 +142,19 @@ $NssmPath = Resolve-Nssm
 
 # -- Register (idempotent) + start the service ---------------------------------
 Write-Step "Registering Windows service..."
-# Remove any prior registration so re-running the installer is clean.
-& $NssmPath stop SpanVault-Agent confirm 2>$null | Out-Null
-& $NssmPath remove SpanVault-Agent confirm 2>$null | Out-Null
+# Remove any prior registration so re-running the installer is clean. Only touch
+# the service if it already exists, and relax error handling around these native
+# nssm calls (on a fresh host the service is absent and nssm writes to stderr,
+# which would otherwise trip ErrorActionPreference='Stop').
+if (Get-Service -Name SpanVault-Agent -ErrorAction SilentlyContinue) {
+  Write-Step "Removing existing SpanVault-Agent service..."
+  $eap = $ErrorActionPreference
+  $ErrorActionPreference = 'SilentlyContinue'
+  & $NssmPath stop SpanVault-Agent confirm 2>&1 | Out-Null
+  & $NssmPath remove SpanVault-Agent confirm 2>&1 | Out-Null
+  Start-Sleep -Seconds 1
+  $ErrorActionPreference = $eap
+}
 
 & $NssmPath install SpanVault-Agent (Get-Command node).Source | Out-Null
 & $NssmPath set SpanVault-Agent AppParameters "$InstallDir\agent.js" | Out-Null
