@@ -6,6 +6,42 @@ import { useEscape } from '@/components/ui';
 
 type Site = { id: number; name: string };
 
+// ── Live "waiting for the agent to connect" indicator ──────────
+// Polls the agent's status after the install command is shown, so the operator
+// gets immediate feedback the moment the remote service connects.
+export function AgentConnectWaiter({ agentId }: { agentId: number }) {
+  const agent = useApi<{ status: string; hostname: string | null; version: string | null }>(
+    `/api/agents/${agentId}`, 3000
+  );
+  const status = (agent.data?.status || '').toLowerCase();
+  const online = status === 'online';
+  return (
+    <div className={`sv-agent-wait ${online ? 'ok' : ''}`} style={{
+      display: 'flex', alignItems: 'center', gap: 10, marginTop: 14,
+      padding: '10px 12px', borderRadius: 'var(--radius-sm)',
+      border: '1px solid var(--border)',
+      background: online ? 'rgba(34,197,94,0.08)' : 'var(--bg-subtle, transparent)',
+    }}>
+      <span style={{
+        width: 10, height: 10, borderRadius: '50%', flex: 'none',
+        background: online ? 'var(--green)' : 'var(--yellow)',
+        boxShadow: online ? '0 0 0 3px rgba(34,197,94,0.25)' : 'none',
+        animation: online ? 'none' : 'pulse 1.4s ease-in-out infinite',
+      }} />
+      {online ? (
+        <span style={{ fontSize: 13, color: 'var(--text-primary)' }}>
+          <strong>Connected!</strong> {agent.data?.hostname || 'agent'}
+          {agent.data?.version ? ` · v${agent.data.version}` : ''} is online.
+        </span>
+      ) : (
+        <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+          Waiting for the agent to connect… run the command above on the remote server.
+        </span>
+      )}
+    </div>
+  );
+}
+
 // ── Status pill (online / offline / never connected) ───────────
 export function AgentStatusPill({ status }: { status: string }) {
   const s = (status || 'never_connected').toLowerCase();
@@ -56,7 +92,7 @@ export function NewAgentModal({
   onClose, onCreated,
 }: {
   onClose: () => void;
-  onCreated: (created: { name: string; install_command: string }) => void;
+  onCreated: (created: { id: number; name: string; install_command: string }) => void;
 }) {
   useEscape(onClose);
   const sites = useApi<Site[]>('/api/netvault/sites');
@@ -78,10 +114,10 @@ export function NewAgentModal({
     setSaving(true);
     setError(null);
     try {
-      const created = await apiSend<{ name: string; install_command: string }>(
+      const created = await apiSend<{ id: number; name: string; install_command: string }>(
         '/api/agents', 'POST', { name: name.trim(), site_ids: Array.from(selected) }
       );
-      onCreated({ name: created.name, install_command: created.install_command });
+      onCreated({ id: created.id, name: created.name, install_command: created.install_command });
     } catch (e: any) {
       setError(e?.message || 'Failed to create agent');
       setSaving(false);

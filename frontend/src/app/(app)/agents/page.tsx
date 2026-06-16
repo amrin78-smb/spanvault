@@ -9,7 +9,7 @@ import {
   ErrorBox, fmtRel, PageHeader, CardSkeleton, EmptyState, useRefreshKey, Loading,
 } from '@/components/ui';
 import { IconAgents } from '@/components/icons';
-import { AgentInstall, NewAgentModal } from '@/components/AgentBits';
+import { AgentInstall, AgentConnectWaiter, NewAgentModal } from '@/components/AgentBits';
 
 type AgentSite = { site_id: number; site_name: string | null };
 export type Agent = {
@@ -33,7 +33,7 @@ export default function AgentsPage() {
   const agents = useApi<Agent[]>(canManageAgents ? '/api/agents' : null, 15000);
   const [showNew, setShowNew] = useState(false);
   // After creating an agent, surface its install command in a modal.
-  const [created, setCreated] = useState<{ name: string; install_command: string } | null>(null);
+  const [created, setCreated] = useState<{ id: number; name: string; install_command: string } | null>(null);
 
   // Agents management is admin-only — bounce view-only roles to the dashboard.
   useEffect(() => {
@@ -110,6 +110,7 @@ export default function AgentsPage() {
               Run this on the remote server (PowerShell, as Administrator):
             </p>
             <AgentInstall command={created.install_command} />
+            <AgentConnectWaiter agentId={created.id} />
             <div style={{ marginTop: 18, textAlign: 'right' }}>
               <button className="sv-btn" onClick={() => setCreated(null)}>Done</button>
             </div>

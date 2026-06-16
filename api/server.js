@@ -32,6 +32,12 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.7.0': [
+    'Agent installer now auto-downloads NSSM when it is missing, so the service registers on a clean server without NetVault present (previously failed with "nssm is not recognized")',
+    'Installer adds a preflight connectivity check, verifies the service actually reached Running state, and prints clear success/log-path output',
+    'New-agent dialog now shows live "Waiting for the agent to connect..." that flips to "Connected!" with hostname/version the moment the remote agent comes online',
+    'Re-running the installer is now idempotent (cleans any prior service), and an offline/air-gapped path is supported by skipping npm install when a bundled node_modules is present',
+  ],
   '1.6.1': [
     'Fixed the agent install command — it now runs correctly in PowerShell (the previous "irm | iex -ServerUrl ..." form failed with a parameter-binding error)',
     'Remote agents now poll SNMPv3 devices correctly (auth/priv credentials were previously ignored, so v3 devices reported no metrics)',
