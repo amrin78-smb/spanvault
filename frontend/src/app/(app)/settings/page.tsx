@@ -12,6 +12,7 @@ const TABS = [
   { key: 'email', label: 'Email Alerts' },
   { key: 'rules', label: 'Alert Rules' },
   { key: 'maintenance', label: 'Maintenance' },
+  { key: 'audit', label: 'Audit Log' },
   { key: 'updates', label: 'Updates' },
   { key: 'about', label: 'About' },
 ];
@@ -82,7 +83,7 @@ export default function SettingsPage() {
     <div className="sv-settings">
       <PageHeader title="Settings" subtitle="Polling, thresholds, notifications, and alert rules." />
       <div className="sv-tabs sticky">
-        {TABS.map((t) => (
+        {TABS.filter((t) => t.key !== 'audit' || canManageSettings).map((t) => (
           <button key={t.key} className={`sv-tab ${tab === t.key ? 'active' : ''}`} onClick={() => setTab(t.key)}>
             {t.label}
             {t.key === 'updates' && updateAvail && (
@@ -101,6 +102,7 @@ export default function SettingsPage() {
       {tab === 'email' && <EmailAlertSettings {...formProps} />}
       {tab === 'rules' && <AlertRules />}
       {tab === 'maintenance' && <Maintenance />}
+      {tab === 'audit' && canManageSettings && <AuditLog />}
       {tab === 'updates' && <SystemUpdates />}
       {tab === 'about' && <AboutSettings />}
     </div>
@@ -486,6 +488,45 @@ function AboutSettings() {
           <div className="sv-muted">© 2026 NocVault</div>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ── Audit log (admin) ──────────────────────────────────────────
+type AuditRow = {
+  id: number; ts: string; user_email: string | null; user_role: string | null;
+  method: string; path: string; status: number | null; detail: any; ip: string | null;
+};
+function AuditLog() {
+  const audit = useApi<AuditRow[]>('/api/audit', 30000);
+  if (audit.loading && !audit.data) return <Loading />;
+  if (audit.error) return <ErrorBox message={audit.error} />;
+  const rows = audit.data || [];
+  return (
+    <div className="sv-panel">
+      <h2>Audit Log</h2>
+      <p className="sv-muted" style={{ fontSize: 13, marginTop: -4 }}>
+        Recent configuration and operational changes (most recent first).
+      </p>
+      {!rows.length ? <Empty message="No audit entries yet." /> : (
+        <table className="sv-table">
+          <thead><tr><th>When</th><th>User</th><th>Role</th><th>Action</th><th>Detail</th></tr></thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.id}>
+                <td style={{ whiteSpace: 'nowrap' }}>{fmtTime(r.ts)}</td>
+                <td>{r.user_email || '—'}</td>
+                <td>{r.user_role || '—'}</td>
+                <td><code style={{ fontSize: 11 }}>{r.method} {r.path}</code></td>
+                <td style={{ maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                    title={r.detail ? JSON.stringify(r.detail) : ''}>
+                  {r.detail ? JSON.stringify(r.detail) : '—'}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
     </div>
   );
 }

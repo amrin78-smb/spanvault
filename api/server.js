@@ -32,6 +32,10 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.19.0': [
+    'Audit logging — every successful change (devices, settings, alert rules, agents, acknowledgements, etc.) is recorded with the verified user, timestamp, action, and source IP (secrets redacted)',
+    'New admin-only Audit Log tab under Settings',
+  ],
   '1.18.1': [
     'Security: write-side RBAC enforced server-side — read-only (viewer) roles can no longer create/delete devices or change settings, and configuration changes (settings, alert rules, agents, controllers, service checks) now require an admin role',
     'Alert acknowledgements are attributed to the verified signed-in user instead of a client-supplied value (no longer forgeable)',
@@ -322,6 +326,37 @@ app.use((req, res, next) => {
   if (rank < 2 && ADMIN_ONLY_WRITE.some((re) => re.test(req.path))) {
     return res.status(403).json({ error: 'This action requires an admin role.' });
   }
+  next();
+});
+
+// ── Audit logging ─────────────────────────────────────────────
+// One row per successful mutation (who/what/when/where). Secrets are redacted.
+function sanitizeAuditBody(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return Array.isArray(body) ? { _count: body.length } : null;
+  }
+  const out = {};
+  for (const k of Object.keys(body)) {
+    if (/pass|secret|api_?key|token|community|priv/i.test(k)) out[k] = '***';
+    else if (typeof body[k] === 'string' && body[k].length > 300) out[k] = body[k].slice(0, 300) + '…';
+    else if (typeof body[k] === 'object' && body[k] !== null) out[k] = '[object]';
+    else out[k] = body[k];
+  }
+  return out;
+}
+app.use((req, res, next) => {
+  if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) return next();
+  res.on('finish', () => {
+    if (res.statusCode >= 400) return; // only audit successful mutations
+    const detail = sanitizeAuditBody(req.body);
+    sv.query(
+      `INSERT INTO audit_log (user_email, user_role, method, path, status, detail, ip)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+      [req.headers['x-user-email'] || null, req.headers['x-user-role'] || null,
+       req.method, req.path, res.statusCode, detail ? JSON.stringify(detail) : null,
+       (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').toString().split(',')[0] || null]
+    ).catch(() => { /* audit_log may be un-migrated — ignore */ });
+  });
   next();
 });
 
@@ -5430,6 +5465,19 @@ app.get('/api/settings', wrap(async (_req, res) => {
   const out = {};
   for (const row of r.rows) out[row.key] = row.value;
   res.json(out);
+}));
+
+// Audit log (admin only) — recent successful mutations.
+app.get('/api/audit', wrap(async (req, res) => {
+  if (userRank(req) < 2) return res.status(403).json({ error: 'Admin only' });
+  try {
+    const limit = safeInt(req.query.limit, 200, 1000);
+    const r = await sv.query(`SELECT * FROM audit_log ORDER BY ts DESC LIMIT ${limit}`);
+    res.json(r.rows);
+  } catch (e) {
+    if (/audit_log/.test(e.message)) return res.json([]);
+    throw e;
+  }
 }));
 
 app.put('/api/settings', wrap(async (req, res) => {

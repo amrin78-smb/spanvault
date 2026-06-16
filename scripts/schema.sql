@@ -194,6 +194,22 @@ ALTER TABLE monitored_devices ADD COLUMN IF NOT EXISTS
 CREATE UNIQUE INDEX IF NOT EXISTS idx_one_gateway_per_site
   ON monitored_devices(site_id) WHERE is_gateway = TRUE AND active = TRUE;
 
+-- ── Audit log ─────────────────────────────────────────────────────────────────
+-- One row per successful mutating API request: who (verified session user),
+-- what (method + path + sanitized body), when, and from where.
+CREATE TABLE IF NOT EXISTS audit_log (
+  id          BIGSERIAL PRIMARY KEY,
+  ts          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  user_email  TEXT,
+  user_role   TEXT,
+  method      TEXT NOT NULL,
+  path        TEXT NOT NULL,
+  status      INTEGER,
+  detail      JSONB,
+  ip          TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts DESC);
+
 -- ── Notification routing + throttle ───────────────────────────────────────────
 -- Route matching alerts to specific email recipients. A NULL match field = "any".
 -- When no route matches, the global alert_email_to is used as a fallback.
