@@ -9,13 +9,13 @@
 
 .PARAMETER ServerUrl
     Base URL of the SpanVault server (the frontend, which proxies /api/*),
-    e.g. http://10.20.30.40:3008
+    e.g. http://<server>:3008
 
 .PARAMETER ApiKey
     The agent's API key (generated when the agent was created in the UI).
 
 .EXAMPLE
-    irm http://10.20.30.40:3008/api/agent/install.ps1 | iex -ServerUrl "http://10.20.30.40:3008" -ApiKey "abc-123-xyz"
+    & ([scriptblock]::Create((irm http://<server>:3008/api/agent/install.ps1))) -ServerUrl "http://<server>:3008" -ApiKey "abc-123-xyz"
 #>
 param(
   [Parameter(Mandatory=$true)][string]$ServerUrl,
@@ -53,7 +53,11 @@ Invoke-WebRequest -Uri "$ServerUrl/api/agent/package.json" -OutFile "$InstallDir
 Write-Host "Installing dependencies..." -ForegroundColor Yellow
 Push-Location $InstallDir
 npm install --omit=dev 2>&1 | Out-Null
+$npmExit = $LASTEXITCODE
 Pop-Location
+if ($npmExit -ne 0) {
+  throw "npm install failed (exit $npmExit). Agent dependencies are incomplete - aborting before service registration."
+}
 
 # Install NSSM and register service
 $NssmPath = "C:\Apps\NetVault\nssm\nssm-2.24\win64\nssm.exe"

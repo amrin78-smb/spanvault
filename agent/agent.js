@@ -47,6 +47,10 @@ function send(msg) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(msg));
   } else {
+    // Heartbeats are worthless once stale — a buffered one replayed on reconnect
+    // would bump last_seen_at to NOW() and mask how long the agent was actually
+    // gone. Only buffer real poll results.
+    if (msg.type === 'heartbeat') return;
     buffer.push(msg);
     if (buffer.length > MAX_BUFFER) buffer = buffer.slice(-MAX_BUFFER);
     saveBuffer();
@@ -118,8 +122,10 @@ function applyConfig(msg) {
 function schedulePoll(device) {
   const interval = (device.poll_interval_seconds ||
     parseInt(settings.icmp_poll_interval_seconds, 10) || 300) * 1000;
-  pollDevice(device);
-  const t = setInterval(() => pollDevice(device), interval);
+  const run = () => pollDevice(device).catch(
+    (e) => console.error(`[Agent] Poll error for ${device.name || device.id}:`, e.message));
+  run();
+  const t = setInterval(run, interval);
   pollTimers.set(device.id, t);
 }
 
@@ -177,10 +183,31 @@ function snmpGet(session, oid) {
   });
 }
 
-async function doSnmp(device) {
-  const community = device.snmp_community || 'public';
+// Build a version-aware SNMP session (matches collector/snmp-session.js so v3
+// devices assigned to an agent poll identically to locally-polled ones).
+function createSnmpSession(device) {
   const port = device.snmp_port || 161;
-  const session = snmp.createSession(device.ip_address, community, { port });
+  const opts = { port, timeout: 3000, retries: 1 };
+  if (String(device.snmp_version) === '3') {
+    opts.version = snmp.Version3;
+    const user = {
+      name: device.snmp_v3_user || '',
+      level: device.snmp_v3_priv_pass
+        ? snmp.SecurityLevel.authPriv
+        : (device.snmp_v3_auth_pass ? snmp.SecurityLevel.authNoPriv : snmp.SecurityLevel.noAuthNoPriv),
+      authProtocol: snmp.AuthProtocols.sha,
+      authKey: device.snmp_v3_auth_pass || undefined,
+      privProtocol: snmp.PrivProtocols.aes,
+      privKey: device.snmp_v3_priv_pass || undefined,
+    };
+    return snmp.createV3Session(device.ip_address, user, opts);
+  }
+  opts.version = String(device.snmp_version) === '1' ? snmp.Version1 : snmp.Version2c;
+  return snmp.createSession(device.ip_address, device.snmp_community || 'public', opts);
+}
+
+async function doSnmp(device) {
+  const session = createSnmpSession(device);
   const ts = new Date().toISOString();
 
   try {

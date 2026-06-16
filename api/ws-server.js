@@ -73,6 +73,12 @@ function startWsServer(port) {
     });
 
     ws.on('close', async () => {
+      // If the agent already reconnected on a new socket, the map points at that
+      // newer socket — do NOT evict it or mark devices offline for a stale close.
+      if (connectedAgents.get(apiKey) !== ws) {
+        console.log(`[WS] Stale socket closed for ${agent.name}; live connection retained`);
+        return;
+      }
       connectedAgents.delete(apiKey);
       try {
         await sv.query(`UPDATE agents SET status='offline', updated_at=NOW() WHERE id=$1`, [agent.id]);

@@ -32,6 +32,13 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.6.1': [
+    'Fixed the agent install command — it now runs correctly in PowerShell (the previous "irm | iex -ServerUrl ..." form failed with a parameter-binding error)',
+    'Remote agents now poll SNMPv3 devices correctly (auth/priv credentials were previously ignored, so v3 devices reported no metrics)',
+    'A reconnecting agent is no longer wrongly knocked offline when its stale socket closes after the new one connects',
+    'Agent installer aborts if dependency install fails instead of registering a broken service; poll errors are caught and logged',
+    'Stale heartbeats are no longer buffered/replayed, keeping each agent\'s "last seen" time accurate',
+  ],
   '1.6.0': [
     'Wireless Insights tab is now interactive — KPI tiles (Total APs, Offline, Clients, Controllers) deep-link straight into their tab',
     'Click any Top AP, Offline AP, or High-Utilization AP row to open that access point\'s detail drawer',
@@ -1806,7 +1813,7 @@ app.get('/api/netvault/sites', wrap(async (_req, res) => {
 // ══════════════════════════════════════════════════════════════
 // Build the one-line install command shown to the user after creating an agent.
 function installCommand(serverUrl, apiKey) {
-  return `irm ${serverUrl}/api/agent/install.ps1 | iex -ServerUrl "${serverUrl}" -ApiKey "${apiKey}"`;
+  return `& ([scriptblock]::Create((irm ${serverUrl}/api/agent/install.ps1))) -ServerUrl "${serverUrl}" -ApiKey "${apiKey}"`;
 }
 
 // Auto-assign a device to whichever agent owns its site (NULL = local polling).
