@@ -32,6 +32,9 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.27.2': [
+    'Fixed HA detection hiding real HA pairs: a controller reporting an Active/Standby role and a peer is now shown as in-HA even when its SNMP "sync" code maps to Standalone (some platforms, e.g. AOS-8 gateways, report a non-Synced sync value while HA is configured)',
+  ],
   '1.27.1': [
     'Fixed a 500 from controller SNMP Diagnostics (and the OID-walk tool) when a controller uses SNMP v3 with incomplete credentials — session creation is now inside the guarded block, so the diagnostics modal shows the real SNMP error instead of failing',
   ],
@@ -3168,10 +3171,14 @@ app.get('/api/wireless/controllers/overview', wrap(async (_req, res) => {
     if (cpu != null && Number.isFinite(cpu)) { cpuSum += cpu; cpuCount += 1; }
     if (mem != null && Number.isFinite(mem)) { memSum += mem; memCount += 1; }
 
-    if (row.ha_sync_status === 'Synced') haHealthy += 1;
-    if (row.ha_mode != null && row.ha_sync_status != null && row.ha_sync_status !== 'Standalone') haTotal += 1;
-    // Manually-paired controllers count as HA (and are treated as healthy).
-    if (row.ha_peer_controller_id != null) { haTotal += 1; haHealthy += 1; }
+    // A controller is in HA if it reports a role/peer or was manually paired —
+    // not gated on the sync code (some platforms report a non-Synced sync value
+    // while HA is configured).
+    const inHa = row.ha_mode === 'Active' || row.ha_mode === 'Standby'
+      || (row.ha_peer_ip != null && row.ha_peer_ip !== '')
+      || row.ha_peer_controller_id != null;
+    if (inHa) haTotal += 1;
+    if (row.ha_sync_status === 'Synced' || row.ha_peer_controller_id != null) haHealthy += 1;
 
     const licensed = row.licensed_aps == null ? null : Number(row.licensed_aps);
     let perCap = null;

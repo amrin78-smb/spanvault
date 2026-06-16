@@ -644,8 +644,21 @@ function ScoreCard({ label, score, grade }: { label: string; score: number; grad
   );
 }
 
-// HA label derivation from a controller's ha fields.
+// A controller is in an HA relationship when it reports a role (Active/Standby),
+// a peer, or has been manually paired — regardless of the sync code (some
+// platforms report a non-"Synced" sync value even when HA is configured).
+function controllerInHa(c: { ha_mode?: string | null; ha_peer_ip?: string | null; ha_peer_name?: string | null; ha_peer_controller_id?: number | null }): boolean {
+  return c.ha_mode === 'Active' || c.ha_mode === 'Standby'
+    || (c.ha_peer_ip != null && c.ha_peer_ip !== '')
+    || c.ha_peer_controller_id != null;
+}
+
+// HA label derivation from a controller's ha fields. A present role wins over the
+// sync code (a controller reporting Active with a peer is in HA even if its sync
+// value maps to "Standalone").
 function haCellLabel(ha_mode: string | null, ha_sync_status: string | null): { text: string; color: string; dot: boolean } {
+  if (ha_mode === 'Active') return { text: 'Active', color: 'var(--green)', dot: true };
+  if (ha_mode === 'Standby') return { text: 'Standby', color: 'var(--text-muted)', dot: true };
   if (ha_sync_status === 'Standalone') return { text: 'Standalone', color: 'var(--text-muted)', dot: false };
   if (ha_mode == null || ha_sync_status == null) return { text: 'N/A', color: 'var(--text-muted)', dot: false };
   if (ha_mode === 'Active') return { text: 'Active', color: 'var(--green)', dot: true };
@@ -3246,9 +3259,7 @@ function ControllerHealthTable({ controllers }: { controllers: OverviewControlle
 // ── HA / redundancy status table (top-level) ──────────────────
 // A controller has HA configured when ha_sync_status is set and not 'Standalone'.
 function HaStatusTable({ controllers }: { controllers: OverviewController[] }) {
-  const haCtls = controllers.filter(
-    (c) => c.ha_peer_controller_id != null || (c.ha_sync_status != null && c.ha_sync_status !== 'Standalone'),
-  );
+  const haCtls = controllers.filter(controllerInHa);
   if (!haCtls.length) {
     return <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>No HA configured</div>;
   }
@@ -3634,8 +3645,8 @@ function ControllersTab({ onViewEvents }: { onViewEvents?: () => void }) {
     : '—';
 
   // HA STATUS card: aggregate from per-controller HA fields.
-  const haConfigured = ovCtls.filter((c) => c.ha_sync_status != null && c.ha_sync_status !== 'Standalone');
-  const anyStandalone = ovCtls.some((c) => c.ha_sync_status === 'Standalone');
+  const haConfigured = ovCtls.filter(controllerInHa);
+  const anyStandalone = ovCtls.some((c) => !controllerInHa(c) && c.ha_sync_status === 'Standalone');
   let haText = 'N/A';
   let haColor: string | undefined;
   if (haConfigured.length) {
