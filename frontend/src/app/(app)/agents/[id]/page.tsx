@@ -8,7 +8,7 @@ import {
   ErrorBox, Loading, Empty, fmtRel, fmtTime, PageHeader, useRefreshKey,
 } from '@/components/ui';
 import { StatusDot } from '@/components/StatusDot';
-import { AgentStatusPill, AgentInstall, AgentDiscovery, SiteMultiSelect } from '@/components/AgentBits';
+import { AgentStatusPill, AgentInstall, AgentDiscovery, AgentHealth, AgentHealthData, SiteMultiSelect } from '@/components/AgentBits';
 
 type AgentSite = { site_id: number; site_name: string | null };
 type AgentDevice = {
@@ -21,6 +21,7 @@ type AgentDetail = {
   ip_address: string | null; hostname: string | null; disabled?: boolean;
   last_seen_at: string | null; connected_at: string | null; created_at: string;
   sites: AgentSite[]; devices: AgentDevice[]; install_command: string;
+  health?: AgentHealthData; latest_agent_version?: string | null;
 };
 type Site = { id: number; name: string };
 
@@ -192,6 +193,19 @@ export default function AgentDetailPage({ params }: { params: { id: string } }) 
             <Empty message="No sites assigned. Edit sites to assign devices to this agent." />
           )}
         </div>
+      </div>
+
+      {a.version && a.latest_agent_version && a.version !== a.latest_agent_version && (
+        <div style={{ ...CARD_STYLE, borderLeft: '3px solid var(--primary)', marginBottom: 12, fontSize: 13 }}>
+          ⬆ This agent is running v{a.version}; latest is v{a.latest_agent_version}. It updates itself
+          automatically on its next config sync — no action needed.
+        </div>
+      )}
+
+      {/* Row 2.25 — Agent host health, full width */}
+      <div style={{ ...CARD_STYLE, marginBottom: 12 }}>
+        <div style={SECTION_TITLE_STYLE}>Agent Host Health</div>
+        <AgentHealth health={a.health ?? null} online={a.status === 'online'} />
       </div>
 
       {/* Row 2.5 — Zero-touch discovery, full width */}

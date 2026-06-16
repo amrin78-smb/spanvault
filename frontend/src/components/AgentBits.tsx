@@ -68,6 +68,63 @@ export function AgentInstall({ command }: { command: string }) {
   );
 }
 
+// ── Agent host health ──────────────────────────────────────────
+export type AgentHealthData = {
+  cpu_pct: number | null; mem_pct: number | null; disk_pct: number | null;
+  host_uptime_s: number | null; agent_uptime_s: number | null;
+  device_count: number | null; buffer_depth: number | null;
+} | null;
+
+function pctColor(v: number | null): string {
+  if (v == null) return 'var(--text-muted)';
+  if (v >= 90) return 'var(--red)';
+  if (v >= 70) return 'var(--yellow)';
+  return 'var(--green)';
+}
+function fmtDuration(s: number | null): string {
+  if (s == null) return '—';
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+
+export function AgentHealth({ health, online }: { health: AgentHealthData; online: boolean }) {
+  if (!online || !health) {
+    return <p className="sv-muted" style={{ fontSize: 13, margin: 0 }}>
+      {online ? 'Waiting for the agent’s first health report…' : 'Agent offline — no live health data.'}
+    </p>;
+  }
+  const metric = (label: string, v: number | null, unit = '%') => (
+    <div style={{ flex: '1 1 80px', minWidth: 80 }}>
+      <div style={{ fontSize: 20, fontWeight: 800, color: pctColor(unit === '%' ? v : null) }}>
+        {v == null ? '—' : `${v}${unit}`}
+      </div>
+      <div style={{ fontSize: 11, textTransform: 'uppercase', color: 'var(--text-muted)', letterSpacing: '0.04em' }}>{label}</div>
+    </div>
+  );
+  return (
+    <div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16 }}>
+        {metric('Host CPU', health.cpu_pct)}
+        {metric('Host Mem', health.mem_pct)}
+        {metric('Disk', health.disk_pct)}
+        <div style={{ flex: '1 1 90px', minWidth: 90 }}>
+          <div style={{ fontSize: 20, fontWeight: 800, color: (health.buffer_depth || 0) > 0 ? 'var(--yellow)' : 'var(--text-primary)' }}>
+            {health.buffer_depth ?? 0}
+          </div>
+          <div style={{ fontSize: 11, textTransform: 'uppercase', color: 'var(--text-muted)', letterSpacing: '0.04em' }}>Buffered</div>
+        </div>
+      </div>
+      <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 10 }}>
+        Agent up {fmtDuration(health.agent_uptime_s)} · host up {fmtDuration(health.host_uptime_s)} · polling {health.device_count ?? 0} device{health.device_count === 1 ? '' : 's'}
+      </div>
+    </div>
+  );
+}
+
 // ── Zero-touch discovery: scan the agent's LAN + adopt devices ──
 type Discovered = {
   id: number; ip_address: string; sys_name: string | null; sys_descr: string | null;

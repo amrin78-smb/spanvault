@@ -245,6 +245,10 @@ CREATE TABLE IF NOT EXISTS agents (
 -- key is refused at the WebSocket handshake and any live socket is dropped.
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS disabled BOOLEAN NOT NULL DEFAULT FALSE;
 
+-- Latest self-reported host health (cpu/mem/disk %, uptimes, buffer/device counts)
+-- shipped on each heartbeat.
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS health JSONB;
+
 -- Site assignments: every device in an assigned site is polled by this agent.
 CREATE TABLE IF NOT EXISTS agent_sites (
   agent_id  INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,

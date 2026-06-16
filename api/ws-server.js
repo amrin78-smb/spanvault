@@ -14,8 +14,47 @@
 require('dotenv').config({ path: require('path').join(__dirname, '..', '.env.local') });
 
 const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
 const { WebSocketServer } = require('ws');
 const { Pool } = require('pg');
+
+const AGENT_JS = path.join(__dirname, '..', 'agent', 'agent.js');
+
+// Fingerprint + version of the canonical agent.js, advertised to agents so they
+// can self-update. Cached and refreshed when the file's mtime changes.
+let _agentMeta = null;
+function agentMeta() {
+  try {
+    const stat = fs.statSync(AGENT_JS);
+    if (_agentMeta && _agentMeta.mtimeMs === stat.mtimeMs) return _agentMeta;
+    const buf = fs.readFileSync(AGENT_JS);
+    const txt = buf.toString('utf8');
+    const m = txt.match(/const VERSION = '([^']+)'/);
+    _agentMeta = {
+      mtimeMs: stat.mtimeMs,
+      sha: crypto.createHash('sha256').update(buf).digest('hex'),
+      version: m ? m[1] : null,
+    };
+  } catch (_e) {
+    _agentMeta = { mtimeMs: 0, sha: '', version: null };
+  }
+  return _agentMeta;
+}
+
+// agents.health is a later migration — probe once so heartbeats don't error on
+// an un-migrated DB.
+let _healthCol = null;
+async function hasHealthCol() {
+  if (_healthCol !== null) return _healthCol;
+  try {
+    const r = await sv.query(
+      `SELECT EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_name='agents' AND column_name='health') AS x`);
+    _healthCol = !!r.rows[0].x;
+  } catch (_e) { _healthCol = false; }
+  return _healthCol;
+}
 
 // SpanVault DB (read/write) — own pool so this module is self-contained.
 const sv = new Pool({
@@ -168,7 +207,11 @@ async function pushConfigToAgent(ws, agentId) {
     const settingsMap = {};
     for (const r of settings.rows) settingsMap[r.key] = r.value;
 
-    ws.send(JSON.stringify({ type: 'config', devices: devices.rows, settings: settingsMap }));
+    const meta = agentMeta();
+    ws.send(JSON.stringify({
+      type: 'config', devices: devices.rows, settings: settingsMap,
+      agent_sha: meta.sha, agent_version: meta.version,
+    }));
   } catch (err) {
     console.error('[WS] pushConfigToAgent error:', err.message);
   }
@@ -198,11 +241,20 @@ async function handleAgentMessage(agent, msg) {
   if (!msg || typeof msg !== 'object') return;
   switch (msg.type) {
     case 'heartbeat':
-      await sv.query(
-        `UPDATE agents SET last_seen_at=NOW(), status='online',
-           version=$2, hostname=$3, updated_at=NOW() WHERE id=$1`,
-        [agent.id, msg.version || null, msg.hostname || null]
-      );
+      if (await hasHealthCol()) {
+        await sv.query(
+          `UPDATE agents SET last_seen_at=NOW(), status='online',
+             version=$2, hostname=$3, health=$4, updated_at=NOW() WHERE id=$1`,
+          [agent.id, msg.version || null, msg.hostname || null,
+           msg.health ? JSON.stringify(msg.health) : null]
+        );
+      } else {
+        await sv.query(
+          `UPDATE agents SET last_seen_at=NOW(), status='online',
+             version=$2, hostname=$3, updated_at=NOW() WHERE id=$1`,
+          [agent.id, msg.version || null, msg.hostname || null]
+        );
+      }
       break;
 
     case 'ping_result':

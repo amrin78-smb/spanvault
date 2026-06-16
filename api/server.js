@@ -32,6 +32,12 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.10.0': [
+    'Agents now self-report host health on every heartbeat (CPU, memory, disk, uptimes, buffered-result depth, device count) — shown in a new "Agent Host Health" panel',
+    'Agent auto-update: the server fingerprints the canonical agent.js and agents that differ pull the new build, verify it, and restart themselves — no manual redeploy across the fleet',
+    'Agent detail page flags when an agent is running an older build (it self-heals on the next config sync)',
+    'Agent runtime bumped to v1.1.0 (health reporting + self-update)',
+  ],
   '1.9.0': [
     'Zero-touch discovery: an agent can sweep its own local network (ICMP + SNMP) and report every device it finds — drop an agent at a site and it discovers everything, no manual entry',
     'New "Discover Devices" panel on the agent detail page: click Scan, then one-click adopt found devices straight into monitoring (assigned to that agent)',
@@ -1834,18 +1840,34 @@ function installCommand(serverUrl, apiKey) {
   return `& ([scriptblock]::Create((irm ${serverUrl}/api/agent/install.ps1))) -ServerUrl "${serverUrl}" -ApiKey "${apiKey}"`;
 }
 
-// The agents.disabled column is a later migration — probe once so the list/detail
-// endpoints work before and after schema.sql is re-applied (mirrors alertCaps).
-let agentsHasDisabled = null;
-async function agentDisabledCol() {
-  if (agentsHasDisabled !== null) return agentsHasDisabled;
+// The agents.disabled / agents.health columns are later migrations — probe once
+// so the list/detail endpoints work before and after schema.sql is re-applied.
+async function agentColExists(col) {
+  agentColExists._cache = agentColExists._cache || {};
+  if (agentColExists._cache[col] !== undefined) return agentColExists._cache[col];
+  let exists = false;
   try {
     const r = await sv.query(
       `SELECT EXISTS (SELECT 1 FROM information_schema.columns
-                       WHERE table_name='agents' AND column_name='disabled') AS x`);
-    agentsHasDisabled = !!r.rows[0].x;
-  } catch (_e) { agentsHasDisabled = false; }
-  return agentsHasDisabled;
+                       WHERE table_name='agents' AND column_name=$1) AS x`, [col]);
+    exists = !!r.rows[0].x;
+  } catch (_e) { exists = false; }
+  agentColExists._cache[col] = exists;
+  return exists;
+}
+const agentDisabledCol = () => agentColExists('disabled');
+
+// Latest canonical agent.js version (parsed from the file the server serves), so
+// the UI can flag agents running an older build (they self-update on next config).
+let _latestAgentVersion;
+function latestAgentVersion() {
+  if (_latestAgentVersion !== undefined) return _latestAgentVersion;
+  try {
+    const txt = require('fs').readFileSync(path.join(__dirname, '..', 'agent', 'agent.js'), 'utf8');
+    const m = txt.match(/const VERSION = '([^']+)'/);
+    _latestAgentVersion = m ? m[1] : null;
+  } catch (_e) { _latestAgentVersion = null; }
+  return _latestAgentVersion;
 }
 
 // Auto-assign a device to whichever agent owns its site (NULL = local polling).
@@ -1864,9 +1886,10 @@ async function assignDeviceAgent(deviceId, siteId) {
 // All agents with device counts + assigned sites.
 app.get('/api/agents', wrap(async (_req, res) => {
   const disCol = (await agentDisabledCol()) ? 'a.disabled' : 'FALSE AS disabled';
+  const healthCol = (await agentColExists('health')) ? 'a.health' : 'NULL::jsonb AS health';
   const r = await sv.query(`
     SELECT a.id, a.name, a.status, a.version, a.ip_address, a.hostname,
-           a.last_seen_at, a.connected_at, a.created_at, ${disCol},
+           a.last_seen_at, a.connected_at, a.created_at, ${disCol}, ${healthCol},
            (SELECT COUNT(*)::int FROM monitored_devices d WHERE d.agent_id = a.id) AS device_count,
            COALESCE((
              SELECT json_agg(json_build_object('site_id', s.site_id, 'site_name', s.site_name) ORDER BY s.site_name)
@@ -1875,7 +1898,8 @@ app.get('/api/agents', wrap(async (_req, res) => {
     FROM agents a
     ORDER BY a.name
   `);
-  res.json(r.rows);
+  const latest = latestAgentVersion();
+  res.json(r.rows.map((a) => ({ ...a, latest_agent_version: latest })));
 }));
 
 // Create an agent: generate api_key, assign sites, auto-assign existing devices.
@@ -1945,6 +1969,7 @@ app.get('/api/agents/:id', wrap(async (req, res) => {
     sites: sites.rows,
     devices: devices.rows,
     install_command: installCommand(serverUrl, a.rows[0].api_key),
+    latest_agent_version: latestAgentVersion(),
   });
 }));
 

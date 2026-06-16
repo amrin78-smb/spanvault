@@ -16,10 +16,13 @@ const snmp = require('net-snmp');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const http = require('http');
+const https = require('https');
+const crypto = require('crypto');
 
 const CONFIG_PATH = path.join(__dirname, 'config.json');
 const BUFFER_PATH = path.join(__dirname, 'buffer.json');
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
 const MAX_BUFFER = 500;
 
 // ── Config ────────────────────────────────────────────────────
@@ -109,8 +112,57 @@ function scheduleReconnect(delay) {
   reconnectTimeout = setTimeout(connect, delay);
 }
 
+// ── Agent host health ─────────────────────────────────────────
+// Sampled and shipped on each heartbeat so operators can see the agent box's own
+// health (not just the devices it polls) and spot a struggling collector early.
+let prevCpu = cpuSample();
+let lastDiskPct = null;
+
+function cpuSample() {
+  let idle = 0, total = 0;
+  for (const c of os.cpus() || []) {
+    for (const k of Object.keys(c.times)) total += c.times[k];
+    idle += c.times.idle;
+  }
+  return { idle, total };
+}
+function cpuPct() {
+  const cur = cpuSample();
+  const dIdle = cur.idle - prevCpu.idle;
+  const dTotal = cur.total - prevCpu.total;
+  prevCpu = cur;
+  if (dTotal <= 0) return null;
+  return Math.round((1 - dIdle / dTotal) * 1000) / 10;
+}
+function sampleDisk() {
+  try {
+    if (typeof fs.statfs !== 'function') return; // Node < 18.15
+    fs.statfs(__dirname, (err, st) => {
+      if (err || !st || !st.blocks) return;
+      const total = st.blocks * st.bsize;
+      const free = st.bfree * st.bsize;
+      lastDiskPct = total ? Math.round(((total - free) / total) * 1000) / 10 : null;
+    });
+  } catch (_e) { /* ignore */ }
+}
+setInterval(sampleDisk, 60000);
+sampleDisk();
+
+function buildHealth() {
+  const totalMem = os.totalmem();
+  return {
+    cpu_pct: cpuPct(),
+    mem_pct: totalMem ? Math.round((1 - os.freemem() / totalMem) * 1000) / 10 : null,
+    disk_pct: lastDiskPct,
+    host_uptime_s: Math.round(os.uptime()),
+    agent_uptime_s: Math.round(process.uptime()),
+    device_count: devices.length,
+    buffer_depth: buffer.length,
+  };
+}
+
 function sendHeartbeat() {
-  send({ type: 'heartbeat', version: VERSION, hostname: os.hostname() });
+  send({ type: 'heartbeat', version: VERSION, hostname: os.hostname(), health: buildHealth() });
 }
 setInterval(sendHeartbeat, 30000);
 
@@ -122,6 +174,52 @@ function applyConfig(msg) {
   for (const t of pollTimers.values()) clearInterval(t);
   pollTimers.clear();
   for (const device of devices) schedulePoll(device);
+  // The server advertises the canonical agent.js fingerprint with every config.
+  if (msg.agent_sha) maybeSelfUpdate(msg.agent_sha);
+}
+
+// ── Self-update ───────────────────────────────────────────────
+// The server sends the sha256 of its canonical agent.js. If ours differs, pull
+// the new file, verify it hashes to exactly what the server advertised, overwrite
+// ourselves, and exit so NSSM restarts us on the new code. No version math, no
+// update loops (after restart our hash matches and we no-op).
+let updating = false;
+
+function ownFileSha() {
+  try { return crypto.createHash('sha256').update(fs.readFileSync(__filename)).digest('hex'); }
+  catch (_e) { return ''; }
+}
+function httpGetBuffer(url) {
+  return new Promise((resolve, reject) => {
+    const lib = /^https/i.test(url) ? https : http;
+    lib.get(url, (res) => {
+      if (res.statusCode !== 200) { res.resume(); return reject(new Error(`HTTP ${res.statusCode}`)); }
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => resolve(Buffer.concat(chunks)));
+    }).on('error', reject);
+  });
+}
+async function maybeSelfUpdate(serverSha) {
+  if (!serverSha || updating) return;
+  if (ownFileSha() === serverSha) return;
+  updating = true;
+  try {
+    console.log('[Agent] New agent version advertised — downloading update...');
+    const body = await httpGetBuffer(`${serverUrl}/api/agent/agent.js`);
+    const sha = crypto.createHash('sha256').update(body).digest('hex');
+    if (sha !== serverSha) {
+      console.log('[Agent] Downloaded agent.js does not match advertised fingerprint — skipping update');
+      updating = false;
+      return;
+    }
+    fs.writeFileSync(__filename, body);
+    console.log('[Agent] Updated agent.js — exiting so the service restarts on the new version');
+    process.exit(0);
+  } catch (e) {
+    console.error('[Agent] Self-update failed:', e.message);
+    updating = false;
+  }
 }
 
 function schedulePoll(device) {
