@@ -101,7 +101,7 @@ if (Test-Path "$InstallDir\node_modules\ws") {
 
 # -- Ensure NSSM is available (auto-download if missing) ------------------------
 function Resolve-Nssm {
-  # 1) A sibling NocVault app may already bundle it.
+  # 1) A sibling NocVault app may already bundle it (only if agent shares the box).
   $shared = "C:\Apps\NetVault\nssm\nssm-2.24\win64\nssm.exe"
   if (Test-Path $shared) { return $shared }
   # 2) On PATH?
@@ -110,8 +110,21 @@ function Resolve-Nssm {
   # 3) Previously downloaded by this installer?
   $local = "$InstallDir\nssm\nssm.exe"
   if (Test-Path $local) { return $local }
-  # 4) Download + extract a fresh copy.
-  Write-Step "NSSM not found - downloading..."
+
+  New-Item -ItemType Directory -Force -Path "$InstallDir\nssm" | Out-Null
+
+  # 4) Preferred: fetch nssm.exe straight from the SpanVault server. It is always
+  #    reachable (the preflight just confirmed it) and needs no public internet.
+  try {
+    Write-Step "Fetching NSSM from the SpanVault server..."
+    Invoke-WebRequest -Uri "$ServerUrl/api/agent/nssm.exe" -OutFile $local -UseBasicParsing
+    if ((Test-Path $local) -and ((Get-Item $local).Length -gt 0)) { Write-Ok "  NSSM ready."; return $local }
+  } catch {
+    Write-Host "  Server copy unavailable ($($_.Exception.Message)); trying nssm.cc..." -ForegroundColor Gray
+  }
+
+  # 5) Last resort: the public nssm.cc zip (may be unreachable in some networks).
+  Write-Step "Downloading NSSM from nssm.cc..."
   $zip = "$env:TEMP\nssm.zip"
   $ex  = "$env:TEMP\nssm-extract"
   Invoke-WebRequest -Uri $NssmZipUrl -OutFile $zip -UseBasicParsing
@@ -121,7 +134,6 @@ function Resolve-Nssm {
   $src  = Get-ChildItem -Path $ex -Recurse -Filter nssm.exe |
             Where-Object { $_.FullName -match "\\$arch\\" } | Select-Object -First 1
   if (-not $src) { throw "Could not locate nssm.exe in the downloaded archive." }
-  New-Item -ItemType Directory -Force -Path "$InstallDir\nssm" | Out-Null
   Copy-Item $src.FullName -Destination $local -Force
   Write-Ok "  NSSM ready."
   return $local

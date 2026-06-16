@@ -32,6 +32,10 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.11.1': [
+    'Agent installer now fetches NSSM from the SpanVault server itself instead of the public nssm.cc, which was returning 503 and blocking installs on hosts without internet access to it',
+    'Server serves nssm.exe (from NetVault\'s bundled copy or SV_NSSM_PATH); nssm.cc is now only a last-resort fallback',
+  ],
   '1.11.0': [
     'Remote agent management: rename, restart, and pull a live log tail straight from the agent detail page — no RDP into the remote server',
     'Bulk actions on the Agents list: multi-select to disable, enable, or delete several agents at once',
@@ -355,6 +359,21 @@ app.get('/api/agent/agent.js', (req, res) => {
 });
 app.get('/api/agent/package.json', (req, res) => {
   res.sendFile(path.join(__dirname, '..', 'agent', 'package.json'));
+});
+// Serve NSSM to the installer from the SpanVault server itself, so a remote agent
+// host never needs to reach the public nssm.cc (which can be down/blocked). The
+// binary is taken from a bundled copy or a configured path (NetVault ships one on
+// the same server). 404 if unavailable — the installer then falls back to nssm.cc.
+app.get('/api/agent/nssm.exe', (req, res) => {
+  const fs = require('fs');
+  const candidates = [
+    process.env.SV_NSSM_PATH,
+    path.join(__dirname, '..', 'agent', 'nssm.exe'),
+    'C:\\Apps\\NetVault\\nssm\\nssm-2.24\\win64\\nssm.exe',
+  ].filter(Boolean);
+  const found = candidates.find((p) => { try { return fs.existsSync(p); } catch (_e) { return false; } });
+  if (!found) return res.status(404).send('nssm not available on server');
+  res.sendFile(found);
 });
 
 // ══════════════════════════════════════════════════════════════
