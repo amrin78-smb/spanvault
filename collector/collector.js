@@ -1547,6 +1547,53 @@ async function evaluateAnomalyAlerts() {
   }
 }
 
+// ── Data retention / rollups ──────────────────────────────────
+// Roll raw ping samples up to daily availability_summary, then purge raw samples
+// (ping/snmp/service) and old rollups/audit beyond configurable windows so the
+// time-series tables don't grow without bound. 0 days = keep forever.
+async function retentionTick() {
+  try {
+    const rawDays = settingInt('retention_raw_days', 14);
+    const rollupDays = settingInt('retention_rollup_days', 730);
+    const auditDays = settingInt('retention_audit_days', 365);
+
+    // 1. Daily availability rollup from ping_results (idempotent upsert).
+    await sv.query(`
+      INSERT INTO availability_summary
+        (device_id, date, uptime_pct, avg_response_ms, min_response_ms, max_response_ms, total_checks, failed_checks)
+      SELECT device_id, ts::date,
+             100.0 * SUM(CASE WHEN status <> 'down' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0),
+             AVG(response_ms) FILTER (WHERE status <> 'down'),
+             MIN(response_ms) FILTER (WHERE status <> 'down'),
+             MAX(response_ms) FILTER (WHERE status <> 'down'),
+             COUNT(*), SUM(CASE WHEN status = 'down' THEN 1 ELSE 0 END)
+        FROM ping_results
+       WHERE ts >= NOW() - make_interval(days => $1)
+       GROUP BY device_id, ts::date
+      ON CONFLICT (device_id, date) DO UPDATE SET
+        uptime_pct = EXCLUDED.uptime_pct, avg_response_ms = EXCLUDED.avg_response_ms,
+        min_response_ms = EXCLUDED.min_response_ms, max_response_ms = EXCLUDED.max_response_ms,
+        total_checks = EXCLUDED.total_checks, failed_checks = EXCLUDED.failed_checks
+    `, [rawDays > 0 ? rawDays + 1 : 3650]);
+
+    // 2. Purge raw samples older than the retention window.
+    if (rawDays > 0) {
+      const p1 = await sv.query(`DELETE FROM ping_results WHERE ts < NOW() - make_interval(days => $1)`, [rawDays]);
+      const p2 = await sv.query(`DELETE FROM snmp_results WHERE ts < NOW() - make_interval(days => $1)`, [rawDays]);
+      try { await sv.query(`DELETE FROM service_check_results WHERE ts < NOW() - make_interval(days => $1)`, [rawDays]); } catch (_e) { /* table optional */ }
+      log(`[retention] purged ${p1.rowCount} ping + ${p2.rowCount} snmp sample(s) older than ${rawDays}d`);
+    }
+
+    // 3. Purge old rollups + audit entries.
+    if (rollupDays > 0) await sv.query(`DELETE FROM availability_summary WHERE date < CURRENT_DATE - $1::int`, [rollupDays]);
+    if (auditDays > 0) {
+      try { await sv.query(`DELETE FROM audit_log WHERE ts < NOW() - make_interval(days => $1)`, [auditDays]); } catch (_e) { /* table optional */ }
+    }
+  } catch (err) {
+    console.error('[retention] tick failed:', err.message);
+  }
+}
+
 // ══════════════════════════════════════════════════════════════
 // Schedulers
 // ══════════════════════════════════════════════════════════════
@@ -1681,6 +1728,10 @@ async function main() {
 
   // Baseline/anomaly → alert sweep — every minute (opt-in).
   setInterval(evaluateAnomalyAlerts, 60 * 1000);
+
+  // Data retention / rollup — shortly after startup, then every 12 hours.
+  setTimeout(retentionTick, 90 * 1000);
+  setInterval(retentionTick, 12 * 60 * 60 * 1000);
 
   // Agentless service checks (HTTP/TCP/SSL/DNS). The due-check inside honors
   // each check's interval_seconds; alert evaluation runs for central + agent

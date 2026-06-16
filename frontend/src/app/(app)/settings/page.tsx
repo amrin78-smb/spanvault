@@ -171,6 +171,27 @@ function GeneralSettings({ settings, form, set, save, saving, saved, saveErr }: 
         </div>
       </div>
 
+      <div className="sv-panel">
+        <h2>Data Retention</h2>
+        <p className="sv-muted" style={{ fontSize: 13, marginTop: -4 }}>
+          Raw samples are rolled up to daily summaries, then purged. 0 = keep forever.
+        </p>
+        <div className="sv-form-grid">
+          <label className="sv-field">Raw samples (days)
+            <input className="sv-input" type="number" min={0} placeholder="14"
+              value={form.retention_raw_days ?? ''} onChange={(e) => set('retention_raw_days', e.target.value)} />
+          </label>
+          <label className="sv-field">Daily rollups (days)
+            <input className="sv-input" type="number" min={0} placeholder="730"
+              value={form.retention_rollup_days ?? ''} onChange={(e) => set('retention_rollup_days', e.target.value)} />
+          </label>
+          <label className="sv-field">Audit log (days)
+            <input className="sv-input" type="number" min={0} placeholder="365"
+              value={form.retention_audit_days ?? ''} onChange={(e) => set('retention_audit_days', e.target.value)} />
+          </label>
+        </div>
+      </div>
+
       <SaveBar save={save} saving={saving} saved={saved} />
     </div>
   );

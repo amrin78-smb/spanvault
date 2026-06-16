@@ -32,6 +32,11 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.20.0': [
+    'Data retention & rollups — raw ping/SNMP samples are now rolled up to daily availability summaries and purged beyond a configurable window (default 14 days), so the database no longer grows unbounded',
+    'Configurable retention for raw samples, daily rollups, and the audit log (Settings → General → Data Retention)',
+    'Fixes the long-range SLA/uptime tiles that depended on the previously-unpopulated daily availability table',
+  ],
   '1.19.0': [
     'Audit logging — every successful change (devices, settings, alert rules, agents, acknowledgements, etc.) is recorded with the verified user, timestamp, action, and source IP (secrets redacted)',
     'New admin-only Audit Log tab under Settings',
