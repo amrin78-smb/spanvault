@@ -869,14 +869,18 @@ async function pollClients(pool, controller, apList) {
        WHERE mac_address = $1 AND controller_id = $2 AND event_type = 'roam' AND ts >= $3`,
       [client.mac_address, controller.id, oneHourAgo]);
     const roamCount = rc.rows[0] ? rc.rows[0].cnt : 0;
-    const isProblem = (client.rssi_dbm !== null && client.rssi_dbm !== undefined && client.rssi_dbm < -75) || roamCount > 5;
+    const hasRssi = client.rssi_dbm !== null && client.rssi_dbm !== undefined;
+    const isProblem = (hasRssi && client.rssi_dbm < -75) || roamCount > 5;
+    // Sticky: poor signal but NOT roaming away (clings to a far AP) — the opposite
+    // failure mode from excessive roaming, so it's tracked separately.
+    const isSticky = hasRssi && client.rssi_dbm <= -72 && roamCount <= 1;
 
     await pool.query(`
       INSERT INTO wireless_clients
         (mac_address, ip_address, hostname, controller_id, ap_id, ap_name, ssid_name, band, channel,
          rssi_dbm, tx_rate_mbps, rx_rate_mbps, connected_since, last_seen_at, auth_type,
-         is_problem, roaming_count, vendor)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+         is_problem, roaming_count, vendor, is_sticky)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
       ON CONFLICT (controller_id, mac_address) DO UPDATE SET
         ip_address    = EXCLUDED.ip_address,
         hostname      = COALESCE(EXCLUDED.hostname, wireless_clients.hostname),
@@ -892,13 +896,14 @@ async function pollClients(pool, controller, apList) {
         last_seen_at  = EXCLUDED.last_seen_at,
         auth_type     = EXCLUDED.auth_type,
         is_problem    = EXCLUDED.is_problem,
-        roaming_count = EXCLUDED.roaming_count
+        roaming_count = EXCLUDED.roaming_count,
+        is_sticky     = EXCLUDED.is_sticky
     `, [
       client.mac_address, client.ip_address || null, client.hostname || null, controller.id,
       client.ap_id || null, client.ap_name || null, client.ssid_name || null, client.band || null,
       intOrNull(client.channel), intOrNull(client.rssi_dbm),
       numOrNull(client.tx_rate_mbps), numOrNull(client.rx_rate_mbps), client.connected_since || null,
-      now, client.auth_type || null, isProblem, roamCount, controller.vendor,
+      now, client.auth_type || null, isProblem, roamCount, controller.vendor, isSticky,
     ]);
   }
 

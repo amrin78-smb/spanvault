@@ -830,6 +830,7 @@ CREATE TABLE IF NOT EXISTS wireless_clients (
   last_seen_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   auth_type        TEXT,
   is_problem       BOOLEAN DEFAULT FALSE,   -- TRUE if rssi < -75 or roaming_count > 5
+  is_sticky        BOOLEAN DEFAULT FALSE,   -- poor signal but NOT roaming (clings to a far AP)
   roaming_count    INTEGER DEFAULT 0,       -- times roamed in last hour
   vendor           TEXT NOT NULL            -- aruba/cisco/ruckus/mikrotik/hpe
 );
@@ -839,6 +840,7 @@ CREATE INDEX IF NOT EXISTS idx_wclient_ap ON wireless_clients(ap_id);
 CREATE INDEX IF NOT EXISTS idx_wclient_rssi ON wireless_clients(rssi_dbm);
 CREATE INDEX IF NOT EXISTS idx_wclient_problem
   ON wireless_clients(is_problem) WHERE is_problem = TRUE;
+ALTER TABLE wireless_clients ADD COLUMN IF NOT EXISTS is_sticky BOOLEAN DEFAULT FALSE;
 
 -- Roaming and auth event history (join/roam/leave/auth_fail/low_signal).
 -- Purged after 7 days by the collector.

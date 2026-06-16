@@ -280,6 +280,7 @@ interface WirelessClient {
   last_seen_at: string | null;
   auth_type: string | null;
   is_problem: boolean;
+  is_sticky?: boolean;
   roaming_count: number;
   vendor: string;
   signal_quality: string;
@@ -2400,6 +2401,14 @@ function IntelligenceTab({ onViewApClients }: { onViewApClients?: (apId: number)
 // ── Client status badge (top-level component) ─────────────────
 function ClientStatusBadge({ client }: { client: WirelessClient }) {
   const rssi = client.rssi_dbm;
+  if (client.is_sticky) {
+    return (
+      <span className="sv-badge" style={{ color: 'var(--red)', borderColor: 'var(--red)' }}
+        title="Poor signal but not roaming — clinging to a distant AP">
+        📌 Sticky
+      </span>
+    );
+  }
   if (rssi != null && rssi < -75) {
     return (
       <span className="sv-badge" style={{ color: 'var(--red)', borderColor: 'var(--red)' }}>

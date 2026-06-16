@@ -32,6 +32,9 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.23.0': [
+    'Sticky-client detection — clients with poor signal that won\'t roam off a distant AP are now flagged distinctly from frequent roamers (a "Sticky" badge in the Clients view)',
+  ],
   '1.22.0': [
     'AP detail drawer now charts RF history: noise floor and retry rate over time, alongside the existing client-count and channel-utilization trends',
     'Retry rate is now historized so its trend accumulates going forward',
