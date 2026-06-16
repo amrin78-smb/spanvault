@@ -32,6 +32,9 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.25.2': [
+    'The API now auto-applies scripts/schema.sql on startup (idempotent, via the DB pool with an advisory lock) — so deployed code and DB schema always stay in sync without depending on psql or the installer step. This prevents the "new feature 500s because a column wasn\'t migrated" class of issue',
+  ],
   '1.25.1': [
     'Fixed a 500 on the Wireless Clients tab (blank KPI cards + sticky filter error) when the is_sticky / retry_rate columns had not been migrated yet — these queries now degrade gracefully like the rest of the app',
   ],
@@ -6191,8 +6194,38 @@ setInterval(() => getLicense(true), 24 * 60 * 60 * 1000);
 checkForUpdates();
 setInterval(checkForUpdates, 24 * 60 * 60 * 1000);
 
-app.listen(PORT, '127.0.0.1', () => {
+// Apply scripts/schema.sql through the existing pg pool on startup. The schema is
+// fully idempotent (CREATE ... IF NOT EXISTS / ADD COLUMN IF NOT EXISTS), so this
+// is safe to run every boot and keeps the DB in sync with the deployed code
+// without depending on psql or the installer's (best-effort) schema step.
+async function applySchema() {
+  try {
+    const sqlPath = path.join(__dirname, '..', 'scripts', 'schema.sql');
+    const sql = require('fs').readFileSync(sqlPath, 'utf8');
+    // Serialize across processes (e.g. collector) so concurrent identical DDL
+    // can't race; advisory lock auto-releases when the session ends.
+    const client = await sv.connect();
+    try {
+      await client.query('SELECT pg_advisory_lock(8723451)');
+      await client.query(sql);
+      console.log('[schema] scripts/schema.sql applied (idempotent)');
+    } finally {
+      try { await client.query('SELECT pg_advisory_unlock(8723451)'); } catch (_e) { /* ignore */ }
+      client.release();
+    }
+  } catch (err) {
+    console.error('[schema] auto-apply failed (continuing — apply scripts/schema.sql manually):', err.message);
+  }
+}
+
+app.listen(PORT, '127.0.0.1', async () => {
   console.log(`SpanVault API listening on 127.0.0.1:${PORT}`);
+  // Ensure the DB schema matches this build before anything else starts.
+  await applySchema();
+  // Reset cached column-capability probes so they re-evaluate post-migration.
+  alertCaps = null;
+  _wcStickyCol = null;
+  if (agentColExists._cache) agentColExists._cache = {};
   // Start the agent WebSocket server (bound to all interfaces so remote agents
   // can reach it; the API itself stays loopback-only).
   const wsPort = parseInt(process.env.SV_WS_PORT || '3010', 10);
