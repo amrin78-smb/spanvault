@@ -32,6 +32,9 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.25.1': [
+    'Fixed a 500 on the Wireless Clients tab (blank KPI cards + sticky filter error) when the is_sticky / retry_rate columns had not been migrated yet — these queries now degrade gracefully like the rest of the app',
+  ],
   '1.25.0': [
     'Agent discovery now lets you specify the subnets to scan (CIDR like 10.0.0.0/24, or comma-separated) and the SNMP communities to try — instead of only the agent\'s local /24 with "public"',
     'Subnet sweeps are bounded (max /20, ~4096 hosts) to prevent accidental huge scans. Agent runtime -> v1.3.0',
@@ -3582,6 +3585,17 @@ app.get('/api/wireless/history/:ap_id', wrap(async (req, res) => {
   const id = parseInt(req.params.ap_id, 10);
   const interval = rangeToInterval(req.query.range);
   const bucket = rangeToBucket(req.query.range);
+  // retry_rate columns are a later migration — degrade to NULL if absent.
+  let retrySel = `NULL::numeric AS retry_rate_2g, NULL::numeric AS retry_rate_5g`;
+  try {
+    const rc = await sv.query(
+      `SELECT EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_name='wireless_history' AND column_name='retry_rate_2g') AS x`);
+    if (rc.rows[0] && rc.rows[0].x) {
+      retrySel = `ROUND(AVG(retry_rate_2g)::numeric, 1) AS retry_rate_2g,
+                  ROUND(AVG(retry_rate_5g)::numeric, 1) AS retry_rate_5g`;
+    }
+  } catch (_e) { /* keep NULL fallback */ }
   const r = await sv.query(`
     SELECT date_bin($1::interval, ts, TIMESTAMPTZ '2000-01-01') AS bucket,
            ROUND(AVG(clients_total))::int AS clients_total,
@@ -3591,8 +3605,7 @@ app.get('/api/wireless/history/:ap_id', wrap(async (req, res) => {
            ROUND(AVG(radio_5g_util)::numeric, 1) AS radio_5g_util,
            ROUND(AVG(noise_floor_2g)::numeric, 0) AS noise_floor_2g,
            ROUND(AVG(noise_floor_5g)::numeric, 0) AS noise_floor_5g,
-           ROUND(AVG(retry_rate_2g)::numeric, 1) AS retry_rate_2g,
-           ROUND(AVG(retry_rate_5g)::numeric, 1) AS retry_rate_5g
+           ${retrySel}
     FROM wireless_history
     WHERE ap_id = $2 AND ts >= NOW() - $3::interval
     GROUP BY bucket ORDER BY bucket
@@ -3949,6 +3962,20 @@ app.get('/api/wireless/intelligence/:controller_id', wrap(async (req, res) => {
 // Route order matters: register the literal /clients and /clients/summary
 // (and /aps/:id/clients) routes BEFORE the /clients/:mac param route so
 // Express doesn't match "summary" as a mac address.
+// is_sticky on wireless_clients is a later migration — probe once so the clients
+// list + summary don't 500 before scripts/schema.sql is re-applied.
+let _wcStickyCol = null;
+async function wcHasSticky() {
+  if (_wcStickyCol !== null) return _wcStickyCol;
+  try {
+    const r = await sv.query(
+      `SELECT EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_name='wireless_clients' AND column_name='is_sticky') AS x`);
+    _wcStickyCol = !!r.rows[0].x;
+  } catch (_e) { _wcStickyCol = false; }
+  return _wcStickyCol;
+}
+
 app.get('/api/wireless/clients', wrap(async (req, res) => {
   const where = [];
   const params = [];
@@ -3956,7 +3983,10 @@ app.get('/api/wireless/clients', wrap(async (req, res) => {
   if (req.query.ap_id) { params.push(parseInt(req.query.ap_id, 10)); where.push(`cl.ap_id = $${params.length}`); }
   if (req.query.controller_id) { params.push(parseInt(req.query.controller_id, 10)); where.push(`cl.controller_id = $${params.length}`); }
   if (String(req.query.problem) === 'true') where.push('cl.is_problem = TRUE');
-  if (String(req.query.sticky) === 'true') where.push('cl.is_sticky = TRUE');
+  if (String(req.query.sticky) === 'true') {
+    if (await wcHasSticky()) where.push('cl.is_sticky = TRUE');
+    else return res.json([]); // column not migrated yet — no sticky data to filter
+  }
   const sc = siteFilterClause(getSiteFilter(req), params, 'c.site_id');
   if (sc) where.push(sc);
   const limit = Math.min(500, Math.max(1, parseInt(req.query.limit, 10) || 50));
@@ -3974,8 +4004,9 @@ app.get('/api/wireless/clients', wrap(async (req, res) => {
 app.get('/api/wireless/clients/summary', wrap(async (req, res) => {
   const params = [];
   const sc = siteFilterClause(getSiteFilter(req), params, 'c.site_id');
+  const stickySel = (await wcHasSticky()) ? 'cl.is_sticky' : 'FALSE AS is_sticky';
   const rows = await sv.query(`
-    SELECT cl.band, cl.rssi_dbm, cl.is_problem, cl.is_sticky, cl.roaming_count, cl.ap_name,
+    SELECT cl.band, cl.rssi_dbm, cl.is_problem, ${stickySel}, cl.roaming_count, cl.ap_name,
            cl.controller_id, c.name AS controller_name
     FROM wireless_clients cl JOIN wireless_controllers c ON c.id = cl.controller_id
     ${sc ? 'WHERE ' + sc : ''}
