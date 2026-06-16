@@ -32,6 +32,10 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.18.1': [
+    'Security: write-side RBAC enforced server-side — read-only (viewer) roles can no longer create/delete devices or change settings, and configuration changes (settings, alert rules, agents, controllers, service checks) now require an admin role',
+    'Alert acknowledgements are attributed to the verified signed-in user instead of a client-supplied value (no longer forgeable)',
+  ],
   '1.18.0': [
     'Baseline anomaly alerting — SpanVault can now alert when latency, CPU, or memory deviates sharply from a device\'s learned normal (z-score), not just on fixed thresholds (opt-in: Settings → Email Alerts)',
     'Anomaly detection expanded beyond latency to CPU and memory; anomaly alerts auto-resolve when the metric returns to normal',
@@ -292,6 +296,34 @@ async function enforceLicense(req, res, next) {
 }
 
 app.use(enforceLicense);
+
+// ── Write-side RBAC ───────────────────────────────────────────
+// Roles arrive via the proxy-set x-user-role header (verified token, not
+// spoofable). viewer = read-only (blocked from all mutations); site_admin can do
+// operational writes (devices, acks, maps, reports); admin/super_admin can also
+// change configuration/infrastructure (settings, rules, agents, controllers, …).
+const ROLE_RANK = { viewer: 0, site_admin: 1, admin: 2, super_admin: 3 };
+const ADMIN_ONLY_WRITE = [
+  /^\/api\/settings$/, /^\/api\/system\//,
+  /^\/api\/agents(\/|$)/, /^\/api\/alert-rules(\/|$)/,
+  /^\/api\/notification-routes(\/|$)/, /^\/api\/escalation-steps(\/|$)/,
+  /^\/api\/oncall-shifts(\/|$)/, /^\/api\/maintenance(\/|$)/,
+  /^\/api\/service-checks(\/|$)/, /^\/api\/wireless\/controllers(\/|$)/,
+  /^\/api\/topology\//, /^\/api\/intelligence\//,
+];
+function userRank(req) {
+  const role = req.headers['x-user-role'] || 'viewer';
+  return ROLE_RANK[role] != null ? ROLE_RANK[role] : 0;
+}
+app.use((req, res, next) => {
+  if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) return next();
+  const rank = userRank(req);
+  if (rank < 1) return res.status(403).json({ error: 'Your role is read-only.' });
+  if (rank < 2 && ADMIN_ONLY_WRITE.some((re) => re.test(req.path))) {
+    return res.status(403).json({ error: 'This action requires an admin role.' });
+  }
+  next();
+});
 
 // ── Helpers ───────────────────────────────────────────────────
 function safeInt(val, def, max) {
@@ -2367,7 +2399,9 @@ app.get('/api/alerts', wrap(async (req, res) => {
 
 app.post('/api/alerts/:id/acknowledge', wrap(async (req, res) => {
   const id = parseInt(req.params.id, 10);
-  const by = (req.body && req.body.acknowledged_by) || 'unknown';
+  // Attribute to the verified session user (proxy-set header), not a client-
+  // supplied field, so acknowledgements can't be forged.
+  const by = req.headers['x-user-email'] || (req.body && req.body.acknowledged_by) || 'unknown';
   const note = req.body && typeof req.body.note === 'string' && req.body.note.trim()
     ? req.body.note.trim() : null;
   // Only write the note column if it exists yet (it's a later migration).

@@ -21,6 +21,7 @@ export async function middleware(req: NextRequest) {
       const headers = new Headers(req.headers);
       headers.set('x-user-role', (token.role as string) || 'viewer');
       headers.set('x-user-sites', ((token.sites as number[]) || []).join(','));
+      headers.set('x-user-email', (token.email as string) || (token.name as string) || 'unknown');
       return NextResponse.rewrite(target, { request: { headers } });
     }
     return NextResponse.rewrite(target);
