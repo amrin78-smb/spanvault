@@ -347,6 +347,7 @@ interface ClientSummary {
   by_band: Record<string, number>;
   by_controller: { controller_id: number; controller_name: string; client_count: number; problem_count: number }[];
   problem_clients: number;
+  sticky_clients: number;
   low_signal_clients: number;
   frequent_roamers: number;
   top_aps_by_clients: { ap_name: string; count: number }[];
@@ -2678,6 +2679,7 @@ function ClientsTab({
   const [controllerFilter, setControllerFilter] = useState('');
   const [ssidFilter, setSsidFilter] = useState('');
   const [bandFilter, setBandFilter] = useState('');
+  const [stickyOnly, setStickyOnly] = useState(false);
   const [selectedMac, setSelectedMac] = useState<string | null>(null);
 
   const summary = useApi<ClientSummary>('/api/wireless/clients/summary', 30000);
@@ -2688,9 +2690,10 @@ function ClientsTab({
     if (search.trim()) params.push(`search=${encodeURIComponent(search.trim())}`);
     if (apFilter != null) params.push(`ap_id=${apFilter}`);
     if (problemOnly) params.push('problem=true');
+    if (stickyOnly) params.push('sticky=true');
     params.push('limit=200');
     return `?${params.join('&')}`;
-  }, [search, apFilter, problemOnly]);
+  }, [search, apFilter, problemOnly, stickyOnly]);
 
   const clientsApi = useApi<WirelessClient[]>(`/api/wireless/clients${qs}`, 30000);
   const allClients = useMemo(() => clientsApi.data || [], [clientsApi.data]);
@@ -2765,6 +2768,17 @@ function ClientsTab({
           <div className="num">{summary.data ? Number(summary.data.frequent_roamers) : '—'}</div>
           <div className="label">Frequent Roamers</div>
         </div>
+        <div
+          className="sv-card"
+          style={{ borderLeftColor: 'var(--red)', cursor: 'pointer' }}
+          onClick={() => setStickyOnly(true)}
+          title="Poor signal but not roaming — clinging to a distant AP"
+        >
+          <div className="num" style={{ color: 'var(--red)' }}>
+            {summary.data ? Number(summary.data.sticky_clients) : '—'}
+          </div>
+          <div className="label">Sticky Clients</div>
+        </div>
       </div>
 
       <div style={{
@@ -2804,6 +2818,11 @@ function ClientsTab({
           style={problemOnly ? { color: 'var(--red)', borderColor: 'var(--red)' } : undefined}
           onClick={() => setProblemOnly(!problemOnly)}
         >⚠ Problem clients only</button>
+        <button
+          className="sv-btn ghost sm"
+          style={stickyOnly ? { color: 'var(--red)', borderColor: 'var(--red)' } : undefined}
+          onClick={() => setStickyOnly(!stickyOnly)}
+        >📌 Sticky only</button>
         {apFilter != null && (
           <span
             className="sv-badge"

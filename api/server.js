@@ -32,6 +32,9 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.24.1': [
+    'Wireless Clients tab now has a Sticky-clients count card and a "Sticky only" filter (alongside the existing problem-client filter)',
+  ],
   '1.24.0': [
     'Rogue AP detection — SpanVault now collects unmanaged/rogue APs that your wireless controllers detect (Cisco/Aruba/Ruckus via SNMP) and lists them on a new Wireless → Rogue APs tab with classification, signal, channel, and detecting AP',
     'Optional alert on rogue/malicious detections (enable wireless_rogue_alerts_enabled)',
@@ -3947,6 +3950,7 @@ app.get('/api/wireless/clients', wrap(async (req, res) => {
   if (req.query.ap_id) { params.push(parseInt(req.query.ap_id, 10)); where.push(`cl.ap_id = $${params.length}`); }
   if (req.query.controller_id) { params.push(parseInt(req.query.controller_id, 10)); where.push(`cl.controller_id = $${params.length}`); }
   if (String(req.query.problem) === 'true') where.push('cl.is_problem = TRUE');
+  if (String(req.query.sticky) === 'true') where.push('cl.is_sticky = TRUE');
   const sc = siteFilterClause(getSiteFilter(req), params, 'c.site_id');
   if (sc) where.push(sc);
   const limit = Math.min(500, Math.max(1, parseInt(req.query.limit, 10) || 50));
@@ -3965,7 +3969,7 @@ app.get('/api/wireless/clients/summary', wrap(async (req, res) => {
   const params = [];
   const sc = siteFilterClause(getSiteFilter(req), params, 'c.site_id');
   const rows = await sv.query(`
-    SELECT cl.band, cl.rssi_dbm, cl.is_problem, cl.roaming_count, cl.ap_name,
+    SELECT cl.band, cl.rssi_dbm, cl.is_problem, cl.is_sticky, cl.roaming_count, cl.ap_name,
            cl.controller_id, c.name AS controller_name
     FROM wireless_clients cl JOIN wireless_controllers c ON c.id = cl.controller_id
     ${sc ? 'WHERE ' + sc : ''}
@@ -3977,7 +3981,7 @@ app.get('/api/wireless/clients/summary', wrap(async (req, res) => {
   // the Total Clients card — not the radio-based wireless_aps.clients_total.
   const byController = new Map();
   const byAp = {};
-  let problemClients = 0, lowSignalClients = 0, frequentRoamers = 0;
+  let problemClients = 0, lowSignalClients = 0, frequentRoamers = 0, stickyClients = 0;
   for (const row of rows.rows) {
     if (Object.prototype.hasOwnProperty.call(byBand, row.band)) byBand[row.band]++;
     if (row.controller_id != null) {
@@ -3991,6 +3995,7 @@ app.get('/api/wireless/clients/summary', wrap(async (req, res) => {
     }
     if (row.ap_name) byAp[row.ap_name] = (byAp[row.ap_name] || 0) + 1;
     if (row.is_problem) problemClients++;
+    if (row.is_sticky) stickyClients++;
     if (row.rssi_dbm !== null && row.rssi_dbm !== undefined && row.rssi_dbm < -75) lowSignalClients++;
     if ((row.roaming_count || 0) > 5) frequentRoamers++;
   }
@@ -4006,6 +4011,7 @@ app.get('/api/wireless/clients/summary', wrap(async (req, res) => {
     by_band: byBand,
     by_controller: byControllerArr,
     problem_clients: problemClients,
+    sticky_clients: stickyClients,
     low_signal_clients: lowSignalClients,
     frequent_roamers: frequentRoamers,
     top_aps_by_clients: topApsByClients,
