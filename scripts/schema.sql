@@ -762,6 +762,8 @@ ALTER TABLE wireless_history ADD COLUMN IF NOT EXISTS noise_floor_5g    INTEGER;
 ALTER TABLE wireless_history ADD COLUMN IF NOT EXISTS throughput_in_bps BIGINT;
 ALTER TABLE wireless_history ADD COLUMN IF NOT EXISTS throughput_out_bps BIGINT;
 ALTER TABLE wireless_history ADD COLUMN IF NOT EXISTS auth_failures     INTEGER;
+ALTER TABLE wireless_history ADD COLUMN IF NOT EXISTS retry_rate_2g     NUMERIC;
+ALTER TABLE wireless_history ADD COLUMN IF NOT EXISTS retry_rate_5g     NUMERIC;
 
 -- ══ Wireless intelligence (computed analytics per poll cycle) ═════════════════
 CREATE TABLE IF NOT EXISTS wireless_intelligence (

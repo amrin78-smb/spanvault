@@ -32,6 +32,10 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.22.0': [
+    'AP detail drawer now charts RF history: noise floor and retry rate over time, alongside the existing client-count and channel-utilization trends',
+    'Retry rate is now historized so its trend accumulates going forward',
+  ],
   '1.21.0': [
     'Wireless alerting — SpanVault now raises alerts for AP down, controller offline, high channel utilization, and AP reboots/flaps (previously wireless data was collected but never alerted on)',
     'Wireless alerts flow through the normal engine (routing/escalation/email) and appear in the Alerts page linked to the AP/controller',
@@ -3568,7 +3572,11 @@ app.get('/api/wireless/history/:ap_id', wrap(async (req, res) => {
            ROUND(AVG(clients_2g))::int AS clients_2g,
            ROUND(AVG(clients_5g))::int AS clients_5g,
            ROUND(AVG(radio_2g_util)::numeric, 1) AS radio_2g_util,
-           ROUND(AVG(radio_5g_util)::numeric, 1) AS radio_5g_util
+           ROUND(AVG(radio_5g_util)::numeric, 1) AS radio_5g_util,
+           ROUND(AVG(noise_floor_2g)::numeric, 0) AS noise_floor_2g,
+           ROUND(AVG(noise_floor_5g)::numeric, 0) AS noise_floor_5g,
+           ROUND(AVG(retry_rate_2g)::numeric, 1) AS retry_rate_2g,
+           ROUND(AVG(retry_rate_5g)::numeric, 1) AS retry_rate_5g
     FROM wireless_history
     WHERE ap_id = $2 AND ts >= NOW() - $3::interval
     GROUP BY bucket ORDER BY bucket

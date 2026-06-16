@@ -382,10 +382,12 @@ async function upsertAp(pool, controller, ap) {
   await pool.query(`
     INSERT INTO wireless_history
       (ap_id, clients_total, clients_2g, clients_5g, radio_2g_util, radio_5g_util,
-       noise_floor_2g, noise_floor_5g, throughput_in_bps, throughput_out_bps, auth_failures)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+       noise_floor_2g, noise_floor_5g, throughput_in_bps, throughput_out_bps, auth_failures,
+       retry_rate_2g, retry_rate_5g)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
   `, [apId, clientsTotal, clients2g, clients5g, numOrNull(ap.radio_2g_util_pct), numOrNull(ap.radio_5g_util_pct),
-      noise2g, noise5g, inBps, outBps, authFailures]);
+      noise2g, noise5g, inBps, outBps, authFailures,
+      numOrNull(ap.retry_rate_2g), numOrNull(ap.retry_rate_5g)]);
 
   return apId;
 }

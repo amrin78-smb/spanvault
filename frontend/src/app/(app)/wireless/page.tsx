@@ -142,6 +142,10 @@ interface ApHistoryRow {
   clients_5g: number | null;
   radio_2g_util: number | null;
   radio_5g_util: number | null;
+  noise_floor_2g: number | null;
+  noise_floor_5g: number | null;
+  retry_rate_2g: number | null;
+  retry_rate_5g: number | null;
 }
 
 interface Controller {
@@ -1682,6 +1686,32 @@ function ApDetailDrawer({
                 <Legend />
                 <Line type="monotone" dataKey="radio_2g_util" name="2.4GHz %" stroke={CHART_COLORS.g2} dot={false} />
                 <Line type="monotone" dataKey="radio_5g_util" name="5GHz %" stroke={CHART_COLORS.g5} dot={false} />
+              </LineChart>
+            </ResponsiveContainer>
+
+            <h3 style={{ marginBottom: 6 }}>24h Noise Floor (dBm)</h3>
+            <ResponsiveContainer width="100%" height={200}>
+              <LineChart data={history}>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                <XAxis dataKey="bucket" tickFormatter={fmtBucket} fontSize={11} />
+                <YAxis fontSize={11} />
+                <Tooltip />
+                <Legend />
+                <Line type="monotone" dataKey="noise_floor_2g" name="2.4GHz" stroke={CHART_COLORS.g2} dot={false} connectNulls />
+                <Line type="monotone" dataKey="noise_floor_5g" name="5GHz" stroke={CHART_COLORS.g5} dot={false} connectNulls />
+              </LineChart>
+            </ResponsiveContainer>
+
+            <h3 style={{ marginBottom: 6 }}>24h Retry Rate (%)</h3>
+            <ResponsiveContainer width="100%" height={200}>
+              <LineChart data={history}>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                <XAxis dataKey="bucket" tickFormatter={fmtBucket} fontSize={11} />
+                <YAxis fontSize={11} />
+                <Tooltip />
+                <Legend />
+                <Line type="monotone" dataKey="retry_rate_2g" name="2.4GHz %" stroke={CHART_COLORS.g2} dot={false} connectNulls />
+                <Line type="monotone" dataKey="retry_rate_5g" name="5GHz %" stroke={CHART_COLORS.g5} dot={false} connectNulls />
               </LineChart>
             </ResponsiveContainer>
           </>
