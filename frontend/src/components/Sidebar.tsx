@@ -6,13 +6,14 @@ import { useEffect, useState } from 'react';
 import { useRbac } from '@/lib/rbac';
 import {
   IconDashboard, IconDevices, IconAlerts, IconReports, IconMap, IconAgents,
-  IconIntelligence, IconSettings, IconTopology, IconWireless,
+  IconIntelligence, IconSettings, IconTopology, IconWireless, IconServices,
 } from './icons';
 
 const NAV = [
   { href: '/', label: 'Dashboard', Icon: IconDashboard, exact: true },
   { href: '/devices', label: 'Devices', Icon: IconDevices },
   { href: '/alerts', label: 'Alerts', Icon: IconAlerts },
+  { href: '/services', label: 'Services', Icon: IconServices },
   { href: '/reports', label: 'Reports', Icon: IconReports },
   { href: '/maps', label: 'Maps', Icon: IconMap },
   { href: '/wireless', label: 'Wireless', Icon: IconWireless },

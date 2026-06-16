@@ -16,6 +16,12 @@
 
 require('dotenv').config({ path: require('path').join(__dirname, '..', '.env.local') });
 
+const http       = require('http');
+const https      = require('https');
+const net        = require('net');
+const tls        = require('tls');
+const dns         = require('dns');
+const urlmod     = require('url');
 const { Pool }   = require('pg');
 const ping       = require('ping');
 const nodemailer = require('nodemailer');
@@ -1192,6 +1198,322 @@ async function escalationTick() {
 }
 
 // ══════════════════════════════════════════════════════════════
+// Agentless service checks (HTTP / TCP / SSL / DNS)
+// ══════════════════════════════════════════════════════════════
+// Each runner probes a target with Node built-ins and resolves to
+// { status, response_ms, detail } — NEVER throws. Central (agent_id IS NULL)
+// checks are run here; agent-owned checks have their status written by the WS
+// handler. serviceCheckTick() evaluates alerts for ALL active checks from their
+// stored current_status.
+
+function svcParams(check) {
+  // params is JSONB → already an object via pg, but tolerate a string or null.
+  const p = check && check.params;
+  if (!p) return {};
+  if (typeof p === 'string') { try { return JSON.parse(p) || {}; } catch (_e) { return {}; } }
+  return p;
+}
+
+// Split "host:port" → { host, port }. port falls back to params.port / def.
+function hostPort(target, paramsPort, def) {
+  let host = String(target || '').trim();
+  let port = null;
+  // Strip an optional scheme so tcp/ssl targets like "https://h:443" still work.
+  host = host.replace(/^[a-z]+:\/\//i, '');
+  // Drop any trailing path.
+  host = host.split('/')[0];
+  const idx = host.lastIndexOf(':');
+  if (idx > 0 && /^\d+$/.test(host.slice(idx + 1))) {
+    port = parseInt(host.slice(idx + 1), 10);
+    host = host.slice(0, idx);
+  }
+  if (!port && paramsPort) port = parseInt(paramsPort, 10);
+  if (!port) port = def;
+  return { host, port };
+}
+
+// HTTP/HTTPS GET. up = status in expect-range AND (no keyword OR body contains it).
+function checkHttp(target, params) {
+  return new Promise((resolve) => {
+    const p = params || {};
+    const timeout = parseInt(p.timeout_ms, 10) || 10000;
+    let url = String(target || '').trim();
+    if (!/^https?:\/\//i.test(url)) url = 'http://' + url;
+    let parsed;
+    try { parsed = new urlmod.URL(url); }
+    catch (_e) { return resolve({ status: 'down', response_ms: null, detail: 'Invalid URL' }); }
+    const lib = parsed.protocol === 'https:' ? https : http;
+    const keyword = p.keyword ? String(p.keyword) : null;
+    const start = Date.now();
+    let done = false;
+    const finish = (r) => { if (done) return; done = true; resolve(r); };
+
+    let req;
+    try {
+      req = lib.request(url, { method: 'GET', timeout }, (res) => {
+        const code = res.statusCode || 0;
+        let body = '';
+        // Only buffer body when a keyword match is required (bounded to ~256KB).
+        res.on('data', (chunk) => {
+          if (!keyword) return;
+          if (body.length < 262144) body += chunk.toString();
+        });
+        res.on('end', () => {
+          const ms = Date.now() - start;
+          const okCode = matchExpectStatus(code, p.expect_status);
+          if (!okCode) return finish({ status: 'down', response_ms: ms, detail: `HTTP ${code}` });
+          if (keyword && body.indexOf(keyword) === -1) {
+            return finish({ status: 'down', response_ms: ms, detail: `HTTP ${code} — keyword not found` });
+          }
+          finish({ status: 'up', response_ms: ms, detail: `HTTP ${code}` });
+        });
+        res.on('error', (err) =>
+          finish({ status: 'down', response_ms: Date.now() - start, detail: err.message }));
+      });
+    } catch (err) {
+      return finish({ status: 'down', response_ms: Date.now() - start, detail: err.message });
+    }
+    req.on('timeout', () => { try { req.destroy(); } catch (_e) {}
+      finish({ status: 'down', response_ms: Date.now() - start, detail: 'Timeout' }); });
+    req.on('error', (err) =>
+      finish({ status: 'down', response_ms: Date.now() - start, detail: err.message }));
+    try { req.end(); } catch (_e) { /* error event handles it */ }
+  });
+}
+
+// Is an HTTP status code accepted? expect = number, "200", "200,301", "200-399"
+// (default 200-399). Ranges and CSV lists are both supported.
+function matchExpectStatus(code, expect) {
+  if (expect === undefined || expect === null || expect === '') return code >= 200 && code <= 399;
+  const parts = String(expect).split(',').map((s) => s.trim()).filter(Boolean);
+  for (const part of parts) {
+    const m = part.match(/^(\d+)\s*-\s*(\d+)$/);
+    if (m) { if (code >= parseInt(m[1], 10) && code <= parseInt(m[2], 10)) return true; }
+    else if (parseInt(part, 10) === code) return true;
+  }
+  return false;
+}
+
+// TCP connect. up = connected within timeout; down = error/timeout.
+function checkTcp(target, params) {
+  return new Promise((resolve) => {
+    const p = params || {};
+    const timeout = parseInt(p.timeout_ms, 10) || 10000;
+    const { host, port } = hostPort(target, p.port, null);
+    if (!host || !port) return resolve({ status: 'down', response_ms: null, detail: 'No host/port' });
+    const start = Date.now();
+    let done = false;
+    const finish = (r) => { if (done) return; done = true; try { sock.destroy(); } catch (_e) {} resolve(r); };
+    const sock = net.connect({ host, port });
+    sock.setTimeout(timeout);
+    sock.on('connect', () => finish({ status: 'up', response_ms: Date.now() - start, detail: `Connected to ${host}:${port}` }));
+    sock.on('timeout', () => finish({ status: 'down', response_ms: Date.now() - start, detail: 'Timeout' }));
+    sock.on('error', (err) => finish({ status: 'down', response_ms: Date.now() - start, detail: err.message }));
+  });
+}
+
+// SSL/TLS cert check. warning = cert expires within ssl_warn_days (default 14);
+// down = connect/handshake error; up otherwise.
+function checkSsl(target, params) {
+  return new Promise((resolve) => {
+    const p = params || {};
+    const timeout = parseInt(p.timeout_ms, 10) || 10000;
+    const warnDays = parseInt(p.ssl_warn_days, 10) || 14;
+    const { host, port } = hostPort(target, p.port, 443);
+    if (!host) return resolve({ status: 'down', response_ms: null, detail: 'No host' });
+    const start = Date.now();
+    let done = false;
+    let sock;
+    const finish = (r) => { if (done) return; done = true; try { sock.destroy(); } catch (_e) {} resolve(r); };
+    try {
+      sock = tls.connect({ host, port, servername: host, timeout, rejectUnauthorized: false }, () => {
+        const ms = Date.now() - start;
+        const cert = sock.getPeerCertificate();
+        if (!cert || !cert.valid_to) return finish({ status: 'down', response_ms: ms, detail: 'No certificate' });
+        const validTo = new Date(cert.valid_to);
+        if (isNaN(validTo.getTime())) return finish({ status: 'down', response_ms: ms, detail: 'Bad cert date' });
+        const daysLeft = Math.floor((validTo.getTime() - Date.now()) / 86400000);
+        const ymd = validTo.toISOString().slice(0, 10);
+        const detail = `Cert expires in ${daysLeft} days (${ymd})`;
+        if (daysLeft <= warnDays) finish({ status: 'warning', response_ms: ms, detail });
+        else finish({ status: 'up', response_ms: ms, detail });
+      });
+    } catch (err) {
+      return finish({ status: 'down', response_ms: Date.now() - start, detail: err.message });
+    }
+    sock.on('timeout', () => finish({ status: 'down', response_ms: Date.now() - start, detail: 'Timeout' }));
+    sock.on('error', (err) => finish({ status: 'down', response_ms: Date.now() - start, detail: err.message }));
+  });
+}
+
+// DNS resolve. up = ≥1 record; down = error/empty.
+function checkDns(target, params) {
+  return new Promise((resolve) => {
+    const p = params || {};
+    const timeout = parseInt(p.timeout_ms, 10) || 10000;
+    let host = String(target || '').trim().replace(/^[a-z]+:\/\//i, '').split('/')[0];
+    const idx = host.lastIndexOf(':');
+    if (idx > 0 && /^\d+$/.test(host.slice(idx + 1))) host = host.slice(0, idx);
+    if (!host) return resolve({ status: 'down', response_ms: null, detail: 'No hostname' });
+    const start = Date.now();
+    let done = false;
+    const finish = (r) => { if (done) return; done = true; resolve(r); };
+    // dns.resolve has no native timeout — guard it.
+    const timer = setTimeout(() =>
+      finish({ status: 'down', response_ms: Date.now() - start, detail: 'Timeout' }), timeout);
+    dns.resolve(host, (err, records) => {
+      clearTimeout(timer);
+      const ms = Date.now() - start;
+      if (err) return finish({ status: 'down', response_ms: ms, detail: err.message });
+      const n = Array.isArray(records) ? records.length : 0;
+      if (n < 1) return finish({ status: 'down', response_ms: ms, detail: 'No records' });
+      finish({ status: 'up', response_ms: ms, detail: `Resolved ${n} record(s)` });
+    });
+  });
+}
+
+// Dispatch a check to the right runner. Always resolves to {status,response_ms,detail}.
+async function runServiceCheck(check) {
+  const params = svcParams(check);
+  const type = String(check.type || '').toLowerCase();
+  try {
+    switch (type) {
+      case 'http':
+      case 'https': return await checkHttp(check.target, params);
+      case 'tcp':   return await checkTcp(check.target, params);
+      case 'ssl':
+      case 'tls':   return await checkSsl(check.target, params);
+      case 'dns':   return await checkDns(check.target, params);
+      default:      return { status: 'unknown', response_ms: null, detail: `Unknown check type: ${check.type}` };
+    }
+  } catch (err) {
+    return { status: 'down', response_ms: null, detail: err.message };
+  }
+}
+
+// ── Service-level alerts (keyed on service_check_id, device_id NULL) ──
+async function raiseServiceAlert(check, alertType, severity, message) {
+  try {
+    const r = await sv.query(`
+      INSERT INTO alerts (service_check_id, alert_type, severity, message, status)
+      VALUES ($1,$2,$3,$4,'active')
+      ON CONFLICT (service_check_id, alert_type) WHERE status = 'active' AND service_check_id IS NOT NULL DO NOTHING
+      RETURNING id
+    `, [check.id, alertType, severity, message]);
+    if (r.rows[0]) {
+      log(`[alert] RAISED ${alertType} on service ${check.name}: ${message}`);
+      // Route + throttle: key the throttle on the check id via the agent_id slot
+      // (negative so it never collides with a real agent id), and route by site.
+      if (await notifyCooldownOk(0, -check.id, alertType)) {
+        const to = await recipientsFor(check.site_id, severity, alertType);
+        if (to) await sendAlertEmail(`[SpanVault] ${severity.toUpperCase()}: ${message}`, message, to);
+      }
+    }
+  } catch (err) {
+    console.error('[alerts] service raise failed:', err.message);
+  }
+}
+
+async function resolveServiceAlert(checkId, alertType) {
+  try {
+    const r = await sv.query(`
+      UPDATE alerts SET status = 'resolved', resolved_at = NOW()
+       WHERE service_check_id = $1 AND alert_type = $2 AND status <> 'resolved'
+       RETURNING id
+    `, [checkId, alertType]);
+    if (r.rows[0]) { log(`[alert] RESOLVED ${alertType} on service ${checkId}`); return true; }
+    return false;
+  } catch (err) {
+    console.error('[alerts] service resolve failed:', err.message);
+    return false;
+  }
+}
+
+// Run one central check, persist its status + a result row.
+async function runAndStoreServiceCheck(check) {
+  const res = await runServiceCheck(check);
+  const ms = (res.response_ms != null && isFinite(res.response_ms)) ? res.response_ms : null;
+  try {
+    await sv.query(`
+      UPDATE service_checks
+         SET current_status = $2, last_response_ms = $3, last_detail = $4,
+             last_checked_at = NOW(), updated_at = NOW()
+       WHERE id = $1
+    `, [check.id, res.status, ms, res.detail || null]);
+    await sv.query(
+      `INSERT INTO service_check_results (check_id, status, response_ms, detail) VALUES ($1,$2,$3,$4)`,
+      [check.id, res.status, ms, res.detail || null]
+    );
+  } catch (err) {
+    console.error(`[svc] ${check.name} store failed:`, err.message);
+  }
+  // Update in-memory copy so the same-tick alert pass sees fresh state.
+  check.current_status = res.status;
+  check.last_detail = res.detail || null;
+  check.last_response_ms = ms;
+}
+
+// Evaluate alerts for one check from its STORED status (central + agent alike).
+async function evaluateServiceCheckAlerts(check) {
+  // Reachability — service_down (critical).
+  if (check.current_status === 'down') {
+    await raiseServiceAlert(check, 'service_down', 'critical',
+      `Service ${check.name} is down — ${check.last_detail || ''}`.trim());
+  } else {
+    await resolveServiceAlert(check.id, 'service_down');
+  }
+
+  // SSL expiry — ssl_expiring (warning). The SSL runner reports status='warning'
+  // when the cert is within ssl_warn_days; reflect that as an alert.
+  if (String(check.type || '').toLowerCase() === 'ssl') {
+    if (check.current_status === 'warning') {
+      await raiseServiceAlert(check, 'ssl_expiring', 'warning',
+        `SSL for ${check.name}: ${check.last_detail || ''}`.trim());
+    } else {
+      await resolveServiceAlert(check.id, 'ssl_expiring');
+    }
+  }
+}
+
+let svcBusy = false;
+async function serviceCheckTick() {
+  if (svcBusy) return;
+  svcBusy = true;
+  try {
+    let checks;
+    try {
+      checks = (await sv.query(`SELECT * FROM service_checks WHERE active = TRUE`)).rows;
+    } catch (_e) {
+      // Table not migrated yet — nothing to do.
+      return;
+    }
+
+    // 1. Run DUE central checks (agent_id IS NULL).
+    const now = Date.now();
+    const due = checks.filter((c) => {
+      if (c.agent_id != null) return false;
+      const iv = (c.interval_seconds || 60) * 1000;
+      if (!c.last_checked_at) return true;
+      return now - new Date(c.last_checked_at).getTime() >= iv - 1000;
+    });
+    await runPooled(due, 10, (c) => runAndStoreServiceCheck(c).catch((e) =>
+      console.error(`[svc] ${c.name} run failed:`, e.message)));
+    if (due.length) log(`[svc] checked ${due.length} service(s)`);
+
+    // 2. Evaluate alerts for ALL active checks from stored status (central +
+    //    agent — agent checks have current_status set by the WS handler).
+    for (const c of checks) {
+      await evaluateServiceCheckAlerts(c).catch((e) =>
+        console.error(`[svc] ${c.name} eval failed:`, e.message));
+    }
+  } catch (err) {
+    console.error('[svc] tick failed:', err.message);
+  } finally {
+    svcBusy = false;
+  }
+}
+
+// ══════════════════════════════════════════════════════════════
 // Schedulers
 // ══════════════════════════════════════════════════════════════
 async function getActiveDevices() {
@@ -1322,6 +1644,11 @@ async function main() {
 
   // Alert escalation sweep — every minute.
   setInterval(escalationTick, 60 * 1000);
+
+  // Agentless service checks (HTTP/TCP/SSL/DNS). The due-check inside honors
+  // each check's interval_seconds; alert evaluation runs for central + agent
+  // checks every tick.
+  setInterval(serviceCheckTick, 15 * 1000);
 
   // Topology discovery — once shortly after startup, then every 6 hours.
   setTimeout(topologyTick, 60 * 1000);

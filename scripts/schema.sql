@@ -349,6 +349,47 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_alerts_active_agent_unique
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO spanvault_user;
 GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO spanvault_user;
 
+-- ══ Agentless service checks (HTTP/TCP/SSL/DNS) ════════════════════════════════
+-- PRTG-style "is this service up" probes. A check runs from the CENTRAL collector
+-- when agent_id IS NULL, or from a remote agent when agent_id is set (the agent
+-- writes current_status/last_* via the WS handler). The server evaluates alerts
+-- for ALL checks from their stored status. Placed after the agents + alerts blocks
+-- so the agent_id / service_check_id forward FKs resolve.
+CREATE TABLE IF NOT EXISTS service_checks (
+  id               SERIAL PRIMARY KEY,
+  name             TEXT NOT NULL,
+  type             TEXT NOT NULL,          -- 'http' | 'tcp' | 'ssl' | 'dns'
+  target           TEXT NOT NULL,          -- url | host[:port] | hostname
+  site_id          INTEGER,
+  site_name        TEXT,
+  agent_id         INTEGER REFERENCES agents(id) ON DELETE SET NULL,  -- NULL = central
+  interval_seconds INTEGER NOT NULL DEFAULT 60,
+  params           JSONB,                  -- {port, expect_status, keyword, ssl_warn_days, timeout_ms}
+  current_status   TEXT NOT NULL DEFAULT 'unknown',  -- up | down | warning | unknown
+  last_response_ms NUMERIC,
+  last_detail      TEXT,
+  last_checked_at  TIMESTAMPTZ,
+  active           BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS service_check_results (
+  id          BIGSERIAL PRIMARY KEY,
+  check_id    INTEGER NOT NULL REFERENCES service_checks(id) ON DELETE CASCADE,
+  ts          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  status      TEXT NOT NULL,
+  response_ms NUMERIC,
+  detail      TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_svc_results ON service_check_results(check_id, ts DESC);
+-- Service-level alerts reference the check, not a device.
+ALTER TABLE alerts ADD COLUMN IF NOT EXISTS service_check_id INTEGER REFERENCES service_checks(id) ON DELETE CASCADE;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_alerts_active_service_unique
+  ON alerts(service_check_id, alert_type) WHERE status = 'active' AND service_check_id IS NOT NULL;
+
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO spanvault_user;
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO spanvault_user;
+
 -- ══ Interactive map designer ══════════════════════════════════════════════════
 -- User-designed network maps: a canvas with positioned device nodes, connection
 -- lines between them, and free-floating text labels. Maps can be made public

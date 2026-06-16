@@ -210,9 +210,21 @@ async function pushConfigToAgent(ws, agentId) {
     const settingsMap = {};
     for (const r of settings.rows) settingsMap[r.key] = r.value;
 
+    // Agentless service checks assigned to this agent. service_checks is a later
+    // migration — degrade to an empty array on an un-migrated DB rather than
+    // breaking the whole config push.
+    let serviceChecks = [];
+    try {
+      const checks = await sv.query(
+        `SELECT id, type, target, interval_seconds, params
+           FROM service_checks WHERE agent_id=$1 AND active=TRUE`, [agentId]);
+      serviceChecks = checks.rows;
+    } catch (_e) { serviceChecks = []; }
+
     const meta = agentMeta();
     ws.send(JSON.stringify({
       type: 'config', devices: devices.rows, settings: settingsMap,
+      service_checks: serviceChecks,
       agent_sha: meta.sha, agent_version: meta.version,
     }));
   } catch (err) {
@@ -284,6 +296,29 @@ async function handleAgentMessage(agent, msg) {
         [msg.device_id, msg.ts || new Date(), msg.oid, msg.metric_name,
          msg.value, msg.if_index || null, msg.if_name || null, agent.id]
       );
+      break;
+
+    case 'service_result':
+      // Result of an agentless service check (HTTP/TCP/SSL/DNS) run by a remote
+      // agent. Scope updates to this agent for safety. The collector evaluates
+      // alerts from current_status — we only store here. service_checks /
+      // service_check_results are a later migration; ignore if missing.
+      if (msg.check_id == null) break;
+      try {
+        await sv.query(
+          `UPDATE service_checks SET current_status=$2, last_response_ms=$3,
+             last_detail=$4, last_checked_at=NOW(), updated_at=NOW()
+           WHERE id=$1 AND agent_id=$5`,
+          [msg.check_id, msg.status, msg.response_ms != null ? msg.response_ms : null,
+           msg.detail || null, agent.id]
+        );
+        await sv.query(
+          `INSERT INTO service_check_results (check_id, ts, status, response_ms, detail)
+           VALUES ($1, NOW(), $2, $3, $4)`,
+          [msg.check_id, msg.status, msg.response_ms != null ? msg.response_ms : null,
+           msg.detail || null]
+        );
+      } catch (e) { console.error('[WS] service_result error:', e.message); }
       break;
 
     case 'logs':

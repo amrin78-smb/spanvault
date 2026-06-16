@@ -32,6 +32,11 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.17.0': [
+    'New Services page — agentless uptime checks for HTTP/HTTPS, TCP ports, SSL certificate expiry, and DNS, like PRTG sensors',
+    'Checks run from the central collector or from a remote agent (for services only reachable inside a site)',
+    'Service checks alert through the normal engine: "Service Down" (critical) and "SSL Expiring" (warning, configurable days), shown in the Alerts page and emailed/routed/escalated like any alert',
+  ],
   '1.16.0': [
     'Interface bandwidth utilization % is now computed from in/out throughput and link speed (ifHighSpeed) and stored per interface',
     'The "bandwidth_pct" alert rule now works (previously a no-op) — alert when an interface crosses a utilization threshold',
@@ -2300,12 +2305,14 @@ async function getAlertCaps() {
         EXISTS (SELECT 1 FROM information_schema.tables
                  WHERE table_name = 'incidents') AS has_incidents,
         EXISTS (SELECT 1 FROM information_schema.columns
-                 WHERE table_name = 'alerts' AND column_name = 'agent_id') AS has_agent_id
+                 WHERE table_name = 'alerts' AND column_name = 'agent_id') AS has_agent_id,
+        EXISTS (SELECT 1 FROM information_schema.columns
+                 WHERE table_name = 'alerts' AND column_name = 'service_check_id') AS has_service_check_id
     `);
-    alertCaps = r.rows[0] || { has_note: false, has_incident_id: false, has_incidents: false, has_agent_id: false };
+    alertCaps = r.rows[0] || { has_note: false, has_incident_id: false, has_incidents: false, has_agent_id: false, has_service_check_id: false };
   } catch (_e) {
     // If the probe itself fails, assume the optional pieces are absent.
-    alertCaps = { has_note: false, has_incident_id: false, has_incidents: false, has_agent_id: false };
+    alertCaps = { has_note: false, has_incident_id: false, has_incidents: false, has_agent_id: false, has_service_check_id: false };
   }
   return alertCaps;
 }
@@ -2329,6 +2336,9 @@ app.get('/api/alerts', wrap(async (req, res) => {
   const agentIdSel = caps.has_agent_id ? 'a.agent_id' : 'NULL::int AS agent_id';
   const agentNameSel = caps.has_agent_id ? 'ag.name AS agent_name' : 'NULL::text AS agent_name';
   const agentJoin = caps.has_agent_id ? 'LEFT JOIN agents ag ON ag.id = a.agent_id' : '';
+  const svcIdSel = caps.has_service_check_id ? 'a.service_check_id' : 'NULL::int AS service_check_id';
+  const svcNameSel = caps.has_service_check_id ? 'sc2.name AS service_name' : 'NULL::text AS service_name';
+  const svcJoin = caps.has_service_check_id ? 'LEFT JOIN service_checks sc2 ON sc2.id = a.service_check_id' : '';
 
   const rows = await sv.query(`
     SELECT a.id, a.device_id, d.name AS device_name, d.ip_address,
@@ -2336,12 +2346,14 @@ app.get('/api/alerts', wrap(async (req, res) => {
            a.triggered_at, a.acknowledged_at, a.acknowledged_by, a.resolved_at, a.status,
            ${noteSel}, ${incIdSel}, ${incTitleSel},
            ${agentIdSel}, ${agentNameSel},
+           ${svcIdSel}, ${svcNameSel},
            a.suppressed_by, a.suppression_reason, sb.name AS suppressed_by_name
     FROM alerts a
     LEFT JOIN monitored_devices d  ON d.id = a.device_id
     LEFT JOIN monitored_devices sb ON sb.id = a.suppressed_by
     ${incJoin ? 'LEFT JOIN incidents inc ON inc.id = a.incident_id' : ''}
     ${agentJoin}
+    ${svcJoin}
     ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
     ORDER BY a.triggered_at DESC
     LIMIT ${limit}
@@ -5439,6 +5451,113 @@ app.put('/api/notification-routes/:id', wrap(async (req, res) => {
 app.delete('/api/notification-routes/:id', wrap(async (req, res) => {
   await sv.query(`DELETE FROM notification_routes WHERE id = $1`, [parseInt(req.params.id, 10)]);
   res.json({ ok: true });
+}));
+
+// ── Service checks (HTTP/TCP/SSL/DNS) ─────────────────────────
+// Synthetic checks run either by the central collector (agent_id NULL) or by a
+// remote agent. The service_checks/service_check_results tables are a later
+// migration — every read degrades to [] on an un-migrated DB.
+const SERVICE_TYPES = ['http', 'tcp', 'ssl', 'dns'];
+
+app.get('/api/service-checks', wrap(async (_req, res) => {
+  try {
+    const r = await sv.query(`
+      SELECT sc.id, sc.name, sc.type, sc.target, sc.site_id, sc.site_name,
+             sc.agent_id, ag.name AS agent_name,
+             sc.interval_seconds, sc.params,
+             sc.current_status, sc.last_response_ms, sc.last_detail, sc.last_checked_at, sc.active,
+             (SELECT COUNT(*)::int FROM service_check_results r WHERE r.check_id = sc.id) AS result_count
+        FROM service_checks sc
+        LEFT JOIN agents ag ON ag.id = sc.agent_id
+        ORDER BY sc.name
+    `);
+    res.json(r.rows);
+  } catch (e) {
+    if (/service_checks/.test(e.message)) return res.json([]); // un-migrated DB
+    throw e;
+  }
+}));
+
+app.post('/api/service-checks', wrap(async (req, res) => {
+  const b = req.body || {};
+  const name = (b.name || '').trim();
+  const type = (b.type || '').trim().toLowerCase();
+  const target = (b.target || '').trim();
+  if (!name)   return res.status(400).json({ error: 'name is required' });
+  if (!SERVICE_TYPES.includes(type)) return res.status(400).json({ error: 'type must be one of http, tcp, ssl, dns' });
+  if (!target) return res.status(400).json({ error: 'target is required' });
+
+  const siteId   = b.site_id != null && b.site_id !== '' ? parseInt(b.site_id, 10) : null;
+  const agentId  = b.agent_id != null && b.agent_id !== '' ? parseInt(b.agent_id, 10) : null;
+  const interval = safeInt(b.interval_seconds, 60);
+  const params   = b.params && typeof b.params === 'object' ? b.params : {};
+
+  const r = await sv.query(
+    `INSERT INTO service_checks
+       (name, type, target, site_id, site_name, agent_id, interval_seconds, params, current_status, active)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'unknown',TRUE) RETURNING *`,
+    [name, type, target, siteId, b.site_name || null, agentId, interval, JSON.stringify(params)]
+  );
+  // Refresh the owning agent's config so it picks up the new check immediately.
+  if (agentId) { try { await pushConfigToAgentId(agentId); } catch (e) { console.error('[service-checks] push config failed:', e.message); } }
+  res.status(201).json(r.rows[0]);
+}));
+
+app.put('/api/service-checks/:id', wrap(async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const b = req.body || {};
+  const type = b.type != null ? String(b.type).trim().toLowerCase() : null;
+  if (type && !SERVICE_TYPES.includes(type)) {
+    return res.status(400).json({ error: 'type must be one of http, tcp, ssl, dns' });
+  }
+  const siteId  = b.site_id  != null && b.site_id  !== '' ? parseInt(b.site_id, 10) : null;
+  const agentId = b.agent_id != null && b.agent_id !== '' ? parseInt(b.agent_id, 10) : null;
+  const params  = b.params && typeof b.params === 'object' ? JSON.stringify(b.params) : null;
+
+  const r = await sv.query(
+    `UPDATE service_checks SET
+       name = COALESCE($2, name),
+       type = COALESCE($3, type),
+       target = COALESCE($4, target),
+       site_id = $5,
+       site_name = COALESCE($6, site_name),
+       agent_id = $7,
+       interval_seconds = COALESCE($8, interval_seconds),
+       params = COALESCE($9::jsonb, params),
+       active = COALESCE($10, active)
+     WHERE id = $1 RETURNING *`,
+    [id, b.name != null ? String(b.name).trim() : null, type,
+     b.target != null ? String(b.target).trim() : null,
+     siteId, b.site_name || null, agentId,
+     b.interval_seconds != null ? safeInt(b.interval_seconds, 60) : null,
+     params, typeof b.active === 'boolean' ? b.active : null]
+  );
+  if (!r.rows[0]) return res.status(404).json({ error: 'Service check not found' });
+  if (agentId) { try { await pushConfigToAgentId(agentId); } catch (e) { console.error('[service-checks] push config failed:', e.message); } }
+  res.json(r.rows[0]);
+}));
+
+app.delete('/api/service-checks/:id', wrap(async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const cur = await sv.query(`SELECT agent_id FROM service_checks WHERE id = $1`, [id]);
+  const oldAgentId = cur.rows[0] ? cur.rows[0].agent_id : null;
+  await sv.query(`DELETE FROM service_checks WHERE id = $1`, [id]);
+  if (oldAgentId) { try { await pushConfigToAgentId(oldAgentId); } catch (e) { console.error('[service-checks] push config failed:', e.message); } }
+  res.json({ ok: true });
+}));
+
+app.get('/api/service-checks/:id/results', wrap(async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const limit = safeInt(req.query.limit, 100, 1000);
+  try {
+    const r = await sv.query(
+      `SELECT ts, status, response_ms, detail FROM service_check_results
+        WHERE check_id = $1 ORDER BY ts DESC LIMIT ${limit}`, [id]);
+    res.json(r.rows);
+  } catch (e) {
+    if (/service_check_results/.test(e.message)) return res.json([]); // un-migrated DB
+    throw e;
+  }
 }));
 
 // ── Escalation steps + on-call shifts ─────────────────────────

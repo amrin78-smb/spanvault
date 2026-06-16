@@ -18,6 +18,7 @@ type Alert = {
   incident_id: number | null; incident_title: string | null;
   suppressed_by: number | null; suppression_reason: string | null; suppressed_by_name: string | null;
   agent_id?: number | null; agent_name?: string | null;
+  service_check_id?: number | null; service_name?: string | null;
 };
 
 // ── style tokens (kept inline since globals.css is not editable here) ──
@@ -34,6 +35,8 @@ function prettyType(t: string): string {
   if (/^rule_/.test(t)) return 'Custom Rule';
   if (/^recovery/.test(t)) return 'Recovery';
   if (t === 'agent_down') return 'Agent Down';
+  if (t === 'service_down') return 'Service Down';
+  if (t === 'ssl_expiring') return 'SSL Expiring';
   return t.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
@@ -268,7 +271,14 @@ export default function AlertsPage() {
           </td>
           {/* device, or agent for agent_down alerts */}
           <td style={{ whiteSpace: 'nowrap' }}>
-            {a.device_id == null && a.agent_name ? (
+            {a.device_id == null && a.service_name ? (
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <Link href="/services" style={{ color: 'var(--sv-crimson)', fontWeight: 600 }}>
+                  {a.service_name}
+                </Link>
+                <span className="sv-type-badge" style={{ fontSize: 10 }}>Service</span>
+              </span>
+            ) : a.device_id == null && a.agent_name ? (
               <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                 <Link href={`/agents/${a.agent_id}`} style={{ color: 'var(--sv-crimson)', fontWeight: 600 }}>
                   {a.agent_name}

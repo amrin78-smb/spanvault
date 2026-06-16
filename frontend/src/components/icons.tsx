@@ -41,6 +41,9 @@ export const IconTopology = (p: SVGProps<SVGSVGElement>) => (
 export const IconWireless = (p: SVGProps<SVGSVGElement>) => (
   <svg {...base(p)}><path d="M5 12.55a11 11 0 0 1 14 0" /><path d="M8.5 16.05a6 6 0 0 1 7 0" /><path d="M2 8.82a15 15 0 0 1 20 0" /><line x1="12" y1="20" x2="12.01" y2="20" /></svg>
 );
+export const IconServices = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base(p)}><circle cx="12" cy="12" r="10" /><line x1="2" y1="12" x2="22" y2="12" /><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" /></svg>
+);
 export const IconHome = (p: SVGProps<SVGSVGElement>) => (
   <svg {...base(p)}><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /><polyline points="9 22 9 12 15 12 15 22" /></svg>
 );
