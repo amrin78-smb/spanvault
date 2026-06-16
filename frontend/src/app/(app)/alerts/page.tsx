@@ -19,6 +19,7 @@ type Alert = {
   suppressed_by: number | null; suppression_reason: string | null; suppressed_by_name: string | null;
   agent_id?: number | null; agent_name?: string | null;
   service_check_id?: number | null; service_name?: string | null;
+  wireless_ap_id?: number | null; wireless_controller_id?: number | null; wireless_name?: string | null;
 };
 
 // ── style tokens (kept inline since globals.css is not editable here) ──
@@ -37,6 +38,10 @@ function prettyType(t: string): string {
   if (t === 'agent_down') return 'Agent Down';
   if (t === 'service_down') return 'Service Down';
   if (t === 'ssl_expiring') return 'SSL Expiring';
+  if (t === 'wireless_ap_down') return 'AP Down';
+  if (t === 'wireless_controller_down') return 'Controller Down';
+  if (t === 'wireless_high_util') return 'High Channel Util';
+  if (t === 'wireless_ap_rebooted') return 'AP Rebooted';
   return t.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
@@ -65,7 +70,7 @@ const CHIPS = [
 function passesChips(a: Alert, active: Set<string>, search: string): boolean {
   if (search) {
     const q = search.toLowerCase();
-    const hay = `${a.device_name || ''} ${a.agent_name || ''} ${a.ip_address || ''} ${a.message || ''} ${a.alert_type || ''}`.toLowerCase();
+    const hay = `${a.device_name || ''} ${a.agent_name || ''} ${a.service_name || ''} ${a.wireless_name || ''} ${a.ip_address || ''} ${a.message || ''} ${a.alert_type || ''}`.toLowerCase();
     if (!hay.includes(q)) return false;
   }
   if (!active.size) return true;
@@ -284,6 +289,15 @@ export default function AlertsPage() {
                   {a.agent_name}
                 </Link>
                 <span className="sv-type-badge" style={{ fontSize: 10 }}>Agent</span>
+              </span>
+            ) : a.device_id == null && a.wireless_name ? (
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <Link href="/wireless" style={{ color: 'var(--sv-crimson)', fontWeight: 600 }}>
+                  {a.wireless_name}
+                </Link>
+                <span className="sv-type-badge" style={{ fontSize: 10 }}>
+                  {a.wireless_controller_id ? 'Controller' : 'AP'}
+                </span>
               </span>
             ) : (
               <Link href={`/devices/${a.device_id}`} style={{ color: 'var(--sv-crimson)', fontWeight: 600 }}>

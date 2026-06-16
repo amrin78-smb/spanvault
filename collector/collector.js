@@ -1547,6 +1547,90 @@ async function evaluateAnomalyAlerts() {
   }
 }
 
+// ── Wireless alerting ─────────────────────────────────────────
+// Wireless APs/controllers live in their own tables (not monitored_devices), so
+// the device alert paths never touch them. This pass raises/resolves alerts for
+// AP down, controller offline, high channel utilization, and AP reboots/flaps.
+const wirelessApUptime = new Map(); // ap_id → last seen uptime_seconds (flap detection)
+
+async function raiseWirelessAlert(idCol, entity, alertType, severity, message) {
+  try {
+    const r = await sv.query(
+      `INSERT INTO alerts (${idCol}, alert_type, severity, message, status)
+       VALUES ($1,$2,$3,$4,'active')
+       ON CONFLICT (${idCol}, alert_type) WHERE status = 'active' AND ${idCol} IS NOT NULL DO NOTHING
+       RETURNING id`,
+      [entity.id, alertType, severity, message]);
+    if (r.rows[0]) {
+      log(`[alert] RAISED ${alertType} on ${entity.name}`);
+      const to = await recipientsFor(entity.site_id, severity, alertType);
+      if (to) await sendAlertEmail(`[SpanVault] ${severity.toUpperCase()}: ${message}`, message, to);
+    }
+  } catch (e) { console.error('[wireless-alert] raise failed:', e.message); }
+}
+async function resolveWirelessAlert(idCol, id, alertType) {
+  try {
+    await sv.query(
+      `UPDATE alerts SET status='resolved', resolved_at=NOW()
+        WHERE ${idCol}=$1 AND alert_type=$2 AND status <> 'resolved'`, [id, alertType]);
+  } catch (e) { console.error('[wireless-alert] resolve failed:', e.message); }
+}
+
+async function evaluateWirelessAlerts() {
+  try {
+    const utilThreshold = settingInt('wireless_util_threshold_pct', 90);
+    // Controllers — offline when the last poll errored.
+    const ctrls = (await sv.query(
+      `SELECT id, name, status, site_id FROM wireless_controllers WHERE active = TRUE`)).rows;
+    for (const c of ctrls) {
+      if (c.status === 'error') {
+        await raiseWirelessAlert('wireless_controller_id', c, 'wireless_controller_down', 'critical',
+          `Wireless controller ${c.name} is unreachable`);
+      } else if (c.status === 'ok') {
+        await resolveWirelessAlert('wireless_controller_id', c.id, 'wireless_controller_down');
+      }
+    }
+    // APs — down / high utilization / reboot.
+    const aps = (await sv.query(`
+      SELECT a.id, a.name, a.status, a.site_id, a.uptime_seconds,
+             a.radio_2g_util_pct, a.radio_5g_util_pct
+        FROM wireless_aps a
+        JOIN wireless_controllers c ON c.id = a.controller_id AND c.active = TRUE`)).rows;
+    for (const ap of aps) {
+      if (ap.status === 'offline') {
+        await raiseWirelessAlert('wireless_ap_id', ap, 'wireless_ap_down', 'critical',
+          `Access point ${ap.name} is offline`);
+      } else if (ap.status === 'online') {
+        await resolveWirelessAlert('wireless_ap_id', ap.id, 'wireless_ap_down');
+        const util = Math.max(Number(ap.radio_2g_util_pct) || 0, Number(ap.radio_5g_util_pct) || 0);
+        if (util >= utilThreshold) {
+          await raiseWirelessAlert('wireless_ap_id', ap, 'wireless_high_util', 'warning',
+            `Access point ${ap.name} channel utilization ${Math.round(util)}% (>= ${utilThreshold}%)`);
+        } else {
+          await resolveWirelessAlert('wireless_ap_id', ap.id, 'wireless_high_util');
+        }
+      }
+      // Reboot/flap: uptime went backwards since we last saw it.
+      const up = ap.uptime_seconds != null ? Number(ap.uptime_seconds) : null;
+      if (up != null) {
+        const prev = wirelessApUptime.get(ap.id);
+        if (prev != null && up < prev - 60) {
+          await raiseWirelessAlert('wireless_ap_id', ap, 'wireless_ap_rebooted', 'warning',
+            `Access point ${ap.name} rebooted (uptime reset)`);
+        } else if (up > 7200) {
+          // Stable for >2h — clear any lingering reboot flag.
+          await resolveWirelessAlert('wireless_ap_id', ap.id, 'wireless_ap_rebooted');
+        }
+        wirelessApUptime.set(ap.id, up);
+      }
+    }
+  } catch (err) {
+    if (!/wireless_aps|wireless_controllers/.test(err.message)) {
+      console.error('[wireless-alert] tick failed:', err.message);
+    }
+  }
+}
+
 // ── Data retention / rollups ──────────────────────────────────
 // Roll raw ping samples up to daily availability_summary, then purge raw samples
 // (ping/snmp/service) and old rollups/audit beyond configurable windows so the
@@ -1728,6 +1812,9 @@ async function main() {
 
   // Baseline/anomaly → alert sweep — every minute (opt-in).
   setInterval(evaluateAnomalyAlerts, 60 * 1000);
+
+  // Wireless alert sweep (AP/controller down, high util, reboots) — every minute.
+  setInterval(evaluateWirelessAlerts, 60 * 1000);
 
   // Data retention / rollup — shortly after startup, then every 12 hours.
   setTimeout(retentionTick, 90 * 1000);

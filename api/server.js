@@ -32,6 +32,11 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.21.0': [
+    'Wireless alerting — SpanVault now raises alerts for AP down, controller offline, high channel utilization, and AP reboots/flaps (previously wireless data was collected but never alerted on)',
+    'Wireless alerts flow through the normal engine (routing/escalation/email) and appear in the Alerts page linked to the AP/controller',
+    'Channel-utilization alert threshold configurable via wireless_util_threshold_pct (default 90%)',
+  ],
   '1.20.0': [
     'Data retention & rollups — raw ping/SNMP samples are now rolled up to daily availability summaries and purged beyond a configurable window (default 14 days), so the database no longer grows unbounded',
     'Configurable retention for raw samples, daily rollups, and the audit log (Settings → General → Data Retention)',
@@ -2383,12 +2388,15 @@ async function getAlertCaps() {
         EXISTS (SELECT 1 FROM information_schema.columns
                  WHERE table_name = 'alerts' AND column_name = 'agent_id') AS has_agent_id,
         EXISTS (SELECT 1 FROM information_schema.columns
-                 WHERE table_name = 'alerts' AND column_name = 'service_check_id') AS has_service_check_id
+                 WHERE table_name = 'alerts' AND column_name = 'service_check_id') AS has_service_check_id,
+        EXISTS (SELECT 1 FROM information_schema.columns
+                 WHERE table_name = 'alerts' AND column_name = 'wireless_ap_id') AS has_wireless
     `);
-    alertCaps = r.rows[0] || { has_note: false, has_incident_id: false, has_incidents: false, has_agent_id: false, has_service_check_id: false };
+    const def = { has_note: false, has_incident_id: false, has_incidents: false, has_agent_id: false, has_service_check_id: false, has_wireless: false };
+    alertCaps = r.rows[0] || def;
   } catch (_e) {
     // If the probe itself fails, assume the optional pieces are absent.
-    alertCaps = { has_note: false, has_incident_id: false, has_incidents: false, has_agent_id: false, has_service_check_id: false };
+    alertCaps = { has_note: false, has_incident_id: false, has_incidents: false, has_agent_id: false, has_service_check_id: false, has_wireless: false };
   }
   return alertCaps;
 }
@@ -2415,6 +2423,12 @@ app.get('/api/alerts', wrap(async (req, res) => {
   const svcIdSel = caps.has_service_check_id ? 'a.service_check_id' : 'NULL::int AS service_check_id';
   const svcNameSel = caps.has_service_check_id ? 'sc2.name AS service_name' : 'NULL::text AS service_name';
   const svcJoin = caps.has_service_check_id ? 'LEFT JOIN service_checks sc2 ON sc2.id = a.service_check_id' : '';
+  const wlSel = caps.has_wireless
+    ? 'a.wireless_ap_id, a.wireless_controller_id, COALESCE(wap.name, wctl.name) AS wireless_name'
+    : 'NULL::int AS wireless_ap_id, NULL::int AS wireless_controller_id, NULL::text AS wireless_name';
+  const wlJoin = caps.has_wireless
+    ? 'LEFT JOIN wireless_aps wap ON wap.id = a.wireless_ap_id LEFT JOIN wireless_controllers wctl ON wctl.id = a.wireless_controller_id'
+    : '';
 
   const rows = await sv.query(`
     SELECT a.id, a.device_id, d.name AS device_name, d.ip_address,
@@ -2423,6 +2437,7 @@ app.get('/api/alerts', wrap(async (req, res) => {
            ${noteSel}, ${incIdSel}, ${incTitleSel},
            ${agentIdSel}, ${agentNameSel},
            ${svcIdSel}, ${svcNameSel},
+           ${wlSel},
            a.suppressed_by, a.suppression_reason, sb.name AS suppressed_by_name
     FROM alerts a
     LEFT JOIN monitored_devices d  ON d.id = a.device_id
@@ -2430,6 +2445,7 @@ app.get('/api/alerts', wrap(async (req, res) => {
     ${incJoin ? 'LEFT JOIN incidents inc ON inc.id = a.incident_id' : ''}
     ${agentJoin}
     ${svcJoin}
+    ${wlJoin}
     ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
     ORDER BY a.triggered_at DESC
     LIMIT ${limit}

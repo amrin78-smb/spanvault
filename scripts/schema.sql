@@ -694,6 +694,16 @@ CREATE INDEX IF NOT EXISTS idx_wap_site ON wireless_aps(site_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_wap_ctrl_name
   ON wireless_aps(controller_id, name);
 
+-- Wireless-level alerts reference the AP or controller, not a monitored device.
+ALTER TABLE alerts ADD COLUMN IF NOT EXISTS wireless_ap_id INTEGER
+  REFERENCES wireless_aps(id) ON DELETE CASCADE;
+ALTER TABLE alerts ADD COLUMN IF NOT EXISTS wireless_controller_id INTEGER
+  REFERENCES wireless_controllers(id) ON DELETE CASCADE;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_alerts_active_wap_unique
+  ON alerts(wireless_ap_id, alert_type) WHERE status = 'active' AND wireless_ap_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_alerts_active_wctl_unique
+  ON alerts(wireless_controller_id, alert_type) WHERE status = 'active' AND wireless_controller_id IS NOT NULL;
+
 -- Wireless time-series (AP metrics history)
 CREATE TABLE IF NOT EXISTS wireless_history (
   id             BIGSERIAL PRIMARY KEY,
