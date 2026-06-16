@@ -32,6 +32,9 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.11.3': [
+    'Agent installer checks for Administrator rights up front and exits with clear guidance, instead of downloading files and NSSM before failing at service registration',
+  ],
   '1.11.2': [
     'Agent installer no longer aborts on a fresh host: the idempotent service cleanup only runs when the SpanVault-Agent service already exists, fixing the "nssm.exe: Can\'t open service!" error on first install',
   ],

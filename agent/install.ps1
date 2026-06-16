@@ -40,6 +40,16 @@ function Write-Fail($msg) { Write-Host $msg -ForegroundColor Red }
 
 Write-Host "=== SpanVault Agent Installer ===" -ForegroundColor Cyan
 
+# -- Require elevation up front (installing a Windows service needs admin) so we
+#    fail fast with clear guidance instead of after downloading files + NSSM. ----
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
+            ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $isAdmin) {
+  Write-Fail "This installer must run in an elevated PowerShell (Run as Administrator)."
+  Write-Fail "Right-click PowerShell, choose 'Run as administrator', then paste the install command again."
+  throw "Administrator rights required."
+}
+
 # -- Preflight: confirm the server is reachable before changing anything --------
 Write-Step "Checking connectivity to $ServerUrl ..."
 try {
