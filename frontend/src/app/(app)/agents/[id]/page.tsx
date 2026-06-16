@@ -176,6 +176,12 @@ export default function AgentDetailPage({ params }: { params: { id: string } }) 
             <span style={{ flex: 1 }} />
             {!editSites && <button className="sv-btn ghost sm" onClick={() => setEditSites(true)}>Edit sites</button>}
           </div>
+          {!editSites && (
+            <p className="sv-muted" style={{ fontSize: 12, margin: '0 0 8px' }}>
+              This agent polls <strong>every device in the sites assigned below</strong>. Assign a site here,
+              then add devices to it (Devices → Import / + Add Device) or use <strong>Discover Devices</strong>.
+            </p>
+          )}
           {editSites ? (
             <SiteEditor
               agentId={a.id}
@@ -209,7 +215,7 @@ export default function AgentDetailPage({ params }: { params: { id: string } }) 
               </tbody>
             </table>
           ) : (
-            <Empty message="No sites assigned. Edit sites to assign devices to this agent." />
+            <Empty message="No sites assigned yet. Click “Edit sites” to assign one — every device in that site is then polled by this agent." />
           )}
         </div>
       </div>
@@ -230,6 +236,11 @@ export default function AgentDetailPage({ params }: { params: { id: string } }) 
       {/* Row 2.5 — Zero-touch discovery, full width */}
       <div style={{ ...CARD_STYLE, marginBottom: 12 }}>
         <div style={SECTION_TITLE_STYLE}>Discover Devices on the Agent’s Network</div>
+        {!a.sites.length && (
+          <p className="sv-muted" style={{ fontSize: 12, margin: '0 0 8px' }}>
+            Tip: assign a site above first — adopted devices are placed in one of this agent’s sites.
+          </p>
+        )}
         <AgentDiscovery agentId={a.id} online={a.status === 'online'} />
       </div>
 
@@ -243,7 +254,7 @@ export default function AgentDetailPage({ params }: { params: { id: string } }) 
       <div style={CARD_STYLE}>
         <div style={SECTION_TITLE_STYLE}>Devices Polled by This Agent</div>
         {!a.devices.length ? (
-          <Empty message="No devices assigned to this agent yet." />
+          <Empty message="No devices yet. Assign a site above, then import/add devices to it — or use Discover Devices to scan & adopt." />
         ) : (
           groups.map((g) => (
             <div key={g.name} style={{ marginBottom: 14 }}>

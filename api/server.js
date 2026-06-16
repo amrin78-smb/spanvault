@@ -32,6 +32,9 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.11.5': [
+    'Agent detail page now explains how monitoring works: an agent polls every device in the sites assigned to it — added inline guidance on the Assigned Sites, Devices, and Discover panels so the workflow is self-explanatory',
+  ],
   '1.11.4': [
     'Fixed the agent crashing on startup with a JSON BOM error: the installer wrote config.json with a UTF-8 BOM (Windows PowerShell Out-File) that Node\'s JSON.parse rejects. Installer now writes config without a BOM, and the agent strips one defensively',
   ],
