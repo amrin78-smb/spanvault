@@ -241,6 +241,10 @@ CREATE TABLE IF NOT EXISTS agents (
   updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Revoke an agent without deleting it (and its history): a disabled agent's API
+-- key is refused at the WebSocket handshake and any live socket is dropped.
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS disabled BOOLEAN NOT NULL DEFAULT FALSE;
+
 -- Site assignments: every device in an assigned site is polled by this agent.
 CREATE TABLE IF NOT EXISTS agent_sites (
   agent_id  INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,

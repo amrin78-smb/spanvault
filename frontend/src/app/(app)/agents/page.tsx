@@ -14,7 +14,7 @@ import { AgentInstall, AgentConnectWaiter, NewAgentModal } from '@/components/Ag
 type AgentSite = { site_id: number; site_name: string | null };
 export type Agent = {
   id: number; name: string; status: string; version: string | null;
-  ip_address: string | null; hostname: string | null;
+  ip_address: string | null; hostname: string | null; disabled?: boolean;
   last_seen_at: string | null; connected_at: string | null; created_at: string;
   device_count: number; sites: AgentSite[];
 };
@@ -149,6 +149,16 @@ function AgentCard({ agent, onDelete }: { agent: Agent; onDelete: (a: Agent) => 
         >
           {agent.name}
         </Link>
+        {agent.disabled && (
+          <span
+            style={{
+              fontSize: 11, color: 'var(--red)', border: '1px solid var(--red)',
+              borderRadius: 'var(--radius-sm)', padding: '1px 7px', flex: 'none', whiteSpace: 'nowrap',
+            }}
+          >
+            Disabled
+          </span>
+        )}
         <span
           style={{
             fontSize: 11, color: 'var(--text-muted)', border: '1px solid var(--border)',

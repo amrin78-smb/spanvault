@@ -13,6 +13,7 @@
 
 require('dotenv').config({ path: require('path').join(__dirname, '..', '.env.local') });
 
+const fs = require('fs');
 const { WebSocketServer } = require('ws');
 const { Pool } = require('pg');
 
@@ -32,19 +33,54 @@ sv.on('error', (err) => console.error('[WS DB] Pool error:', err.message));
 // Map of api_key → live WebSocket connection.
 const connectedAgents = new Map();
 
+// Read the agent's API key from the Authorization header (preferred — keeps the
+// secret out of URLs and proxy/access logs) and fall back to the legacy ?key=
+// query param so already-deployed agents keep working during a rolling upgrade.
+function getApiKey(req) {
+  const auth = req.headers && req.headers['authorization'];
+  if (auth && /^Bearer\s+/i.test(auth)) return auth.replace(/^Bearer\s+/i, '').trim();
+  try { return new URL(req.url, 'ws://x').searchParams.get('key'); } catch (_e) { return null; }
+}
+
+// Forcibly drop a connected agent by api_key (used when it is disabled/rotated).
+function disconnectAgent(apiKey, reason) {
+  const ws = connectedAgents.get(apiKey);
+  if (ws) { try { ws.close(4003, reason || 'Disconnected'); } catch (_e) { /* ignore */ } }
+}
+
 function startWsServer(port) {
-  const wss = new WebSocketServer({ port });
+  // Optional TLS: if a cert + key are configured, terminate wss:// here. Otherwise
+  // serve plain ws:// (expected on trusted LAN / behind a TLS-terminating proxy).
+  let wss;
+  const certPath = process.env.SV_WS_TLS_CERT;
+  const keyPath = process.env.SV_WS_TLS_KEY;
+  if (certPath && keyPath && fs.existsSync(certPath) && fs.existsSync(keyPath)) {
+    const httpsServer = require('https').createServer({
+      cert: fs.readFileSync(certPath),
+      key: fs.readFileSync(keyPath),
+    });
+    wss = new WebSocketServer({ server: httpsServer });
+    httpsServer.listen(port);
+    console.log('[WS] TLS enabled (SV_WS_TLS_CERT/KEY configured)');
+  } else {
+    wss = new WebSocketServer({ port });
+  }
 
   wss.on('connection', async (ws, req) => {
     let agent = null;
     let apiKey = null;
     try {
-      apiKey = new URL(req.url, 'ws://x').searchParams.get('key');
+      apiKey = getApiKey(req);
       if (!apiKey) { ws.close(4001, 'No API key'); return; }
 
       const r = await sv.query('SELECT * FROM agents WHERE api_key = $1', [apiKey]);
       if (!r.rows[0]) { ws.close(4003, 'Invalid API key'); return; }
       agent = r.rows[0];
+      if (agent.disabled) {
+        console.log(`[WS] Rejected disabled agent: ${agent.name}`);
+        ws.close(4003, 'Agent disabled');
+        return;
+      }
 
       connectedAgents.set(apiKey, ws);
 
@@ -196,4 +232,4 @@ async function handleAgentMessage(agent, msg) {
   }
 }
 
-module.exports = { startWsServer, connectedAgents, pushConfigToAgent, pushConfigToAgentId };
+module.exports = { startWsServer, connectedAgents, pushConfigToAgent, pushConfigToAgentId, disconnectAgent };

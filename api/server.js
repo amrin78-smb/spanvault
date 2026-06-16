@@ -18,7 +18,7 @@ const { Pool } = require('pg');
 const { discoverDevice, snmpTest } = require('../collector/discovery');
 const topology = require('../collector/topology');
 const wireless = require('../collector/wirelessCollector');
-const { startWsServer, connectedAgents, pushConfigToAgent, pushConfigToAgentId } = require('./ws-server');
+const { startWsServer, connectedAgents, pushConfigToAgent, pushConfigToAgentId, disconnectAgent } = require('./ws-server');
 const intelligence = require('./intelligence');
 const { getLicense, getLicenseState } = require('./licenseCheck');
 const reportScheduler = require('./reportScheduler');
@@ -32,6 +32,12 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.8.0': [
+    'Agents now authenticate with the API key in an Authorization header instead of the URL, so the secret no longer lands in proxy/access logs (server still accepts the old form during upgrade)',
+    'Optional TLS (wss://) for the agent WebSocket via SV_WS_TLS_CERT / SV_WS_TLS_KEY',
+    'Rotate an agent\'s API key from its detail page — the old key is invalidated immediately and the agent is dropped until re-installed',
+    'Disable/enable an agent without deleting it: a disabled agent is disconnected and its handshake refused until re-enabled (shown with a Disabled badge)',
+  ],
   '1.7.0': [
     'Agent installer now auto-downloads NSSM when it is missing, so the service registers on a clean server without NetVault present (previously failed with "nssm is not recognized")',
     'Installer adds a preflight connectivity check, verifies the service actually reached Running state, and prints clear success/log-path output',
@@ -1822,6 +1828,20 @@ function installCommand(serverUrl, apiKey) {
   return `& ([scriptblock]::Create((irm ${serverUrl}/api/agent/install.ps1))) -ServerUrl "${serverUrl}" -ApiKey "${apiKey}"`;
 }
 
+// The agents.disabled column is a later migration — probe once so the list/detail
+// endpoints work before and after schema.sql is re-applied (mirrors alertCaps).
+let agentsHasDisabled = null;
+async function agentDisabledCol() {
+  if (agentsHasDisabled !== null) return agentsHasDisabled;
+  try {
+    const r = await sv.query(
+      `SELECT EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_name='agents' AND column_name='disabled') AS x`);
+    agentsHasDisabled = !!r.rows[0].x;
+  } catch (_e) { agentsHasDisabled = false; }
+  return agentsHasDisabled;
+}
+
 // Auto-assign a device to whichever agent owns its site (NULL = local polling).
 // Returns the resolved agent_id (or null). Updates the device row in place.
 async function assignDeviceAgent(deviceId, siteId) {
@@ -1837,9 +1857,10 @@ async function assignDeviceAgent(deviceId, siteId) {
 
 // All agents with device counts + assigned sites.
 app.get('/api/agents', wrap(async (_req, res) => {
+  const disCol = (await agentDisabledCol()) ? 'a.disabled' : 'FALSE AS disabled';
   const r = await sv.query(`
     SELECT a.id, a.name, a.status, a.version, a.ip_address, a.hostname,
-           a.last_seen_at, a.connected_at, a.created_at,
+           a.last_seen_at, a.connected_at, a.created_at, ${disCol},
            (SELECT COUNT(*)::int FROM monitored_devices d WHERE d.agent_id = a.id) AS device_count,
            COALESCE((
              SELECT json_agg(json_build_object('site_id', s.site_id, 'site_name', s.site_name) ORDER BY s.site_name)
@@ -1929,6 +1950,40 @@ app.put('/api/agents/:id', wrap(async (req, res) => {
   const r = await sv.query(
     `UPDATE agents SET name = $2, updated_at = NOW() WHERE id = $1 RETURNING *`, [id, b.name]);
   if (!r.rows[0]) return res.status(404).json({ error: 'Agent not found' });
+  res.json(r.rows[0]);
+}));
+
+// Rotate an agent's API key. The old key is immediately invalid; if the agent is
+// connected it is dropped and must be re-installed with the new command.
+app.post('/api/agents/:id/rotate-key', wrap(async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const cur = await sv.query(`SELECT api_key FROM agents WHERE id = $1`, [id]);
+  if (!cur.rows[0]) return res.status(404).json({ error: 'Agent not found' });
+  const oldKey = cur.rows[0].api_key;
+  const r = await sv.query(
+    `UPDATE agents SET api_key = gen_random_uuid()::text, status = 'never_connected',
+       updated_at = NOW() WHERE id = $1 RETURNING *`, [id]);
+  try { disconnectAgent(oldKey, 'Key rotated'); } catch (_e) { /* ignore */ }
+  const serverUrl = getServerUrl(req);
+  res.json({ ...r.rows[0], install_command: installCommand(serverUrl, r.rows[0].api_key) });
+}));
+
+// Enable/disable an agent without deleting it. Disabling drops any live socket and
+// refuses future handshakes until re-enabled.
+app.post('/api/agents/:id/disabled', wrap(async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!(await agentDisabledCol())) {
+    return res.status(400).json({ error: 'Agent disable requires a schema update (re-apply scripts/schema.sql).' });
+  }
+  const disabled = !!(req.body && req.body.disabled);
+  const r = await sv.query(
+    `UPDATE agents SET disabled = $2, updated_at = NOW() WHERE id = $1 RETURNING *`, [id, disabled]);
+  if (!r.rows[0]) return res.status(404).json({ error: 'Agent not found' });
+  if (disabled) {
+    try { disconnectAgent(r.rows[0].api_key, 'Agent disabled'); } catch (_e) { /* ignore */ }
+    await sv.query(`UPDATE agents SET status = 'offline' WHERE id = $1`, [id]);
+    await sv.query(`UPDATE monitored_devices SET current_status = 'agent_offline' WHERE agent_id = $1`, [id]);
+  }
   res.json(r.rows[0]);
 }));
 

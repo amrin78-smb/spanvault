@@ -65,9 +65,11 @@ function connect() {
   let host = serverUrl;
   try { host = new URL(serverUrl).hostname; } catch { /* serverUrl may be bare */ }
   const wsProto = /^https/i.test(serverUrl) ? 'wss' : 'ws';
-  const wsUrl = `${wsProto}://${host}:${WS_PORT}/?key=${encodeURIComponent(apiKey)}`;
+  // Send the API key in the Authorization header rather than the URL so it never
+  // lands in proxy/access logs. (The ws client supports custom headers.)
+  const wsUrl = `${wsProto}://${host}:${WS_PORT}/`;
   console.log('[Agent] Connecting to', wsUrl);
-  ws = new WebSocket(wsUrl);
+  ws = new WebSocket(wsUrl, { headers: { Authorization: `Bearer ${apiKey}` } });
 
   ws.on('open', () => {
     console.log('[Agent] Connected to SpanVault server');

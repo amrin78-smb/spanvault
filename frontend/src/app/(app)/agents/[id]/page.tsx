@@ -18,7 +18,7 @@ type AgentDevice = {
 };
 type AgentDetail = {
   id: number; name: string; status: string; version: string | null;
-  ip_address: string | null; hostname: string | null;
+  ip_address: string | null; hostname: string | null; disabled?: boolean;
   last_seen_at: string | null; connected_at: string | null; created_at: string;
   sites: AgentSite[]; devices: AgentDevice[]; install_command: string;
 };
@@ -70,6 +70,20 @@ export default function AgentDetailPage({ params }: { params: { id: string } }) 
     router.push('/agents');
   }
 
+  async function handleRotateKey() {
+    if (!confirm('Rotate this agent\'s API key? The current key stops working immediately — you must re-run the install command (shown below) on the remote server.')) return;
+    await apiSend(`/api/agents/${params.id}/rotate-key`, 'POST');
+    agent.reload();
+  }
+
+  async function handleToggleDisabled() {
+    if (!agent.data) return;
+    const next = !agent.data.disabled;
+    if (next && !confirm(`Disable agent "${agent.data.name}"? It will be disconnected and refused until re-enabled. Its devices show as agent-offline.`)) return;
+    await apiSend(`/api/agents/${params.id}/disabled`, 'POST', { disabled: next });
+    agent.reload();
+  }
+
   if (agent.error) return <ErrorBox message={agent.error} />;
   if (agent.loading && !agent.data) return <Loading label="Loading agent…" />;
   const a = agent.data;
@@ -84,8 +98,18 @@ export default function AgentDetailPage({ params }: { params: { id: string } }) 
       <PageHeader title={a.name} subtitle="Remote polling agent detail.">
         <AgentStatusPill status={a.status} />
         <Link href="/agents" className="sv-btn ghost">← Back to Agents</Link>
+        <button className="sv-btn ghost" onClick={handleToggleDisabled}>
+          {a.disabled ? 'Enable Agent' : 'Disable Agent'}
+        </button>
         <button className="sv-btn ghost" onClick={handleDelete}>Delete Agent</button>
       </PageHeader>
+
+      {a.disabled && (
+        <div style={{ ...CARD_STYLE, borderLeft: '3px solid var(--red)', marginBottom: 12, fontSize: 13 }}>
+          ⛔ This agent is <strong>disabled</strong> — its connection is refused and its devices are not being polled.
+          Use <strong>Enable Agent</strong> to restore it.
+        </div>
+      )}
 
       {/* Row 1 — compact stat cards */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 12 }}>
@@ -117,7 +141,11 @@ export default function AgentDetailPage({ params }: { params: { id: string } }) 
             <dt style={{ color: 'var(--text-muted)' }}>Created</dt>
             <dd style={{ margin: 0, color: 'var(--text-primary)' }}>{fmtTime(a.created_at)}</dd>
           </dl>
-          <div style={{ ...SECTION_TITLE_STYLE, marginTop: 16 }}>Install / Reconnect</div>
+          <div style={{ display: 'flex', alignItems: 'center', marginTop: 16, marginBottom: 8 }}>
+            <span style={{ ...SECTION_TITLE_STYLE, marginBottom: 0 }}>Install / Reconnect</span>
+            <span style={{ flex: 1 }} />
+            <button className="sv-btn ghost sm" onClick={handleRotateKey} title="Generate a new API key (old key stops working)">Rotate key</button>
+          </div>
           <AgentInstall command={a.install_command} />
         </div>
 
