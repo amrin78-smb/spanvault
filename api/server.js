@@ -32,6 +32,9 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.27.5': [
+    'Removed the redundant KPI summary cards (Controllers, Avg CPU, AP Capacity, HA Status) from the Wireless → Controllers tab — every value was already shown per-controller in the Inventory, AP Capacity, Health, and HA/Redundancy panels directly below, and the aggregated "HA Status" was misleading since HA is per-pair',
+  ],
   '1.27.4': [
     'Fixed the section title touching the card edge on the Intelligence tables (Anomaly Detection, Device Health Scores) — the card removes its padding so the table can span edge-to-edge, but the header now keeps its own padding instead of sitting flush against the left edge',
   ],

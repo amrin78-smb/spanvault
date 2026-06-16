@@ -3635,31 +3635,6 @@ function ControllersTab({ onViewEvents }: { onViewEvents?: () => void }) {
     return m;
   }, [ctlList]);
 
-  // AP CAPACITY card text: "111 / 347 (32%)" if license data, else "111 APs".
-  const hasLicensed = ovCtls.some((c) => c.licensed_aps != null && Number(c.licensed_aps) > 0);
-  const licensedTotal = ovCtls.reduce((s, c) => s + (Number(c.licensed_aps) > 0 ? Number(c.licensed_aps) : 0), 0);
-  const apCapValue = ov
-    ? (hasLicensed && licensedTotal > 0
-        ? `${fmtInt(ov.total_aps)} / ${fmtInt(licensedTotal)} (${ov.ap_capacity_pct ?? 0}%)`
-        : `${fmtInt(ov.total_aps)} APs`)
-    : '—';
-
-  // HA STATUS card: aggregate from per-controller HA fields.
-  const haConfigured = ovCtls.filter(controllerInHa);
-  const anyStandalone = ovCtls.some((c) => !controllerInHa(c) && c.ha_sync_status === 'Standalone');
-  let haText = 'N/A';
-  let haColor: string | undefined;
-  if (haConfigured.length) {
-    const allSynced = haConfigured.every((c) => c.ha_sync_status === 'Synced');
-    const active = haConfigured.find((c) => c.ha_mode === 'Active');
-    const role2 = active ? 'Active' : (haConfigured[0].ha_mode || 'HA');
-    haText = `${role2}/${allSynced ? 'Synced' : 'Not Synced'}`;
-    haColor = allSynced ? 'var(--green)' : 'var(--yellow)';
-  } else if (anyStandalone) {
-    haText = 'Standalone';
-    haColor = 'var(--text-muted)';
-  }
-
   return (
     <div>
       {/* Add controller bar */}
@@ -3689,21 +3664,6 @@ function ControllersTab({ onViewEvents }: { onViewEvents?: () => void }) {
         </div>
       ) : (
         <>
-          {/* Row 1 — 6 compact stat cards */}
-          {ov && (
-            <StatRow>
-              <StatCard
-                value={fmtInt(ov.total_controllers)}
-                sub={ov.online_controllers === ov.total_controllers ? 'All online' : `${fmtInt(ov.online_controllers)} online`}
-                label="Controllers"
-                color={ov.online_controllers === ov.total_controllers ? 'var(--green)' : 'var(--yellow)'}
-              />
-              <StatCard value={fmtPct(ov.avg_cpu_pct)} label="Avg CPU" />
-              <StatCard value={apCapValue} label="AP Capacity" />
-              <StatCard value={haText} valueColor={haColor} label="HA Status" color={haColor} />
-            </StatRow>
-          )}
-
           {/* Controller Capabilities — shown above the overview rows so the
               edit/test controls stay visible while the overview API loads. */}
           <CapabilitiesAccordion
