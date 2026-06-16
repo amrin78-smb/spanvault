@@ -32,6 +32,9 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.27.1': [
+    'Fixed a 500 from controller SNMP Diagnostics (and the OID-walk tool) when a controller uses SNMP v3 with incomplete credentials — session creation is now inside the guarded block, so the diagnostics modal shows the real SNMP error instead of failing',
+  ],
   '1.27.0': [
     'Manual HA pairing for controllers — link two controllers as an HA pair (with Active/Standby roles) when the platform doesn\'t expose HA over SNMP (e.g. AOS-8 gateways); set on a controller\'s Edit dialog and shown in the HA/Redundancy panel',
   ],

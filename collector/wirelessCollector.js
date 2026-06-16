@@ -789,12 +789,15 @@ async function debugWalk(pool, controller) {
     metadataOids.ruckus_max_aps     = '1.3.6.1.4.1.25053.1.2.2.1.1.1.1.16.0';
   }
 
-  const session = createSession(device, 12000);
+  let session;
   const out = {
     ok: true, vendor: controller.vendor, device_ip: device.ip_address,
     parser_oids: {}, subtrees: {}, essid_table: {}, metadata_probe: {},
   };
   try {
+    // createSession can throw synchronously (e.g. net-snmp v3 with malformed
+    // credentials), so build it INSIDE the try — a throw becomes ok:false here.
+    session = createSession(device, 12000);
     // 0) Controller-metadata scalar probes (best-effort; capped to the small map).
     for (const [label, oid] of Object.entries(metadataOids)) {
       try {
@@ -839,7 +842,7 @@ async function debugWalk(pool, controller) {
     out.ok = false;
     out.error = e.message;
   } finally {
-    try { session.close(); } catch (_e) { /* ignore */ }
+    try { if (session) session.close(); } catch (_e) { /* ignore */ }
   }
   return out;
 }
@@ -864,8 +867,9 @@ async function walkOid(pool, controller, oid) {
   if (!device) return { ok: false, message: 'Linked SNMP device not found' };
 
   const CAP = 500;
-  const session = createSession(device, 12000);
+  let session;
   try {
+    session = createSession(device, 12000); // can throw synchronously (v3) — keep inside try
     let rows = await walk(session, oid);
     if (rows.length === 0) {
       const g = await get(session, [oid]);
@@ -883,7 +887,7 @@ async function walkOid(pool, controller, oid) {
   } catch (e) {
     return { ok: false, message: e.message };
   } finally {
-    try { session.close(); } catch (_e) { /* ignore */ }
+    try { if (session) session.close(); } catch (_e) { /* ignore */ }
   }
 }
 
