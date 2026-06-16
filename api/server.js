@@ -32,6 +32,10 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.27.7': [
+    'Wireless Clients tab "Total Clients" (and per-controller header counts) now use the same live per-AP associated-client gauge as the Wireless Insights "Clients" figure, so the two pages always agree — the controller\'s station table re-reports clients it has already aged out, so it could not be reconciled by polling more often',
+    'Reverted the client poll back to every 15 minutes (1.27.6 had moved it to 5) now that the count no longer depends on the station table being fresh — avoids the extra SNMP load for no benefit; the batched roam-count query is kept',
+  ],
   '1.27.6': [
     'Fixed the Wireless Clients tab "Total Clients" running far higher than the live client count on Wireless Insights — the collector now polls clients every 5 minutes (was 15) and prunes clients not seen in 7 minutes (was 15), so the station table tracks currently-associated clients instead of holding ones the controller had already aged out',
     'Batched the per-client roam-count lookup into a single grouped query per controller (was one query per client), so the faster client polling does not increase database load',
@@ -4109,9 +4113,10 @@ app.get('/api/wireless/clients/summary', wrap(async (req, res) => {
   `, params);
 
   const byBand = { '2.4GHz': 0, '5GHz': 0, '6GHz': 0 };
-  // Per-controller client + problem counts, keyed by controller_id, so the Clients
-  // tab accordion headers use the SAME wireless_clients (station table) source as
-  // the Total Clients card — not the radio-based wireless_aps.clients_total.
+  // Per-controller problem counts (and band/signal/roam stats) come from the station
+  // table — they're per-client attributes only it carries. The client_count is
+  // overridden below with the live per-AP associated gauge so the accordion headers
+  // and the Total Clients card agree with the Wireless Insights "Clients" figure.
   const byController = new Map();
   const byAp = {};
   let problemClients = 0, lowSignalClients = 0, frequentRoamers = 0, stickyClients = 0;
@@ -4132,6 +4137,25 @@ app.get('/api/wireless/clients/summary', wrap(async (req, res) => {
     if (row.rssi_dbm !== null && row.rssi_dbm !== undefined && row.rssi_dbm < -75) lowSignalClients++;
     if ((row.roaming_count || 0) > 5) frequentRoamers++;
   }
+  // Live currently-associated client count per controller, from the per-AP gauge
+  // (wireless_aps.clients_total) — the SAME source as Wireless Insights. The Aruba
+  // station table keeps re-reporting clients the controller has aged out, so it (and
+  // the per-client rows) can sit well above what's actually associated right now;
+  // sourcing the counts from the gauge keeps the two pages in sync.
+  const liveParams = [];
+  const liveSc = siteFilterClause(getSiteFilter(req), liveParams, 'c.site_id');
+  const liveRes = await sv.query(`
+    SELECT a.controller_id, COALESCE(SUM(a.clients_total), 0)::int AS live
+    FROM wireless_aps a JOIN wireless_controllers c ON c.id = a.controller_id
+    ${liveSc ? 'WHERE ' + liveSc : ''}
+    GROUP BY a.controller_id
+  `, liveParams);
+  const liveByCtl = new Map(liveRes.rows.map((r) => [Number(r.controller_id), Number(r.live)]));
+  const liveTotal = liveRes.rows.reduce((s, r) => s + Number(r.live), 0);
+
+  for (const e of byController.values()) {
+    if (liveByCtl.has(e.controller_id)) e.client_count = liveByCtl.get(e.controller_id);
+  }
   const byControllerArr = Array.from(byController.values())
     .sort((a, b) => b.client_count - a.client_count);
   const topApsByClients = Object.entries(byAp)
@@ -4140,7 +4164,7 @@ app.get('/api/wireless/clients/summary', wrap(async (req, res) => {
     .slice(0, 5);
 
   res.json({
-    total_clients: rows.rows.length,
+    total_clients: liveTotal,
     by_band: byBand,
     by_controller: byControllerArr,
     problem_clients: problemClients,
