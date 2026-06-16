@@ -1149,6 +1149,57 @@ function ControllerGroupHeader({
   );
 }
 
+// ── Access-point table sorting ────────────────────────────────────────────────
+type ApSort = { key: string; dir: 'asc' | 'desc' };
+
+// Value extractor per sortable column. Strings sort case-insensitively; numeric
+// columns push missing values to the bottom (ascending) so blanks don't lead.
+const AP_SORT_ACCESSORS: Record<string, (a: AccessPoint) => string | number> = {
+  name: (a) => (a.name || '').toLowerCase(),
+  site: (a) => (a.site_name || '').toLowerCase(),
+  status: (a) => a.status || '',
+  clients: (a) => a.clients_total || 0,
+  ch2g: (a) => a.radio_2g_channel ?? -1,
+  ch5g: (a) => a.radio_5g_channel ?? -1,
+  util: (a) => Math.max(a.radio_2g_util_pct || 0, a.radio_5g_util_pct || 0),
+  uptime: (a) => a.uptime_seconds ?? -1,
+  lastseen: (a) => (a.last_seen_at ? Date.parse(a.last_seen_at) : -1),
+};
+
+function sortAps(aps: AccessPoint[], sort: ApSort | null): AccessPoint[] {
+  if (!sort) return aps;
+  const get = AP_SORT_ACCESSORS[sort.key];
+  if (!get) return aps;
+  const out = [...aps].sort((a, b) => {
+    const va = get(a);
+    const vb = get(b);
+    if (va < vb) return -1;
+    if (va > vb) return 1;
+    return 0;
+  });
+  if (sort.dir === 'desc') out.reverse();
+  return out;
+}
+
+// Clickable, sort-aware table header cell (top-level per the no-nested-components rule).
+function SortTh({ label, col, sort, onSort }: {
+  label: string; col: string; sort: ApSort | null; onSort: (col: string) => void;
+}) {
+  const active = sort?.key === col;
+  return (
+    <th
+      onClick={() => onSort(col)}
+      style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }}
+      title="Click to sort"
+    >
+      {label}
+      <span style={{ marginLeft: 4, color: active ? 'var(--sv-crimson)' : 'var(--text-muted)', fontSize: 10 }}>
+        {active ? (sort!.dir === 'asc' ? '▲' : '▼') : '↕'}
+      </span>
+    </th>
+  );
+}
+
 // ── One controller's collapsible AP group (own search + collapse state) ───────
 function ApControllerGroup({
   controller, aps, onSelectAp,
@@ -1160,6 +1211,7 @@ function ApControllerGroup({
   const online = controllerOnline(controller);
   const [collapsed, setCollapsed] = useState<boolean>(!online);
   const [search, setSearch] = useState('');
+  const [sort, setSort] = useState<ApSort | null>(null);
 
   useEffect(() => { setCollapsed(readCollapsed(controller.id, !online)); }, [controller.id, online]);
 
@@ -1167,14 +1219,22 @@ function ApControllerGroup({
     setCollapsed((c) => { const n = !c; writeCollapsed(controller.id, n); return n; });
   }
 
+  // Click a header: first click sorts ascending, click again toggles direction.
+  function onSort(col: string) {
+    setSort((s) => (s && s.key === col)
+      ? { key: col, dir: s.dir === 'asc' ? 'desc' : 'asc' }
+      : { key: col, dir: 'asc' });
+  }
+
   const clients = aps.reduce((s, a) => s + (a.clients_total || 0), 0);
   const summary = `${aps.length} AP${aps.length === 1 ? '' : 's'} · ${clients} client${clients === 1 ? '' : 's'}`;
 
   const shown = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return aps;
-    return aps.filter((a) => a.name.toLowerCase().includes(q) || (a.ip_address || '').toLowerCase().includes(q));
-  }, [aps, search]);
+    const filtered = !q ? aps
+      : aps.filter((a) => a.name.toLowerCase().includes(q) || (a.ip_address || '').toLowerCase().includes(q));
+    return sortAps(filtered, sort);
+  }, [aps, search, sort]);
 
   return (
     <div style={{ marginBottom: 12 }}>
@@ -1197,8 +1257,15 @@ function ApControllerGroup({
             <table className="sv-table">
               <thead>
                 <tr>
-                  <th>AP Name</th><th>Site</th><th>Status</th><th>Clients</th>
-                  <th>2.4GHz</th><th>5GHz</th><th>Channel Util</th><th>Uptime</th><th>Last Seen</th>
+                  <SortTh label="AP Name" col="name" sort={sort} onSort={onSort} />
+                  <SortTh label="Site" col="site" sort={sort} onSort={onSort} />
+                  <SortTh label="Status" col="status" sort={sort} onSort={onSort} />
+                  <SortTh label="Clients" col="clients" sort={sort} onSort={onSort} />
+                  <SortTh label="2.4GHz" col="ch2g" sort={sort} onSort={onSort} />
+                  <SortTh label="5GHz" col="ch5g" sort={sort} onSort={onSort} />
+                  <SortTh label="Channel Util" col="util" sort={sort} onSort={onSort} />
+                  <SortTh label="Uptime" col="uptime" sort={sort} onSort={onSort} />
+                  <SortTh label="Last Seen" col="lastseen" sort={sort} onSort={onSort} />
                 </tr>
               </thead>
               <tbody>

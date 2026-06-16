@@ -32,6 +32,10 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.13.0': [
+    'Access Points table (Wireless tab) now has sortable column headers — click any header to sort ascending/descending (alphabetical for AP Name/Site/Status, numeric for Clients/channels/utilization/uptime, by time for Last Seen)',
+    'A sort indicator shows the active column and direction; clicking the same header again flips the direction',
+  ],
   '1.12.0': [
     'Devices polled by a remote agent are now alerted on (down / high-latency / your alert rules) — previously distributed polling collected data but never raised alerts',
     'Agent-down dependency: when an agent goes offline, you get ONE "Agent Down" alert and its devices\' alerts are suppressed instead of a flood of false device-down alerts (the devices aren\'t down — they\'re just unreachable while the agent is offline)',
