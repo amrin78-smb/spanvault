@@ -169,6 +169,8 @@ interface Controller {
   ha_peer_ip?: string | null;
   ha_sync_status?: string | null;
   ap_disconnects_24h?: number | null;
+  ha_peer_controller_id?: number | null;
+  ha_manual_role?: string | null;
   capabilities_probed_at?: string | null;
   has_capabilities?: boolean;
   // SNMP credentials of the linked monitored device (present on GET responses);
@@ -197,6 +199,9 @@ interface OverviewController {
   ha_mode: string | null;
   ha_peer_ip: string | null;
   ha_sync_status: string | null;
+  ha_peer_controller_id: number | null;
+  ha_manual_role: string | null;
+  ha_peer_name: string | null;
   ap_disconnects_24h: number | null;
   last_polled_at: string | null;
 }
@@ -3242,7 +3247,7 @@ function ControllerHealthTable({ controllers }: { controllers: OverviewControlle
 // A controller has HA configured when ha_sync_status is set and not 'Standalone'.
 function HaStatusTable({ controllers }: { controllers: OverviewController[] }) {
   const haCtls = controllers.filter(
-    (c) => c.ha_sync_status != null && c.ha_sync_status !== 'Standalone',
+    (c) => c.ha_peer_controller_id != null || (c.ha_sync_status != null && c.ha_sync_status !== 'Standalone'),
   );
   if (!haCtls.length) {
     return <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>No HA configured</div>;
@@ -3256,17 +3261,20 @@ function HaStatusTable({ controllers }: { controllers: OverviewController[] }) {
         </tr></thead>
         <tbody>
           {haCtls.map((c) => {
+            const manual = c.ha_peer_controller_id != null;
             const synced = c.ha_sync_status === 'Synced';
-            const role = haCellLabel(c.ha_mode, c.ha_sync_status);
+            const role = manual
+              ? { text: c.ha_manual_role || 'Paired', color: c.ha_manual_role === 'Active' ? 'var(--green)' : 'var(--text-muted)', dot: true }
+              : haCellLabel(c.ha_mode, c.ha_sync_status);
             return (
               <tr key={c.id}>
                 <td style={{ ...TD_STYLE, fontWeight: 600 }}>{c.name}</td>
-                <td style={TD_STYLE}>{c.ha_peer_ip || '—'}</td>
+                <td style={TD_STYLE}>{manual ? (c.ha_peer_name || '—') : (c.ha_peer_ip || '—')}</td>
                 <td style={{ ...TD_STYLE, color: role.color, fontWeight: 600 }}>
                   {role.dot && <span style={{ marginRight: 4 }}>●</span>}{role.text}
                 </td>
-                <td style={{ ...TD_STYLE, color: synced ? 'var(--green)' : 'var(--orange)' }}>
-                  {synced ? '✓ Synced' : `⚠ ${c.ha_sync_status || 'Not Synced'}`}
+                <td style={{ ...TD_STYLE, color: manual ? 'var(--text-muted)' : (synced ? 'var(--green)' : 'var(--orange)') }}>
+                  {manual ? 'Manual' : (synced ? '✓ Synced' : `⚠ ${c.ha_sync_status || 'Not Synced'}`)}
                 </td>
               </tr>
             );
@@ -3789,6 +3797,10 @@ function ControllerModal({
   }));
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // Manual HA pairing (edit mode only).
+  const allCtls = useApi<Controller[]>('/api/wireless/controllers', 0);
+  const [haPeerId, setHaPeerId] = useState(existing?.ha_peer_controller_id != null ? String(existing.ha_peer_controller_id) : '');
+  const [haRole, setHaRole] = useState(existing?.ha_manual_role || '');
 
   function patch(p: Partial<ControllerForm>) {
     setForm((f) => ({ ...f, ...p }));
@@ -3857,6 +3869,13 @@ function ControllerModal({
     try {
       if (existing) {
         await apiSend(`/api/wireless/controllers/${existing.id}`, 'PUT', body);
+        // Apply manual HA pairing (separate endpoint; sets both sides).
+        try {
+          await apiSend(`/api/wireless/controllers/${existing.id}/ha-peer`, 'POST', {
+            peer_id: haPeerId ? Number(haPeerId) : null,
+            role: haRole || null,
+          });
+        } catch (_e) { /* HA pairing is optional — don't fail the save */ }
       } else {
         await apiSend('/api/wireless/controllers', 'POST', body);
       }
@@ -3903,6 +3922,28 @@ function ControllerModal({
               {sites.data?.map((s: SiteRow) => <option key={s.id} value={s.id}>{s.name}</option>)}
             </select>
           </label>
+
+          {existing && (
+            <>
+              <label className="sv-field">HA peer (manual)
+                <select className="sv-select" value={haPeerId} onChange={(e) => setHaPeerId(e.target.value)}>
+                  <option value="">— None —</option>
+                  {(allCtls.data || []).filter((c) => c.id !== existing.id)
+                    .map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+              </label>
+              <label className="sv-field">HA role
+                <select className="sv-select" value={haRole} onChange={(e) => setHaRole(e.target.value)} disabled={!haPeerId}>
+                  <option value="">—</option>
+                  <option value="Active">Active</option>
+                  <option value="Standby">Standby</option>
+                </select>
+              </label>
+              <span className="sv-muted" style={{ gridColumn: '1 / -1', fontSize: 11, marginTop: -6 }}>
+                For controllers that don’t expose HA over SNMP (e.g. AOS-8 gateways). Pairing is applied to both controllers.
+              </span>
+            </>
+          )}
 
           {form.conn_type === 'snmp' ? (
             <>

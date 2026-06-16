@@ -652,6 +652,12 @@ ALTER TABLE wireless_controllers ADD COLUMN IF NOT EXISTS ha_mode TEXT;         
 ALTER TABLE wireless_controllers ADD COLUMN IF NOT EXISTS ha_peer_ip TEXT;
 ALTER TABLE wireless_controllers ADD COLUMN IF NOT EXISTS ha_sync_status TEXT;   -- synced/not-synced/unknown/n-a
 ALTER TABLE wireless_controllers ADD COLUMN IF NOT EXISTS ap_disconnects_24h INTEGER;  -- from wireless_client_events
+-- Manual HA pairing: for platforms (e.g. AOS-8 gateways) that don't expose HA via
+-- SNMP, an operator can link two controllers as a pair. Kept separate from the
+-- SNMP-derived ha_* columns so polling never overwrites the manual designation.
+ALTER TABLE wireless_controllers ADD COLUMN IF NOT EXISTS ha_peer_controller_id INTEGER
+  REFERENCES wireless_controllers(id) ON DELETE SET NULL;
+ALTER TABLE wireless_controllers ADD COLUMN IF NOT EXISTS ha_manual_role TEXT;  -- Active / Standby
 -- One-time OID capability discovery: { capabilityKey: workingOid, probe_done: true }.
 ALTER TABLE wireless_controllers ADD COLUMN IF NOT EXISTS capabilities JSONB DEFAULT '{}';
 ALTER TABLE wireless_controllers ADD COLUMN IF NOT EXISTS capabilities_probed_at TIMESTAMPTZ;

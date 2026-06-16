@@ -32,6 +32,9 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.27.0': [
+    'Manual HA pairing for controllers — link two controllers as an HA pair (with Active/Standby roles) when the platform doesn\'t expose HA over SNMP (e.g. AOS-8 gateways); set on a controller\'s Edit dialog and shown in the HA/Redundancy panel',
+  ],
   '1.26.0': [
     'Controller "Detect" now shows its results — a panel listing each capability (model, firmware, licensed APs, HA role/peer/sync) with the OID that resolved and its live value, or "not found", so you can see exactly what a controller exposes (and why e.g. HA isn\'t detected on a given model)',
     'New per-controller "Diagnostics" button — a live read-only SNMP walk showing metadata probes, table row counts, and raw OID samples, to find the correct OID when something isn\'t auto-detected',
@@ -3070,11 +3073,14 @@ function fmtUptime(seconds) {
 
 // ── Controllers CRUD ──────────────────────────────────────────
 app.get('/api/wireless/controllers', wrap(async (_req, res) => {
+  const hp = (await wctlHasHaPeer())
+    ? 'c.ha_peer_controller_id, c.ha_manual_role'
+    : 'NULL::int AS ha_peer_controller_id, NULL::text AS ha_manual_role';
   const r = await sv.query(`
     SELECT c.id, c.name, c.vendor, c.controller_url, c.api_username, c.snmp_device_id,
            c.site_id, c.site_name, c.active, c.last_polled_at, c.status,
            c.model, c.firmware_version, c.licensed_aps, c.ha_mode, c.ha_peer_ip,
-           c.ha_sync_status, c.ap_disconnects_24h, c.capabilities_probed_at,
+           c.ha_sync_status, c.ap_disconnects_24h, c.capabilities_probed_at, ${hp},
            (c.capabilities IS NOT NULL AND c.capabilities <> '{}') AS has_capabilities,
            d.snmp_community AS snmp_community,
            d.snmp_version AS snmp_version,
@@ -3090,11 +3096,29 @@ app.get('/api/wireless/controllers', wrap(async (_req, res) => {
 
 // ── Aggregate overview across all controllers ─────────────────
 // Registered before any /:id route so "overview" is never treated as an :id.
+// Manual HA columns are a later migration — probe once so the overview/list
+// endpoints don't 500 before scripts/schema.sql is applied.
+let _wctlHaPeerCol = null;
+async function wctlHasHaPeer() {
+  if (_wctlHaPeerCol !== null) return _wctlHaPeerCol;
+  try {
+    const r = await sv.query(
+      `SELECT EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_name='wireless_controllers' AND column_name='ha_peer_controller_id') AS x`);
+    _wctlHaPeerCol = !!r.rows[0].x;
+  } catch (_e) { _wctlHaPeerCol = false; }
+  return _wctlHaPeerCol;
+}
+
 app.get('/api/wireless/controllers/overview', wrap(async (_req, res) => {
+  const hp = (await wctlHasHaPeer())
+    ? `c.ha_peer_controller_id, c.ha_manual_role,
+       (SELECT name FROM wireless_controllers p WHERE p.id = c.ha_peer_controller_id) AS ha_peer_name`
+    : `NULL::int AS ha_peer_controller_id, NULL::text AS ha_manual_role, NULL::text AS ha_peer_name`;
   const r = await sv.query(`
     SELECT c.id, c.name, c.vendor, c.site_name, c.model, c.firmware_version,
            c.status, c.licensed_aps, c.ha_mode, c.ha_peer_ip, c.ha_sync_status,
-           c.ap_disconnects_24h, c.last_polled_at,
+           c.ap_disconnects_24h, c.last_polled_at, ${hp},
            (SELECT COUNT(*)::int FROM wireless_aps a WHERE a.controller_id = c.id) AS ap_count,
            (SELECT COALESCE(SUM(a.clients_total), 0)::int FROM wireless_aps a WHERE a.controller_id = c.id) AS client_count,
            cpu.value AS cpu_pct, mem.value AS mem_pct, up.value AS uptime_seconds
@@ -3143,6 +3167,8 @@ app.get('/api/wireless/controllers/overview', wrap(async (_req, res) => {
 
     if (row.ha_sync_status === 'Synced') haHealthy += 1;
     if (row.ha_mode != null && row.ha_sync_status != null && row.ha_sync_status !== 'Standalone') haTotal += 1;
+    // Manually-paired controllers count as HA (and are treated as healthy).
+    if (row.ha_peer_controller_id != null) { haTotal += 1; haHealthy += 1; }
 
     const licensed = row.licensed_aps == null ? null : Number(row.licensed_aps);
     let perCap = null;
@@ -3171,6 +3197,9 @@ app.get('/api/wireless/controllers/overview', wrap(async (_req, res) => {
       ha_mode: row.ha_mode,
       ha_peer_ip: row.ha_peer_ip,
       ha_sync_status: row.ha_sync_status,
+      ha_peer_controller_id: row.ha_peer_controller_id ?? null,
+      ha_manual_role: row.ha_manual_role ?? null,
+      ha_peer_name: row.ha_peer_name ?? null,
       ap_disconnects_24h: row.ap_disconnects_24h == null ? null : Number(row.ap_disconnects_24h),
       last_polled_at: row.last_polled_at,
     };
@@ -3467,6 +3496,35 @@ app.put('/api/wireless/controllers/:id', wrap(async (req, res) => {
 app.delete('/api/wireless/controllers/:id', wrap(async (req, res) => {
   await sv.query(`DELETE FROM wireless_controllers WHERE id = $1`, [parseInt(req.params.id, 10)]);
   res.json({ ok: true });
+}));
+
+// Manual HA pairing: link two controllers as an HA pair (for platforms that don't
+// expose HA over SNMP). Sets the link on BOTH sides; peer_id null clears it.
+app.post('/api/wireless/controllers/:id/ha-peer', wrap(async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const b = req.body || {};
+  const peerId = b.peer_id != null && b.peer_id !== '' ? parseInt(b.peer_id, 10) : null;
+  const role = b.role === 'Active' || b.role === 'Standby' ? b.role : null;
+  if (peerId === id) return res.status(400).json({ error: 'A controller cannot be its own HA peer.' });
+  try {
+    if (peerId == null) {
+      // Clear this controller's link and any controller that pointed back at it.
+      await sv.query(`UPDATE wireless_controllers SET ha_peer_controller_id = NULL, ha_manual_role = NULL WHERE id = $1`, [id]);
+      await sv.query(`UPDATE wireless_controllers SET ha_peer_controller_id = NULL, ha_manual_role = NULL WHERE ha_peer_controller_id = $1`, [id]);
+    } else {
+      const peer = await sv.query(`SELECT id FROM wireless_controllers WHERE id = $1`, [peerId]);
+      if (!peer.rows[0]) return res.status(404).json({ error: 'Peer controller not found' });
+      const opposite = role === 'Active' ? 'Standby' : role === 'Standby' ? 'Active' : null;
+      await sv.query(`UPDATE wireless_controllers SET ha_peer_controller_id = $2, ha_manual_role = $3 WHERE id = $1`, [id, peerId, role]);
+      await sv.query(`UPDATE wireless_controllers SET ha_peer_controller_id = $2, ha_manual_role = COALESCE($3, ha_manual_role) WHERE id = $1`, [peerId, id, opposite]);
+    }
+    res.json({ ok: true });
+  } catch (e) {
+    if (/ha_peer_controller_id|ha_manual_role/.test(e.message)) {
+      return res.status(400).json({ error: 'HA pairing needs a schema update (restart the API to auto-apply).' });
+    }
+    throw e;
+  }
 }));
 
 // On-demand auto-detection of SNMP wireless controllers. Replicates the
