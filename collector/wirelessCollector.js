@@ -192,6 +192,20 @@ async function walkParserOids(session, parser) {
   return walked;
 }
 
+// Walk a parser's rogue-AP OID set (parser.snmpRogueOids) the same way as
+// walkParserOids, grouping varbinds by logical key. Returns {} on any failure
+// so a controller that doesn't expose the rogue table never breaks the poll.
+async function walkRogueOids(session, parser) {
+  const walked = {};
+  try {
+    for (const key of Object.keys(parser.snmpRogueOids)) {
+      try { walked[key] = await walk(session, parser.snmpRogueOids[key]); }
+      catch (_e) { walked[key] = []; }
+    }
+  } catch (_e) { return {}; }
+  return walked;
+}
+
 async function pollSnmpController(pool, controller) {
   const dq = await pool.query(`SELECT * FROM monitored_devices WHERE id = $1`, [controller.snmp_device_id]);
   const device = dq.rows[0];
@@ -214,10 +228,18 @@ async function pollSnmpController(pool, controller) {
     if (typeof parser.parseSsids === 'function') {
       try { ssids = parser.parseSsids(walked) || []; } catch (_e) { ssids = []; }
     }
+    // Rogue/unmanaged APs are optional — only some vendor parsers declare the
+    // rogue OID set + parseRogueAps. Failures here never affect AP/SSID polling.
+    let rogues = [];
+    if (parser.snmpRogueOids && typeof parser.parseRogueAps === 'function') {
+      let rogueWalked = {};
+      try { rogueWalked = await walkRogueOids(session, parser); } catch (_e) { rogueWalked = {}; }
+      try { rogues = parser.parseRogueAps(rogueWalked) || []; } catch (_e) { rogues = []; }
+    }
     let metadata = {};
     try { metadata = await pollControllerMetadata(session, controller); }
     catch (_e) { metadata = {}; }
-    return { aps, ssids, metadata };
+    return { aps, ssids, rogues, metadata };
   } finally {
     try { session.close(); } catch (_e) { /* ignore */ }
   }
@@ -419,6 +441,34 @@ async function upsertSsid(pool, controller, ssid) {
   ]);
 }
 
+// Upsert one rogue AP (keyed by controller_id + bssid) into wireless_rogue_aps.
+// Skips rows with no bssid. Wrapped so a missing table (un-migrated DB) is fine.
+async function upsertRogueAp(pool, controller, rogue) {
+  const bssid = rogue && rogue.bssid ? String(rogue.bssid) : null;
+  if (!bssid) return;
+  try {
+    await pool.query(`
+      INSERT INTO wireless_rogue_aps
+        (controller_id, bssid, ssid, rssi_dbm, channel, classification, detecting_ap, last_seen_at)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())
+      ON CONFLICT (controller_id, bssid) DO UPDATE SET
+        ssid           = EXCLUDED.ssid,
+        rssi_dbm       = EXCLUDED.rssi_dbm,
+        channel        = EXCLUDED.channel,
+        classification = EXCLUDED.classification,
+        detecting_ap   = EXCLUDED.detecting_ap,
+        last_seen_at   = NOW()
+    `, [
+      controller.id, bssid, rogue.ssid || null,
+      intOrNull(rogue.rssi_dbm), intOrNull(rogue.channel),
+      rogue.classification || null, rogue.detecting_ap || null,
+    ]);
+  } catch (e) {
+    // Missing table on an un-migrated DB (or any write error) is non-fatal.
+    console.error(`[wireless] rogue upsert failed on ${controller.name}:`, e.message);
+  }
+}
+
 // ── Auto-detection of SNMP wireless controllers ───────────────
 // SQL predicate (on the given device_type column) that identifies genuine
 // wireless gear — a WLC, an access point, or anything tagged wireless/wifi.
@@ -514,6 +564,7 @@ async function pollController(pool, controller) {
   try {
     let aps = [];
     let ssids = [];
+    let rogues = [];
     let metadata = {};
     if (controller.snmp_device_id) {
       // One-time capability discovery: probe OIDs once, then reuse stored OIDs.
@@ -522,7 +573,7 @@ async function pollController(pool, controller) {
         const rq = await pool.query('SELECT * FROM wireless_controllers WHERE id = $1', [controller.id]);
         if (rq.rows[0]) controller = rq.rows[0];
       }
-      ({ aps, ssids, metadata = {} } = await pollSnmpController(pool, controller));
+      ({ aps, ssids, rogues = [], metadata = {} } = await pollSnmpController(pool, controller));
     } else if (controller.controller_url) {
       ({ aps, ssids } = await pollApiController(controller));
     } else {
@@ -538,6 +589,17 @@ async function pollController(pool, controller) {
       try { await upsertSsid(pool, controller, ssid); }
       catch (e) { console.error(`[wireless] SSID upsert failed on ${controller.name}:`, e.message); }
     }
+
+    // Rogue/unmanaged APs (SNMP controllers only — pollApiController returns none).
+    for (const rogue of rogues) {
+      await upsertRogueAp(pool, controller, rogue);
+    }
+    // Prune rogues not heard from in 24h so the table reflects current detections.
+    try {
+      await pool.query(
+        `DELETE FROM wireless_rogue_aps WHERE controller_id = $1 AND last_seen_at < NOW() - INTERVAL '24 hours'`,
+        [controller.id]);
+    } catch (_e) { /* missing table on un-migrated DB — ignore */ }
 
     // AP disconnects in the last 24h = distinct clients that 'leave' on this
     // controller (sourced from wireless_client_events).
@@ -974,7 +1036,7 @@ function startWirelessCollector(pool) {
 }
 
 module.exports = {
-  startWirelessCollector, pollAll, pollController, upsertAp, upsertSsid,
+  startWirelessCollector, pollAll, pollController, upsertAp, upsertSsid, upsertRogueAp,
   autoDetectControllers, cleanupBadAutoControllers, cleanupDecimalMacAps, testController, debugWalk,
   walkOid, pollClients, pollAllClients, probeControllerCapabilities,
 };

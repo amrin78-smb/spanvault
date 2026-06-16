@@ -59,6 +59,73 @@ const bsnDot11EssWlanIfOutOctets = BSN_ESS_STAT_BASE + '.2'; // bsnDot11EssWlanI
 // bsnAuthFailureCount (AIRESPACE-WIRELESS-MIB): best-effort per-SSID auth failures.
 const bsnAuthFailureCount = '1.3.6.1.4.1.14179.2.1.13.1.1.7'; // bsnAuthFailureCount
 
+// ── Rogue AP table (bsnRogueAPTable, AIRESPACE-WIRELESS-MIB) ─────────────────
+// Base 1.3.6.1.4.1.14179.2.1.7 ; the table itself is ...2.1.7.1, columns ...2.1.7.1.1.x
+// Index = bsnRogueAPDot11MacAddress (6-octet MAC). Best-effort column suffixes
+// from the MIB — validate against real hardware.
+const BSN_ROGUE_BASE = '1.3.6.1.4.1.14179.2.1.7.1.1';
+const bsnRogueAPDot11MacAddress = BSN_ROGUE_BASE + '.1'; // rogue radio MAC (BSSID)
+const bsnRogueAPSsid = BSN_ROGUE_BASE + '.2';            // bsnRogueAPSsid
+const bsnRogueAPState = BSN_ROGUE_BASE + '.5';           // bsnRogueAPState (class/state)
+const bsnRogueAPClassType = BSN_ROGUE_BASE + '.24';      // bsnRogueAPClassType (best-effort)
+// First / detecting AP reporting this rogue, plus the rogue's RSSI and channel as
+// seen by that AP. These live on the per-detecting-AP entry (bsnRogueAPAirespaceAPTable
+// / bsnRogueAPFirstReportedBy). Index there is rogueMAC.detectingApMAC; we read the
+// best-of column values keyed by the rogue MAC prefix.
+const bsnRogueAPChannel = BSN_ROGUE_BASE + '.14';        // best-effort channel
+const bsnRogueAPRssi = BSN_ROGUE_BASE + '.13';           // best-effort RSSI (dBm)
+const bsnRogueAPFirstReportedApMac = BSN_ROGUE_BASE + '.20'; // best-effort detecting AP MAC
+
+// Format a 6-octet MAC (Buffer) or dotted-decimal index as colon-hex.
+function fmtMac(v) {
+  if (v === null || v === undefined) return null;
+  if (Buffer.isBuffer(v)) {
+    if (v.length === 0) return null;
+    return Array.from(v).map((b) => b.toString(16).padStart(2, '0')).join(':');
+  }
+  const s = String(v).trim();
+  if (!s) return null;
+  // Already colon/dash-hex.
+  if (/^[0-9a-f]{2}([:-][0-9a-f]{2})+$/i.test(s)) return s.replace(/-/g, ':').toLowerCase();
+  // Dotted-decimal octets (e.g. "0.27.211.5.6.7" from an OID index) → colon-hex.
+  if (/^\d+(\.\d+){5}$/.test(s)) {
+    return s.split('.').map((d) => (Number(d) & 0xff).toString(16).padStart(2, '0')).join(':');
+  }
+  // Bare hex string (e.g. "001bd3050607") → colon-hex.
+  if (/^[0-9a-f]{12}$/i.test(s)) return s.match(/.{2}/g).join(':').toLowerCase();
+  return s;
+}
+
+// Normalise a Cisco bsnRogueAPState / class to the shared classification set.
+// AIRESPACE-WIRELESS-MIB bsnRogueAPState INTEGER:
+//   1 initializing, 2 pending, 3 alert/lrad, 4 detected-lrad,
+//   5 known, 6 acknowledged, 7 contained, 8 threat, 9 unknown-contained,
+//   10 contained-pending. bsnRogueAPClassType (when present): 1 friendly,
+//   2 malicious, 3 unclassified, 4 custom.
+function classifyRogue(stateV, classV) {
+  const cls = num(classV);
+  if (cls === 1) return 'friendly';
+  if (cls === 2) return 'malicious';
+  if (cls === 3) return 'unclassified';
+
+  const st = num(stateV);
+  if (st !== null) {
+    if (st === 5 || st === 6) return 'friendly';        // known / acknowledged
+    if (st === 7 || st === 8 || st === 9 || st === 10) return 'malicious'; // contained / threat
+    if (st === 3 || st === 4) return 'rogue';           // alert / detected
+    if (st === 1 || st === 2) return 'unclassified';    // initializing / pending
+  }
+
+  const s = (str(stateV) || str(classV) || '').toLowerCase();
+  if (s) {
+    if (s.includes('friend') || s.includes('known') || s.includes('acknowledg')) return 'friendly';
+    if (s.includes('malicious') || s.includes('threat') || s.includes('contain')) return 'malicious';
+    if (s.includes('interfer')) return 'interfering';
+    if (s.includes('rogue') || s.includes('alert') || s.includes('detect')) return 'rogue';
+  }
+  return 'unclassified';
+}
+
 function mapStatus(v) {
   const n = num(v);
   // bsnAPOperationStatus: 1 = associated/up, 2 = disassociating, 3 = downloading
@@ -274,6 +341,78 @@ function parseSsids(walked) {
   return out;
 }
 
+// Parse the rogue/unmanaged AP table (bsnRogueAPTable). The main columns are
+// indexed by the rogue MAC; RSSI/channel/detecting-AP may be on a per-detecting-AP
+// sub-table indexed "<rogueMAC>.<detectingApMAC>", so we correlate those back to
+// the rogue MAC by longest matching index prefix. Never throws.
+function parseRogueAps(walked) {
+  const out = [];
+  try {
+    walked = walked || {};
+
+    const macs = columnMap(walked.rogueMac, bsnRogueAPDot11MacAddress);
+    const ssids = columnMap(walked.rogueSsid, bsnRogueAPSsid);
+    const states = columnMap(walked.rogueState, bsnRogueAPState);
+    const classes = columnMap(walked.rogueClass, bsnRogueAPClassType);
+    const channels = columnMap(walked.rogueChannel, bsnRogueAPChannel);
+    const rssis = columnMap(walked.rogueRssi, bsnRogueAPRssi);
+    const detectors = columnMap(walked.rogueDetector, bsnRogueAPFirstReportedApMac);
+
+    // Helper: given a per-rogue column keyed by either "<rogueIdx>" or
+    // "<rogueIdx>.<extra>", find the value whose index equals or starts with idx.
+    function pick(col, idx) {
+      if (col[idx] !== undefined) return col[idx];
+      const prefix = idx + '.';
+      for (const k of Object.keys(col)) {
+        if (k === idx || k.startsWith(prefix)) return col[k];
+      }
+      return undefined;
+    }
+
+    // The set of rogue rows: primary index source is the MAC column; fall back to
+    // SSID/state index keys when the MAC column came back empty.
+    const indexes = new Set();
+    [macs, ssids, states, classes].forEach((m) => {
+      Object.keys(m).forEach((k) => indexes.add(k));
+    });
+
+    for (const idx of indexes) {
+      // BSSID: prefer the MAC value column; otherwise the index itself is the MAC.
+      const bssid = fmtMac(macs[idx]) || fmtMac(idx);
+      if (!bssid) continue;
+
+      const ssid = str(pick(ssids, idx));
+      const rssi = num(pick(rssis, idx));
+      const channel = num(pick(channels, idx));
+      const classification = classifyRogue(pick(states, idx), pick(classes, idx));
+      const detecting_ap = fmtMac(pick(detectors, idx));
+
+      out.push({
+        bssid,
+        ssid: ssid || null,
+        rssi_dbm: rssi === null ? null : rssi,
+        channel: channel === null ? null : channel,
+        classification,
+        detecting_ap: detecting_ap || null,
+      });
+    }
+  } catch (e) {
+    // never throw
+    return [];
+  }
+  return out;
+}
+
+const snmpRogueOids = {
+  rogueMac: bsnRogueAPDot11MacAddress,
+  rogueSsid: bsnRogueAPSsid,
+  rogueState: bsnRogueAPState,
+  rogueClass: bsnRogueAPClassType,
+  rogueChannel: bsnRogueAPChannel,
+  rogueRssi: bsnRogueAPRssi,
+  rogueDetector: bsnRogueAPFirstReportedApMac,
+};
+
 module.exports = {
   name: 'cisco',
   snmpOids: {
@@ -300,7 +439,9 @@ module.exports = {
     bsnEssOutOctets: bsnDot11EssWlanIfOutOctets,
     bsnAuthFailures: bsnAuthFailureCount,
   },
+  snmpRogueOids,
   parseApTable,
   parseClientCounts,
   parseSsids,
+  parseRogueAps,
 };

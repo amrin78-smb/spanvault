@@ -259,7 +259,41 @@ interface ControllerForm {
   snmp_v3_priv_pass: string;
 }
 
-type TabKey = 'overview' | 'aps' | 'ssids' | 'intelligence' | 'clients' | 'controllers';
+type TabKey = 'overview' | 'aps' | 'ssids' | 'intelligence' | 'clients' | 'rogues' | 'controllers';
+
+// ── Rogue AP contract (mirrors wireless_rogue_aps + controller join) ──
+interface RogueAp {
+  id: number;
+  controller_id: number;
+  bssid: string;
+  ssid: string | null;
+  rssi_dbm: number | null;
+  channel: number | null;
+  classification: 'rogue' | 'friendly' | 'malicious' | 'unclassified' | 'interfering' | string;
+  detecting_ap: string | null;
+  first_seen_at: string | null;
+  last_seen_at: string | null;
+  controller_name: string | null;
+  site_name: string | null;
+  vendor: string | null;
+}
+
+// Classification colour: malicious/rogue = red, interfering = yellow,
+// friendly/known = green, anything else (unclassified) = muted.
+function rogueClassColor(c: string): string {
+  switch ((c || '').toLowerCase()) {
+    case 'malicious':
+    case 'rogue':
+      return 'var(--red)';
+    case 'interfering':
+      return 'var(--yellow)';
+    case 'friendly':
+    case 'known':
+      return 'var(--green)';
+    default:
+      return 'var(--text-muted)';
+  }
+}
 
 // ── Wireless client contracts ─────────────────────────────────
 interface WirelessClient {
@@ -701,6 +735,10 @@ export default function WirelessPage() {
           onClick={() => setTab('clients')}
         >Clients</button>
         <button
+          className={`sv-tab ${tab === 'rogues' ? 'active' : ''}`}
+          onClick={() => setTab('rogues')}
+        >Rogue APs</button>
+        <button
           className={`sv-tab ${tab === 'controllers' ? 'active' : ''}`}
           onClick={() => setTab('controllers')}
         >Controllers</button>
@@ -747,7 +785,122 @@ export default function WirelessPage() {
           setProblemOnly={setClientProblemOnly}
         />
       )}
+      {tab === 'rogues' && <RogueApsTab />}
       {tab === 'controllers' && <ControllersTab onViewEvents={() => setTab('clients')} />}
+    </div>
+  );
+}
+
+// ════════════════════════════════════════════════════════════
+// TAB — Rogue APs
+// ════════════════════════════════════════════════════════════
+
+function RogueApsTab() {
+  const [search, setSearch] = useState('');
+  const [classFilter, setClassFilter] = useState('');
+
+  const roguesApi = useApi<RogueAp[]>('/api/wireless/rogues', 30000);
+  const all = useMemo(() => roguesApi.data || [], [roguesApi.data]);
+
+  const shown = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return all.filter((r) => {
+      if (classFilter && (r.classification || '').toLowerCase() !== classFilter) return false;
+      if (q && !(r.bssid || '').toLowerCase().includes(q) && !(r.ssid || '').toLowerCase().includes(q)) return false;
+      return true;
+    });
+  }, [all, search, classFilter]);
+
+  const threatCount = useMemo(
+    () => all.filter((r) => ['rogue', 'malicious'].includes((r.classification || '').toLowerCase())).length,
+    [all],
+  );
+
+  return (
+    <div>
+      <div className="sv-cards">
+        <div className="sv-card">
+          <div className="num">{all.length}</div>
+          <div className="label">Detected APs</div>
+        </div>
+        <div className="sv-card" style={{ borderLeftColor: 'var(--red)' }}>
+          <div className="num" style={{ color: threatCount > 0 ? 'var(--red)' : undefined }}>{threatCount}</div>
+          <div className="label">Rogue / Malicious</div>
+        </div>
+      </div>
+
+      <div style={{
+        display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', margin: '14px 0',
+      }}>
+        <input
+          className="sv-input"
+          style={{ maxWidth: 320, flex: 1 }}
+          placeholder="Search by BSSID or SSID…"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
+        <select
+          className="sv-select"
+          style={{ maxWidth: 200 }}
+          value={classFilter}
+          onChange={(e) => setClassFilter(e.target.value)}
+        >
+          <option value="">All classifications</option>
+          <option value="malicious">Malicious</option>
+          <option value="rogue">Rogue</option>
+          <option value="interfering">Interfering</option>
+          <option value="friendly">Friendly</option>
+          <option value="unclassified">Unclassified</option>
+        </select>
+      </div>
+
+      {roguesApi.error && <ErrorBox message={roguesApi.error} />}
+
+      {roguesApi.loading && !roguesApi.data ? (
+        <div className="sv-panel"><Loading /></div>
+      ) : shown.length ? (
+        <div className="sv-panel" style={{ padding: 0 }}>
+          <table className="sv-table">
+            <thead>
+              <tr>
+                <th style={TH_STYLE}>BSSID</th>
+                <th style={TH_STYLE}>SSID</th>
+                <th style={TH_STYLE}>Classification</th>
+                <th style={TH_STYLE}>RSSI</th>
+                <th style={TH_STYLE}>Channel</th>
+                <th style={TH_STYLE}>Detecting AP</th>
+                <th style={TH_STYLE}>Controller</th>
+                <th style={TH_STYLE}>Last Seen</th>
+              </tr>
+            </thead>
+            <tbody>
+              {shown.map((r) => {
+                const color = rogueClassColor(r.classification);
+                return (
+                  <tr key={r.id}>
+                    <td style={{ fontWeight: 600, fontFamily: 'monospace' }}>{r.bssid}</td>
+                    <td>{r.ssid || '—'}</td>
+                    <td>
+                      <span className="sv-badge" style={{ color, borderColor: color, textTransform: 'capitalize' }}>
+                        {r.classification || 'unclassified'}
+                      </span>
+                    </td>
+                    <td style={{ color: signalColor(r.rssi_dbm), fontWeight: 600 }}>
+                      {r.rssi_dbm != null ? `${r.rssi_dbm} dBm` : '—'}
+                    </td>
+                    <td>{r.channel != null ? `Ch ${r.channel}` : '—'}</td>
+                    <td>{r.detecting_ap || '—'}</td>
+                    <td style={{ color: 'var(--text-muted)' }}>{r.controller_name || '—'}</td>
+                    <td style={{ color: 'var(--text-muted)' }}>{fmtRel(r.last_seen_at)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <Empty message={all.length ? 'No rogue APs match your filters.' : 'No rogue APs detected. ✓'} />
+      )}
     </div>
   );
 }

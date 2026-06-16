@@ -842,6 +842,23 @@ CREATE INDEX IF NOT EXISTS idx_wclient_problem
   ON wireless_clients(is_problem) WHERE is_problem = TRUE;
 ALTER TABLE wireless_clients ADD COLUMN IF NOT EXISTS is_sticky BOOLEAN DEFAULT FALSE;
 
+-- Rogue/unmanaged APs detected by a controller (from the vendor rogue SNMP table).
+-- Refreshed every poll; rows not seen in 24h are pruned by the collector.
+CREATE TABLE IF NOT EXISTS wireless_rogue_aps (
+  id             SERIAL PRIMARY KEY,
+  controller_id  INTEGER NOT NULL REFERENCES wireless_controllers(id) ON DELETE CASCADE,
+  bssid          TEXT NOT NULL,            -- rogue radio MAC/BSSID
+  ssid           TEXT,
+  rssi_dbm       INTEGER,
+  channel        INTEGER,
+  classification TEXT,                     -- rogue/friendly/malicious/unclassified/interfering
+  detecting_ap   TEXT,                     -- managed AP that heard it
+  first_seen_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  last_seen_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (controller_id, bssid)
+);
+CREATE INDEX IF NOT EXISTS idx_rogue_ctrl ON wireless_rogue_aps(controller_id);
+
 -- Roaming and auth event history (join/roam/leave/auth_fail/low_signal).
 -- Purged after 7 days by the collector.
 CREATE TABLE IF NOT EXISTS wireless_client_events (

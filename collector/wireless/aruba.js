@@ -83,6 +83,57 @@ function mapStatus(v) {
   return 'unknown';
 }
 
+// ── Rogue / unsecure AP table (WLSX-WLAN-MIB wlsxWlanAPRogueTable) ───────────
+// Aruba publishes detected rogue/unsecure APs under the wlsxWlanMonRadioInfo /
+// rogue AP tree. The reliable, documented table is wlsxWlanAPRogueTable at
+// ...5.2.1.10.1, indexed by the rogue BSSID (6-octet MAC). Best-effort column
+// suffixes from the MIB — validate against real hardware.
+const ROGUE_BASE = '1.3.6.1.4.1.14823.2.2.1.5.2.1.10.1';
+const wlanAPRogueBSSID = ROGUE_BASE + '.1';     // rogue BSSID (also the index)
+const wlanAPRogueSSID = ROGUE_BASE + '.2';      // rogue SSID name
+const wlanAPRogueChannel = ROGUE_BASE + '.3';   // channel
+const wlanAPRogueRSSI = ROGUE_BASE + '.4';      // RSSI (dBm)
+const wlanAPRogueType = ROGUE_BASE + '.5';      // classification (rogue/interfering/known)
+const wlanAPRogueDetectingAP = ROGUE_BASE + '.6'; // detecting AP MAC (best-effort)
+
+// Format a 6-octet MAC (Buffer) / dotted-decimal index / bare-hex string as colon-hex.
+function fmtMac(v) {
+  if (v === null || v === undefined) return null;
+  if (Buffer.isBuffer(v)) {
+    if (v.length === 0) return null;
+    return Array.from(v).map((b) => b.toString(16).padStart(2, '0')).join(':');
+  }
+  const s = String(v).trim();
+  if (!s) return null;
+  if (/^[0-9a-f]{2}([:-][0-9a-f]{2})+$/i.test(s)) return s.replace(/-/g, ':').toLowerCase();
+  if (/^\d+(\.\d+){5}$/.test(s)) {
+    return s.split('.').map((d) => (Number(d) & 0xff).toString(16).padStart(2, '0')).join(':');
+  }
+  if (/^[0-9a-f]{12}$/i.test(s)) return s.match(/.{2}/g).join(':').toLowerCase();
+  return s;
+}
+
+// Normalise an Aruba rogue type to the shared classification set.
+// WLSX-WLAN-MIB rogue type INTEGER (best-effort): 1 valid, 2 interfering,
+// 3 dos, 4 rogue, 5 known-interfering, 6 unsecure, 7 suspect-rogue.
+function classifyRogue(v) {
+  const n = num(v);
+  if (n !== null) {
+    if (n === 1) return 'friendly';                 // valid / known-good
+    if (n === 2 || n === 5) return 'interfering';   // interfering
+    if (n === 3 || n === 6) return 'malicious';     // dos / unsecure
+    if (n === 4 || n === 7) return 'rogue';         // rogue / suspect-rogue
+  }
+  const s = (str(v) || '').toLowerCase();
+  if (s) {
+    if (s.includes('valid') || s.includes('known') || s.includes('friend')) return 'friendly';
+    if (s.includes('interfer')) return 'interfering';
+    if (s.includes('dos') || s.includes('unsecure') || s.includes('malicious') || s.includes('threat')) return 'malicious';
+    if (s.includes('rogue') || s.includes('suspect')) return 'rogue';
+  }
+  return 'unclassified';
+}
+
 function parseApTable(walked) {
   const out = [];
   try {
@@ -237,6 +288,60 @@ function parseSsids(walked) {
   }
 }
 
+// Parse the rogue/unsecure AP table (wlsxWlanAPRogueTable). Indexed by the rogue
+// BSSID; when the BSSID value column is empty the table index is the BSSID.
+// Never throws.
+function parseRogueAps(walked) {
+  const out = [];
+  try {
+    walked = walked || {};
+
+    const bssids = columnMap(walked.rogueBssid, wlanAPRogueBSSID);
+    const ssids = columnMap(walked.rogueSsid, wlanAPRogueSSID);
+    const channels = columnMap(walked.rogueChannel, wlanAPRogueChannel);
+    const rssis = columnMap(walked.rogueRssi, wlanAPRogueRSSI);
+    const types = columnMap(walked.rogueType, wlanAPRogueType);
+    const detectors = columnMap(walked.rogueDetector, wlanAPRogueDetectingAP);
+
+    const indexes = new Set();
+    [bssids, ssids, channels, rssis, types].forEach((m) => {
+      Object.keys(m).forEach((k) => indexes.add(k));
+    });
+
+    for (const idx of indexes) {
+      const bssid = fmtMac(bssids[idx]) || fmtMac(idx);
+      if (!bssid) continue;
+
+      const ssid = str(ssids[idx]);
+      const channel = num(channels[idx]);
+      const rssi = num(rssis[idx]);
+      const detecting_ap = fmtMac(detectors[idx]);
+
+      out.push({
+        bssid,
+        ssid: ssid || null,
+        rssi_dbm: rssi === null ? null : rssi,
+        channel: channel === null ? null : channel,
+        classification: classifyRogue(types[idx]),
+        detecting_ap: detecting_ap || null,
+      });
+    }
+  } catch (e) {
+    // never throw
+    return [];
+  }
+  return out;
+}
+
+const snmpRogueOids = {
+  rogueBssid: wlanAPRogueBSSID,
+  rogueSsid: wlanAPRogueSSID,
+  rogueChannel: wlanAPRogueChannel,
+  rogueRssi: wlanAPRogueRSSI,
+  rogueType: wlanAPRogueType,
+  rogueDetector: wlanAPRogueDetectingAP,
+};
+
 module.exports = {
   name: 'aruba',
   snmpOids: {
@@ -257,7 +362,9 @@ module.exports = {
     bssidEssid: wlanAPESSID,
     bssidStations: wlanAPBssidNumAssociatedStations,
   },
+  snmpRogueOids,
   parseApTable,
   parseClientCounts,
   parseSsids,
+  parseRogueAps,
 };

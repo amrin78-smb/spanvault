@@ -32,6 +32,10 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.24.0': [
+    'Rogue AP detection — SpanVault now collects unmanaged/rogue APs that your wireless controllers detect (Cisco/Aruba/Ruckus via SNMP) and lists them on a new Wireless → Rogue APs tab with classification, signal, channel, and detecting AP',
+    'Optional alert on rogue/malicious detections (enable wireless_rogue_alerts_enabled)',
+  ],
   '1.23.0': [
     'Sticky-client detection — clients with poor signal that won\'t roam off a distant AP are now flagged distinctly from frequent roamers (a "Sticky" badge in the Clients view)',
   ],
@@ -4006,6 +4010,34 @@ app.get('/api/wireless/clients/summary', wrap(async (req, res) => {
     frequent_roamers: frequentRoamers,
     top_aps_by_clients: topApsByClients,
   });
+}));
+
+// ── Rogue AP detection ────────────────────────────────────────
+// Rogue/unauthorized APs detected by controllers' SNMP rogue tables, populated
+// by the wireless collector into wireless_rogue_aps. Returns [] when the table
+// has not been migrated yet so the UI degrades gracefully.
+app.get('/api/wireless/rogues', wrap(async (req, res) => {
+  try {
+    const where = [];
+    const params = [];
+    if (req.query.controller_id) { params.push(parseInt(req.query.controller_id, 10)); where.push(`r.controller_id = $${params.length}`); }
+    if (req.query.classification) { params.push(String(req.query.classification)); where.push(`r.classification = $${params.length}`); }
+    if (req.query.search) { params.push(`%${String(req.query.search)}%`); where.push(`(r.bssid ILIKE $${params.length} OR r.ssid ILIKE $${params.length})`); }
+    const sc = siteFilterClause(getSiteFilter(req), params, 'c.site_id');
+    if (sc) where.push(sc);
+    const r = await sv.query(`
+      SELECT r.*, c.name AS controller_name, c.site_name, c.vendor
+      FROM wireless_rogue_aps r
+      JOIN wireless_controllers c ON c.id = r.controller_id
+      ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+      ORDER BY r.last_seen_at DESC
+      LIMIT 500
+    `, params);
+    res.json(r.rows);
+  } catch (e) {
+    if (/wireless_rogue_aps/.test(e.message)) return res.json([]);
+    throw e;
+  }
 }));
 
 app.get('/api/wireless/aps/:id/clients', wrap(async (req, res) => {

@@ -1624,6 +1624,27 @@ async function evaluateWirelessAlerts() {
         wirelessApUptime.set(ap.id, up);
       }
     }
+    // Rogue AP detection (opt-in via setting). For each active controller, count
+    // rogue/malicious detections seen in the last hour; raise a warning when any
+    // are present, otherwise resolve. Uses the controller rows already loaded.
+    if (String(setting('wireless_rogue_alerts_enabled', 'false')).toLowerCase() === 'true') {
+      for (const c of ctrls) {
+        try {
+          const rc = await sv.query(
+            `SELECT COUNT(*)::int AS c FROM wireless_rogue_aps
+              WHERE controller_id = $1 AND last_seen_at >= NOW() - INTERVAL '1 hour'
+                AND classification IN ('rogue','malicious')`,
+            [c.id]);
+          const count = rc.rows[0] ? rc.rows[0].c : 0;
+          if (count > 0) {
+            await raiseWirelessAlert('wireless_controller_id', c, 'wireless_rogue_detected', 'warning',
+              `${count} rogue AP(s) detected near controller ${c.name}`);
+          } else {
+            await resolveWirelessAlert('wireless_controller_id', c.id, 'wireless_rogue_detected');
+          }
+        } catch (_e) { /* missing table on un-migrated DB — ignore */ }
+      }
+    }
   } catch (err) {
     if (!/wireless_aps|wireless_controllers/.test(err.message)) {
       console.error('[wireless-alert] tick failed:', err.message);
