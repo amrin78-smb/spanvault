@@ -55,16 +55,18 @@ function StatCardCompact({ label, value, accent, badge, hint }: {
 }
 
 // Section card — 16px 20px padding, --bg-card, 1px border, radius-sm.
-function SectionCard({ title, action, children, style }: {
-  title: string; action?: React.ReactNode; children: React.ReactNode; style?: React.CSSProperties;
+function SectionCard({ title, action, children, style, flush }: {
+  title: string; action?: React.ReactNode; children: React.ReactNode; style?: React.CSSProperties; flush?: boolean;
 }) {
+  // flush: card padding is 0 so a table can span edge-to-edge, but the title still
+  // needs its own padding — otherwise the header text sits against the card edge.
   return (
     <div style={{
       background: 'var(--bg-card)', border: '1px solid var(--border)',
-      borderRadius: 'var(--radius-sm)', padding: '16px 20px', minWidth: 0,
+      borderRadius: 'var(--radius-sm)', padding: flush ? '0' : '16px 20px', minWidth: 0,
       display: 'flex', flexDirection: 'column', ...style,
     }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, ...(flush ? { padding: '16px 20px 0' } : null) }}>
         <span style={{ fontSize: 12, textTransform: 'uppercase', fontWeight: 600, color: 'var(--text-muted)', letterSpacing: '0.06em' }}>{title}</span>
         {action && <span style={{ marginLeft: 'auto' }}>{action}</span>}
       </div>
@@ -360,7 +362,7 @@ function AnomaliesTab() {
           style={{ marginLeft: 'auto', minWidth: 160, maxWidth: 280, height: 32, padding: '0 12px' }} />
       </div>
 
-      <SectionCard title="Anomaly Detection" style={{ padding: rows.length ? '0' : '16px 20px' }}>
+      <SectionCard title="Anomaly Detection" flush={rows.length > 0}>
         {api.loading && !api.data ? (
           <div style={{ padding: 16 }}><TableSkeleton rows={6} cols={9} /></div>
         ) : api.error ? (
@@ -415,7 +417,7 @@ function HealthTab() {
   const rows = api.data || [];
 
   return (
-    <SectionCard title="Device Health Scores" style={{ padding: rows.length ? '0' : '16px 20px' }}>
+    <SectionCard title="Device Health Scores" flush={rows.length > 0}>
       {api.loading && !api.data ? (
         <div style={{ padding: 16 }}><TableSkeleton rows={8} cols={9} /></div>
       ) : api.error ? (
