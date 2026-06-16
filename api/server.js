@@ -32,6 +32,10 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.27.6': [
+    'Fixed the Wireless Clients tab "Total Clients" running far higher than the live client count on Wireless Insights — the collector now polls clients every 5 minutes (was 15) and prunes clients not seen in 7 minutes (was 15), so the station table tracks currently-associated clients instead of holding ones the controller had already aged out',
+    'Batched the per-client roam-count lookup into a single grouped query per controller (was one query per client), so the faster client polling does not increase database load',
+  ],
   '1.27.5': [
     'Removed the redundant KPI summary cards (Controllers, Avg CPU, AP Capacity, HA Status) from the Wireless → Controllers tab — every value was already shown per-controller in the Inventory, AP Capacity, Health, and HA/Redundancy panels directly below, and the aggregated "HA Status" was misleading since HA is per-pair',
   ],

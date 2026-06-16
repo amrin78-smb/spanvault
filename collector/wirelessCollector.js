@@ -968,14 +968,21 @@ async function pollClients(pool, controller, apList) {
     }
   }
 
+  // Roam counts (last hour) for ALL clients on this controller in one grouped
+  // query, rather than one SELECT per client — avoids an N+1 pattern that gets
+  // costly at the faster (5-min) client cadence. The current cycle's roam events
+  // are inserted further below, so this sees the same table state for every row.
+  const roamRows = await pool.query(
+    `SELECT mac_address, COUNT(*)::int AS cnt FROM wireless_client_events
+     WHERE controller_id = $1 AND event_type = 'roam' AND ts >= $2
+     GROUP BY mac_address`,
+    [controller.id, oneHourAgo]);
+  const roamByMac = new Map(roamRows.rows.map((r) => [r.mac_address, r.cnt]));
+
   // Upsert current clients (roaming_count from the last hour of roam events).
   for (const client of clients) {
     if (!client.mac_address) continue;
-    const rc = await pool.query(
-      `SELECT COUNT(*)::int AS cnt FROM wireless_client_events
-       WHERE mac_address = $1 AND controller_id = $2 AND event_type = 'roam' AND ts >= $3`,
-      [client.mac_address, controller.id, oneHourAgo]);
-    const roamCount = rc.rows[0] ? rc.rows[0].cnt : 0;
+    const roamCount = roamByMac.get(client.mac_address) || 0;
     const hasRssi = client.rssi_dbm !== null && client.rssi_dbm !== undefined;
     const isProblem = (hasRssi && client.rssi_dbm < -75) || roamCount > 5;
     // Sticky: poor signal but NOT roaming away (clings to a far AP) — the opposite
@@ -1027,9 +1034,12 @@ async function pollClients(pool, controller, apList) {
     ]);
   }
 
-  // Prune clients not seen in 15 minutes; purge events older than 7 days.
+  // Prune clients not seen in 7 minutes (just over one 5-min poll cycle), so the
+  // station table tracks live association closely instead of holding clients the
+  // controller aged out — keeps the Clients-tab count in line with the live
+  // per-AP associated count shown on Wireless Insights. Purge events older than 7 days.
   await pool.query(
-    `DELETE FROM wireless_clients WHERE controller_id = $1 AND last_seen_at < NOW() - INTERVAL '15 minutes'`,
+    `DELETE FROM wireless_clients WHERE controller_id = $1 AND last_seen_at < NOW() - INTERVAL '7 minutes'`,
     [controller.id]);
   await pool.query(`DELETE FROM wireless_client_events WHERE ts < NOW() - INTERVAL '7 days'`);
 
@@ -1061,9 +1071,11 @@ async function pollAllClients(pool) {
   }
 }
 
-// Clients are polled on a slower cadence than APs to reduce SNMP load on the
-// controllers (note 2): every 15 minutes, with a first pass 30s after startup.
-const CLIENT_POLL_INTERVAL = 15 * 60 * 1000;
+// Clients are polled on the same 5-minute cadence as APs, with a first pass 30s
+// after startup. (Previously 15 min, but that let the station table hold clients
+// the controller had aged out, inflating the Clients-tab total well above the
+// live per-AP associated count on Wireless Insights.)
+const CLIENT_POLL_INTERVAL = 5 * 60 * 1000;
 
 // Start the wireless collector on a 5-minute cadence (first pass after 20s so
 // the initial NetVault sync + vendor detection has a chance to populate).
@@ -1074,10 +1086,10 @@ function startWirelessCollector(pool) {
   cleanupDecimalMacAps(pool).catch((e) => console.error('[wireless] decimal-MAC cleanup:', e.message));
   setTimeout(() => pollAll(pool), 20 * 1000);
   setInterval(() => pollAll(pool), 5 * 60 * 1000);
-  // Client polling on its own (slower) schedule, separate from the AP poll.
+  // Client polling on its own schedule, separate from (but same cadence as) the AP poll.
   setTimeout(() => pollAllClients(pool), 30 * 1000);
   setInterval(() => pollAllClients(pool), CLIENT_POLL_INTERVAL);
-  log('wireless collector started (APs every 5 min, clients every 15 min)');
+  log('wireless collector started (APs every 5 min, clients every 5 min)');
 }
 
 module.exports = {
