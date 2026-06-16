@@ -91,9 +91,10 @@ Write-Step "Downloading agent files..."
 Invoke-WebRequest -Uri "$ServerUrl/api/agent/agent.js"     -OutFile "$InstallDir\agent.js"     -UseBasicParsing
 Invoke-WebRequest -Uri "$ServerUrl/api/agent/package.json" -OutFile "$InstallDir\package.json" -UseBasicParsing
 
-# -- Config --------------------------------------------------------------------
-@{ serverUrl = $ServerUrl; apiKey = $ApiKey; wsPort = $WsPort } |
-  ConvertTo-Json | Out-File "$InstallDir\config.json" -Encoding UTF8
+# -- Config: write UTF-8 WITHOUT a BOM. Windows PowerShell's Out-File -Encoding
+#    UTF8 prepends a BOM that Node's JSON.parse rejects, crashing the agent. -----
+$cfgJson = @{ serverUrl = $ServerUrl; apiKey = $ApiKey; wsPort = $WsPort } | ConvertTo-Json
+[System.IO.File]::WriteAllText("$InstallDir\config.json", $cfgJson, (New-Object System.Text.UTF8Encoding $false))
 
 # -- Dependencies (skip if a bundled node_modules is already present - offline) -
 if (Test-Path "$InstallDir\node_modules\ws") {

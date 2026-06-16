@@ -32,6 +32,9 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.11.4': [
+    'Fixed the agent crashing on startup with a JSON BOM error: the installer wrote config.json with a UTF-8 BOM (Windows PowerShell Out-File) that Node\'s JSON.parse rejects. Installer now writes config without a BOM, and the agent strips one defensively',
+  ],
   '1.11.3': [
     'Agent installer checks for Administrator rights up front and exits with clear guidance, instead of downloading files and NSSM before failing at service registration',
   ],

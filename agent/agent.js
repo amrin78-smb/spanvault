@@ -26,7 +26,9 @@ const VERSION = '1.2.0';
 const MAX_BUFFER = 500;
 
 // ── Config ────────────────────────────────────────────────────
-const config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+// Strip a leading UTF-8 BOM (U+FEFF) — PowerShell can write config.json with one
+// and JSON.parse rejects it.
+const config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8').replace(/^﻿/, ''));
 const { serverUrl, apiKey } = config;
 const WS_PORT = config.wsPort || 3010;
 
