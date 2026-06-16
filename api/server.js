@@ -32,6 +32,10 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.25.0': [
+    'Agent discovery now lets you specify the subnets to scan (CIDR like 10.0.0.0/24, or comma-separated) and the SNMP communities to try — instead of only the agent\'s local /24 with "public"',
+    'Subnet sweeps are bounded (max /20, ~4096 hosts) to prevent accidental huge scans. Agent runtime -> v1.3.0',
+  ],
   '1.24.1': [
     'Wireless Clients tab now has a Sticky-clients count card and a "Sticky only" filter (alongside the existing problem-client filter)',
   ],
@@ -2310,8 +2314,10 @@ app.post('/api/agents/:id/discover', wrap(async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const exists = await sv.query(`SELECT id FROM agents WHERE id = $1`, [id]);
   if (!exists.rows[0]) return res.status(404).json({ error: 'Agent not found' });
-  const communities = Array.isArray(req.body && req.body.communities) ? req.body.communities : undefined;
-  const sent = await sendToAgentId(id, { type: 'discover', communities });
+  const b = req.body || {};
+  const communities = Array.isArray(b.communities) ? b.communities.map((s) => String(s).trim()).filter(Boolean) : undefined;
+  const subnets = Array.isArray(b.subnets) ? b.subnets.map((s) => String(s).trim()).filter(Boolean) : undefined;
+  const sent = await sendToAgentId(id, { type: 'discover', communities, subnets });
   if (!sent) return res.status(409).json({ error: 'Agent is offline — it must be connected to run a discovery sweep.' });
   res.json({ ok: true, scanning: true });
 }));

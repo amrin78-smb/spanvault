@@ -25,7 +25,7 @@ const crypto = require('crypto');
 
 const CONFIG_PATH = path.join(__dirname, 'config.json');
 const BUFFER_PATH = path.join(__dirname, 'buffer.json');
-const VERSION = '1.2.0';
+const VERSION = '1.3.0';
 const MAX_BUFFER = 500;
 
 // ── Config ────────────────────────────────────────────────────
@@ -625,27 +625,67 @@ async function mapLimit(items, limit, fn) {
   return ret;
 }
 
+// Expand operator-supplied scan targets into a flat host list. Accepts CIDR
+// ("10.0.0.0/24"), a 3-octet base ("10.0.0" → .1-.254), or a single IP. Total
+// hosts are capped so a typo (e.g. /8) can't launch a massive sweep.
+const MAX_SWEEP_HOSTS = 4096;
+function ipToInt(ip) {
+  const p = String(ip).split('.').map((n) => parseInt(n, 10));
+  if (p.length !== 4 || p.some((n) => isNaN(n) || n < 0 || n > 255)) return null;
+  return ((p[0] << 24) | (p[1] << 16) | (p[2] << 8) | p[3]) >>> 0;
+}
+function intToIp(n) {
+  return [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255].join('.');
+}
+function expandTarget(t) {
+  t = String(t || '').trim();
+  if (!t) return [];
+  const cidr = t.match(/^(\d+\.\d+\.\d+\.\d+)\/(\d+)$/);
+  if (cidr) {
+    const prefix = parseInt(cidr[2], 10);
+    const ipInt = ipToInt(cidr[1]);
+    if (ipInt == null || prefix < 20 || prefix > 32) return []; // bound: /20 max (~4094)
+    const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
+    const net = (ipInt & mask) >>> 0;
+    const size = Math.pow(2, 32 - prefix);
+    const out = [];
+    const start = prefix <= 30 ? 1 : 0;       // skip network address
+    const end = prefix <= 30 ? size - 2 : size - 1; // skip broadcast
+    for (let i = start; i <= end; i++) out.push(intToIp((net + i) >>> 0));
+    return out;
+  }
+  if (/^\d+\.\d+\.\d+$/.test(t)) { const out = []; for (let h = 1; h <= 254; h++) out.push(`${t}.${h}`); return out; }
+  if (ipToInt(t) != null) return [t];
+  return [];
+}
+function buildTargets(msg) {
+  // Operator-supplied subnets take precedence; otherwise sweep the agent's /24s.
+  const list = (msg && Array.isArray(msg.subnets)) ? msg.subnets : [];
+  if (list.length) {
+    const seen = new Set();
+    for (const t of list) for (const ip of expandTarget(t)) { if (!seen.has(ip)) seen.add(ip); if (seen.size >= MAX_SWEEP_HOSTS) break; }
+    return Array.from(seen);
+  }
+  const ips = [];
+  for (const sn of localSubnets()) for (let h = 1; h <= 254; h++) ips.push(`${sn.base}.${h}`);
+  return ips;
+}
+
 async function runDiscovery(msg) {
   if (discovering) { console.log('[Agent] Discovery already running — ignoring'); return; }
   discovering = true;
   try {
     const communities = (msg && Array.isArray(msg.communities) && msg.communities.length) ? msg.communities : ['public'];
-    const subnets = localSubnets();
-    console.log(`[Agent] Discovery: sweeping ${subnets.length} subnet(s)`);
-    const hosts = [];
-    for (const sn of subnets) {
-      const ips = [];
-      for (let h = 1; h <= 254; h++) ips.push(`${sn.base}.${h}`);
-      const alive = (await mapLimit(ips, 32, async (ip) => (await pingHost(ip)) ? ip : null)).filter(Boolean);
-      const probed = await mapLimit(alive, 16, async (ip) => {
-        const info = await snmpProbe(ip, communities);
-        return {
-          ip_address: ip, snmp_ok: !!info,
-          sys_name: info ? info.sys_name : '', sys_descr: info ? info.sys_descr : '',
-        };
-      });
-      hosts.push(...probed);
-    }
+    const ips = buildTargets(msg);
+    console.log(`[Agent] Discovery: sweeping ${ips.length} address(es)`);
+    const alive = (await mapLimit(ips, 32, async (ip) => (await pingHost(ip)) ? ip : null)).filter(Boolean);
+    const hosts = await mapLimit(alive, 16, async (ip) => {
+      const info = await snmpProbe(ip, communities);
+      return {
+        ip_address: ip, snmp_ok: !!info,
+        sys_name: info ? info.sys_name : '', sys_descr: info ? info.sys_descr : '',
+      };
+    });
     console.log(`[Agent] Discovery: ${hosts.length} live host(s) found`);
     send({ type: 'discovery', hosts });
   } finally {

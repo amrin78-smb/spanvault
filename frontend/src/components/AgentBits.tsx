@@ -182,6 +182,8 @@ export function AgentDiscovery({ agentId, online }: { agentId: number; online: b
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [subnets, setSubnets] = useState('');
+  const [communities, setCommunities] = useState('');
   const disc = useApi<Discovered[]>(`/api/agents/${agentId}/discovered`, scanning ? 4000 : 0);
   const rows = disc.data || [];
 
@@ -189,9 +191,16 @@ export function AgentDiscovery({ agentId, online }: { agentId: number; online: b
     setMsg(null);
     setBusy(true);
     try {
-      await apiSend(`/api/agents/${agentId}/discover`, 'POST', {});
+      const body: { subnets?: string[]; communities?: string[] } = {};
+      const sn = subnets.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
+      const co = communities.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
+      if (sn.length) body.subnets = sn;
+      if (co.length) body.communities = co;
+      await apiSend(`/api/agents/${agentId}/discover`, 'POST', body);
       setScanning(true);
-      setMsg('Scanning the agent’s local network… new devices appear below as they are found.');
+      setMsg(sn.length
+        ? `Scanning ${sn.join(', ')}… new devices appear below as they are found.`
+        : 'Scanning the agent’s local network… new devices appear below as they are found.');
       setTimeout(() => { setScanning(false); disc.reload(); }, 60000);
     } catch (e: any) {
       setMsg(e?.message || 'Failed to start the scan.');
@@ -230,6 +239,18 @@ export function AgentDiscovery({ agentId, online }: { agentId: number; online: b
 
   return (
     <div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'flex-end', marginBottom: 10 }}>
+        <label className="sv-field" style={{ margin: 0, flex: 1, minWidth: 200 }}>
+          <span style={{ fontSize: 12 }}>Subnets to scan <span className="sv-muted">(optional — blank = agent’s local /24)</span></span>
+          <input className="sv-input" value={subnets} onChange={(e) => setSubnets(e.target.value)}
+            placeholder="e.g. 192.168.6.0/24, 10.0.0.0/24" disabled={scanning} />
+        </label>
+        <label className="sv-field" style={{ margin: 0, flex: 1, minWidth: 160 }}>
+          <span style={{ fontSize: 12 }}>SNMP communities <span className="sv-muted">(optional — blank = public)</span></span>
+          <input className="sv-input" value={communities} onChange={(e) => setCommunities(e.target.value)}
+            placeholder="e.g. public, private" disabled={scanning} />
+        </label>
+      </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
         <button className="sv-btn" onClick={scan} disabled={!online || busy || scanning}>
           {scanning ? 'Scanning…' : 'Scan for devices'}
