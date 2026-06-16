@@ -133,6 +133,47 @@ async function probeControllerCapabilities(pool, controller) {
   }
 }
 
+// Like probeControllerCapabilities, but also returns a per-capability breakdown
+// (which OID resolved + the live value, and which capabilities weren't found) so
+// the UI can SHOW what the controller exposes instead of probing silently.
+async function probeControllerCapabilitiesDetailed(pool, controller) {
+  if (!controller.snmp_device_id) {
+    return { capabilities: {}, details: [], message: 'Controller is API-based — no SNMP device to probe.' };
+  }
+  try {
+    const dq = await pool.query('SELECT * FROM monitored_devices WHERE id = $1', [controller.snmp_device_id]);
+    const device = dq.rows[0];
+    if (!device) return { capabilities: {}, details: [], message: 'Linked SNMP device not found.' };
+    const candidates = VENDOR_OID_CANDIDATES[controller.vendor] || {};
+    const capKeys = Object.keys(candidates);
+    if (!capKeys.length) return { capabilities: {}, details: [], message: `No capability OIDs defined for vendor "${controller.vendor}".` };
+
+    const capabilities = {};
+    const details = [];
+    const session = createSession(device, 10000);
+    try {
+      for (const cap of capKeys) {
+        let resolvedOid = null;
+        let value = null;
+        for (const oid of candidates[cap]) {
+          const val = await getOid(session, oid);
+          if (val != null) { resolvedOid = oid; value = decodeSnmpVal(val); capabilities[cap] = oid; break; }
+        }
+        details.push({ capability: cap, found: !!resolvedOid, oid: resolvedOid, value, tried: candidates[cap].length });
+      }
+    } finally {
+      try { session.close(); } catch (_e) { /* ignore */ }
+    }
+    capabilities.probe_done = true;
+    await pool.query(
+      'UPDATE wireless_controllers SET capabilities = $2, capabilities_probed_at = NOW() WHERE id = $1',
+      [controller.id, capabilities]);
+    return { capabilities, details };
+  } catch (e) {
+    return { capabilities: {}, details: [], message: e.message };
+  }
+}
+
 // Poll controller metadata using ONLY the stored capability OIDs (discovered once
 // by probeControllerCapabilities). No per-poll guessing or diagnostic walks.
 // Always returns the full object shape; fields are null when the capability OID
@@ -1038,5 +1079,5 @@ function startWirelessCollector(pool) {
 module.exports = {
   startWirelessCollector, pollAll, pollController, upsertAp, upsertSsid, upsertRogueAp,
   autoDetectControllers, cleanupBadAutoControllers, cleanupDecimalMacAps, testController, debugWalk,
-  walkOid, pollClients, pollAllClients, probeControllerCapabilities,
+  walkOid, pollClients, pollAllClients, probeControllerCapabilities, probeControllerCapabilitiesDetailed,
 };

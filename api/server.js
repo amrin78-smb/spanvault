@@ -32,6 +32,10 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.26.0': [
+    'Controller "Detect" now shows its results — a panel listing each capability (model, firmware, licensed APs, HA role/peer/sync) with the OID that resolved and its live value, or "not found", so you can see exactly what a controller exposes (and why e.g. HA isn\'t detected on a given model)',
+    'New per-controller "Diagnostics" button — a live read-only SNMP walk showing metadata probes, table row counts, and raw OID samples, to find the correct OID when something isn\'t auto-detected',
+  ],
   '1.25.3': [
     'API now has a central error handler — 500s return a clear JSON message (and log the route + stack) instead of an opaque page, so failures like the controller Test are diagnosable',
   ],
@@ -3855,9 +3859,14 @@ app.post('/api/wireless/controllers/:id/probe', wrap(async (req, res) => {
   const r = await sv.query('SELECT * FROM wireless_controllers WHERE id = $1', [id]);
   const controller = r.rows[0];
   if (!controller) return res.status(404).json({ error: 'Controller not found' });
-  const capabilities = await wireless.probeControllerCapabilities(sv, controller);
+  const result = await wireless.probeControllerCapabilitiesDetailed(sv, controller);
   const pr = await sv.query('SELECT capabilities_probed_at FROM wireless_controllers WHERE id = $1', [id]);
-  res.json({ capabilities, probed_at: pr.rows[0] ? pr.rows[0].capabilities_probed_at : null });
+  res.json({
+    capabilities: result.capabilities,
+    details: result.details || [],
+    message: result.message || null,
+    probed_at: pr.rows[0] ? pr.rows[0].capabilities_probed_at : null,
+  });
 }));
 
 // ── Wireless intelligence ─────────────────────────────────────

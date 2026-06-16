@@ -3305,9 +3305,152 @@ function ControllerEventsTimeline({ events }: { events: ControllerEvent[] }) {
   );
 }
 
+// ── Capability probe result + diagnostics (top-level) ─────────
+type CapabilityDetail = { capability: string; found: boolean; oid: string | null; value: any; tried: number };
+
+const CAP_LABELS: Record<string, string> = {
+  model: 'Model', firmware: 'Firmware', licensed_aps: 'Licensed APs',
+  ha_role: 'HA Role', ha_peer_name: 'HA Peer', ha_sync: 'HA Sync',
+};
+function capLabel(k: string): string { return CAP_LABELS[k] || k.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()); }
+
+// SNMP values arrive as a string/number, or { hex, ascii } for binary (decodeSnmpVal).
+function fmtSnmpVal(v: any): string {
+  if (v == null) return '—';
+  if (typeof v === 'object') {
+    const printable = (v.ascii || '').replace(/\./g, '').trim();
+    return printable ? v.ascii : (v.hex ? `0x${v.hex}` : '—');
+  }
+  return String(v);
+}
+
+// Shows what the Detect probe actually found: each capability → resolved OID + value, or "not found".
+function CapabilityResultModal({ result, onClose }: {
+  result: { name: string; details: CapabilityDetail[]; message: string | null };
+  onClose: () => void;
+}) {
+  const found = result.details.filter((d) => d.found).length;
+  return (
+    <div className="sv-modal-backdrop" onMouseDown={onClose}>
+      <div className="sv-modal" style={{ maxWidth: 680 }} onMouseDown={(e) => e.stopPropagation()}>
+        <h2 style={{ marginTop: 0 }}>Capabilities — {result.name}</h2>
+        <p className="sv-muted" style={{ fontSize: 13, marginTop: -4 }}>
+          What SpanVault probed on this controller. Found {found} of {result.details.length}.
+          {' '}A capability shows “not found” when this hardware/firmware doesn’t expose that OID.
+        </p>
+        {result.message && <div className="sv-err-inline">{result.message}</div>}
+        {result.details.length > 0 && (
+          <table className="sv-table">
+            <thead><tr><th>Capability</th><th>Status</th><th>OID</th><th>Value</th></tr></thead>
+            <tbody>
+              {result.details.map((d) => (
+                <tr key={d.capability}>
+                  <td style={{ fontWeight: 600 }}>{capLabel(d.capability)}</td>
+                  <td style={{ color: d.found ? 'var(--green)' : 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+                    {d.found ? '✓ Found' : '✗ Not found'}
+                  </td>
+                  <td><code style={{ fontSize: 11 }}>{d.oid || '—'}</code></td>
+                  <td style={{ maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {d.found ? fmtSnmpVal(d.value) : '—'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        <div style={{ marginTop: 16, textAlign: 'right' }}>
+          <button className="sv-btn" onClick={onClose}>Done</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Raw SNMP diagnostics — walks the controller live and shows what its OID tables
+// actually return (metadata scalars + subtree row counts + samples). Read-only.
+function ControllerDiagnosticsModal({ controller, onClose }: { controller: Controller; onClose: () => void }) {
+  const [data, setData] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true); setErr(null);
+    apiGet<any>(`/api/wireless/debug/walk?controller_id=${controller.id}`)
+      .then((d) => { if (!cancelled) setData(d); })
+      .catch((e: any) => { if (!cancelled) setErr(e?.message || 'Diagnostics failed'); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [controller.id]);
+
+  const meta = data && data.metadata_probe ? Object.entries<any>(data.metadata_probe) : [];
+  const subtrees = data && data.subtrees ? Object.entries<any>(data.subtrees) : [];
+  return (
+    <div className="sv-modal-backdrop" onMouseDown={onClose}>
+      <div className="sv-modal" style={{ maxWidth: 760, maxHeight: '88vh', overflowY: 'auto' }} onMouseDown={(e) => e.stopPropagation()}>
+        <h2 style={{ marginTop: 0 }}>SNMP Diagnostics — {controller.name}</h2>
+        <p className="sv-muted" style={{ fontSize: 13, marginTop: -4 }}>
+          Live walk of what this controller exposes over SNMP — use it to find the right OID when something
+          (e.g. HA state) isn’t auto-detected.
+        </p>
+        {loading ? <Loading /> : err ? <ErrorBox message={err} /> : data && data.ok === false ? (
+          <ErrorBox message={data.message || data.error || 'Diagnostics failed'} />
+        ) : data ? (
+          <>
+            {meta.length > 0 && (
+              <>
+                <h3 style={{ marginBottom: 6 }}>Metadata probes</h3>
+                <table className="sv-table" style={{ marginBottom: 14 }}>
+                  <thead><tr><th>Field</th><th>OID</th><th>Value</th></tr></thead>
+                  <tbody>
+                    {meta.map(([k, v]) => (
+                      <tr key={k}>
+                        <td style={{ fontWeight: 600 }}>{k}</td>
+                        <td><code style={{ fontSize: 11 }}>{v.oid}</code></td>
+                        <td style={{ color: v.value == null ? 'var(--text-muted)' : undefined }}>
+                          {v.value == null ? 'no value' : fmtSnmpVal(v.value)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </>
+            )}
+            {subtrees.length > 0 && (
+              <>
+                <h3 style={{ marginBottom: 6 }}>SNMP tables (row counts)</h3>
+                <table className="sv-table" style={{ marginBottom: 14 }}>
+                  <thead><tr><th>Table</th><th>Base OID</th><th>Rows</th></tr></thead>
+                  <tbody>
+                    {subtrees.map(([k, v]) => (
+                      <tr key={k}>
+                        <td>{k}</td>
+                        <td><code style={{ fontSize: 11 }}>{v.base}</code></td>
+                        <td>{v.count}{v.truncated ? '+' : ''}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </>
+            )}
+            <details>
+              <summary style={{ cursor: 'pointer', fontSize: 13, color: 'var(--text-muted)' }}>Raw JSON</summary>
+              <pre style={{ maxHeight: 280, overflow: 'auto', fontSize: 11, background: 'var(--bg-code, #0b1020)', color: 'var(--text-code, #cbd5e1)', padding: 10, borderRadius: 6 }}>
+                {JSON.stringify(data, null, 2)}
+              </pre>
+            </details>
+          </>
+        ) : null}
+        <div style={{ marginTop: 16, textAlign: 'right' }}>
+          <button className="sv-btn" onClick={onClose}>Close</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Capabilities detection accordion (collapsed) (top-level) ──
 function CapabilitiesAccordion({
-  controllers, canProbe, canEdit, probingId, onProbe, onEdit, onTest, onDelete,
+  controllers, canProbe, canEdit, probingId, onProbe, onEdit, onTest, onDelete, onDiagnostics,
 }: {
   controllers: Controller[];
   canProbe: boolean;
@@ -3317,6 +3460,7 @@ function CapabilitiesAccordion({
   onEdit: (c: Controller) => void;
   onTest: (c: Controller) => void;
   onDelete: (c: Controller) => void;
+  onDiagnostics: (c: Controller) => void;
 }) {
   const [open, setOpen] = useState(true);
   return (
@@ -3370,6 +3514,9 @@ function CapabilitiesAccordion({
                               {busy ? 'Detecting…' : 'Detect'}
                             </button>
                           )}
+                          {isSnmp && canEdit && (
+                            <button className="sv-btn ghost sm" onClick={() => onDiagnostics(c)} title="Show what OIDs this controller exposes">Diagnostics</button>
+                          )}
                           {canEdit && (
                             <>
                               <button className="sv-btn ghost sm" onClick={() => onEdit(c)}>Edit</button>
@@ -3422,15 +3569,18 @@ function ControllersTab({ onViewEvents }: { onViewEvents?: () => void }) {
   }
 
   const [probingId, setProbingId] = useState<number | null>(null);
+  const [probeResult, setProbeResult] = useState<{ name: string; details: CapabilityDetail[]; message: string | null } | null>(null);
+  const [diagController, setDiagController] = useState<Controller | null>(null);
   async function handleProbe(c: Controller) {
     setProbingId(c.id);
     try {
-      await apiSend(`/api/wireless/controllers/${c.id}/probe`, 'POST', {});
-      setToast(`✓ ${c.name}: capability probe complete`);
+      const r = await apiSend<{ details: CapabilityDetail[]; message: string | null }>(
+        `/api/wireless/controllers/${c.id}/probe`, 'POST', {});
+      setProbeResult({ name: c.name, details: r.details || [], message: r.message || null });
     } catch (e: any) {
       setToast(`✗ ${c.name}: ${e?.message || 'Probe failed'}`);
+      setTimeout(() => setToast(null), 6000);
     }
-    setTimeout(() => setToast(null), 6000);
     await controllers.reload();
     overview.reload();
     setProbingId(null);
@@ -3546,7 +3696,15 @@ function ControllersTab({ onViewEvents }: { onViewEvents?: () => void }) {
             onEdit={(c) => { setEditing(c); setShowModal(true); }}
             onTest={handleTest}
             onDelete={handleDelete}
+            onDiagnostics={(c) => setDiagController(c)}
           />
+
+          {probeResult && (
+            <CapabilityResultModal result={probeResult} onClose={() => setProbeResult(null)} />
+          )}
+          {diagController && (
+            <ControllerDiagnosticsModal controller={diagController} onClose={() => setDiagController(null)} />
+          )}
 
           {overview.loading && !ov ? (
             <div className="sv-panel"><Loading /></div>
