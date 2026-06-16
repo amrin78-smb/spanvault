@@ -198,9 +198,127 @@ function EmailAlertSettings({ settings, form, set, save, saving, saved, saveErr 
             </label>
           ))}
         </div>
+        <div style={{ marginTop: 14, display: 'flex', flexWrap: 'wrap', gap: 24, alignItems: 'flex-end' }}>
+          <label className="sv-field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8, margin: 0 }}>
+            <input type="checkbox"
+              checked={String(form.email_recovery_enabled ?? 'true').toLowerCase() !== 'false'}
+              onChange={(e) => set('email_recovery_enabled', e.target.checked ? 'true' : 'false')} />
+            Send recovery (“all-clear”) emails
+          </label>
+          <label className="sv-field" style={{ margin: 0 }}>Re-notify cooldown (minutes)
+            <input className="sv-input" type="number" min={0} style={{ maxWidth: 120 }}
+              value={form.notify_cooldown_minutes ?? '15'}
+              onChange={(e) => set('notify_cooldown_minutes', e.target.value)} />
+            <span className="sv-muted" style={{ fontSize: 11 }}>0 = no throttle. Suppresses repeat emails for a flapping alert.</span>
+          </label>
+        </div>
       </div>
 
+      <NotificationRoutes />
+
       <SaveBar save={save} saving={saving} saved={saved} />
+    </div>
+  );
+}
+
+// ── Notification routing (send matching alerts to specific recipients) ─────────
+type NotifRoute = {
+  id: number; name: string; match_severity: string | null;
+  match_site_id: number | null; match_alert_type: string | null;
+  email_to: string; enabled: boolean;
+};
+const ALERT_TYPE_OPTIONS = [
+  { v: '', label: 'Any type' },
+  { v: 'device_down', label: 'Device down' },
+  { v: 'high_latency', label: 'High latency' },
+  { v: 'agent_down', label: 'Agent down' },
+];
+
+function NotificationRoutes() {
+  const routes = useApi<NotifRoute[]>('/api/notification-routes');
+  const sites = useApi<Site[]>('/api/netvault/sites');
+  const [name, setName] = useState('');
+  const [emailTo, setEmailTo] = useState('');
+  const [sev, setSev] = useState('');
+  const [siteId, setSiteId] = useState('');
+  const [atype, setAtype] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const siteName = (id: number | null) =>
+    id == null ? 'Any site' : (sites.data?.find((s) => s.id === id)?.name || `Site ${id}`);
+
+  async function add() {
+    if (!name.trim() || !emailTo.trim()) { setErr('Name and recipients are required'); return; }
+    setBusy(true); setErr(null);
+    try {
+      await apiSend('/api/notification-routes', 'POST', {
+        name: name.trim(), email_to: emailTo.trim(),
+        match_severity: sev || null, match_site_id: siteId || null, match_alert_type: atype || null,
+      });
+      setName(''); setEmailTo(''); setSev(''); setSiteId(''); setAtype('');
+      routes.reload();
+    } catch (e: any) { setErr(e?.message || 'Failed to add route'); }
+    finally { setBusy(false); }
+  }
+  async function remove(id: number) {
+    await apiSend(`/api/notification-routes/${id}`, 'DELETE');
+    routes.reload();
+  }
+
+  const list = routes.data || [];
+  return (
+    <div className="sv-panel" style={{ marginTop: 12 }}>
+      <h2>Notification Routing</h2>
+      <p className="sv-muted" style={{ fontSize: 13, marginTop: -4 }}>
+        Send alerts that match a rule to specific recipients. If no route matches an alert, it goes to the
+        Alert Recipients above.
+      </p>
+      {err && <div className="sv-err-inline">{err}</div>}
+      {list.length > 0 && (
+        <table className="sv-table" style={{ marginBottom: 12 }}>
+          <thead><tr><th>Name</th><th>Severity</th><th>Site</th><th>Type</th><th>Recipients</th><th></th></tr></thead>
+          <tbody>
+            {list.map((r) => (
+              <tr key={r.id}>
+                <td>{r.name}</td>
+                <td>{r.match_severity || 'Any'}</td>
+                <td>{siteName(r.match_site_id)}</td>
+                <td>{r.match_alert_type || 'Any'}</td>
+                <td style={{ maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.email_to}</td>
+                <td style={{ textAlign: 'right' }}>
+                  <button className="sv-btn ghost sm" onClick={() => remove(r.id)}>Delete</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'flex-end' }}>
+        <label className="sv-field" style={{ margin: 0 }}>Name
+          <input className="sv-input" style={{ maxWidth: 160 }} value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. DB team" />
+        </label>
+        <label className="sv-field" style={{ margin: 0 }}>Severity
+          <select className="sv-input" value={sev} onChange={(e) => setSev(e.target.value)}>
+            <option value="">Any</option><option value="warning">Warning</option><option value="critical">Critical</option>
+          </select>
+        </label>
+        <label className="sv-field" style={{ margin: 0 }}>Site
+          <select className="sv-input" value={siteId} onChange={(e) => setSiteId(e.target.value)}>
+            <option value="">Any site</option>
+            {(sites.data || []).map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+          </select>
+        </label>
+        <label className="sv-field" style={{ margin: 0 }}>Type
+          <select className="sv-input" value={atype} onChange={(e) => setAtype(e.target.value)}>
+            {ALERT_TYPE_OPTIONS.map((o) => <option key={o.v} value={o.v}>{o.label}</option>)}
+          </select>
+        </label>
+        <label className="sv-field" style={{ margin: 0, flex: 1, minWidth: 200 }}>Recipients
+          <input className="sv-input" value={emailTo} onChange={(e) => setEmailTo(e.target.value)} placeholder="a@x.com, b@x.com" />
+        </label>
+        <button className="sv-btn" onClick={add} disabled={busy}>{busy ? 'Adding…' : 'Add route'}</button>
+      </div>
     </div>
   );
 }

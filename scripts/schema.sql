@@ -194,6 +194,30 @@ ALTER TABLE monitored_devices ADD COLUMN IF NOT EXISTS
 CREATE UNIQUE INDEX IF NOT EXISTS idx_one_gateway_per_site
   ON monitored_devices(site_id) WHERE is_gateway = TRUE AND active = TRUE;
 
+-- ── Notification routing + throttle ───────────────────────────────────────────
+-- Route matching alerts to specific email recipients. A NULL match field = "any".
+-- When no route matches, the global alert_email_to is used as a fallback.
+CREATE TABLE IF NOT EXISTS notification_routes (
+  id               SERIAL PRIMARY KEY,
+  name             TEXT NOT NULL,
+  match_severity   TEXT,     -- 'warning' | 'critical' | NULL(any)
+  match_site_id    INTEGER,  -- NULL = any site
+  match_alert_type TEXT,     -- e.g. 'device_down' | NULL(any)
+  email_to         TEXT NOT NULL,   -- comma/space separated recipients
+  enabled          BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Throttle re-notification of a flapping alert. device_id/agent_id use 0 to mean
+-- "none" so the composite key has no NULLs.
+CREATE TABLE IF NOT EXISTS notification_state (
+  device_id        INTEGER NOT NULL DEFAULT 0,
+  agent_id         INTEGER NOT NULL DEFAULT 0,
+  alert_type       TEXT NOT NULL,
+  last_notified_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (device_id, agent_id, alert_type)
+);
+
 GRANT ALL PRIVILEGES ON TABLE device_dependencies TO spanvault_user;
 GRANT ALL PRIVILEGES ON SEQUENCE device_dependencies_id_seq TO spanvault_user;
 

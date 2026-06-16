@@ -32,6 +32,11 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.14.0': [
+    'Notification routing — send alerts matching a severity, site, and/or type to specific email recipients (Settings → Email Alerts); unmatched alerts fall back to the global recipient list',
+    'Recovery ("all-clear") emails are now sent when an alert resolves (toggle in settings)',
+    'Re-notification throttle suppresses repeat emails for a flapping alert within a configurable cooldown (default 15 min)',
+  ],
   '1.13.0': [
     'Access Points table (Wireless tab) now has sortable column headers — click any header to sort ascending/descending (alphabetical for AP Name/Site/Status, numeric for Clients/channels/utilization/uptime, by time for Last Seen)',
     'A sort indicator shows the active column and direction; clicking the same header again flips the direction',
@@ -5378,6 +5383,53 @@ app.put('/api/settings', wrap(async (req, res) => {
     `, [k, b[k] === null ? null : String(b[k])]);
   }
   res.json({ ok: true, updated: keys.length });
+}));
+
+// ── Notification routing ──────────────────────────────────────
+// Route matching alerts to specific email recipients (NULL match = any).
+app.get('/api/notification-routes', wrap(async (_req, res) => {
+  try {
+    const r = await sv.query(`SELECT * FROM notification_routes ORDER BY name`);
+    res.json(r.rows);
+  } catch (e) {
+    if (/notification_routes/.test(e.message)) return res.json([]); // un-migrated DB
+    throw e;
+  }
+}));
+
+app.post('/api/notification-routes', wrap(async (req, res) => {
+  const b = req.body || {};
+  if (!b.name || !b.email_to) return res.status(400).json({ error: 'name and email_to are required' });
+  const r = await sv.query(
+    `INSERT INTO notification_routes (name, match_severity, match_site_id, match_alert_type, email_to, enabled)
+     VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+    [b.name, b.match_severity || null,
+     b.match_site_id != null && b.match_site_id !== '' ? parseInt(b.match_site_id, 10) : null,
+     b.match_alert_type || null, b.email_to, b.enabled !== false]);
+  res.status(201).json(r.rows[0]);
+}));
+
+app.put('/api/notification-routes/:id', wrap(async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const b = req.body || {};
+  const r = await sv.query(
+    `UPDATE notification_routes SET
+       name = COALESCE($2, name),
+       match_severity = $3, match_site_id = $4, match_alert_type = $5,
+       email_to = COALESCE($6, email_to),
+       enabled = COALESCE($7, enabled)
+     WHERE id = $1 RETURNING *`,
+    [id, b.name || null, b.match_severity || null,
+     b.match_site_id != null && b.match_site_id !== '' ? parseInt(b.match_site_id, 10) : null,
+     b.match_alert_type || null, b.email_to || null,
+     typeof b.enabled === 'boolean' ? b.enabled : null]);
+  if (!r.rows[0]) return res.status(404).json({ error: 'Route not found' });
+  res.json(r.rows[0]);
+}));
+
+app.delete('/api/notification-routes/:id', wrap(async (req, res) => {
+  await sv.query(`DELETE FROM notification_routes WHERE id = $1`, [parseInt(req.params.id, 10)]);
+  res.json({ ok: true });
 }));
 
 // ══════════════════════════════════════════════════════════════

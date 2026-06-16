@@ -241,14 +241,14 @@ async function pingDevice(device) {
       await buildDeviceDownMessage(device), null);
   } else if (newStatus !== 'down') {
     const wasDown = await resolveAlert(device.id, 'device_down');
-    if (wasDown) await deviceRecoveryEvent(device, timeMs);
+    if (wasDown) { await deviceRecoveryEvent(device, timeMs); await notifyRecovery(device, 'device_down', 'Device down'); }
   }
 
   if (alive && timeMs !== null && timeMs > threshold && !inMaint) {
     await raiseAlert(device, 'high_latency', 'warning',
       await buildHighLatencyMessage(device, timeMs), timeMs);
   } else if (alive && (timeMs === null || timeMs <= threshold)) {
-    await resolveAlert(device.id, 'high_latency');
+    if (await resolveAlert(device.id, 'high_latency')) await notifyRecovery(device, 'high_latency', 'High latency');
   }
 
   // User-defined ping-context rules (device_down / response_time / packet_loss).
@@ -559,7 +559,7 @@ async function raiseAlert(device, alertType, severity, message, metricValue) {
     `, [device.id, alertType, severity, message, isFinite(metricValue) ? metricValue : null]);
     if (r.rows[0]) {
       log(`[alert] RAISED ${alertType} on ${device.name}: ${message}`);
-      await sendAlertEmail(`[SpanVault] ${severity.toUpperCase()}: ${message}`, message);
+      await notifyAlertRaise(device, severity, alertType, `[SpanVault] ${severity.toUpperCase()}: ${message}`, message);
     }
   } catch (err) {
     console.error('[alerts] raise failed:', err.message);
@@ -594,7 +594,8 @@ async function raiseAgentAlert(agent, message) {
     `, [agent.id, message]);
     if (r.rows[0]) {
       log(`[alert] RAISED agent_down on ${agent.name}: ${message}`);
-      await sendAlertEmail(`[SpanVault] CRITICAL: ${message}`, message);
+      await notifyAlertRaise({ agent: true, id: agent.id }, 'critical', 'agent_down',
+        `[SpanVault] CRITICAL: ${message}`, message);
     }
   } catch (err) {
     console.error('[alerts] agent raise failed:', err.message);
@@ -634,7 +635,7 @@ async function evaluateStoredDevice(device) {
     await raiseAlert(device, 'device_down', 'critical',
       await buildDeviceDownMessage(device), null);
   } else if (newStatus !== 'down') {
-    await resolveAlert(device.id, 'device_down');
+    if (await resolveAlert(device.id, 'device_down')) await notifyRecovery(device, 'device_down', 'Device down');
   }
 
   // Latency.
@@ -643,7 +644,7 @@ async function evaluateStoredDevice(device) {
     await raiseAlert(device, 'high_latency', 'warning',
       await buildHighLatencyMessage(device, timeMs), timeMs);
   } else if (alive && (timeMs === null || timeMs <= threshold)) {
-    await resolveAlert(device.id, 'high_latency');
+    if (await resolveAlert(device.id, 'high_latency')) await notifyRecovery(device, 'high_latency', 'High latency');
   }
 
   // SNMP-metric rules from the latest stored samples (best-effort).
@@ -1012,17 +1013,82 @@ async function evaluateEffectiveRules(device, metrics) {
         message, typeof val === 'number' ? val : null);
     } else {
       const wasActive = await resolveAlert(device.id, alertType);
-      if (wasActive && rule.notify_recovery) await recoveryEvent(device, rule);
+      if (wasActive && rule.notify_recovery) {
+        await recoveryEvent(device, rule);
+        await notifyRecovery(device, alertType, METRIC_LABELS[rule.metric] || rule.metric);
+      }
     }
   }
 }
 
 // ── Email notifications ───────────────────────────────────────
-async function sendAlertEmail(subject, body) {
+// Recipients for an alert, honoring notification_routes. A NULL/omitted match
+// dimension means "any". Falls back to the global alert_email_to when no route
+// matches (or the table doesn't exist yet).
+async function recipientsFor(siteId, severity, alertType) {
+  try {
+    const r = await sv.query(
+      `SELECT email_to FROM notification_routes
+        WHERE enabled = TRUE
+          AND (match_severity   IS NULL OR $1::text IS NULL OR match_severity   = $1)
+          AND (match_site_id    IS NULL OR $2::int  IS NULL OR match_site_id    = $2)
+          AND (match_alert_type IS NULL OR $3::text IS NULL OR match_alert_type = $3)`,
+      [severity || null, siteId == null ? null : siteId, alertType || null]
+    );
+    const set = new Set();
+    for (const row of r.rows) {
+      for (const e of String(row.email_to).split(/[\s,;]+/)) { if (e) set.add(e.trim()); }
+    }
+    if (set.size) return Array.from(set).join(',');
+  } catch (_e) { /* table may not exist yet — fall through to global */ }
+  return setting('alert_email_to', '');
+}
+
+// Throttle: stamp + return true if we may notify, false if within the cooldown
+// window (suppresses re-notification of a flapping alert). 0 disables throttle.
+async function notifyCooldownOk(deviceId, agentId, alertType) {
+  const mins = settingInt('notify_cooldown_minutes', 15);
+  if (mins <= 0) return true;
+  try {
+    const r = await sv.query(
+      `INSERT INTO notification_state (device_id, agent_id, alert_type, last_notified_at)
+       VALUES ($1,$2,$3,NOW())
+       ON CONFLICT (device_id, agent_id, alert_type) DO UPDATE SET last_notified_at = NOW()
+         WHERE notification_state.last_notified_at < NOW() - make_interval(mins => $4::int)
+       RETURNING device_id`,
+      [deviceId || 0, agentId || 0, alertType, mins]
+    );
+    return r.rowCount > 0;
+  } catch (_e) { return true; } // if table missing, never block notifications
+}
+
+// Notify on a NEW alert (routed + throttled). entity = a device row, or
+// { agent:true, id } for an agent-level alert.
+async function notifyAlertRaise(entity, severity, alertType, subject, body) {
+  const isAgent = !!entity.agent;
+  if (!(await notifyCooldownOk(isAgent ? 0 : entity.id, isAgent ? entity.id : 0, alertType))) return;
+  const to = await recipientsFor(isAgent ? null : entity.site_id, severity, alertType);
+  if (to) await sendAlertEmail(subject, body, to);
+}
+
+// Notify that an alert cleared (the "all-clear"), routed to the same recipients.
+async function notifyRecovery(device, alertType, label) {
+  if (String(setting('email_recovery_enabled', 'true')).toLowerCase() === 'false') return;
+  const to = await recipientsFor(device.site_id, null, alertType);
+  if (to) {
+    await sendAlertEmail(
+      `[SpanVault] RESOLVED: ${label} on ${device.name}`,
+      `${label} on ${device.name} (${device.ip_address || 'unknown IP'}) has recovered.`,
+      to
+    );
+  }
+}
+
+async function sendAlertEmail(subject, body, to) {
   if (!settingBool('email_alerts_enabled')) return;
   const host = setting('smtp_host', '');
-  const to = setting('alert_email_to', '');
-  if (!host || !to) return;
+  const recipients = to || setting('alert_email_to', '');
+  if (!host || !recipients) return;
   try {
     const transport = nodemailer.createTransport({
       host,
@@ -1032,7 +1098,7 @@ async function sendAlertEmail(subject, body) {
     });
     await transport.sendMail({
       from: setting('smtp_from', '') || setting('smtp_user', 'spanvault@localhost'),
-      to,
+      to: recipients,
       subject,
       text: body,
     });
