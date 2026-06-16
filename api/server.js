@@ -32,6 +32,9 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.25.3': [
+    'API now has a central error handler — 500s return a clear JSON message (and log the route + stack) instead of an opaque page, so failures like the controller Test are diagnosable',
+  ],
   '1.25.2': [
     'The API now auto-applies scripts/schema.sql on startup (idempotent, via the DB pool with an advisory lock) — so deployed code and DB schema always stay in sync without depending on psql or the installer step. This prevents the "new feature 500s because a column wasn\'t migrated" class of issue',
   ],
@@ -6193,6 +6196,15 @@ setInterval(() => getLicense(true), 24 * 60 * 60 * 1000);
 // ── Update check: on startup + every 24h (cached for the notifier banner) ─────
 checkForUpdates();
 setInterval(checkForUpdates, 24 * 60 * 60 * 1000);
+
+// Central error handler — log the route + stack and return clean JSON so a 500 is
+// diagnosable in the UI / network tab instead of an opaque default HTML page.
+// (Must be registered AFTER all routes.)
+app.use((err, req, res, _next) => {
+  console.error(`[500] ${req.method} ${req.path}:`, err && err.stack ? err.stack : err);
+  if (res.headersSent) return;
+  res.status(500).json({ error: (err && err.message) || 'Internal server error', path: req.path });
+});
 
 // Apply scripts/schema.sql through the existing pg pool on startup. The schema is
 // fully idempotent (CREATE ... IF NOT EXISTS / ADD COLUMN IF NOT EXISTS), so this
