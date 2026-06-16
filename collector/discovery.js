@@ -246,6 +246,7 @@ async function collectCandidates(session, vendor, prev, now, want) {
         category: 'interface',
         std_metric: stdMetric, metric: `if_${idx}_${metricSfx}`,
         oid: `${oidBase}.${idx}`, value, if_index: idx, if_name: ifName, unit,
+        speed_mbps: speedByIdx.get(idx) || null,
       });
 
       const statusCand = mk('Status', 'status', 'if_oper_status', 'oper', OID.ifOperStatus, operUp, 'state');

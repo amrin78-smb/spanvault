@@ -342,6 +342,24 @@ async function snmpPollDevice(device) {
     }));
   }
 
+  // Derive interface utilization % from in/out bps + link speed (ifHighSpeed).
+  // Stored as if_<idx>_<dir>_util_pct samples and used for the bandwidth_pct rule
+  // and weather-map link coloring.
+  const utilSamples = [];
+  for (const c of candidates) {
+    if (c.category !== 'interface' || c.value == null || !c.speed_mbps) continue;
+    if (!/_in_bps$|_out_bps$/.test(c.metric || '')) continue;
+    const speedBps = Number(c.speed_mbps) * 1e6;
+    if (!(speedBps > 0)) continue;
+    const dir = /_in_bps$/.test(c.metric) ? 'in' : 'out';
+    const util = Math.min(100, Math.round((Number(c.value) / speedBps) * 1000) / 10);
+    utilSamples.push({
+      metric_name: `if_${c.if_index}_${dir}_util_pct`, value: util,
+      oid: null, if_index: c.if_index, if_name: c.if_name,
+    });
+  }
+  if (utilSamples.length) samples = samples.concat(utilSamples);
+
   // Persist samples (skip ones with no value — e.g. bps on the first poll).
   let written = 0;
   for (const s of samples) {
@@ -521,12 +539,21 @@ async function evaluateSnmpAlerts(device, samples) {
     snmpNoDataMin = lastTs ? (Date.now() - new Date(lastTs).getTime()) / 60000 : null;
   } catch (_e) { /* ignore */ }
 
+  // Device-level bandwidth utilization = peak interface util this poll.
+  let maxUtil = null;
+  for (const s of samples) {
+    if (/_util_pct$/.test(s.metric_name) && s.value != null) {
+      const v = Number(s.value);
+      if (isFinite(v) && (maxUtil === null || v > maxUtil)) maxUtil = v;
+    }
+  }
+
   await evaluateEffectiveRules(device, {
     cpu_pct: latest.cpu_pct !== undefined ? latest.cpu_pct : null,
     mem_pct: latest.mem_pct !== undefined ? latest.mem_pct : null,
     interface_down: interfaceDown,
     snmp_no_data: snmpNoDataMin,
-    bandwidth_pct: null, // interface capacity not tracked yet — reserved
+    bandwidth_pct: maxUtil,
   });
 }
 

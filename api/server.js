@@ -32,6 +32,10 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.16.0': [
+    'Interface bandwidth utilization % is now computed from in/out throughput and link speed (ifHighSpeed) and stored per interface',
+    'The "bandwidth_pct" alert rule now works (previously a no-op) — alert when an interface crosses a utilization threshold',
+  ],
   '1.15.0': [
     'Alert escalation — if an alert stays active and unacknowledged past a step\'s delay, SpanVault emails that step\'s recipients (or the current on-call); multiple ordered steps supported',
     'On-call rotation — define shifts (contact + time window); escalation steps can target "current on-call"',
