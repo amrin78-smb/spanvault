@@ -211,6 +211,12 @@ function EmailAlertSettings({ settings, form, set, save, saving, saved, saveErr 
               onChange={(e) => set('notify_cooldown_minutes', e.target.value)} />
             <span className="sv-muted" style={{ fontSize: 11 }}>0 = no throttle. Suppresses repeat emails for a flapping alert.</span>
           </label>
+          <label className="sv-field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8, margin: 0 }}>
+            <input type="checkbox"
+              checked={String(form.anomaly_alerts_enabled ?? 'false').toLowerCase() === 'true'}
+              onChange={(e) => set('anomaly_alerts_enabled', e.target.checked ? 'true' : 'false')} />
+            Alert on baseline anomalies (latency / CPU / memory deviating from normal)
+          </label>
         </div>
       </div>
 

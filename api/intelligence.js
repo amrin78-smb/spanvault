@@ -118,49 +118,58 @@ async function computeMetricBaseline(deviceId, metric, query) {
 }
 
 // ── Anomaly detection ──────────────────────────────────────────
+// Compare each device's last-15-min average for a metric against its baseline;
+// flag a z-score anomaly (|z|>=2.5 warning, >=3.5 critical) and auto-resolve when
+// it falls back in-band. `recentSql` must return rows {device_id, avg_v, mean, stddev}.
+async function detectMetricAnomalies(metric, recentSql, params) {
+  const recent = await sv.query(recentSql, params || []);
+  const live = [];
+  for (const row of recent.rows) {
+    const v = parseFloat(row.avg_v);
+    const bMean = parseFloat(row.mean);
+    const bStd = parseFloat(row.stddev);
+    if (!(bStd > 0) || !isFinite(v)) continue;
+    const z = Math.abs((v - bMean) / bStd);
+    if (z >= 2.5) {
+      live.push(row.device_id);
+      const severity = z >= 3.5 ? 'critical' : 'warning';
+      await sv.query(`
+        INSERT INTO device_anomalies
+          (device_id, metric, value, baseline_mean, baseline_stddev, z_score, severity)
+        VALUES ($1,$2,$3,$4,$5,$6,$7)
+        ON CONFLICT (device_id, metric) WHERE status = 'active' DO NOTHING
+      `, [row.device_id, metric, v, bMean, bStd, z, severity]);
+    }
+  }
+  // Resolve anomalies for this metric whose device is no longer out-of-band
+  // (small grace period so it doesn't flap immediately).
+  await sv.query(`
+    UPDATE device_anomalies SET status='resolved', resolved_at=NOW()
+     WHERE status='active' AND metric=$1
+       AND detected_at < NOW() - INTERVAL '10 minutes'
+       AND device_id <> ALL($2::int[])
+  `, [metric, live.length ? live : [-1]]);
+}
+
 async function detectAnomalies() {
   try {
-    // Check the last 15 minutes of ping results against the response_ms baseline.
-    const recent = await sv.query(`
-      SELECT p.device_id, AVG(p.response_ms) AS avg_ms,
-             b.mean, b.stddev, b.sample_count
+    await detectMetricAnomalies('response_ms', `
+      SELECT p.device_id, AVG(p.response_ms) AS avg_v, b.mean, b.stddev
       FROM ping_results p
       JOIN device_baselines b ON b.device_id = p.device_id AND b.metric = 'response_ms'
       WHERE p.ts >= NOW() - INTERVAL '15 minutes'
         AND p.status = 'up' AND p.response_ms IS NOT NULL
         AND b.sample_count >= 10 AND b.stddev > 0
-      GROUP BY p.device_id, b.mean, b.stddev, b.sample_count
-    `);
-
-    for (const row of recent.rows) {
-      const avgMs = parseFloat(row.avg_ms);
-      const bMean = parseFloat(row.mean);
-      const bStd = parseFloat(row.stddev);
-      const z = Math.abs((avgMs - bMean) / bStd);
-      if (z >= 2.5) {
-        const severity = z >= 3.5 ? 'critical' : 'warning';
-        // One active anomaly per device/metric (partial unique index enforces it).
-        await sv.query(`
-          INSERT INTO device_anomalies
-            (device_id, metric, value, baseline_mean, baseline_stddev, z_score, severity)
-          VALUES ($1, 'response_ms', $2, $3, $4, $5, $6)
-          ON CONFLICT (device_id, metric) WHERE status = 'active' DO NOTHING
-        `, [row.device_id, avgMs, bMean, bStd, z, severity]);
-      }
+      GROUP BY p.device_id, b.mean, b.stddev`);
+    for (const metric of ['cpu_pct', 'mem_pct']) {
+      await detectMetricAnomalies(metric, `
+        SELECT s.device_id, AVG(s.value) AS avg_v, b.mean, b.stddev
+        FROM snmp_results s
+        JOIN device_baselines b ON b.device_id = s.device_id AND b.metric = $1
+        WHERE s.metric_name = $1 AND s.ts >= NOW() - INTERVAL '15 minutes'
+          AND s.value IS NOT NULL AND b.sample_count >= 10 AND b.stddev > 0
+        GROUP BY s.device_id, b.mean, b.stddev`, [metric]);
     }
-
-    // Resolve anomalies that are back to normal (no recent out-of-baseline reading).
-    await sv.query(`
-      UPDATE device_anomalies SET status='resolved', resolved_at=NOW()
-      WHERE status='active' AND detected_at < NOW() - INTERVAL '30 minutes'
-        AND device_id NOT IN (
-          SELECT DISTINCT p.device_id FROM ping_results p
-          JOIN device_baselines b ON b.device_id=p.device_id AND b.metric='response_ms'
-          WHERE p.ts >= NOW() - INTERVAL '15 minutes'
-            AND b.stddev > 0
-            AND ABS((p.response_ms - b.mean) / NULLIF(b.stddev,0)) >= 2.5
-        )
-    `);
   } catch (e) {
     console.error('[Intelligence] detectAnomalies error:', e.message);
   }

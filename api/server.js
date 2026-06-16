@@ -32,6 +32,10 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.18.0': [
+    'Baseline anomaly alerting — SpanVault can now alert when latency, CPU, or memory deviates sharply from a device\'s learned normal (z-score), not just on fixed thresholds (opt-in: Settings → Email Alerts)',
+    'Anomaly detection expanded beyond latency to CPU and memory; anomaly alerts auto-resolve when the metric returns to normal',
+  ],
   '1.17.0': [
     'New Services page — agentless uptime checks for HTTP/HTTPS, TCP ports, SSL certificate expiry, and DNS, like PRTG sensors',
     'Checks run from the central collector or from a remote agent (for services only reachable inside a site)',

@@ -1513,6 +1513,40 @@ async function serviceCheckTick() {
   }
 }
 
+// ── Baseline / anomaly alerting ───────────────────────────────
+// Raise/resolve alerts from the intelligence engine's active anomalies (deviation
+// from each metric's learned baseline). Opt-in via anomaly_alerts_enabled.
+const ANOMALY_LABELS = { response_ms: 'Response time', cpu_pct: 'CPU', mem_pct: 'Memory' };
+async function evaluateAnomalyAlerts() {
+  if (String(setting('anomaly_alerts_enabled', 'false')).toLowerCase() !== 'true') return;
+  try {
+    const active = (await sv.query(`
+      SELECT a.device_id, a.metric, a.severity, a.value, a.baseline_mean, a.z_score,
+             d.name, d.site_id, d.ip_address
+        FROM device_anomalies a
+        JOIN monitored_devices d ON d.id = a.device_id
+       WHERE a.status = 'active'`)).rows;
+    const live = new Set();
+    for (const row of active) {
+      const alertType = `anomaly_${row.metric}`;
+      live.add(`${row.device_id}:${alertType}`);
+      const device = { id: row.device_id, name: row.name, site_id: row.site_id, ip_address: row.ip_address };
+      const label = ANOMALY_LABELS[row.metric] || row.metric;
+      const r1 = (v) => Math.round(Number(v) * 10) / 10;
+      await raiseAlert(device, alertType, row.severity || 'warning',
+        `Anomaly: ${label} on ${row.name} is ${r1(row.value)} (baseline ~${r1(row.baseline_mean)}, z=${r1(row.z_score)})`,
+        Number(row.value));
+    }
+    const open = (await sv.query(
+      `SELECT device_id, alert_type FROM alerts WHERE status='active' AND alert_type LIKE 'anomaly%'`)).rows;
+    for (const al of open) {
+      if (!live.has(`${al.device_id}:${al.alert_type}`)) await resolveAlert(al.device_id, al.alert_type);
+    }
+  } catch (e) {
+    console.error('[anomaly] alert eval failed:', e.message);
+  }
+}
+
 // ══════════════════════════════════════════════════════════════
 // Schedulers
 // ══════════════════════════════════════════════════════════════
@@ -1644,6 +1678,9 @@ async function main() {
 
   // Alert escalation sweep — every minute.
   setInterval(escalationTick, 60 * 1000);
+
+  // Baseline/anomaly → alert sweep — every minute (opt-in).
+  setInterval(evaluateAnomalyAlerts, 60 * 1000);
 
   // Agentless service checks (HTTP/TCP/SSL/DNS). The due-check inside honors
   // each check's interval_seconds; alert evaluation runs for central + agent
