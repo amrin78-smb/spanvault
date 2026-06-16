@@ -1586,8 +1586,11 @@ body.sv-noc .sv-content:has(.sv-tabs.sticky) > :first-child { padding-top: 28px;
 .sv-agent-group { margin-bottom: 18px; }
 .sv-agent-group-head {
   display: flex; align-items: center; gap: 10px; padding: 11px 14px; cursor: pointer;
-  background: var(--navy); color: #fff; border-radius: var(--radius) var(--radius) 0 0;
-  border-left: 4px solid var(--navy);
+  /* Background is set to the light page colour inline in JSX, so text must use the
+     theme foreground — not #fff, which would be invisible on the light header. */
+  background: var(--bg-card); color: var(--text-primary);
+  border-radius: var(--radius) var(--radius) 0 0;
+  border: 1px solid var(--border); border-left: 4px solid var(--primary);
 }
 .sv-agent-group-head.local { background: var(--bg-card); color: var(--text-primary); border-left-color: var(--sv-unknown); border: 1px solid var(--border); }
 .sv-agent-group-head.offline { border-left-color: var(--sv-down); }

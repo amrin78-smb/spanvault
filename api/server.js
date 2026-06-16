@@ -32,6 +32,9 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.27.3': [
+    'Fixed the polling-agent group header on the Devices page rendering white text on a light background (agent name, status, and device count were invisible) — the header now uses the theme foreground colour with a crimson accent stripe',
+  ],
   '1.27.2': [
     'Fixed HA detection hiding real HA pairs: a controller reporting an Active/Standby role and a peer is now shown as in-HA even when its SNMP "sync" code maps to Standalone (some platforms, e.g. AOS-8 gateways, report a non-Synced sync value while HA is configured)',
   ],
