@@ -8,7 +8,7 @@ import {
   ErrorBox, Loading, Empty, fmtRel, fmtTime, PageHeader, useRefreshKey,
 } from '@/components/ui';
 import { StatusDot } from '@/components/StatusDot';
-import { AgentStatusPill, AgentInstall, AgentDiscovery, AgentHealth, AgentHealthData, SiteMultiSelect } from '@/components/AgentBits';
+import { AgentStatusPill, AgentInstall, AgentDiscovery, AgentHealth, AgentHealthData, AgentLogs, SiteMultiSelect } from '@/components/AgentBits';
 
 type AgentSite = { site_id: number; site_name: string | null };
 type AgentDevice = {
@@ -85,6 +85,23 @@ export default function AgentDetailPage({ params }: { params: { id: string } }) 
     agent.reload();
   }
 
+  async function handleRename() {
+    if (!agent.data) return;
+    const name = window.prompt('Rename agent:', agent.data.name);
+    if (!name || !name.trim() || name.trim() === agent.data.name) return;
+    await apiSend(`/api/agents/${params.id}`, 'PUT', { name: name.trim() });
+    agent.reload();
+  }
+
+  async function handleRestart() {
+    if (!confirm('Restart this agent? It will reconnect within a few seconds.')) return;
+    try {
+      await apiSend(`/api/agents/${params.id}/restart`, 'POST', {});
+    } catch (e: any) {
+      alert(e?.message || 'Restart failed');
+    }
+  }
+
   if (agent.error) return <ErrorBox message={agent.error} />;
   if (agent.loading && !agent.data) return <Loading label="Loading agent…" />;
   const a = agent.data;
@@ -99,6 +116,8 @@ export default function AgentDetailPage({ params }: { params: { id: string } }) 
       <PageHeader title={a.name} subtitle="Remote polling agent detail.">
         <AgentStatusPill status={a.status} />
         <Link href="/agents" className="sv-btn ghost">← Back to Agents</Link>
+        <button className="sv-btn ghost" onClick={handleRename}>Rename</button>
+        <button className="sv-btn ghost" onClick={handleRestart} disabled={a.status !== 'online'}>Restart</button>
         <button className="sv-btn ghost" onClick={handleToggleDisabled}>
           {a.disabled ? 'Enable Agent' : 'Disable Agent'}
         </button>
@@ -212,6 +231,12 @@ export default function AgentDetailPage({ params }: { params: { id: string } }) 
       <div style={{ ...CARD_STYLE, marginBottom: 12 }}>
         <div style={SECTION_TITLE_STYLE}>Discover Devices on the Agent’s Network</div>
         <AgentDiscovery agentId={a.id} online={a.status === 'online'} />
+      </div>
+
+      {/* Row 2.75 — Agent logs, full width */}
+      <div style={{ ...CARD_STYLE, marginBottom: 12 }}>
+        <div style={SECTION_TITLE_STYLE}>Agent Logs</div>
+        <AgentLogs agentId={a.id} online={a.status === 'online'} />
       </div>
 
       {/* Row 3 — Devices grouped by site, full width */}

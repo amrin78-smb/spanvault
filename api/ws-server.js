@@ -72,6 +72,9 @@ sv.on('error', (err) => console.error('[WS DB] Pool error:', err.message));
 // Map of api_key → live WebSocket connection.
 const connectedAgents = new Map();
 
+// Map of agent_id → { lines, ts } — last log tail an agent pushed on request.
+const agentLogs = new Map();
+
 // Read the agent's API key from the Authorization header (preferred — keeps the
 // secret out of URLs and proxy/access logs) and fall back to the legacy ?key=
 // query param so already-deployed agents keep working during a rolling upgrade.
@@ -283,6 +286,13 @@ async function handleAgentMessage(agent, msg) {
       );
       break;
 
+    case 'logs':
+      // Live log tail the agent pushed in response to a get_logs request.
+      if (Array.isArray(msg.lines)) {
+        agentLogs.set(agent.id, { lines: msg.lines.slice(-300), ts: Date.now() });
+      }
+      break;
+
     case 'discovery':
       // Candidates the agent found by sweeping its local subnet(s).
       if (Array.isArray(msg.hosts)) {
@@ -313,4 +323,4 @@ async function handleAgentMessage(agent, msg) {
   }
 }
 
-module.exports = { startWsServer, connectedAgents, pushConfigToAgent, pushConfigToAgentId, disconnectAgent, sendToAgentId };
+module.exports = { startWsServer, connectedAgents, agentLogs, pushConfigToAgent, pushConfigToAgentId, disconnectAgent, sendToAgentId };

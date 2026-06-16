@@ -32,8 +32,29 @@ export default function AgentsPage() {
   const router = useRouter();
   const agents = useApi<Agent[]>(canManageAgents ? '/api/agents' : null, 15000);
   const [showNew, setShowNew] = useState(false);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
   // After creating an agent, surface its install command in a modal.
   const [created, setCreated] = useState<{ id: number; name: string; install_command: string } | null>(null);
+
+  function toggleSelect(id: number) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  async function bulkDelete() {
+    if (!confirm(`Delete ${selected.size} agent(s)? Their devices move back to local polling.`)) return;
+    for (const id of selected) { try { await apiSend(`/api/agents/${id}`, 'DELETE'); } catch { /* skip */ } }
+    setSelected(new Set());
+    agents.reload();
+  }
+  async function bulkDisable(disabled: boolean) {
+    for (const id of selected) { try { await apiSend(`/api/agents/${id}/disabled`, 'POST', { disabled }); } catch { /* skip */ } }
+    setSelected(new Set());
+    agents.reload();
+  }
 
   // Agents management is admin-only — bounce view-only roles to the dashboard.
   useEffect(() => {
@@ -73,6 +94,20 @@ export default function AgentsPage() {
         </div>
       )}
 
+      {selected.size > 0 && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, padding: '8px 12px',
+          background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
+        }}>
+          <span style={{ fontSize: 13, fontWeight: 600 }}>{selected.size} selected</span>
+          <span style={{ flex: 1 }} />
+          <button className="sv-btn ghost sm" onClick={() => bulkDisable(true)}>Disable</button>
+          <button className="sv-btn ghost sm" onClick={() => bulkDisable(false)}>Enable</button>
+          <button className="sv-btn ghost sm" onClick={bulkDelete}>Delete</button>
+          <button className="sv-btn ghost sm" onClick={() => setSelected(new Set())}>Clear</button>
+        </div>
+      )}
+
       {agents.loading && !agents.data ? (
         <div className="sv-agent-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
           <CardSkeleton count={3} height={120} />
@@ -80,7 +115,13 @@ export default function AgentsPage() {
       ) : list.length ? (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
           {list.map((a) => (
-            <AgentCard key={a.id} agent={a} onDelete={handleDelete} />
+            <AgentCard
+              key={a.id}
+              agent={a}
+              onDelete={handleDelete}
+              selected={selected.has(a.id)}
+              onToggleSelect={() => toggleSelect(a.id)}
+            />
           ))}
         </div>
       ) : (
@@ -122,12 +163,14 @@ export default function AgentsPage() {
 }
 
 // ── Single agent card (top-level component) ────────────────────
-function AgentCard({ agent, onDelete }: { agent: Agent; onDelete: (a: Agent) => void }) {
+function AgentCard({ agent, onDelete, selected, onToggleSelect }: {
+  agent: Agent; onDelete: (a: Agent) => void; selected: boolean; onToggleSelect: () => void;
+}) {
   return (
     <div
       style={{
         background: 'var(--bg-card)',
-        border: '1px solid var(--border)',
+        border: `1px solid ${selected ? 'var(--primary)' : 'var(--border)'}`,
         borderRadius: 'var(--radius-sm)',
         padding: '12px 16px',
         display: 'flex',
@@ -136,8 +179,15 @@ function AgentCard({ agent, onDelete }: { agent: Agent; onDelete: (a: Agent) => 
         minHeight: 120,
       }}
     >
-      {/* line 1 — status dot + name + vendor badge */}
+      {/* line 1 — checkbox + status dot + name + vendor badge */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <input
+          type="checkbox"
+          checked={selected}
+          onChange={onToggleSelect}
+          aria-label={`select ${agent.name}`}
+          style={{ flex: 'none', cursor: 'pointer' }}
+        />
         <span
           aria-label={`status: ${agent.status}`}
           title={agent.status}

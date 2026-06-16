@@ -22,7 +22,7 @@ const crypto = require('crypto');
 
 const CONFIG_PATH = path.join(__dirname, 'config.json');
 const BUFFER_PATH = path.join(__dirname, 'buffer.json');
-const VERSION = '1.1.0';
+const VERSION = '1.2.0';
 const MAX_BUFFER = 500;
 
 // ── Config ────────────────────────────────────────────────────
@@ -30,12 +30,28 @@ const config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
 const { serverUrl, apiKey } = config;
 const WS_PORT = config.wsPort || 3010;
 
+// ── Log ring ──────────────────────────────────────────────────
+// Keep the last N log lines in memory so the central UI can pull a live tail
+// without needing filesystem access to the remote NSSM log.
+const LOG_RING = [];
+const LOG_RING_MAX = 300;
+function ringPush(level, args) {
+  const text = args.map((a) => (typeof a === 'string' ? a : (() => { try { return JSON.stringify(a); } catch (_e) { return String(a); } })())).join(' ');
+  LOG_RING.push(`${new Date().toISOString()} ${level} ${text}`);
+  if (LOG_RING.length > LOG_RING_MAX) LOG_RING.shift();
+}
+const _log = console.log.bind(console);
+const _err = console.error.bind(console);
+console.log = (...a) => { ringPush('INFO', a); _log(...a); };
+console.error = (...a) => { ringPush('ERROR', a); _err(...a); };
+
 // ── State ─────────────────────────────────────────────────────
 let ws = null;
 let devices = [];
 let settings = {};
 const pollTimers = new Map();
 let reconnectTimeout = null;
+let reconnectAttempts = 0;
 let buffer = loadBuffer();
 
 function loadBuffer() {
@@ -76,6 +92,7 @@ function connect() {
 
   ws.on('open', () => {
     console.log('[Agent] Connected to SpanVault server');
+    reconnectAttempts = 0; // reset backoff on a successful connect
     sendHeartbeat();
     // Flush any buffered results accumulated while offline.
     if (buffer.length > 0) {
@@ -92,24 +109,34 @@ function connect() {
       if (msg.type === 'config') applyConfig(msg);
       else if (msg.type === 'discover') {
         runDiscovery(msg).catch((e) => console.error('[Agent] Discovery error:', e.message));
+      } else if (msg.type === 'restart') {
+        console.log('[Agent] Restart requested by server — exiting (service will restart)');
+        process.exit(0);
+      } else if (msg.type === 'get_logs') {
+        try { ws.send(JSON.stringify({ type: 'logs', lines: LOG_RING.slice(-200) })); } catch (_e) { /* ignore */ }
       }
     } catch (e) { console.error('[Agent] Message error:', e.message); }
   });
 
   ws.on('close', () => {
-    console.log('[Agent] Disconnected. Reconnecting in 10s...');
-    scheduleReconnect(10000);
+    scheduleReconnect();
   });
 
   ws.on('error', (err) => {
     console.error('[Agent] WS error:', err.message);
-    scheduleReconnect(10000);
+    scheduleReconnect();
   });
 }
 
-function scheduleReconnect(delay) {
+// Exponential backoff with jitter, capped at 2 minutes, so a fleet of agents
+// doesn't reconnect in lockstep and hammer the server after an outage.
+function scheduleReconnect() {
+  reconnectAttempts++;
+  const base = Math.min(120000, 10000 * Math.pow(1.5, reconnectAttempts - 1));
+  const delay = Math.round(base * (0.8 + Math.random() * 0.4));
   if (reconnectTimeout) clearTimeout(reconnectTimeout);
   reconnectTimeout = setTimeout(connect, delay);
+  console.log(`[Agent] Disconnected — reconnecting in ${Math.round(delay / 1000)}s (attempt ${reconnectAttempts})`);
 }
 
 // ── Agent host health ─────────────────────────────────────────

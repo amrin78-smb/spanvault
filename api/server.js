@@ -18,7 +18,7 @@ const { Pool } = require('pg');
 const { discoverDevice, snmpTest } = require('../collector/discovery');
 const topology = require('../collector/topology');
 const wireless = require('../collector/wirelessCollector');
-const { startWsServer, connectedAgents, pushConfigToAgent, pushConfigToAgentId, disconnectAgent, sendToAgentId } = require('./ws-server');
+const { startWsServer, connectedAgents, agentLogs, pushConfigToAgent, pushConfigToAgentId, disconnectAgent, sendToAgentId } = require('./ws-server');
 const intelligence = require('./intelligence');
 const { getLicense, getLicenseState } = require('./licenseCheck');
 const reportScheduler = require('./reportScheduler');
@@ -32,6 +32,12 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.11.0': [
+    'Remote agent management: rename, restart, and pull a live log tail straight from the agent detail page — no RDP into the remote server',
+    'Bulk actions on the Agents list: multi-select to disable, enable, or delete several agents at once',
+    'A site can now belong to only one agent — assigning a site already owned by another agent reassigns it cleanly (and refreshes the other agent)',
+    'Agents reconnect with exponential backoff + jitter so a fleet doesn\'t reconnect in lockstep after an outage. Agent runtime -> v1.2.0',
+  ],
   '1.10.0': [
     'Agents now self-report host health on every heartbeat (CPU, memory, disk, uptimes, buffered-result depth, device count) — shown in a new "Agent Host Health" panel',
     'Agent auto-update: the server fingerprints the canonical agent.js and agents that differ pull the new build, verify it, and restart themselves — no manual redeploy across the fleet',
@@ -1913,8 +1919,16 @@ app.post('/api/agents', wrap(async (req, res) => {
     await client.query('BEGIN');
     const ins = await client.query(`INSERT INTO agents (name) VALUES ($1) RETURNING *`, [b.name]);
     const agent = ins.rows[0];
+    const displaced = new Set();
 
     if (siteIds.length) {
+      // A site belongs to exactly one agent — detach these from any other agent
+      // (and remember them so we can refresh their config after commit).
+      const prev = await client.query(
+        `SELECT DISTINCT agent_id FROM agent_sites WHERE site_id = ANY($1::int[])`, [siteIds]);
+      for (const row of prev.rows) displaced.add(row.agent_id);
+      await client.query(`DELETE FROM agent_sites WHERE site_id = ANY($1::int[])`, [siteIds]);
+
       // Resolve site names from NetVault for display (best-effort).
       let names = {};
       try {
@@ -1936,6 +1950,13 @@ app.post('/api/agents', wrap(async (req, res) => {
       );
     }
     await client.query('COMMIT');
+
+    // Refresh config for any agent that lost sites to this new one.
+    for (const aid of displaced) {
+      if (aid && aid !== agent.id) {
+        try { await pushConfigToAgentId(aid); } catch (e) { console.error('[agents] displaced push failed:', e.message); }
+      }
+    }
 
     const serverUrl = getServerUrl(req);
     res.status(201).json({
@@ -2038,12 +2059,21 @@ app.post('/api/agents/:id/sites', wrap(async (req, res) => {
   const exists = await sv.query(`SELECT id FROM agents WHERE id = $1`, [id]);
   if (!exists.rows[0]) return res.status(404).json({ error: 'Agent not found' });
 
+  const displaced = new Set();
   const client = await sv.connect();
   try {
     await client.query('BEGIN');
     await client.query(`DELETE FROM agent_sites WHERE agent_id = $1`, [id]);
 
     if (siteIds.length) {
+      // Enforce one-agent-per-site: take these sites from any other agent.
+      const prev = await client.query(
+        `SELECT DISTINCT agent_id FROM agent_sites WHERE site_id = ANY($1::int[]) AND agent_id <> $2`,
+        [siteIds, id]);
+      for (const row of prev.rows) displaced.add(row.agent_id);
+      await client.query(
+        `DELETE FROM agent_sites WHERE site_id = ANY($1::int[]) AND agent_id <> $2`, [siteIds, id]);
+
       let names = {};
       try {
         const nr = await nv.query(`SELECT id, name FROM sites WHERE id = ANY($1::int[])`, [siteIds]);
@@ -2081,12 +2111,42 @@ app.post('/api/agents/:id/sites', wrap(async (req, res) => {
     client.release();
   }
 
-  // Push the refreshed config to the agent if it is connected.
+  // Push the refreshed config to this agent + any agent that lost sites to it.
   try { await pushConfigToAgentId(id); } catch (e) { console.error('[agents] push config failed:', e.message); }
+  for (const aid of displaced) {
+    if (aid && aid !== id) {
+      try { await pushConfigToAgentId(aid); } catch (e) { console.error('[agents] displaced push failed:', e.message); }
+    }
+  }
 
   const sites = await sv.query(
     `SELECT site_id, site_name FROM agent_sites WHERE agent_id = $1 ORDER BY site_name`, [id]);
   res.json({ ok: true, sites: sites.rows });
+}));
+
+// Remotely restart a connected agent (it exits; NSSM restarts the service).
+app.post('/api/agents/:id/restart', wrap(async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const exists = await sv.query(`SELECT id FROM agents WHERE id = $1`, [id]);
+  if (!exists.rows[0]) return res.status(404).json({ error: 'Agent not found' });
+  const sent = await sendToAgentId(id, { type: 'restart' });
+  if (!sent) return res.status(409).json({ error: 'Agent is offline.' });
+  res.json({ ok: true });
+}));
+
+// Request a fresh log tail from the agent (it pushes a 'logs' message back).
+app.post('/api/agents/:id/logs/refresh', wrap(async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const sent = await sendToAgentId(id, { type: 'get_logs' });
+  if (!sent) return res.status(409).json({ error: 'Agent is offline.' });
+  res.json({ ok: true });
+}));
+
+// Return the most recent log tail the agent pushed (may be empty until refreshed).
+app.get('/api/agents/:id/logs', wrap(async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const snap = agentLogs.get(id);
+  res.json({ lines: (snap && snap.lines) || [], ts: (snap && snap.ts) || null });
 }));
 
 // ── Zero-touch discovery ──────────────────────────────────────

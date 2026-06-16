@@ -68,6 +68,52 @@ export function AgentInstall({ command }: { command: string }) {
   );
 }
 
+// ── Live log tail (pulled on demand from the agent) ────────────
+export function AgentLogs({ agentId, online }: { agentId: number; online: boolean }) {
+  const [polling, setPolling] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const logs = useApi<{ lines: string[]; ts: number | null }>(
+    `/api/agents/${agentId}/logs`, polling ? 2000 : 0);
+
+  async function refresh() {
+    setMsg(null);
+    try {
+      await apiSend(`/api/agents/${agentId}/logs/refresh`, 'POST', {});
+      setPolling(true);
+      setTimeout(() => logs.reload(), 1200);
+      setTimeout(() => { setPolling(false); logs.reload(); }, 8000);
+    } catch (e: any) {
+      setMsg(e?.message || 'Failed to request logs.');
+    }
+  }
+
+  const lines = logs.data?.lines || [];
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+        <button className="sv-btn ghost sm" onClick={refresh} disabled={!online}>
+          {polling ? 'Fetching…' : 'Fetch logs'}
+        </button>
+        {!online && <span className="sv-muted" style={{ fontSize: 12 }}>Agent must be online.</span>}
+      </div>
+      {msg && <div className="sv-err-inline">{msg}</div>}
+      {lines.length ? (
+        <pre style={{
+          margin: 0, maxHeight: 300, overflow: 'auto', fontSize: 11.5, lineHeight: 1.5,
+          background: 'var(--bg-code, #0b1020)', color: 'var(--text-code, #cbd5e1)',
+          padding: '10px 12px', borderRadius: 'var(--radius-sm)', whiteSpace: 'pre-wrap',
+        }}>
+          {lines.join('\n')}
+        </pre>
+      ) : (
+        <p className="sv-muted" style={{ fontSize: 13, margin: 0 }}>
+          No logs yet — click <strong>Fetch logs</strong> to pull the agent’s recent output.
+        </p>
+      )}
+    </div>
+  );
+}
+
 // ── Agent host health ──────────────────────────────────────────
 export type AgentHealthData = {
   cpu_pct: number | null; mem_pct: number | null; disk_pct: number | null;
