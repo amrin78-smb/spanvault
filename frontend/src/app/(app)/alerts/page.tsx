@@ -17,6 +17,7 @@ type Alert = {
   resolved_at: string | null; status: string; note: string | null;
   incident_id: number | null; incident_title: string | null;
   suppressed_by: number | null; suppression_reason: string | null; suppressed_by_name: string | null;
+  agent_id?: number | null; agent_name?: string | null;
 };
 
 // ── style tokens (kept inline since globals.css is not editable here) ──
@@ -32,6 +33,7 @@ function prettyType(t: string): string {
   if (!t) return 'Alert';
   if (/^rule_/.test(t)) return 'Custom Rule';
   if (/^recovery/.test(t)) return 'Recovery';
+  if (t === 'agent_down') return 'Agent Down';
   return t.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
@@ -60,7 +62,7 @@ const CHIPS = [
 function passesChips(a: Alert, active: Set<string>, search: string): boolean {
   if (search) {
     const q = search.toLowerCase();
-    const hay = `${a.device_name || ''} ${a.ip_address || ''} ${a.message || ''} ${a.alert_type || ''}`.toLowerCase();
+    const hay = `${a.device_name || ''} ${a.agent_name || ''} ${a.ip_address || ''} ${a.message || ''} ${a.alert_type || ''}`.toLowerCase();
     if (!hay.includes(q)) return false;
   }
   if (!active.size) return true;
@@ -264,11 +266,20 @@ export default function AlertsPage() {
           <td style={{ width: 1, whiteSpace: 'nowrap' }}>
             <span className="sv-type-badge">{prettyType(a.alert_type)}</span>
           </td>
-          {/* device */}
+          {/* device, or agent for agent_down alerts */}
           <td style={{ whiteSpace: 'nowrap' }}>
-            <Link href={`/devices/${a.device_id}`} style={{ color: 'var(--sv-crimson)', fontWeight: 600 }}>
-              {a.device_name || a.ip_address || `#${a.device_id}`}
-            </Link>
+            {a.device_id == null && a.agent_name ? (
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <Link href={`/agents/${a.agent_id}`} style={{ color: 'var(--sv-crimson)', fontWeight: 600 }}>
+                  {a.agent_name}
+                </Link>
+                <span className="sv-type-badge" style={{ fontSize: 10 }}>Agent</span>
+              </span>
+            ) : (
+              <Link href={`/devices/${a.device_id}`} style={{ color: 'var(--sv-crimson)', fontWeight: 600 }}>
+                {a.device_name || a.ip_address || `#${a.device_id}`}
+              </Link>
+            )}
           </td>
           {/* message (truncate at 300px) + note + suppression reason */}
           <td>

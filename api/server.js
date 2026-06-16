@@ -32,6 +32,12 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.12.0': [
+    'Devices polled by a remote agent are now alerted on (down / high-latency / your alert rules) — previously distributed polling collected data but never raised alerts',
+    'Agent-down dependency: when an agent goes offline, you get ONE "Agent Down" alert and its devices\' alerts are suppressed instead of a flood of false device-down alerts (the devices aren\'t down — they\'re just unreachable while the agent is offline)',
+    'When the agent reconnects, normal per-device alerting resumes automatically',
+    'Agent-down alerts appear in the Alerts page (linked to the agent) and send email like any other critical alert',
+  ],
   '1.11.5': [
     'Agent detail page now explains how monitoring works: an agent polls every device in the sites assigned to it — added inline guidance on the Assigned Sites, Devices, and Discover panels so the workflow is self-explanatory',
   ],
@@ -2274,12 +2280,14 @@ async function getAlertCaps() {
         EXISTS (SELECT 1 FROM information_schema.columns
                  WHERE table_name = 'alerts' AND column_name = 'incident_id') AS has_incident_id,
         EXISTS (SELECT 1 FROM information_schema.tables
-                 WHERE table_name = 'incidents') AS has_incidents
+                 WHERE table_name = 'incidents') AS has_incidents,
+        EXISTS (SELECT 1 FROM information_schema.columns
+                 WHERE table_name = 'alerts' AND column_name = 'agent_id') AS has_agent_id
     `);
-    alertCaps = r.rows[0] || { has_note: false, has_incident_id: false, has_incidents: false };
+    alertCaps = r.rows[0] || { has_note: false, has_incident_id: false, has_incidents: false, has_agent_id: false };
   } catch (_e) {
     // If the probe itself fails, assume the optional pieces are absent.
-    alertCaps = { has_note: false, has_incident_id: false, has_incidents: false };
+    alertCaps = { has_note: false, has_incident_id: false, has_incidents: false, has_agent_id: false };
   }
   return alertCaps;
 }
@@ -2300,17 +2308,22 @@ app.get('/api/alerts', wrap(async (req, res) => {
   const incIdSel = caps.has_incident_id ? `a.incident_id` : `NULL::int AS incident_id`;
   const incJoin = caps.has_incidents && caps.has_incident_id;
   const incTitleSel = incJoin ? `inc.title AS incident_title` : `NULL::text AS incident_title`;
+  const agentIdSel = caps.has_agent_id ? 'a.agent_id' : 'NULL::int AS agent_id';
+  const agentNameSel = caps.has_agent_id ? 'ag.name AS agent_name' : 'NULL::text AS agent_name';
+  const agentJoin = caps.has_agent_id ? 'LEFT JOIN agents ag ON ag.id = a.agent_id' : '';
 
   const rows = await sv.query(`
     SELECT a.id, a.device_id, d.name AS device_name, d.ip_address,
            a.alert_type, a.severity, a.message, a.metric_value,
            a.triggered_at, a.acknowledged_at, a.acknowledged_by, a.resolved_at, a.status,
            ${noteSel}, ${incIdSel}, ${incTitleSel},
+           ${agentIdSel}, ${agentNameSel},
            a.suppressed_by, a.suppression_reason, sb.name AS suppressed_by_name
     FROM alerts a
     LEFT JOIN monitored_devices d  ON d.id = a.device_id
     LEFT JOIN monitored_devices sb ON sb.id = a.suppressed_by
     ${incJoin ? 'LEFT JOIN incidents inc ON inc.id = a.incident_id' : ''}
+    ${agentJoin}
     ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
     ORDER BY a.triggered_at DESC
     LIMIT ${limit}

@@ -581,6 +581,146 @@ async function resolveAlert(deviceId, alertType) {
   }
 }
 
+// ── Agent-level alerts (agent_down) ───────────────────────────
+// An agent being offline references the agent, not a device. One active
+// agent_down per agent is enforced by idx_alerts_active_agent_unique.
+async function raiseAgentAlert(agent, message) {
+  try {
+    const r = await sv.query(`
+      INSERT INTO alerts (agent_id, alert_type, severity, message, status)
+      VALUES ($1,'agent_down','critical',$2,'active')
+      ON CONFLICT (agent_id, alert_type) WHERE status = 'active' AND agent_id IS NOT NULL DO NOTHING
+      RETURNING id
+    `, [agent.id, message]);
+    if (r.rows[0]) {
+      log(`[alert] RAISED agent_down on ${agent.name}: ${message}`);
+      await sendAlertEmail(`[SpanVault] CRITICAL: ${message}`, message);
+    }
+  } catch (err) {
+    console.error('[alerts] agent raise failed:', err.message);
+  }
+}
+
+async function resolveAgentAlert(agentId) {
+  try {
+    const r = await sv.query(`
+      UPDATE alerts SET status = 'resolved', resolved_at = NOW()
+       WHERE agent_id = $1 AND alert_type = 'agent_down' AND status <> 'resolved'
+       RETURNING id
+    `, [agentId]);
+    if (r.rows[0]) { log(`[alert] RESOLVED agent_down on agent ${agentId}`); return true; }
+    return false;
+  } catch (err) {
+    console.error('[alerts] agent resolve failed:', err.message);
+    return false;
+  }
+}
+
+// Evaluate ONE agent-owned device from its STORED state (the agent has already
+// written current_status / last_response_ms / last_seen_at + ping/snmp rows).
+// Mirrors pingDevice's reachability + latency + rules evaluation.
+async function evaluateStoredDevice(device) {
+  const newStatus = device.current_status;
+  const timeMs = device.last_response_ms != null ? Number(device.last_response_ms) : null;
+  const threshold = device.ping_threshold_ms || 500;
+
+  // No usable data — agent-offline suppression is handled by evaluateAgentDevices.
+  if (newStatus === 'agent_offline' || newStatus === 'unknown' || newStatus == null) return;
+
+  const inMaint = await inMaintenance(device.id);
+
+  // Reachability.
+  if (newStatus === 'down' && !inMaint) {
+    await raiseAlert(device, 'device_down', 'critical',
+      await buildDeviceDownMessage(device), null);
+  } else if (newStatus !== 'down') {
+    await resolveAlert(device.id, 'device_down');
+  }
+
+  // Latency.
+  const alive = (newStatus === 'up' || newStatus === 'warning');
+  if (alive && timeMs !== null && timeMs > threshold && !inMaint) {
+    await raiseAlert(device, 'high_latency', 'warning',
+      await buildHighLatencyMessage(device, timeMs), timeMs);
+  } else if (alive && (timeMs === null || timeMs <= threshold)) {
+    await resolveAlert(device.id, 'high_latency');
+  }
+
+  // SNMP-metric rules from the latest stored samples (best-effort).
+  let cpu_pct = null;
+  let mem_pct = null;
+  try {
+    const r = await sv.query(
+      `SELECT DISTINCT ON (metric_name) metric_name, value
+         FROM snmp_results
+        WHERE device_id = $1 AND metric_name IN ('cpu_pct','mem_pct')
+        ORDER BY metric_name, ts DESC`,
+      [device.id]
+    );
+    for (const row of r.rows) {
+      if (row.metric_name === 'cpu_pct') cpu_pct = row.value != null ? Number(row.value) : null;
+      else if (row.metric_name === 'mem_pct') mem_pct = row.value != null ? Number(row.value) : null;
+    }
+  } catch (_e) { /* ignore — no SNMP data yet */ }
+
+  await evaluateEffectiveRules(device, {
+    device_down: newStatus === 'down' ? 1 : 0,
+    response_time: timeMs,
+    cpu_pct,
+    mem_pct,
+  });
+}
+
+// Alert pass for agent-polled devices. When an agent is OFFLINE we raise ONE
+// agent_down alert and SUPPRESS its devices' alerts (we can't see them, so we
+// don't spam N device-down alerts). When ONLINE we evaluate each device from its
+// stored state. Agents that never connected are never alerted on.
+async function evaluateAgentDevices() {
+  try {
+    const agents = (await sv.query(`SELECT id, name, status FROM agents`)).rows;
+    for (const agent of agents) {
+      if (agent.status === 'offline') {
+        // Dependency: the agent is down, so its devices' outages are unknowable.
+        let count = 0;
+        try {
+          const c = (await sv.query(
+            `SELECT COUNT(*)::int AS c FROM monitored_devices WHERE agent_id = $1 AND active = TRUE`,
+            [agent.id]
+          )).rows[0];
+          count = c ? c.c : 0;
+        } catch (_e) { /* ignore */ }
+        await raiseAgentAlert(agent,
+          `Agent ${agent.name} is offline — ${count} device(s) at its site(s) are not being polled`);
+        try {
+          await sv.query(
+            `UPDATE alerts SET status = 'suppressed', resolved_at = NOW(), suppression_reason = $2
+              WHERE status = 'active'
+                AND device_id IN (SELECT id FROM monitored_devices WHERE agent_id = $1)`,
+            [agent.id, `Agent ${agent.name} is offline`]
+          );
+        } catch (err) {
+          console.error('[agent-eval] suppress failed:', err.message);
+        }
+      } else if (agent.status === 'online') {
+        await resolveAgentAlert(agent.id);
+        const devs = (await sv.query(
+          `SELECT * FROM monitored_devices WHERE agent_id = $1 AND active = TRUE`,
+          [agent.id]
+        )).rows;
+        for (const d of devs) {
+          await evaluateStoredDevice(d).catch((e) =>
+            console.error('[agent-eval]', d.name, e.message));
+        }
+      } else {
+        // never_connected or other — never alert; clear any stale agent_down.
+        await resolveAgentAlert(agent.id);
+      }
+    }
+  } catch (err) {
+    console.error('[agent-eval] tick failed:', err.message);
+  }
+}
+
 // ══════════════════════════════════════════════════════════════
 // Human-language alert messages
 // ══════════════════════════════════════════════════════════════
@@ -930,6 +1070,9 @@ async function pingTick() {
     await runPooled(due, 20, (d) => pingDevice(d).catch((e) =>
       console.error(`[ping] ${d.name} failed:`, e.message)));
     if (due.length) log(`[ping] checked ${due.length} device(s)`);
+    // Evaluate agent-polled devices from their stored state every tick, even
+    // when there are no local devices due.
+    await evaluateAgentDevices();
   } catch (err) {
     console.error('[ping] tick failed:', err.message);
   } finally {

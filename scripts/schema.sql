@@ -288,6 +288,13 @@ ALTER TABLE ping_results ADD COLUMN IF NOT EXISTS
 ALTER TABLE snmp_results ADD COLUMN IF NOT EXISTS
   agent_id INTEGER REFERENCES agents(id) ON DELETE SET NULL;
 
+-- Agent-level alerts (agent_down) reference the agent, not a device. Placed after
+-- the agents table so the forward FK target exists. One active agent_down alert
+-- per agent is enforced by the partial unique index below.
+ALTER TABLE alerts ADD COLUMN IF NOT EXISTS agent_id INTEGER REFERENCES agents(id) ON DELETE CASCADE;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_alerts_active_agent_unique
+  ON alerts(agent_id, alert_type) WHERE status = 'active' AND agent_id IS NOT NULL;
+
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO spanvault_user;
 GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO spanvault_user;
 
