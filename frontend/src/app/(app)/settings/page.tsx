@@ -215,8 +215,119 @@ function EmailAlertSettings({ settings, form, set, save, saving, saved, saveErr 
       </div>
 
       <NotificationRoutes />
+      <EscalationOnCall form={form} set={set} />
 
       <SaveBar save={save} saving={saving} saved={saved} />
+    </div>
+  );
+}
+
+// ── Escalation + on-call ───────────────────────────────────────
+type EscStep = { id: number; step_order: number; after_minutes: number; email_to: string | null; use_oncall: boolean; enabled: boolean };
+type OncallShift = { id: number; contact_email: string; starts_at: string; ends_at: string };
+
+function EscalationOnCall({ form, set }: { form: Record<string, any>; set: (k: string, v: string) => void }) {
+  const steps = useApi<EscStep[]>('/api/escalation-steps');
+  const shifts = useApi<OncallShift[]>('/api/oncall-shifts');
+  const [after, setAfter] = useState('15');
+  const [stepTo, setStepTo] = useState('');
+  const [useOncall, setUseOncall] = useState(false);
+  const [shiftEmail, setShiftEmail] = useState('');
+  const [shiftStart, setShiftStart] = useState('');
+  const [shiftEnd, setShiftEnd] = useState('');
+  const enabled = String(form.escalation_enabled ?? 'false').toLowerCase() === 'true';
+
+  async function addStep() {
+    if (!useOncall && !stepTo.trim()) return;
+    await apiSend('/api/escalation-steps', 'POST', {
+      after_minutes: parseInt(after, 10) || 15, email_to: stepTo.trim() || null, use_oncall: useOncall,
+      step_order: (steps.data?.length || 0) + 1,
+    });
+    setStepTo(''); setUseOncall(false); steps.reload();
+  }
+  async function addShift() {
+    if (!shiftEmail.trim() || !shiftStart || !shiftEnd) return;
+    await apiSend('/api/oncall-shifts', 'POST', { contact_email: shiftEmail.trim(), starts_at: shiftStart, ends_at: shiftEnd });
+    setShiftEmail(''); setShiftStart(''); setShiftEnd(''); shifts.reload();
+  }
+
+  return (
+    <div className="sv-panel" style={{ marginTop: 12 }}>
+      <h2>Escalation & On-Call</h2>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 24, alignItems: 'flex-end', marginBottom: 12 }}>
+        <label className="sv-field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8, margin: 0 }}>
+          <input type="checkbox" checked={enabled}
+            onChange={(e) => set('escalation_enabled', e.target.checked ? 'true' : 'false')} />
+          Enable escalation
+        </label>
+        <label className="sv-field" style={{ margin: 0 }}>Escalate severities
+          <select className="sv-input" value={form.escalation_min_severity ?? 'critical'}
+            onChange={(e) => set('escalation_min_severity', e.target.value)}>
+            <option value="critical">Critical only</option>
+            <option value="warning">Warning &amp; Critical</option>
+          </select>
+        </label>
+        <span className="sv-muted" style={{ fontSize: 12 }}>Unacknowledged alerts email each step in turn. Save to apply enable/severity.</span>
+      </div>
+
+      <h3 style={{ fontSize: 13, margin: '8px 0' }}>Steps</h3>
+      {(steps.data || []).length > 0 && (
+        <table className="sv-table" style={{ marginBottom: 10 }}>
+          <thead><tr><th>Order</th><th>After (min)</th><th>Recipients</th><th></th></tr></thead>
+          <tbody>
+            {(steps.data || []).map((s) => (
+              <tr key={s.id}>
+                <td>{s.step_order}</td><td>{s.after_minutes}</td>
+                <td>{s.use_oncall ? 'Current on-call' : s.email_to}</td>
+                <td style={{ textAlign: 'right' }}>
+                  <button className="sv-btn ghost sm" onClick={async () => { await apiSend(`/api/escalation-steps/${s.id}`, 'DELETE'); steps.reload(); }}>Delete</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'flex-end', marginBottom: 16 }}>
+        <label className="sv-field" style={{ margin: 0 }}>After (min)
+          <input className="sv-input" type="number" min={1} style={{ maxWidth: 100 }} value={after} onChange={(e) => setAfter(e.target.value)} />
+        </label>
+        <label className="sv-field" style={{ margin: 0, flex: 1, minWidth: 200 }}>Recipients
+          <input className="sv-input" value={stepTo} onChange={(e) => setStepTo(e.target.value)} placeholder="ops@x.com" disabled={useOncall} />
+        </label>
+        <label className="sv-field" style={{ flexDirection: 'row', alignItems: 'center', gap: 6, margin: 0 }}>
+          <input type="checkbox" checked={useOncall} onChange={(e) => setUseOncall(e.target.checked)} /> Use on-call
+        </label>
+        <button className="sv-btn" onClick={addStep}>Add step</button>
+      </div>
+
+      <h3 style={{ fontSize: 13, margin: '8px 0' }}>On-Call Shifts</h3>
+      {(shifts.data || []).length > 0 && (
+        <table className="sv-table" style={{ marginBottom: 10 }}>
+          <thead><tr><th>Contact</th><th>From</th><th>To</th><th></th></tr></thead>
+          <tbody>
+            {(shifts.data || []).map((s) => (
+              <tr key={s.id}>
+                <td>{s.contact_email}</td><td>{fmtTime(s.starts_at)}</td><td>{fmtTime(s.ends_at)}</td>
+                <td style={{ textAlign: 'right' }}>
+                  <button className="sv-btn ghost sm" onClick={async () => { await apiSend(`/api/oncall-shifts/${s.id}`, 'DELETE'); shifts.reload(); }}>Delete</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'flex-end' }}>
+        <label className="sv-field" style={{ margin: 0, flex: 1, minWidth: 180 }}>Contact email
+          <input className="sv-input" value={shiftEmail} onChange={(e) => setShiftEmail(e.target.value)} placeholder="oncall@x.com" />
+        </label>
+        <label className="sv-field" style={{ margin: 0 }}>From
+          <input className="sv-input" type="datetime-local" value={shiftStart} onChange={(e) => setShiftStart(e.target.value)} />
+        </label>
+        <label className="sv-field" style={{ margin: 0 }}>To
+          <input className="sv-input" type="datetime-local" value={shiftEnd} onChange={(e) => setShiftEnd(e.target.value)} />
+        </label>
+        <button className="sv-btn" onClick={addShift}>Add shift</button>
+      </div>
     </div>
   );
 }

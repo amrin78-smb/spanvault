@@ -32,6 +32,11 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.15.0': [
+    'Alert escalation — if an alert stays active and unacknowledged past a step\'s delay, SpanVault emails that step\'s recipients (or the current on-call); multiple ordered steps supported',
+    'On-call rotation — define shifts (contact + time window); escalation steps can target "current on-call"',
+    'Configurable in Settings → Email Alerts (enable, escalate critical-only or warning+critical)',
+  ],
   '1.14.0': [
     'Notification routing — send alerts matching a severity, site, and/or type to specific email recipients (Settings → Email Alerts); unmatched alerts fall back to the global recipient list',
     'Recovery ("all-clear") emails are now sent when an alert resolves (toggle in settings)',
@@ -5429,6 +5434,49 @@ app.put('/api/notification-routes/:id', wrap(async (req, res) => {
 
 app.delete('/api/notification-routes/:id', wrap(async (req, res) => {
   await sv.query(`DELETE FROM notification_routes WHERE id = $1`, [parseInt(req.params.id, 10)]);
+  res.json({ ok: true });
+}));
+
+// ── Escalation steps + on-call shifts ─────────────────────────
+app.get('/api/escalation-steps', wrap(async (_req, res) => {
+  try {
+    const r = await sv.query(`SELECT * FROM escalation_steps ORDER BY step_order, after_minutes`);
+    res.json(r.rows);
+  } catch (e) { if (/escalation_steps/.test(e.message)) return res.json([]); throw e; }
+}));
+app.post('/api/escalation-steps', wrap(async (req, res) => {
+  const b = req.body || {};
+  if (!b.use_oncall && !b.email_to) return res.status(400).json({ error: 'email_to or use_oncall required' });
+  const r = await sv.query(
+    `INSERT INTO escalation_steps (step_order, after_minutes, email_to, use_oncall, enabled)
+     VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+    [safeInt(b.step_order, 1), safeInt(b.after_minutes, 15), b.email_to || null,
+     !!b.use_oncall, b.enabled !== false]);
+  res.status(201).json(r.rows[0]);
+}));
+app.delete('/api/escalation-steps/:id', wrap(async (req, res) => {
+  await sv.query(`DELETE FROM escalation_steps WHERE id = $1`, [parseInt(req.params.id, 10)]);
+  res.json({ ok: true });
+}));
+
+app.get('/api/oncall-shifts', wrap(async (_req, res) => {
+  try {
+    const r = await sv.query(`SELECT * FROM oncall_shifts ORDER BY starts_at DESC`);
+    res.json(r.rows);
+  } catch (e) { if (/oncall_shifts/.test(e.message)) return res.json([]); throw e; }
+}));
+app.post('/api/oncall-shifts', wrap(async (req, res) => {
+  const b = req.body || {};
+  if (!b.contact_email || !b.starts_at || !b.ends_at) {
+    return res.status(400).json({ error: 'contact_email, starts_at, ends_at required' });
+  }
+  const r = await sv.query(
+    `INSERT INTO oncall_shifts (contact_email, starts_at, ends_at) VALUES ($1,$2,$3) RETURNING *`,
+    [b.contact_email, b.starts_at, b.ends_at]);
+  res.status(201).json(r.rows[0]);
+}));
+app.delete('/api/oncall-shifts/:id', wrap(async (req, res) => {
+  await sv.query(`DELETE FROM oncall_shifts WHERE id = $1`, [parseInt(req.params.id, 10)]);
   res.json({ ok: true });
 }));
 

@@ -1107,6 +1107,63 @@ async function sendAlertEmail(subject, body, to) {
   }
 }
 
+// ── Escalation + on-call ──────────────────────────────────────
+// Comma-joined emails of whoever's on-call shift covers now.
+async function currentOnCall() {
+  try {
+    const r = await sv.query(
+      `SELECT contact_email FROM oncall_shifts WHERE NOW() BETWEEN starts_at AND ends_at`);
+    const set = new Set();
+    for (const row of r.rows) {
+      for (const e of String(row.contact_email).split(/[\s,;]+/)) { if (e) set.add(e.trim()); }
+    }
+    return Array.from(set).join(',');
+  } catch (_e) { return ''; }
+}
+
+// Every minute: for each active, unacknowledged alert, fire any escalation step
+// whose delay has elapsed and hasn't fired yet (email that step's recipients).
+async function escalationTick() {
+  if (String(setting('escalation_enabled', 'false')).toLowerCase() !== 'true') return;
+  try {
+    const steps = (await sv.query(
+      `SELECT * FROM escalation_steps WHERE enabled = TRUE ORDER BY step_order, after_minutes`)).rows;
+    if (!steps.length) return;
+    const minSev = setting('escalation_min_severity', 'critical');
+    const sevClause = minSev === 'warning' ? '' : `AND a.severity = 'critical'`;
+    const alerts = (await sv.query(`
+      SELECT a.id, a.severity, a.message, a.triggered_at,
+             COALESCE(d.name, ag.name) AS subject_name
+        FROM alerts a
+        LEFT JOIN monitored_devices d ON d.id = a.device_id
+        LEFT JOIN agents ag ON ag.id = a.agent_id
+       WHERE a.status = 'active' AND a.acknowledged_at IS NULL ${sevClause}`)).rows;
+    if (!alerts.length) return;
+    let oncall = null; // resolved lazily, reused across alerts this tick
+    for (const al of alerts) {
+      const ageMin = (Date.now() - new Date(al.triggered_at).getTime()) / 60000;
+      for (const step of steps) {
+        if (ageMin < step.after_minutes) continue;
+        const claim = await sv.query(
+          `INSERT INTO alert_escalations (alert_id, step_id) VALUES ($1,$2)
+           ON CONFLICT (alert_id, step_id) DO NOTHING RETURNING alert_id`, [al.id, step.id]);
+        if (!claim.rows[0]) continue; // already fired this step for this alert
+        let to = step.email_to || '';
+        if (step.use_oncall) { if (oncall === null) oncall = await currentOnCall(); to = oncall; }
+        if (to) {
+          await sendAlertEmail(
+            `[SpanVault] ESCALATION: ${al.message || al.subject_name || 'alert'}`,
+            `Alert on ${al.subject_name || 'unknown'} has been unacknowledged for ${Math.round(ageMin)} min.\n\n${al.message || ''}`,
+            to);
+          log(`[escalation] step ${step.step_order} fired for alert ${al.id}`);
+        }
+      }
+    }
+  } catch (err) {
+    console.error('[escalation] tick failed:', err.message);
+  }
+}
+
 // ══════════════════════════════════════════════════════════════
 // Schedulers
 // ══════════════════════════════════════════════════════════════
@@ -1235,6 +1292,9 @@ async function main() {
   // Poll scheduler ticks. The due-check inside honors per-device intervals.
   setInterval(pingTick, 15 * 1000);
   setInterval(snmpTick, 15 * 1000);
+
+  // Alert escalation sweep — every minute.
+  setInterval(escalationTick, 60 * 1000);
 
   // Topology discovery — once shortly after startup, then every 6 hours.
   setTimeout(topologyTick, 60 * 1000);

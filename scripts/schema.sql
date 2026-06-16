@@ -218,6 +218,33 @@ CREATE TABLE IF NOT EXISTS notification_state (
   PRIMARY KEY (device_id, agent_id, alert_type)
 );
 
+-- ── Escalation + on-call (email) ──────────────────────────────────────────────
+-- Ordered escalation steps: if an alert stays active+unacknowledged past
+-- after_minutes, email that step's recipients (or whoever is on call).
+CREATE TABLE IF NOT EXISTS escalation_steps (
+  id            SERIAL PRIMARY KEY,
+  step_order    INTEGER NOT NULL DEFAULT 1,
+  after_minutes INTEGER NOT NULL DEFAULT 15,
+  email_to      TEXT,
+  use_oncall    BOOLEAN NOT NULL DEFAULT FALSE,
+  enabled       BOOLEAN NOT NULL DEFAULT TRUE
+);
+-- A single on-call rotation: whoever's shift covers "now" is the current on-call.
+CREATE TABLE IF NOT EXISTS oncall_shifts (
+  id            SERIAL PRIMARY KEY,
+  contact_email TEXT NOT NULL,
+  starts_at     TIMESTAMPTZ NOT NULL,
+  ends_at       TIMESTAMPTZ NOT NULL,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+-- Which escalation steps have already fired for an alert (so each fires once).
+CREATE TABLE IF NOT EXISTS alert_escalations (
+  alert_id  INTEGER NOT NULL REFERENCES alerts(id) ON DELETE CASCADE,
+  step_id   INTEGER NOT NULL,
+  fired_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (alert_id, step_id)
+);
+
 GRANT ALL PRIVILEGES ON TABLE device_dependencies TO spanvault_user;
 GRANT ALL PRIVILEGES ON SEQUENCE device_dependencies_id_seq TO spanvault_user;
 
