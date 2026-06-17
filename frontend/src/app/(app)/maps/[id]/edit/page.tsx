@@ -7,7 +7,7 @@ import { StatusDot } from '@/components/StatusDot';
 import { Loading, ErrorBox } from '@/components/ui';
 import {
   type FullMap, type MapDevice, type MapConnection, type MapLabel, type MapShape,
-  statusFill, deviceCenter, normalizeMap,
+  statusFill, deviceCenter, normalizeMap, connLive, fmtBps, utilColor,
 } from '@/lib/mapTypes';
 import {
   MapGlyph, GlyphSwatch, DEVICE_GLYPHS, deviceGlyphFor, BASIC_SHAPES, SHAPE_GLYPHS,
@@ -413,6 +413,7 @@ export default function MapEditorPage() {
       id: nextTemp(), from_item_id: from, to_item_id: to,
       color: DEFAULT_LINE, line_style: 'solid', label: null,
       arrow: false, width: 2,
+      from_if_index: null, to_if_index: null, capacity_bps: null,
     };
     setConnections((prev) => [...prev, c]);
     pushSnapshot();
@@ -740,6 +741,7 @@ export default function MapEditorPage() {
           from_item_id: c.from_item_id, to_item_id: c.to_item_id,
           color: c.color, line_style: c.line_style, label: c.label,
           arrow: c.arrow, width: c.width,
+          from_if_index: c.from_if_index, to_if_index: c.to_if_index, capacity_bps: c.capacity_bps,
         })),
         labels: labels.map((l) => ({
           x: l.x, y: l.y, text: l.text, font_size: l.font_size, color: l.color, bold: l.bold,
@@ -792,6 +794,7 @@ export default function MapEditorPage() {
   const byId = new Map<number, MapDevice>();
   for (const d of devices) byId.set(d.id, d);
   const startDev = lineStart != null ? byId.get(lineStart) : undefined;
+  const selConn = selection?.kind === 'connection' ? connections.find((c) => c.id === selection.id) || null : null;
 
   const filteredPalette = (palette.data || []).filter((d) => {
     if (!search) return true;
@@ -977,6 +980,8 @@ export default function MapEditorPage() {
           device={selection?.kind === 'device' ? devices.find((d) => d.id === selection.id) || null : null}
           shape={selection?.kind === 'shape' ? shapes.find((s) => s.id === selection.id) || null : null}
           connection={selection?.kind === 'connection' ? connections.find((c) => c.id === selection.id) || null : null}
+          connFromDevice={selConn ? devices.find((d) => d.id === selConn.from_item_id) || null : null}
+          connToDevice={selConn ? devices.find((d) => d.id === selConn.to_item_id) || null : null}
           label={selection?.kind === 'label' ? labels.find((l) => l.id === selection.id) || null : null}
           onDeviceChange={updateDevice}
           onDeviceFront={deviceToFront}
@@ -1450,9 +1455,54 @@ function ContextMenu({
   );
 }
 
+// ── Interface picker for weathermap link binding (top-level component) ──
+type IfRow = { if_index: number; if_name: string; status: string | null; in_bps: number | null; out_bps: number | null };
+function InterfaceSelect({ title, deviceId, value, onChange }: {
+  title: string; deviceId: number | null | undefined; value: number | null; onChange: (v: number | null) => void;
+}) {
+  const ifs = useApi<IfRow[]>(deviceId ? `/api/devices/${deviceId}/interfaces` : null, 0);
+  if (!deviceId) {
+    return (
+      <label className="sv-field">{title}
+        <span className="sv-muted" style={{ fontSize: 12 }}>Unlinked node — no interfaces</span>
+      </label>
+    );
+  }
+  const rows = ifs.data || [];
+  return (
+    <label className="sv-field">{title}
+      <select className="sv-select" value={value == null ? '' : String(value)}
+        onChange={(e) => onChange(e.target.value === '' ? null : parseInt(e.target.value, 10))}>
+        <option value="">{ifs.loading && !ifs.data ? 'Loading…' : rows.length ? '— none —' : 'No interface data'}</option>
+        {rows.map((r) => (
+          <option key={r.if_index} value={r.if_index}>{r.if_name}{r.status ? ` (${r.status})` : ''}</option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+// ── Live readout for a bound connection (top-level component) ──
+function ConnLiveReadout({ connection }: { connection: MapConnection }) {
+  const live = connLive(connection);
+  if (!live.bound) {
+    return <p className="sv-muted" style={{ fontSize: 12, margin: '2px 0 0' }}>Bind an interface to colour this link by live traffic.</p>;
+  }
+  if (live.down) {
+    return <p style={{ fontSize: 12, margin: '2px 0 0', color: '#ef4444', fontWeight: 600 }}>● Link down</p>;
+  }
+  const color = live.pct != null ? utilColor(live.pct) : '#22c55e';
+  return (
+    <p style={{ fontSize: 12, margin: '2px 0 0', display: 'flex', alignItems: 'center', gap: 6 }}>
+      <span style={{ width: 9, height: 9, borderRadius: '50%', background: color, display: 'inline-block' }} />
+      <span>Live: {live.pct != null ? `${live.pct.toFixed(0)}% · ` : ''}{fmtBps(live.bps)}</span>
+    </p>
+  );
+}
+
 // ── Selection properties panel (top-level component) ───────────
 function SelectionPanel({
-  selection, device, shape, connection, label,
+  selection, device, shape, connection, connFromDevice, connToDevice, label,
   onDeviceChange, onDeviceFront, onDeviceBack, onDeviceRemove,
   onShapeChange, onShapeFront, onShapeBack, onShapeDelete,
   onConnChange, onConnDelete, onLabelChange, onLabelDelete,
@@ -1460,7 +1510,10 @@ function SelectionPanel({
   selection: Selection;
   device: MapDevice | null;
   shape: MapShape | null;
-  connection: MapConnection | null; label: MapLabel | null;
+  connection: MapConnection | null;
+  connFromDevice: MapDevice | null;
+  connToDevice: MapDevice | null;
+  label: MapLabel | null;
   onDeviceChange: (id: number, patch: Partial<MapDevice>) => void;
   onDeviceFront: (id: number) => void;
   onDeviceBack: (id: number) => void;
@@ -1589,6 +1642,29 @@ function SelectionPanel({
           <input className="sv-input" value={connection.label || ''}
             onChange={(e) => onConnChange(connection.id, { label: e.target.value })} placeholder="Optional" />
         </label>
+
+        <div className="sv-field-group">
+          <div className="sv-field-group-title">Live link (weathermap)</div>
+          <InterfaceSelect title={`${connFromDevice?.device_name || 'From'} interface`}
+            deviceId={connFromDevice?.device_id}
+            value={connection.from_if_index}
+            onChange={(v) => onConnChange(connection.id, { from_if_index: v })} />
+          <InterfaceSelect title={`${connToDevice?.device_name || 'To'} interface`}
+            deviceId={connToDevice?.device_id}
+            value={connection.to_if_index}
+            onChange={(v) => onConnChange(connection.id, { to_if_index: v })} />
+          <label className="sv-field">Capacity (Mbps)
+            <input type="number" className="sv-input" min={0} step={1}
+              value={connection.capacity_bps == null ? '' : Math.round(Number(connection.capacity_bps) / 1_000_000)}
+              placeholder="e.g. 1000"
+              onChange={(e) => {
+                const mbps = parseFloat(e.target.value);
+                onConnChange(connection.id, { capacity_bps: isFinite(mbps) && mbps > 0 ? Math.round(mbps * 1_000_000) : null });
+              }} />
+          </label>
+          <ConnLiveReadout connection={connection} />
+        </div>
+
         <button className="sv-btn ghost sm" onClick={() => onConnDelete(connection.id)}>Delete connection</button>
       </div>
     );

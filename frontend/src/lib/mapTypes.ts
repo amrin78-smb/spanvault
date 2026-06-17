@@ -31,6 +31,19 @@ export type MapConnection = {
   label: string | null;
   arrow: boolean;     // draw a directional arrowhead at the 'to' end
   width: number;      // stroke thickness in user units (default 2)
+  // Weathermap binding (static): SNMP ifIndex on each endpoint device + the link
+  // capacity used to compute utilization. null = unbound (plain styled line).
+  from_if_index: number | null;
+  to_if_index: number | null;
+  capacity_bps: number | null;
+  // Live interface stats for the bound interfaces (present on GET /api/maps/:id,
+  // absent on temp/editor connections). bps = bits/sec, oper = 'up'|'down'|null.
+  from_in_bps?: number | null;
+  from_out_bps?: number | null;
+  from_oper?: string | null;
+  to_in_bps?: number | null;
+  to_out_bps?: number | null;
+  to_oper?: string | null;
 };
 
 export type MapLabel = {
@@ -128,6 +141,13 @@ export function normalizeMap(m: FullMap): FullMap {
       ...c,
       width: Number(c.width ?? 2),
       arrow: !!c.arrow,
+      from_if_index: c.from_if_index == null ? null : Number(c.from_if_index),
+      to_if_index: c.to_if_index == null ? null : Number(c.to_if_index),
+      capacity_bps: c.capacity_bps == null ? null : Number(c.capacity_bps),
+      from_in_bps: c.from_in_bps == null ? null : Number(c.from_in_bps),
+      from_out_bps: c.from_out_bps == null ? null : Number(c.from_out_bps),
+      to_in_bps: c.to_in_bps == null ? null : Number(c.to_in_bps),
+      to_out_bps: c.to_out_bps == null ? null : Number(c.to_out_bps),
     })),
     labels: (m.labels || []).map((l) => ({
       ...l,
@@ -153,4 +173,43 @@ export function normalizeMap(m: FullMap): FullMap {
 // Centre point of a device node (connections attach here).
 export function deviceCenter(d: MapDevice): { cx: number; cy: number } {
   return { cx: Number(d.x) + Number(d.width) / 2, cy: Number(d.y) + Number(d.height) / 2 };
+}
+
+// ── Weathermap helpers (shared by the view renderer and the editor panel) ──
+// Human-readable bits/sec.
+export function fmtBps(bps: number | null | undefined): string {
+  if (bps == null || !isFinite(Number(bps))) return '—';
+  const u = ['bps', 'Kbps', 'Mbps', 'Gbps', 'Tbps'];
+  let v = Number(bps); let i = 0;
+  while (v >= 1000 && i < u.length - 1) { v /= 1000; i++; }
+  return `${v >= 100 ? v.toFixed(0) : v.toFixed(1)} ${u[i]}`;
+}
+
+// Utilization % → weathermap colour (green → yellow → amber → red).
+export function utilColor(pct: number | null | undefined): string {
+  if (pct == null) return '#22c55e';
+  if (pct >= 90) return '#dc2626';
+  if (pct >= 75) return '#f97316';
+  if (pct >= 50) return '#f59e0b';
+  if (pct >= 25) return '#eab308';
+  return '#22c55e';
+}
+
+// Derive a bound connection's live link state from its interface stats. `bps` is
+// the peak of the available in/out samples on either bound side; `pct` is that
+// against capacity (null when capacity unknown).
+export function connLive(c: MapConnection): {
+  bound: boolean; down: boolean; bps: number | null; pct: number | null;
+} {
+  const bound = c.from_if_index != null || c.to_if_index != null;
+  if (!bound) return { bound: false, down: false, bps: null, pct: null };
+  const vals = [c.from_in_bps, c.from_out_bps, c.to_in_bps, c.to_out_bps]
+    .map((v) => (v == null ? null : Number(v)))
+    .filter((v): v is number => v != null && isFinite(v));
+  const bps = vals.length ? Math.max(...vals) : null;
+  const cap = c.capacity_bps != null && Number(c.capacity_bps) > 0 ? Number(c.capacity_bps) : null;
+  const pct = bps != null && cap ? Math.min(100, (bps / cap) * 100) : null;
+  const down = (c.from_if_index != null && c.from_oper === 'down')
+    || (c.to_if_index != null && c.to_oper === 'down');
+  return { bound, down, bps, pct };
 }

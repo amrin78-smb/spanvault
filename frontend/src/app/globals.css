@@ -784,6 +784,9 @@ a { color: inherit; text-decoration: none; }
 
 label.sv-field { display: flex; flex-direction: column; gap: 5px; font-size: 13px; font-weight: 600; color: var(--text-secondary); }
 label.sv-field .sv-input, label.sv-field .sv-select { font-weight: 400; }
+.sv-field-group { display: flex; flex-direction: column; gap: 8px; padding: 10px; margin-top: 4px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-primary); }
+.sv-field-group-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); }
 
 .sv-form-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; }
 
@@ -1488,6 +1491,13 @@ body.sv-noc .sv-content:has(.sv-tabs.sticky) > :first-child { padding-top: 28px;
   100% { opacity: 1; }
 }
 .sv-mapnode-pulse { animation: sv-mapnode-pulse 1.4s ease-in-out infinite; }
+
+/* Weathermap link flow: white dashes travelling from→to along a live link. */
+@keyframes sv-link-flow { to { stroke-dashoffset: -30; } }
+.sv-link-flow { animation: sv-link-flow 0.9s linear infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .sv-link-flow { animation: none; }
+}
 
 /* ══ Public (no-chrome) map page ══════════════════════════ */
 .sv-public-map { display: flex; flex-direction: column; height: 100vh; background: #0f172a; }

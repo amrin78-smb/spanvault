@@ -32,6 +32,12 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.35.0': [
+    'Network maps are now a live NOC weathermap: a connection can be bound to a specific interface on each end device (picked in the connection properties panel) and is then coloured by live link utilization — green under 25%, through yellow/amber, to red at 90%+ — with an animated traffic-flow overlay and a util% / throughput label',
+    'Set a link Capacity (Mbps) to drive the utilization %; without it the link still colours by interface up/down status. A bound interface reporting "down" draws the link dashed-red with a DOWN tag',
+    'Link stats refresh on the same 30s cadence as device status (on the live view and public share), so the map reflects real traffic without reloading. Utilization comes from existing SNMP interface counters — no new collection',
+    'The connection editor shows a live readout (current %/throughput and a colour swatch) while you wire up the binding; unbound connections keep their plain styled-line behaviour exactly as before',
+  ],
   '1.34.0': [
     'Map editor device palette is now organised as a collapsible tree grouped by site — each site is a header showing the device count (and how many are already placed, e.g. 2/5); click to expand/collapse so the list stays tidy as the inventory grows',
     'Searching the palette auto-expands every matching site group so results are never hidden behind a collapsed header; devices with no site fall under an "Unassigned" group listed last',
@@ -2749,6 +2755,53 @@ async function fetchFullMap(mapId) {
   const connections = await sv.query(
     `SELECT * FROM map_connections WHERE map_id = $1 ORDER BY id`, [mapId]
   );
+  // Weathermap: enrich each connection bound to an interface with that
+  // interface's latest oper status + in/out bps, so the view can colour the
+  // link by live utilization. Handles both selective (if_<idx>_*) and shared
+  // (if_oper_status/if_in_bps/if_out_bps) metric names; both carry if_index.
+  const mdToDevice = new Map(devices.rows.map((r) => [Number(r.id), r.device_id == null ? null : Number(r.device_id)]));
+  const ifStats = new Map(); // `${device_id}:${if_index}` → { oper, in_bps, out_bps }
+  const devIds = new Set();
+  const ifIdxs = new Set();
+  for (const c of connections.rows) {
+    const fd = mdToDevice.get(Number(c.from_item_id));
+    const td = mdToDevice.get(Number(c.to_item_id));
+    if (fd != null && c.from_if_index != null) { devIds.add(fd); ifIdxs.add(Number(c.from_if_index)); }
+    if (td != null && c.to_if_index != null) { devIds.add(td); ifIdxs.add(Number(c.to_if_index)); }
+  }
+  if (devIds.size) {
+    const sr = await sv.query(`
+      SELECT DISTINCT ON (device_id, metric_name, if_index) device_id, metric_name, if_index, value
+      FROM snmp_results
+      WHERE device_id = ANY($1::int[])
+        AND if_index = ANY($2::int[])
+        AND (metric_name ~ '^if_[0-9]+_(oper|in_bps|out_bps)$'
+             OR metric_name IN ('if_oper_status', 'if_in_bps', 'if_out_bps'))
+        AND ts >= NOW() - INTERVAL '1 day'
+      ORDER BY device_id, metric_name, if_index, ts DESC
+    `, [[...devIds], [...ifIdxs]]);
+    for (const row of sr.rows) {
+      const key = `${Number(row.device_id)}:${Number(row.if_index)}`;
+      let g = ifStats.get(key);
+      if (!g) { g = { oper: null, in_bps: null, out_bps: null }; ifStats.set(key, g); }
+      const mn = row.metric_name;
+      const v = row.value == null ? null : Number(row.value);
+      if (mn === 'if_oper_status' || /_oper$/.test(mn)) g.oper = v == null ? null : (v >= 0.5 ? 'up' : 'down');
+      else if (mn === 'if_in_bps' || /_in_bps$/.test(mn)) g.in_bps = v;
+      else if (mn === 'if_out_bps' || /_out_bps$/.test(mn)) g.out_bps = v;
+    }
+  }
+  const connRows = connections.rows.map((c) => {
+    const fd = mdToDevice.get(Number(c.from_item_id));
+    const td = mdToDevice.get(Number(c.to_item_id));
+    const fg = (fd != null && c.from_if_index != null) ? ifStats.get(`${fd}:${Number(c.from_if_index)}`) : null;
+    const tg = (td != null && c.to_if_index != null) ? ifStats.get(`${td}:${Number(c.to_if_index)}`) : null;
+    return {
+      ...c,
+      from_in_bps: fg ? fg.in_bps : null, from_out_bps: fg ? fg.out_bps : null, from_oper: fg ? fg.oper : null,
+      to_in_bps: tg ? tg.in_bps : null, to_out_bps: tg ? tg.out_bps : null, to_oper: tg ? tg.oper : null,
+    };
+  });
   const labels = await sv.query(
     `SELECT * FROM map_labels WHERE map_id = $1 ORDER BY id`, [mapId]
   );
@@ -2759,7 +2812,7 @@ async function fetchFullMap(mapId) {
     const sh = await sv.query(`SELECT * FROM map_shapes WHERE map_id = $1 ORDER BY z_index, id`, [mapId]);
     shapes = sh.rows;
   } catch (_e) { shapes = []; }
-  return { ...map, devices: devices.rows, connections: connections.rows, labels: labels.rows, shapes };
+  return { ...map, devices: devices.rows, connections: connRows, labels: labels.rows, shapes };
 }
 
 // List all maps (with a device count for the cards).
@@ -2857,11 +2910,14 @@ app.put('/api/maps/:id/layout', wrap(async (req, res) => {
       const from = idMap.get(String(c.from_item_id));
       const to = idMap.get(String(c.to_item_id));
       if (!from || !to) continue; // skip dangling connections
+      const fIf = Number.isFinite(Number(c.from_if_index)) ? Number(c.from_if_index) : null;
+      const tIf = Number.isFinite(Number(c.to_if_index)) ? Number(c.to_if_index) : null;
+      const cap = Number.isFinite(Number(c.capacity_bps)) && Number(c.capacity_bps) > 0 ? Number(c.capacity_bps) : null;
       await client.query(`
-        INSERT INTO map_connections (map_id, from_item_id, to_item_id, color, line_style, label, arrow, width)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+        INSERT INTO map_connections (map_id, from_item_id, to_item_id, color, line_style, label, arrow, width, from_if_index, to_if_index, capacity_bps)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
       `, [id, from, to, c.color || '#94a3b8', c.line_style || 'solid', c.label || null,
-          !!c.arrow, safeInt(c.width, 2)]);
+          !!c.arrow, safeInt(c.width, 2), fIf, tIf, cap]);
     }
 
     for (const l of labels) {

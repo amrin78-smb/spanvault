@@ -484,6 +484,15 @@ ALTER TABLE map_labels  ADD COLUMN IF NOT EXISTS z_index    INTEGER NOT NULL DEF
 ALTER TABLE map_connections ADD COLUMN IF NOT EXISTS arrow BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE map_connections ADD COLUMN IF NOT EXISTS width INTEGER NOT NULL DEFAULT 2;
 
+-- Weathermap: bind a connection to specific device interfaces so the rendered
+-- link can be coloured by live utilization (a NOC weathermap). from_if_index /
+-- to_if_index are SNMP ifIndex values on the connection's from/to devices;
+-- capacity_bps is the link speed used to compute util% (NULL = unknown, colour
+-- by oper status only). All additive + idempotent; old rows stay unbound.
+ALTER TABLE map_connections ADD COLUMN IF NOT EXISTS from_if_index INTEGER;
+ALTER TABLE map_connections ADD COLUMN IF NOT EXISTS to_if_index   INTEGER;
+ALTER TABLE map_connections ADD COLUMN IF NOT EXISTS capacity_bps  BIGINT;
+
 -- Decorative, non-device elements: basic shapes (rect/ellipse/arrow/line/text)
 -- and built-in network glyphs (cloud/internet/router/switch/firewall/server/...).
 -- The glyph artwork lives in client code; here we only store the kind + geometry

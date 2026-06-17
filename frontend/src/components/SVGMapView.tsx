@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { apiGet } from '@/lib/api';
 import {
   type FullMap, type MapDevice, type MapConnection, type MapLabel, type MapShape,
-  statusFill, deviceCenter,
+  statusFill, deviceCenter, connLive, utilColor, fmtBps,
 } from '@/lib/mapTypes';
 import { MapGlyph, deviceGlyphFor, isGlyphKind } from '@/lib/mapIcons';
 
@@ -25,6 +25,7 @@ export default function SVGMapView({
 }) {
   const router = useRouter();
   const [live, setLive] = useState<Record<number, Partial<MapDevice>>>({});
+  const [liveConns, setLiveConns] = useState<Record<number, Partial<MapConnection>>>({});
 
   useEffect(() => {
     if (!refreshUrl) return;
@@ -44,6 +45,15 @@ export default function SVGMapView({
           };
         }
         setLive(next);
+        // Refresh weathermap link stats too, so bound connections re-colour live.
+        const nextC: Record<number, Partial<MapConnection>> = {};
+        for (const c of fresh.connections || []) {
+          nextC[c.id] = {
+            from_in_bps: c.from_in_bps, from_out_bps: c.from_out_bps, from_oper: c.from_oper,
+            to_in_bps: c.to_in_bps, to_out_bps: c.to_out_bps, to_oper: c.to_oper,
+          };
+        }
+        setLiveConns(nextC);
       } catch {
         /* keep last-known status on transient failure */
       }
@@ -56,6 +66,8 @@ export default function SVGMapView({
   const devices: MapDevice[] = (map.devices || []).map((d) => ({ ...d, ...(live[d.id] || {}) }));
   const byId = new Map<number, MapDevice>();
   for (const d of devices) byId.set(d.id, d);
+  // Merge fresh interface stats over the static connections (weathermap).
+  const connections: MapConnection[] = (map.connections || []).map((c) => ({ ...c, ...(liveConns[c.id] || {}) }));
 
   function onNodeClick(d: MapDevice) {
     if (interactive && d.device_id) router.push(`/devices/${d.device_id}`);
@@ -91,7 +103,7 @@ export default function SVGMapView({
       ))}
 
       {/* Connections (under the nodes) */}
-      {(map.connections || []).map((c) => (
+      {connections.map((c) => (
         <ConnectionLine key={c.id} conn={c} from={byId.get(c.from_item_id)} to={byId.get(c.to_item_id)} />
       ))}
 
@@ -120,20 +132,39 @@ export function ConnectionLine({
   const a = deviceCenter(from);
   const b = deviceCenter(to);
 
-  // Live colouring applies only when the connection kept the default colour.
-  const custom = (conn.color || '').toLowerCase() !== DEFAULT_LINE;
+  // A connection bound to interface(s) becomes a live weathermap link: colour by
+  // utilization (green→red), dashed red when the link is down, with an animated
+  // flow and a util%/throughput label. Bound links ignore the custom colour.
+  const live = connLive(conn);
   let stroke = conn.color || DEFAULT_LINE;
-  if (!custom) {
-    const fs = from.current_status;
-    const ts = to.current_status;
-    if (fs === 'down' || ts === 'down') stroke = '#ef4444';
-    else if (fs === 'up' && ts === 'up') stroke = '#22c55e';
-    else stroke = DEFAULT_LINE;
+  let dash: string | undefined = conn.line_style === 'dashed' ? '8 6' : undefined;
+  let liveLabel: string | null = null;
+  let flow = false;
+  if (live.bound) {
+    if (live.down) {
+      stroke = '#ef4444'; dash = '7 5'; liveLabel = 'DOWN';
+    } else {
+      stroke = live.pct != null ? utilColor(live.pct) : '#22c55e';
+      flow = live.bps != null && live.bps > 0;
+      liveLabel = live.pct != null ? `${live.pct.toFixed(0)}%`
+        : live.bps != null ? fmtBps(live.bps) : null;
+    }
+  } else {
+    // Unbound: keep the legacy status-based colouring for default-coloured lines.
+    const custom = (conn.color || '').toLowerCase() !== DEFAULT_LINE;
+    if (!custom) {
+      const fs = from.current_status;
+      const ts = to.current_status;
+      if (fs === 'down' || ts === 'down') stroke = '#ef4444';
+      else if (fs === 'up' && ts === 'up') stroke = '#22c55e';
+      else stroke = DEFAULT_LINE;
+    }
   }
 
   const mx = (a.cx + b.cx) / 2;
   const my = (a.cy + b.cy) / 2;
   const width = Number(conn.width) || 2;
+  const textLabel = [conn.label, liveLabel].filter(Boolean).join(' · ') || null;
 
   // Directional arrowhead at the 'to' end (point b), oriented along a->b.
   let arrowPath: string | null = null;
@@ -163,13 +194,20 @@ export function ConnectionLine({
       <line
         x1={a.cx} y1={a.cy} x2={b.cx} y2={b.cy}
         stroke={stroke} strokeWidth={width}
-        strokeDasharray={conn.line_style === 'dashed' ? '8 6' : undefined}
+        strokeDasharray={dash}
       />
+      {flow && (
+        <line
+          x1={a.cx} y1={a.cy} x2={b.cx} y2={b.cy}
+          stroke="#ffffff" strokeWidth={Math.max(1.5, width - 0.5)} strokeLinecap="round"
+          strokeDasharray="1 14" opacity={0.85} className="sv-link-flow" pointerEvents="none"
+        />
+      )}
       {arrowPath && <path d={arrowPath} fill={stroke} />}
-      {conn.label && (
+      {textLabel && (
         <text x={mx} y={my - 4} textAnchor="middle" fontSize={12} fill="#475569"
           style={{ paintOrder: 'stroke', stroke: '#ffffff', strokeWidth: 3 }}>
-          {conn.label}
+          {textLabel}
         </text>
       )}
     </g>
