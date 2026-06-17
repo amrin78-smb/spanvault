@@ -36,6 +36,7 @@ export type MapConnection = {
   label: string | null;
   arrow: boolean;     // draw a directional arrowhead at the 'to' end
   width: number;      // stroke thickness in user units (default 2)
+  routing: string;    // 'straight' | 'elbow' (orthogonal)
   // Weathermap binding (static): SNMP ifIndex on each endpoint device + the link
   // capacity used to compute utilization. null = unbound (plain styled line).
   from_if_index: number | null;
@@ -150,6 +151,7 @@ export function normalizeMap(m: FullMap): FullMap {
       ...c,
       width: Number(c.width ?? 2),
       arrow: !!c.arrow,
+      routing: c.routing === 'elbow' ? 'elbow' : 'straight',
       from_if_index: c.from_if_index == null ? null : Number(c.from_if_index),
       to_if_index: c.to_if_index == null ? null : Number(c.to_if_index),
       capacity_bps: c.capacity_bps == null ? null : Number(c.capacity_bps),
@@ -182,6 +184,24 @@ export function normalizeMap(m: FullMap): FullMap {
 // Centre point of a device node (connections attach here).
 export function deviceCenter(d: MapDevice): { cx: number; cy: number } {
   return { cx: Number(d.x) + Number(d.width) / 2, cy: Number(d.y) + Number(d.height) / 2 };
+}
+
+// Orthogonal (Manhattan) connector between two centres: a 3-segment path that
+// bends along the dominant axis. Returns the SVG path `d`, a label anchor, and
+// the unit vector of the final segment (for orienting an arrowhead).
+export function elbowPoints(
+  a: { cx: number; cy: number }, b: { cx: number; cy: number },
+): { d: string; mx: number; my: number; ux: number; uy: number } {
+  const dx = Math.abs(b.cx - a.cx);
+  const dy = Math.abs(b.cy - a.cy);
+  if (dx >= dy) {
+    const mid = (a.cx + b.cx) / 2;
+    return { d: `M${a.cx} ${a.cy} L${mid} ${a.cy} L${mid} ${b.cy} L${b.cx} ${b.cy}`,
+      mx: mid, my: (a.cy + b.cy) / 2, ux: Math.sign(b.cx - mid) || 1, uy: 0 };
+  }
+  const mid = (a.cy + b.cy) / 2;
+  return { d: `M${a.cx} ${a.cy} L${a.cx} ${mid} L${b.cx} ${mid} L${b.cx} ${b.cy}`,
+    mx: (a.cx + b.cx) / 2, my: mid, ux: 0, uy: Math.sign(b.cy - mid) || 1 };
 }
 
 // ── Weathermap helpers (shared by the view renderer and the editor panel) ──

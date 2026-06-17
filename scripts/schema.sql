@@ -493,6 +493,9 @@ ALTER TABLE map_connections ADD COLUMN IF NOT EXISTS from_if_index INTEGER;
 ALTER TABLE map_connections ADD COLUMN IF NOT EXISTS to_if_index   INTEGER;
 ALTER TABLE map_connections ADD COLUMN IF NOT EXISTS capacity_bps  BIGINT;
 
+-- Connection routing style: 'straight' (default) or 'elbow' (orthogonal/Manhattan).
+ALTER TABLE map_connections ADD COLUMN IF NOT EXISTS routing TEXT NOT NULL DEFAULT 'straight';
+
 -- Decorative, non-device elements: basic shapes (rect/ellipse/arrow/line/text)
 -- and built-in network glyphs (cloud/internet/router/switch/firewall/server/...).
 -- The glyph artwork lives in client code; here we only store the kind + geometry

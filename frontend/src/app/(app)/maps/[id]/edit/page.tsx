@@ -7,7 +7,7 @@ import { StatusDot } from '@/components/StatusDot';
 import { Loading, ErrorBox } from '@/components/ui';
 import {
   type FullMap, type MapDevice, type MapConnection, type MapLabel, type MapShape,
-  statusFill, deviceCenter, normalizeMap, connLive, fmtBps, utilColor,
+  statusFill, deviceCenter, normalizeMap, connLive, fmtBps, utilColor, elbowPoints,
 } from '@/lib/mapTypes';
 import {
   MapGlyph, GlyphSwatch, DEVICE_GLYPHS, deviceGlyphFor, BASIC_SHAPES, SHAPE_GLYPHS,
@@ -473,7 +473,7 @@ export default function MapEditorPage() {
     const c: MapConnection = {
       id: nextTemp(), from_item_id: from, to_item_id: to,
       color: DEFAULT_LINE, line_style: 'solid', label: null,
-      arrow: false, width: 2,
+      arrow: false, width: 2, routing: 'straight',
       from_if_index: null, to_if_index: null, capacity_bps: null,
     };
     setConnections((prev) => [...prev, c]);
@@ -801,7 +801,7 @@ export default function MapEditorPage() {
         connections: connections.map((c) => ({
           from_item_id: c.from_item_id, to_item_id: c.to_item_id,
           color: c.color, line_style: c.line_style, label: c.label,
-          arrow: c.arrow, width: c.width,
+          arrow: c.arrow, width: c.width, routing: c.routing,
           from_if_index: c.from_if_index, to_if_index: c.to_if_index, capacity_bps: c.capacity_bps,
         })),
         labels: labels.map((l) => ({
@@ -1020,6 +1020,10 @@ export default function MapEditorPage() {
               onAction={(action) => { handleCtxAction(action, ctx); setCtx(null); }}
             />
           )}
+
+          {selectedIds.size >= 2 && (
+            <FloatingAlignBar onAlign={alignSelected} onDistribute={distributeSelected} />
+          )}
         </div>
 
         {selectedIds.size > 1 ? (
@@ -1099,6 +1103,27 @@ function MultiSelectPanel({
         <button className="sv-btn ghost sm" style={{ flex: 1 }} onClick={() => onDistribute('v')}>Vertically</button>
       </div>
       <button className="sv-btn ghost sm" style={{ marginTop: 8 }} onClick={onDelete}>Delete selected</button>
+    </div>
+  );
+}
+
+// ── Floating align/distribute toolbar (top-level component) ────
+function FloatingAlignBar({ onAlign, onDistribute }: {
+  onAlign: (edge: 'left' | 'center' | 'right' | 'top' | 'middle' | 'bottom') => void;
+  onDistribute: (axis: 'h' | 'v') => void;
+}) {
+  return (
+    <div className="sv-align-bar" onMouseDown={(e) => e.stopPropagation()}>
+      <button title="Align left" onClick={() => onAlign('left')}>⇤</button>
+      <button title="Align centre (horizontal)" onClick={() => onAlign('center')}>⇔</button>
+      <button title="Align right" onClick={() => onAlign('right')}>⇥</button>
+      <span className="sep" />
+      <button title="Align top" onClick={() => onAlign('top')}>⤒</button>
+      <button title="Align middle (vertical)" onClick={() => onAlign('middle')}>⇳</button>
+      <button title="Align bottom" onClick={() => onAlign('bottom')}>⤓</button>
+      <span className="sep" />
+      <button title="Distribute horizontally (3+)" onClick={() => onDistribute('h')}>⇆</button>
+      <button title="Distribute vertically (3+)" onClick={() => onDistribute('v')}>⇅</button>
     </div>
   );
 }
@@ -1276,32 +1301,24 @@ function EditorConnection({
   if (!from || !to) return null;
   const a = deviceCenter(from);
   const b = deviceCenter(to);
-  const mx = (a.cx + b.cx) / 2;
-  const my = (a.cy + b.cy) / 2;
+  const elbow = conn.routing === 'elbow';
+  const geo = elbow ? elbowPoints(a, b) : null;
+  const mx = geo ? geo.mx : (a.cx + b.cx) / 2;
+  const my = geo ? geo.my : (a.cy + b.cy) / 2;
   const stroke = selected ? '#3b82f6' : conn.color || DEFAULT_LINE;
   const width = Number(conn.width) || 2;
+  const dash = conn.line_style === 'dashed' ? '8 6' : undefined;
 
-  // Directional arrowhead at the 'to' end (point b), oriented along a->b.
+  // Directional arrowhead at the 'to' end, oriented along the final segment.
   let arrowPath: string | null = null;
   if (conn.arrow) {
-    const dx = b.cx - a.cx;
-    const dy = b.cy - a.cy;
-    const len = Math.hypot(dx, dy) || 1;
-    const ux = dx / len;
-    const uy = dy / len;
-    const px = -uy;
-    const py = ux;
-    const head = 12;
-    const half = 6;
-    const tipX = b.cx;
-    const tipY = b.cy;
-    const baseX = tipX - ux * head;
-    const baseY = tipY - uy * head;
-    const leftX = baseX + px * half;
-    const leftY = baseY + py * half;
-    const rightX = baseX - px * half;
-    const rightY = baseY - py * half;
-    arrowPath = `M${tipX} ${tipY} L${leftX} ${leftY} L${rightX} ${rightY} Z`;
+    let ux: number, uy: number;
+    if (geo) { ux = geo.ux; uy = geo.uy; }
+    else { const dx = b.cx - a.cx, dy = b.cy - a.cy; const len = Math.hypot(dx, dy) || 1; ux = dx / len; uy = dy / len; }
+    const px = -uy, py = ux;
+    const head = 12, half = 6;
+    const baseX = b.cx - ux * head, baseY = b.cy - uy * head;
+    arrowPath = `M${b.cx} ${b.cy} L${baseX + px * half} ${baseY + py * half} L${baseX - px * half} ${baseY - py * half} Z`;
   }
 
   return (
@@ -1310,14 +1327,18 @@ function EditorConnection({
       onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); onContext(e.clientX, e.clientY); }}
       style={{ cursor: 'pointer' }}
     >
-      {/* Wide invisible hit area */}
-      <line x1={a.cx} y1={a.cy} x2={b.cx} y2={b.cy} stroke="transparent" strokeWidth={14} />
-      <line
-        x1={a.cx} y1={a.cy} x2={b.cx} y2={b.cy}
-        stroke={stroke}
-        strokeWidth={selected ? width + 1 : width}
-        strokeDasharray={conn.line_style === 'dashed' ? '8 6' : undefined}
-      />
+      {geo ? (
+        <>
+          <path d={geo.d} fill="none" stroke="transparent" strokeWidth={14} />
+          <path d={geo.d} fill="none" stroke={stroke} strokeWidth={selected ? width + 1 : width} strokeDasharray={dash} />
+        </>
+      ) : (
+        <>
+          <line x1={a.cx} y1={a.cy} x2={b.cx} y2={b.cy} stroke="transparent" strokeWidth={14} />
+          <line x1={a.cx} y1={a.cy} x2={b.cx} y2={b.cy} stroke={stroke}
+            strokeWidth={selected ? width + 1 : width} strokeDasharray={dash} />
+        </>
+      )}
       {arrowPath && <path d={arrowPath} fill={stroke} />}
       {conn.label && (
         <text x={mx} y={my - 4} textAnchor="middle" fontSize={12} fill="#475569"
@@ -1690,6 +1711,13 @@ function SelectionPanel({
             onChange={(e) => onConnChange(connection.id, { line_style: e.target.value })}>
             <option value="solid">Solid</option>
             <option value="dashed">Dashed</option>
+          </select>
+        </label>
+        <label className="sv-field">Routing
+          <select className="sv-select" value={connection.routing || 'straight'}
+            onChange={(e) => onConnChange(connection.id, { routing: e.target.value })}>
+            <option value="straight">Straight</option>
+            <option value="elbow">Elbow (orthogonal)</option>
           </select>
         </label>
         <label className="sv-field">Width

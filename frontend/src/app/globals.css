@@ -1610,6 +1610,17 @@ body.sv-noc .sv-content:has(.sv-tabs.sticky) > :first-child { padding-top: 28px;
 .sv-ctxmenu button.danger { color: var(--sv-down); }
 .sv-editor-dirty { font-size: 12px; font-weight: 600; color: #b45309; white-space: nowrap; }
 .sv-editor-dirty.saved { color: #16a34a; }
+.sv-align-bar {
+  position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 2px; background: rgba(255,255,255,0.96);
+  border: 1px solid var(--border); border-radius: 8px; padding: 4px; box-shadow: var(--shadow-md); z-index: 5;
+}
+.sv-align-bar button {
+  width: 28px; height: 28px; border: none; background: transparent; border-radius: 6px;
+  cursor: pointer; font-size: 15px; color: #1a2744; display: flex; align-items: center; justify-content: center;
+}
+.sv-align-bar button:hover { background: var(--bg-primary); }
+.sv-align-bar .sep { width: 1px; height: 18px; background: var(--border); margin: 0 3px; }
 
 .sv-editor-props {
   background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px;

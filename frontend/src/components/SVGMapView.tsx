@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { apiGet } from '@/lib/api';
 import {
   type FullMap, type MapDevice, type MapConnection, type MapLabel, type MapShape,
-  statusFill, deviceCenter, connLive, utilColor, fmtBps,
+  statusFill, deviceCenter, connLive, utilColor, fmtBps, elbowPoints,
 } from '@/lib/mapTypes';
 import { MapGlyph, deviceGlyphFor, isGlyphKind } from '@/lib/mapIcons';
 
@@ -240,6 +240,7 @@ export function ConnectionLine({
   if (!from || !to) return null;
   const a = deviceCenter(from);
   const b = deviceCenter(to);
+  const geo = conn.routing === 'elbow' ? elbowPoints(a, b) : null;
 
   // A connection bound to interface(s) becomes a live weathermap link: colour by
   // utilization (green→red), dashed red when the link is down, with an animated
@@ -270,48 +271,38 @@ export function ConnectionLine({
     }
   }
 
-  const mx = (a.cx + b.cx) / 2;
-  const my = (a.cy + b.cy) / 2;
+  const mx = geo ? geo.mx : (a.cx + b.cx) / 2;
+  const my = geo ? geo.my : (a.cy + b.cy) / 2;
   const width = Number(conn.width) || 2;
   const textLabel = [conn.label, liveLabel].filter(Boolean).join(' · ') || null;
 
-  // Directional arrowhead at the 'to' end (point b), oriented along a->b.
+  // Directional arrowhead at the 'to' end, oriented along the final segment.
   let arrowPath: string | null = null;
   if (conn.arrow) {
-    const dx = b.cx - a.cx;
-    const dy = b.cy - a.cy;
-    const len = Math.hypot(dx, dy) || 1;
-    const ux = dx / len;          // unit vector a->b
-    const uy = dy / len;
-    const px = -uy;               // perpendicular unit vector
-    const py = ux;
-    const head = 12;              // arrowhead length
-    const half = 6;               // arrowhead half-width
-    const tipX = b.cx;
-    const tipY = b.cy;
-    const baseX = tipX - ux * head;
-    const baseY = tipY - uy * head;
-    const leftX = baseX + px * half;
-    const leftY = baseY + py * half;
-    const rightX = baseX - px * half;
-    const rightY = baseY - py * half;
-    arrowPath = `M${tipX} ${tipY} L${leftX} ${leftY} L${rightX} ${rightY} Z`;
+    let ux: number, uy: number;
+    if (geo) { ux = geo.ux; uy = geo.uy; }
+    else { const dx = b.cx - a.cx, dy = b.cy - a.cy; const len = Math.hypot(dx, dy) || 1; ux = dx / len; uy = dy / len; }
+    const px = -uy, py = ux;
+    const head = 12, half = 6;
+    const baseX = b.cx - ux * head, baseY = b.cy - uy * head;
+    arrowPath = `M${b.cx} ${b.cy} L${baseX + px * half} ${baseY + py * half} L${baseX - px * half} ${baseY - py * half} Z`;
   }
 
   return (
     <g>
-      <line
-        x1={a.cx} y1={a.cy} x2={b.cx} y2={b.cy}
-        stroke={stroke} strokeWidth={width}
-        strokeDasharray={dash}
-      />
-      {flow && (
-        <line
-          x1={a.cx} y1={a.cy} x2={b.cx} y2={b.cy}
-          stroke="#ffffff" strokeWidth={Math.max(1.5, width - 0.5)} strokeLinecap="round"
-          strokeDasharray="1 14" opacity={0.85} className="sv-link-flow" pointerEvents="none"
-        />
+      {geo ? (
+        <path d={geo.d} fill="none" stroke={stroke} strokeWidth={width} strokeDasharray={dash} />
+      ) : (
+        <line x1={a.cx} y1={a.cy} x2={b.cx} y2={b.cy} stroke={stroke} strokeWidth={width} strokeDasharray={dash} />
       )}
+      {flow && (geo ? (
+        <path d={geo.d} fill="none" stroke="#ffffff" strokeWidth={Math.max(1.5, width - 0.5)} strokeLinecap="round"
+          strokeDasharray="1 14" opacity={0.85} className="sv-link-flow" pointerEvents="none" />
+      ) : (
+        <line x1={a.cx} y1={a.cy} x2={b.cx} y2={b.cy}
+          stroke="#ffffff" strokeWidth={Math.max(1.5, width - 0.5)} strokeLinecap="round"
+          strokeDasharray="1 14" opacity={0.85} className="sv-link-flow" pointerEvents="none" />
+      ))}
       {arrowPath && <path d={arrowPath} fill={stroke} />}
       {textLabel && (
         <text x={mx} y={my - 4} textAnchor="middle" fontSize={12} fill="#475569"

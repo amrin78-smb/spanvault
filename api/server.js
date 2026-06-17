@@ -32,6 +32,10 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.39.0': [
+    'Connections can now use orthogonal "elbow" routing (right-angle Manhattan paths) in addition to straight lines — set per connection in the properties panel. Cleaner-looking network diagrams; arrowheads, dashed style, labels and the live weathermap colouring all follow the elbow path',
+    'Added a floating align/distribute toolbar that appears above the canvas whenever 2+ elements are selected, so you can align left/centre/right/top/middle/bottom or distribute horizontally/vertically without reaching for the side panel',
+  ],
   '1.38.0': [
     'Map editor now guards against losing work: an "● Unsaved / ✓ Saved" indicator in the toolbar tracks pending changes, and the browser warns before you reload or navigate away with unsaved edits',
     'Keyboard ergonomics: arrow keys nudge the selection (1px, or 10px with Shift), Ctrl/Cmd+D duplicates selected shapes/labels, and V / L / T switch between the Select, Line and Label tools',
@@ -2946,10 +2950,10 @@ app.put('/api/maps/:id/layout', wrap(async (req, res) => {
       const tIf = Number.isFinite(Number(c.to_if_index)) ? Number(c.to_if_index) : null;
       const cap = Number.isFinite(Number(c.capacity_bps)) && Number(c.capacity_bps) > 0 ? Number(c.capacity_bps) : null;
       await client.query(`
-        INSERT INTO map_connections (map_id, from_item_id, to_item_id, color, line_style, label, arrow, width, from_if_index, to_if_index, capacity_bps)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+        INSERT INTO map_connections (map_id, from_item_id, to_item_id, color, line_style, label, arrow, width, from_if_index, to_if_index, capacity_bps, routing)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
       `, [id, from, to, c.color || '#94a3b8', c.line_style || 'solid', c.label || null,
-          !!c.arrow, safeInt(c.width, 2), fIf, tIf, cap]);
+          !!c.arrow, safeInt(c.width, 2), fIf, tIf, cap, c.routing === 'elbow' ? 'elbow' : 'straight']);
     }
 
     for (const l of labels) {
