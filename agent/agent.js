@@ -25,7 +25,7 @@ const crypto = require('crypto');
 
 const CONFIG_PATH = path.join(__dirname, 'config.json');
 const BUFFER_PATH = path.join(__dirname, 'buffer.json');
-const VERSION = '1.3.0';
+const VERSION = '1.3.1';
 const MAX_BUFFER = 500;
 
 // ── Config ────────────────────────────────────────────────────
@@ -493,16 +493,44 @@ const SNMP_OID = {
   uptime:    '1.3.6.1.2.1.1.3.0',
 };
 
+// Resolves { value, err }. err is a short reason string when the value could not
+// be read (timeout, noSuchObject/noSuchInstance, non-numeric) so doSnmp can log
+// WHY a metric was dropped instead of failing silently.
 function snmpGet(session, oid) {
   return new Promise((resolve) => {
     session.get([oid], (err, varbinds) => {
-      if (!err && varbinds[0] && !snmp.isVarbindError(varbinds[0])) {
-        const v = Number(varbinds[0].value);
-        resolve(isNaN(v) ? null : v);
-      } else {
-        resolve(null);
-      }
+      if (err) return resolve({ value: null, err: err.message || String(err) });
+      const vb = varbinds && varbinds[0];
+      if (!vb) return resolve({ value: null, err: 'no varbind' });
+      if (snmp.isVarbindError(vb)) return resolve({ value: null, err: snmp.varbindError(vb) });
+      const v = Number(vb.value);
+      if (isNaN(v)) return resolve({ value: null, err: 'non-numeric value' });
+      resolve({ value: v, err: null });
     });
+  });
+}
+
+// Fallback for devices that don't expose CPU at hrProcessorLoad.1 (multi-core
+// boxes, or tables that start at a non-1 index): walk the whole hrProcessorLoad
+// table and average all instances. Resolves null if the table is empty/unwalkable.
+function snmpWalkAvg(session, baseOid) {
+  return new Promise((resolve) => {
+    const vals = [];
+    let settled = false;
+    const done = () => {
+      if (settled) return; settled = true;
+      if (!vals.length) return resolve(null);
+      resolve(Math.round((vals.reduce((a, b) => a + b, 0) / vals.length) * 10) / 10);
+    };
+    try {
+      session.subtree(baseOid, 20, (vbs) => {
+        for (const vb of vbs || []) {
+          if (snmp.isVarbindError(vb)) continue;
+          const v = Number(vb.value);
+          if (!isNaN(v)) vals.push(v);
+        }
+      }, () => done());
+    } catch (_e) { done(); }
   });
 }
 
@@ -533,29 +561,49 @@ async function doSnmp(device) {
   const session = createSnmpSession(device);
   const ts = new Date().toISOString();
 
+  const label = `${device.name || device.id} (${device.ip_address})`;
   try {
-    const [cpu, memUsed, memTotal, uptime] = await Promise.all([
+    const [cpuR, memUsedR, memTotalR, uptimeR] = await Promise.all([
       snmpGet(session, SNMP_OID.cpu_pct),
       snmpGet(session, SNMP_OID.mem_used),
       snmpGet(session, SNMP_OID.mem_total),
       snmpGet(session, SNMP_OID.uptime),
     ]);
 
+    // CPU: prefer hrProcessorLoad.1; if absent, walk the processor table and average.
+    let cpu = cpuR.value;
+    if (cpu === null) cpu = await snmpWalkAvg(session, '1.3.6.1.2.1.25.3.3.1.2');
+
+    let sent = 0;
     if (cpu !== null) {
       send({ type: 'snmp_result', device_id: device.id, ts,
              oid: SNMP_OID.cpu_pct, metric_name: 'cpu_pct', value: cpu });
+      sent++;
     }
-    if (memUsed !== null && memTotal !== null && memTotal > 0) {
+    if (memUsedR.value !== null && memTotalR.value !== null && memTotalR.value > 0) {
       send({ type: 'snmp_result', device_id: device.id, ts,
              oid: SNMP_OID.mem_used, metric_name: 'mem_pct',
-             value: Math.round((memUsed / memTotal) * 1000) / 10 });
+             value: Math.round((memUsedR.value / memTotalR.value) * 1000) / 10 });
+      sent++;
     }
-    if (uptime !== null) {
+    if (uptimeR.value !== null) {
       send({ type: 'snmp_result', device_id: device.id, ts,
-             oid: SNMP_OID.uptime, metric_name: 'uptime', value: uptime });
+             oid: SNMP_OID.uptime, metric_name: 'uptime', value: uptimeR.value });
+      sent++;
+    }
+
+    if (sent === 0) {
+      // Don't fail silently — surface the most telling reason so an operator can
+      // tell "wrong community/timeout" from "OIDs unsupported by this device".
+      const reason = cpuR.err || uptimeR.err || 'no response';
+      console.warn(`[Agent] SNMP ${label}: no metrics (v${device.snmp_version || '2c'}, ` +
+        `community="${device.snmp_version === '3' ? 'v3' : (device.snmp_community || 'public')}") — ${reason}`);
+    } else {
+      console.log(`[Agent] SNMP ${label}: ${sent} metric(s)` +
+        (cpu !== null ? ` cpu=${cpu}%` : ''));
     }
   } catch (e) {
-    console.error(`[Agent] SNMP error for ${device.ip_address}:`, e.message);
+    console.error(`[Agent] SNMP error for ${label}:`, e.message);
   } finally {
     try { session.close(); } catch (_e) { /* ignore */ }
   }
@@ -684,6 +732,10 @@ async function runDiscovery(msg) {
       return {
         ip_address: ip, snmp_ok: !!info,
         sys_name: info ? info.sys_name : '', sys_descr: info ? info.sys_descr : '',
+        // Preserve the community/version that actually answered so adoption keeps
+        // working credentials instead of falling back to 'public'/'2c'.
+        snmp_community: info ? info.community : null,
+        snmp_version: info ? '2c' : null,
       };
     });
     console.log(`[Agent] Discovery: ${hosts.length} live host(s) found`);

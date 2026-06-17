@@ -32,6 +32,12 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.27.8': [
+    'Fixed agent-monitored devices collecting only ICMP and never SNMP (e.g. CPU on a discovered switch) — when an agent discovered a device with a non-default SNMP community, adoption silently replaced it with "public", so every SNMP poll failed. The agent now reports the working community/version it found during discovery, that is stored on the discovered device, and adoption keeps it instead of guessing public/2c',
+    'Editing a device\'s SNMP settings now pushes the new config to its agent immediately (was only applied on the agent\'s next reconnect), so correcting the community on an already-adopted device takes effect at once',
+    'Agent CPU collection now falls back to walking and averaging the hrProcessorLoad table when the single-instance OID is absent — picks up CPU on multi-core devices and tables that do not start at index .1',
+    'Agent now logs why an SNMP poll returned no metrics (timeout vs wrong community vs unsupported OID) instead of failing silently, so SNMP issues are visible in the agent logs',
+  ],
   '1.27.7': [
     'Wireless Clients tab "Total Clients" (and per-controller header counts) now use the same live per-AP associated-client gauge as the Wireless Insights "Clients" figure, so the two pages always agree — the controller\'s station table re-reports clients it has already aged out, so it could not be reconciled by polling more often',
     'Reverted the client poll back to every 15 minutes (1.27.6 had moved it to 5) now that the count no longer depends on the station table being fresh — avoids the extra SNMP load for no benefit; the batched roam-count query is kept',
@@ -1495,6 +1501,13 @@ app.put('/api/devices/:id', wrap(async (req, res) => {
     params
   );
   if (!r.rows[0]) return res.status(404).json({ error: 'Device not found' });
+  // If this device is polled by a remote agent, push the new config so edited
+  // SNMP credentials (e.g. correcting the community) take effect immediately
+  // instead of waiting for the agent to reconnect.
+  if (r.rows[0].agent_id) {
+    try { await pushConfigToAgentId(r.rows[0].agent_id); }
+    catch (e) { console.error('[device update] push config failed:', e.message); }
+  }
   res.json(r.rows[0]);
 }));
 
@@ -2402,20 +2415,23 @@ app.post('/api/agents/:id/discovered/adopt', wrap(async (req, res) => {
   }
 
   const disc = await sv.query(
-    `SELECT ip_address, sys_name, snmp_ok FROM agent_discovered_devices
+    `SELECT ip_address, sys_name, snmp_ok, snmp_community, snmp_version FROM agent_discovered_devices
       WHERE agent_id = $1 AND ip_address = ANY($2::text[])`, [id, ips]);
 
   let adopted = 0;
   for (const d of disc.rows) {
     const name = (d.sys_name && d.sys_name.trim()) ? d.sys_name.trim() : d.ip_address;
+    // Preserve the credentials discovery actually used; only fall back to
+    // public/2c when the discovery record predates community capture.
     const ins = await sv.query(`
       INSERT INTO monitored_devices
         (name, ip_address, site_id, site_name, agent_id,
          snmp_enabled, snmp_version, snmp_community)
-      VALUES ($1,$2,$3,$4,$5,$6,'2c','public')
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
       ON CONFLICT (ip_address) DO NOTHING
       RETURNING id`,
-      [name, d.ip_address, target.site_id, target.site_name, id, !!d.snmp_ok]);
+      [name, d.ip_address, target.site_id, target.site_name, id, !!d.snmp_ok,
+       d.snmp_version || '2c', d.snmp_community || 'public']);
     if (ins.rows[0]) adopted++;
     await sv.query(
       `UPDATE agent_discovered_devices SET adopted = TRUE WHERE agent_id = $1 AND ip_address = $2`,

@@ -343,6 +343,13 @@ CREATE TABLE IF NOT EXISTS agent_discovered_devices (
 );
 CREATE INDEX IF NOT EXISTS idx_agent_disc_agent ON agent_discovered_devices(agent_id);
 
+-- Carry the SNMP community/version the agent actually used to fingerprint each
+-- candidate, so adopting it preserves working credentials instead of guessing
+-- 'public'/'2c'. Without this, a switch discovered with a custom community would
+-- be adopted with the wrong community and silently never return SNMP metrics.
+ALTER TABLE agent_discovered_devices ADD COLUMN IF NOT EXISTS snmp_community TEXT;
+ALTER TABLE agent_discovered_devices ADD COLUMN IF NOT EXISTS snmp_version   TEXT;
+
 -- agent_id on monitored_devices: NULL = polled locally by the collector;
 -- non-NULL = polled by the referenced remote agent.
 ALTER TABLE monitored_devices ADD COLUMN IF NOT EXISTS

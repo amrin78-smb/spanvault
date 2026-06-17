@@ -335,12 +335,16 @@ async function handleAgentMessage(agent, msg) {
           if (!h || !h.ip_address) continue;
           await sv.query(`
             INSERT INTO agent_discovered_devices
-              (agent_id, ip_address, sys_name, sys_descr, snmp_ok, last_seen_at)
-            VALUES ($1,$2,$3,$4,$5,NOW())
+              (agent_id, ip_address, sys_name, sys_descr, snmp_ok, snmp_community, snmp_version, last_seen_at)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())
             ON CONFLICT (agent_id, ip_address) DO UPDATE SET
               sys_name = EXCLUDED.sys_name, sys_descr = EXCLUDED.sys_descr,
-              snmp_ok = EXCLUDED.snmp_ok, last_seen_at = NOW()`,
-            [agent.id, h.ip_address, h.sys_name || null, h.sys_descr || null, !!h.snmp_ok]);
+              snmp_ok = EXCLUDED.snmp_ok,
+              snmp_community = COALESCE(EXCLUDED.snmp_community, agent_discovered_devices.snmp_community),
+              snmp_version = COALESCE(EXCLUDED.snmp_version, agent_discovered_devices.snmp_version),
+              last_seen_at = NOW()`,
+            [agent.id, h.ip_address, h.sys_name || null, h.sys_descr || null, !!h.snmp_ok,
+             h.snmp_community || null, h.snmp_version || null]);
         }
         console.log(`[WS] Discovery from ${agent.name}: ${msg.hosts.length} host(s)`);
       }
