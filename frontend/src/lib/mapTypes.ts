@@ -29,6 +29,8 @@ export type MapConnection = {
   color: string;
   line_style: string; // 'solid' | 'dashed'
   label: string | null;
+  arrow: boolean;     // draw a directional arrowhead at the 'to' end
+  width: number;      // stroke thickness in user units (default 2)
 };
 
 export type MapLabel = {
@@ -122,7 +124,11 @@ export function normalizeMap(m: FullMap): FullMap {
       node_style: d.node_style || 'box',
       icon_type: d.icon_type || 'auto',
     })),
-    connections: m.connections || [],
+    connections: (m.connections || []).map((c) => ({
+      ...c,
+      width: Number(c.width ?? 2),
+      arrow: !!c.arrow,
+    })),
     labels: (m.labels || []).map((l) => ({
       ...l,
       x: Number(l.x),

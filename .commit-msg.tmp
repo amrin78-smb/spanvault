@@ -1,0 +1,19 @@
+feat: map overhaul phase 3 - multi-select, undo/redo, snap/guides, link arrows (1.33.0)
+
+Polish pass on the map editor:
+- Multi-select via shift-click or marquee drag; move/delete/align (6 edges) and
+  distribute (h/v) the whole selection at once. Resize handles show only when a
+  single node/shape is selected.
+- Undo/redo (Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y + toolbar buttons) over a snapshot
+  history; copy/paste (Ctrl+C / Ctrl+V) of shapes and text labels.
+- Snap-to-grid toggle (10px) with a faint grid, plus live alignment guides that
+  snap a dragged node to its neighbours' edges/centers and draw blue guide lines.
+- Connections gained a directional arrowhead and adjustable thickness, set per
+  connection in the properties panel.
+
+Backend/shared (separate task): map_connections.arrow/width columns + layout PUT
+persistence; mapTypes.MapConnection += arrow/width; SVGMapView.ConnectionLine
+renders the arrowhead + width on the map view and public share. Editor mirrors the
+same render. All additive/idempotent; existing maps unaffected.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>

@@ -34,12 +34,21 @@ type Selection =
   | null;
 type Ctx = { x: number; y: number; kind: 'device' | 'connection' | 'label' | 'shape'; id: number } | null;
 type Drag =
-  | { kind: 'device' | 'label' | 'shape'; id: number; dx: number; dy: number }
-  | { kind: 'resize'; id: number; target: 'device' | 'shape'; handle: string; ox: number; oy: number; ow: number; oh: number; sx: number; sy: number }
+  | { kind: 'device' | 'label' | 'shape'; id: number; dx: number; dy: number; moved?: boolean }
+  | { kind: 'resize'; id: number; target: 'device' | 'shape'; handle: string; ox: number; oy: number; ow: number; oh: number; sx: number; sy: number; moved?: boolean }
+  | { kind: 'multi'; id: number; sx: number; sy: number; origins: Record<string, { x: number; y: number }>; moved?: boolean }
   | null;
+type Marquee = { sx: number; sy: number; cx: number; cy: number } | null;
+type Guide = { x: number | null; y: number | null };
+type Snapshot = {
+  devices: MapDevice[]; connections: MapConnection[]; labels: MapLabel[]; shapes: MapShape[];
+};
+type Clipboard = { shapes: MapShape[]; labels: MapLabel[] };
 
 const MIN_W = 60;
 const MIN_H = 40;
+const GRID = 10;
+const GUIDE_TOL = 5;
 
 // <input type="color"> needs a 6-digit hex; non-hex (rgba/null) → '' so the
 // caller can fall back to a default.
@@ -68,11 +77,17 @@ export default function MapEditorPage() {
 
   const [tool, setTool] = useState<Tool>('select');
   const [selection, setSelection] = useState<Selection>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [ctx, setCtx] = useState<Ctx>(null);
   const [drag, setDrag] = useState<Drag>(null);
   const [lineStart, setLineStart] = useState<number | null>(null);
   const [mouse, setMouse] = useState<{ x: number; y: number } | null>(null);
   const [editingLabel, setEditingLabel] = useState<number | null>(null);
+  const [snapEnabled, setSnapEnabled] = useState(false);
+  const [marquee, setMarquee] = useState<Marquee>(null);
+  const [guide, setGuide] = useState<Guide>({ x: null, y: null });
+  const [canUndo, setCanUndo] = useState(false);
+  const [canRedo, setCanRedo] = useState(false);
 
   const [search, setSearch] = useState('');
   const [saving, setSaving] = useState(false);
@@ -83,6 +98,69 @@ export default function MapEditorPage() {
   const svgRef = useRef<SVGSVGElement | null>(null);
   const tempId = useRef(-1);
   const nextTemp = () => { tempId.current -= 1; return tempId.current; };
+
+  const clipboard = useRef<Clipboard | null>(null);
+
+  // Snap a coordinate to the grid when snapping is enabled.
+  function snap(n: number): number {
+    return snapEnabled ? Math.round(n / GRID) * GRID : n;
+  }
+
+  // ── Undo / redo history (snapshots of the four layout arrays) ──
+  const history = useRef<Snapshot[]>([]);
+  const histIndex = useRef(-1);
+  // Live refs so pushSnapshot can read current arrays without stale closures.
+  const arraysRef = useRef<Snapshot>({ devices: [], connections: [], labels: [], shapes: [] });
+  arraysRef.current = { devices, connections, labels, shapes };
+
+  function cloneSnap(s: Snapshot): Snapshot {
+    return {
+      devices: s.devices.map((d) => ({ ...d })),
+      connections: s.connections.map((c) => ({ ...c })),
+      labels: s.labels.map((l) => ({ ...l })),
+      shapes: s.shapes.map((sh) => ({ ...sh })),
+    };
+  }
+  function seedHistory(s: Snapshot) {
+    history.current = [cloneSnap(s)];
+    histIndex.current = 0;
+    setCanUndo(false);
+    setCanRedo(false);
+  }
+  function pushSnapshot() {
+    const snap = cloneSnap(arraysRef.current);
+    // Drop any redo tail, then append.
+    history.current = history.current.slice(0, histIndex.current + 1);
+    history.current.push(snap);
+    if (history.current.length > 100) history.current.shift();
+    histIndex.current = history.current.length - 1;
+    setCanUndo(histIndex.current > 0);
+    setCanRedo(false);
+  }
+  function restoreSnapshot(s: Snapshot) {
+    const c = cloneSnap(s);
+    setDevices(c.devices);
+    setConnections(c.connections);
+    setLabels(c.labels);
+    setShapes(c.shapes);
+    setSelection(null);
+    setSelectedIds(new Set());
+    setEditingLabel(null);
+  }
+  function undo() {
+    if (histIndex.current <= 0) return;
+    histIndex.current -= 1;
+    restoreSnapshot(history.current[histIndex.current]);
+    setCanUndo(histIndex.current > 0);
+    setCanRedo(histIndex.current < history.current.length - 1);
+  }
+  function redo() {
+    if (histIndex.current >= history.current.length - 1) return;
+    histIndex.current += 1;
+    restoreSnapshot(history.current[histIndex.current]);
+    setCanUndo(histIndex.current > 0);
+    setCanRedo(histIndex.current < history.current.length - 1);
+  }
 
   // Hydrate editable state from the loaded map (once it arrives).
   useEffect(() => {
@@ -99,16 +177,43 @@ export default function MapEditorPage() {
     setConnections(m.connections);
     setLabels(m.labels);
     setShapes(m.shapes || []);
+    seedHistory({ devices: m.devices, connections: m.connections, labels: m.labels, shapes: m.shapes || [] });
   }, [loaded.data]);
 
   // ESC cancels an in-progress connection / context menu / label edit.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') { setLineStart(null); setCtx(null); setEditingLabel(null); }
+      if (e.key === 'Escape') { setLineStart(null); setCtx(null); setEditingLabel(null); setMarquee(null); }
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, []);
+
+  // Editing keyboard: undo/redo, delete, copy/paste. Skip while typing in a field.
+  useEffect(() => {
+    function inField(t: EventTarget | null): boolean {
+      const el = t as HTMLElement | null;
+      if (!el) return false;
+      const tag = el.tagName;
+      return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable;
+    }
+    function onKey(e: KeyboardEvent) {
+      const meta = e.ctrlKey || e.metaKey;
+      if (meta && (e.key === 'z' || e.key === 'Z')) {
+        e.preventDefault();
+        if (e.shiftKey) redo(); else undo();
+        return;
+      }
+      if (meta && (e.key === 'y' || e.key === 'Y')) { e.preventDefault(); redo(); return; }
+      if (meta && (e.key === 'c' || e.key === 'C')) { if (!inField(e.target)) { e.preventDefault(); copySelection(); } return; }
+      if (meta && (e.key === 'v' || e.key === 'V')) { if (!inField(e.target)) { e.preventDefault(); pasteClipboard(); } return; }
+      if ((e.key === 'Delete' || e.key === 'Backspace') && !inField(e.target) && editingLabel == null) {
+        if (selectedIds.size > 0) { e.preventDefault(); deleteSelected(); }
+      }
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
 
   // Convert a browser point to SVG user space (handles viewBox scaling).
   function toSvg(clientX: number, clientY: number) {
@@ -124,14 +229,172 @@ export default function MapEditorPage() {
 
   const usedDeviceIds = new Set(devices.map((d) => d.device_id).filter((v): v is number => v != null));
 
+  // ── Delete all currently selected elements ───────────────────
+  function deleteSelected() {
+    if (selectedIds.size === 0) return;
+    const devIds = new Set<number>();
+    const shapeIds = new Set<number>();
+    const labelIds = new Set<number>();
+    selectedIds.forEach((k) => {
+      const [kind, idStr] = k.split(':');
+      const id = Number(idStr);
+      if (kind === 'device') devIds.add(id);
+      else if (kind === 'shape') shapeIds.add(id);
+      else if (kind === 'label') labelIds.add(id);
+    });
+    setDevices((prev) => prev.filter((d) => !devIds.has(d.id)));
+    setConnections((prev) => prev.filter((c) => !devIds.has(c.from_item_id) && !devIds.has(c.to_item_id)));
+    setShapes((prev) => prev.filter((s) => !shapeIds.has(s.id)));
+    setLabels((prev) => prev.filter((l) => !labelIds.has(l.id)));
+    setSelection(null);
+    setSelectedIds(new Set());
+    setEditingLabel(null);
+    pushSnapshot();
+  }
+
+  // ── Align / distribute the multi-selection ───────────────────
+  function selectedBoxes(): { key: string; kind: string; id: number; x: number; y: number; w: number; h: number }[] {
+    const out: { key: string; kind: string; id: number; x: number; y: number; w: number; h: number }[] = [];
+    selectedIds.forEach((k) => {
+      const [kind, idStr] = k.split(':');
+      const id = Number(idStr);
+      const b = elemBox(kind as 'device' | 'shape' | 'label', id);
+      if (b) out.push({ key: k, kind, id, x: b.x, y: b.y, w: b.w, h: b.h });
+    });
+    return out;
+  }
+  function moveElemTo(kind: string, id: number, x: number, y: number) {
+    if (kind === 'device') setDevices((prev) => prev.map((d) => (d.id === id ? { ...d, x, y } : d)));
+    else if (kind === 'shape') setShapes((prev) => prev.map((s) => (s.id === id ? { ...s, x, y } : s)));
+    else if (kind === 'label') setLabels((prev) => prev.map((l) => (l.id === id ? { ...l, x, y: y + 12 } : l)));
+  }
+  function alignSelected(edge: 'left' | 'center' | 'right' | 'top' | 'middle' | 'bottom') {
+    const boxes = selectedBoxes();
+    if (boxes.length < 2) return;
+    const minX = Math.min(...boxes.map((b) => b.x));
+    const maxX = Math.max(...boxes.map((b) => b.x + b.w));
+    const minY = Math.min(...boxes.map((b) => b.y));
+    const maxY = Math.max(...boxes.map((b) => b.y + b.h));
+    const midX = (minX + maxX) / 2;
+    const midY = (minY + maxY) / 2;
+    for (const b of boxes) {
+      let nx = b.x; let ny = b.y;
+      if (edge === 'left') nx = minX;
+      else if (edge === 'right') nx = maxX - b.w;
+      else if (edge === 'center') nx = midX - b.w / 2;
+      else if (edge === 'top') ny = minY;
+      else if (edge === 'bottom') ny = maxY - b.h;
+      else if (edge === 'middle') ny = midY - b.h / 2;
+      moveElemTo(b.kind, b.id, nx, ny);
+    }
+    pushSnapshot();
+  }
+  function distributeSelected(axis: 'h' | 'v') {
+    const boxes = selectedBoxes();
+    if (boxes.length < 3) return;
+    if (axis === 'h') {
+      const sorted = [...boxes].sort((a, b) => (a.x + a.w / 2) - (b.x + b.w / 2));
+      const first = sorted[0].x + sorted[0].w / 2;
+      const last = sorted[sorted.length - 1].x + sorted[sorted.length - 1].w / 2;
+      const step = (last - first) / (sorted.length - 1);
+      sorted.forEach((b, i) => { const cx = first + step * i; moveElemTo(b.kind, b.id, cx - b.w / 2, b.y); });
+    } else {
+      const sorted = [...boxes].sort((a, b) => (a.y + a.h / 2) - (b.y + b.h / 2));
+      const first = sorted[0].y + sorted[0].h / 2;
+      const last = sorted[sorted.length - 1].y + sorted[sorted.length - 1].h / 2;
+      const step = (last - first) / (sorted.length - 1);
+      sorted.forEach((b, i) => { const cy = first + step * i; moveElemTo(b.kind, b.id, b.x, cy - b.h / 2); });
+    }
+    pushSnapshot();
+  }
+
+  // ── Copy / paste (shapes + labels only) ──────────────────────
+  function copySelection() {
+    const cs: MapShape[] = [];
+    const cl: MapLabel[] = [];
+    selectedIds.forEach((k) => {
+      const [kind, idStr] = k.split(':');
+      const id = Number(idStr);
+      if (kind === 'shape') { const s = shapes.find((v) => v.id === id); if (s) cs.push({ ...s }); }
+      else if (kind === 'label') { const l = labels.find((v) => v.id === id); if (l) cl.push({ ...l }); }
+    });
+    if (cs.length === 0 && cl.length === 0) { clipboard.current = null; return; }
+    clipboard.current = { shapes: cs, labels: cl };
+  }
+  function pasteClipboard() {
+    const cb = clipboard.current;
+    if (!cb || (cb.shapes.length === 0 && cb.labels.length === 0)) return;
+    const newKeys: string[] = [];
+    const newShapes = cb.shapes.map((s) => { const id = nextTemp(); newKeys.push(`shape:${id}`); return { ...s, id, x: Number(s.x) + 20, y: Number(s.y) + 20 }; });
+    const newLabels = cb.labels.map((l) => { const id = nextTemp(); newKeys.push(`label:${id}`); return { ...l, id, x: Number(l.x) + 20, y: Number(l.y) + 20 }; });
+    setShapes((prev) => [...prev, ...newShapes]);
+    setLabels((prev) => [...prev, ...newLabels]);
+    setSelectedIds(new Set(newKeys));
+    setSelection(newKeys.length === 1 ? (() => { const [k, idStr] = newKeys[0].split(':'); return { kind: k as any, id: Number(idStr) }; })() : null);
+    pushSnapshot();
+  }
+
+  // ── Multi-select helpers ─────────────────────────────────────
+  // Bounding box of a selectable element (labels treated as a small box).
+  function elemBox(kind: 'device' | 'shape' | 'label', id: number):
+    { x: number; y: number; w: number; h: number } | null {
+    if (kind === 'device') {
+      const d = devices.find((v) => v.id === id);
+      return d ? { x: Number(d.x), y: Number(d.y), w: Number(d.width), h: Number(d.height) } : null;
+    }
+    if (kind === 'shape') {
+      const s = shapes.find((v) => v.id === id);
+      return s ? { x: Number(s.x), y: Number(s.y), w: Number(s.width), h: Number(s.height) } : null;
+    }
+    const l = labels.find((v) => v.id === id);
+    return l ? { x: Number(l.x), y: Number(l.y) - 12, w: Math.max(20, (l.text || '').length * 7), h: 16 } : null;
+  }
+
+  // Click selection: plain = just this element; shift = toggle in the set.
+  function selectElement(kind: 'device' | 'shape' | 'label', id: number, shift: boolean) {
+    const key = `${kind}:${id}`;
+    if (shift) {
+      setSelectedIds((prev) => {
+        const n = new Set(prev);
+        if (n.has(key)) n.delete(key); else n.add(key);
+        return n;
+      });
+      setSelection({ kind, id } as Selection);
+    } else {
+      setSelectedIds(new Set([key]));
+      setSelection({ kind, id } as Selection);
+    }
+  }
+
+  // Build a multi-move drag capturing every selected element's origin.
+  function buildMultiDrag(startId: number, p: { x: number; y: number }): Drag {
+    const origins: Record<string, { x: number; y: number }> = {};
+    selectedIds.forEach((k) => {
+      const [kind, idStr] = k.split(':');
+      const id = Number(idStr);
+      if (kind === 'device') { const d = devices.find((v) => v.id === id); if (d) origins[k] = { x: Number(d.x), y: Number(d.y) }; }
+      else if (kind === 'shape') { const s = shapes.find((v) => v.id === id); if (s) origins[k] = { x: Number(s.x), y: Number(s.y) }; }
+      else if (kind === 'label') { const l = labels.find((v) => v.id === id); if (l) origins[k] = { x: Number(l.x), y: Number(l.y) }; }
+    });
+    return { kind: 'multi', id: startId, sx: p.x, sy: p.y, origins, moved: false };
+  }
+
   // ── Device interactions ──────────────────────────────────────
   function onDeviceMouseDown(e: React.MouseEvent, d: MapDevice) {
     e.stopPropagation();
     setCtx(null);
     if (tool === 'select') {
-      setSelection({ kind: 'device', id: d.id });
+      const key = `device:${d.id}`;
       const p = toSvg(e.clientX, e.clientY);
-      setDrag({ kind: 'device', id: d.id, dx: p.x - Number(d.x), dy: p.y - Number(d.y) });
+      if (e.shiftKey) { selectElement('device', d.id, true); return; }
+      // If clicking an already-multi-selected element, start a group move.
+      if (selectedIds.size > 1 && selectedIds.has(key)) {
+        setSelection({ kind: 'device', id: d.id });
+        setDrag(buildMultiDrag(d.id, p));
+        return;
+      }
+      selectElement('device', d.id, false);
+      setDrag({ kind: 'device', id: d.id, dx: p.x - Number(d.x), dy: p.y - Number(d.y), moved: false });
     } else if (tool === 'line') {
       if (lineStart == null) {
         setLineStart(d.id);
@@ -149,8 +412,10 @@ export default function MapEditorPage() {
     const c: MapConnection = {
       id: nextTemp(), from_item_id: from, to_item_id: to,
       color: DEFAULT_LINE, line_style: 'solid', label: null,
+      arrow: false, width: 2,
     };
     setConnections((prev) => [...prev, c]);
+    pushSnapshot();
   }
 
   function addDeviceAt(pd: PaletteDevice, x: number, y: number) {
@@ -163,15 +428,19 @@ export default function MapEditorPage() {
       current_status: pd.current_status, is_gateway: false, alert_suppressed: false,
     };
     setDevices((prev) => [...prev, d]);
+    pushSnapshot();
   }
 
   function removeDevice(deviceId: number) {
     setDevices((prev) => prev.filter((d) => d.id !== deviceId));
     setConnections((prev) => prev.filter((c) => c.from_item_id !== deviceId && c.to_item_id !== deviceId));
     setSelection(null);
+    setSelectedIds((prev) => { const n = new Set(prev); n.delete(`device:${deviceId}`); return n; });
+    pushSnapshot();
   }
   function updateDevice(deviceId: number, patch: Partial<MapDevice>) {
     setDevices((prev) => prev.map((d) => (d.id === deviceId ? { ...d, ...patch } : d)));
+    pushSnapshot();
   }
   function deviceToFront(deviceId: number) {
     const max = devices.reduce((m, d) => Math.max(m, Number(d.z_index) || 0), 0);
@@ -189,9 +458,10 @@ export default function MapEditorPage() {
   ) {
     e.stopPropagation();
     setSelection({ kind: target, id: item.id });
+    setSelectedIds(new Set([`${target}:${item.id}`]));
     const p = toSvg(e.clientX, e.clientY);
     setDrag({ kind: 'resize', id: item.id, target, handle,
-      ox: Number(item.x), oy: Number(item.y), ow: Number(item.width), oh: Number(item.height), sx: p.x, sy: p.y });
+      ox: Number(item.x), oy: Number(item.y), ow: Number(item.width), oh: Number(item.height), sx: p.x, sy: p.y, moved: false });
   }
 
   // ── Shape interactions ───────────────────────────────────────
@@ -210,22 +480,34 @@ export default function MapEditorPage() {
     };
     setShapes((prev) => [...prev, s]);
     setSelection({ kind: 'shape', id: s.id });
+    setSelectedIds(new Set([`shape:${s.id}`]));
     setTool('select');
+    pushSnapshot();
   }
   function onShapeMouseDown(e: React.MouseEvent, s: MapShape) {
     e.stopPropagation();
     setCtx(null);
     if (tool !== 'select') return;
-    setSelection({ kind: 'shape', id: s.id });
+    const key = `shape:${s.id}`;
     const p = toSvg(e.clientX, e.clientY);
-    setDrag({ kind: 'shape', id: s.id, dx: p.x - Number(s.x), dy: p.y - Number(s.y) });
+    if (e.shiftKey) { selectElement('shape', s.id, true); return; }
+    if (selectedIds.size > 1 && selectedIds.has(key)) {
+      setSelection({ kind: 'shape', id: s.id });
+      setDrag(buildMultiDrag(s.id, p));
+      return;
+    }
+    selectElement('shape', s.id, false);
+    setDrag({ kind: 'shape', id: s.id, dx: p.x - Number(s.x), dy: p.y - Number(s.y), moved: false });
   }
   function updateShape(shapeId: number, patch: Partial<MapShape>) {
     setShapes((prev) => prev.map((s) => (s.id === shapeId ? { ...s, ...patch } : s)));
+    pushSnapshot();
   }
   function deleteShape(shapeId: number) {
     setShapes((prev) => prev.filter((s) => s.id !== shapeId));
     setSelection(null);
+    setSelectedIds((prev) => { const n = new Set(prev); n.delete(`shape:${shapeId}`); return n; });
+    pushSnapshot();
   }
   function shapeToFront(shapeId: number) {
     const max = shapes.reduce((m, s) => Math.max(m, Number(s.z_index) || 0), 0);
@@ -241,32 +523,46 @@ export default function MapEditorPage() {
     e.stopPropagation();
     setCtx(null);
     if (tool === 'select') {
-      setSelection({ kind: 'label', id: l.id });
+      const key = `label:${l.id}`;
       const p = toSvg(e.clientX, e.clientY);
-      setDrag({ kind: 'label', id: l.id, dx: p.x - Number(l.x), dy: p.y - Number(l.y) });
+      if (e.shiftKey) { selectElement('label', l.id, true); return; }
+      if (selectedIds.size > 1 && selectedIds.has(key)) {
+        setSelection({ kind: 'label', id: l.id });
+        setDrag(buildMultiDrag(l.id, p));
+        return;
+      }
+      selectElement('label', l.id, false);
+      setDrag({ kind: 'label', id: l.id, dx: p.x - Number(l.x), dy: p.y - Number(l.y), moved: false });
     }
   }
   function addLabelAt(x: number, y: number) {
     const l: MapLabel = { id: nextTemp(), x, y, text: 'New label', font_size: 16, color: '#1a2744', bold: false, z_index: 0 };
     setLabels((prev) => [...prev, l]);
     setSelection({ kind: 'label', id: l.id });
+    setSelectedIds(new Set([`label:${l.id}`]));
     setEditingLabel(l.id);
+    pushSnapshot();
   }
   function updateLabel(labelId: number, patch: Partial<MapLabel>) {
     setLabels((prev) => prev.map((l) => (l.id === labelId ? { ...l, ...patch } : l)));
+    pushSnapshot();
   }
   function deleteLabel(labelId: number) {
     setLabels((prev) => prev.filter((l) => l.id !== labelId));
     setSelection(null);
+    setSelectedIds((prev) => { const n = new Set(prev); n.delete(`label:${labelId}`); return n; });
     setEditingLabel(null);
+    pushSnapshot();
   }
 
   function updateConnection(connId: number, patch: Partial<MapConnection>) {
     setConnections((prev) => prev.map((c) => (c.id === connId ? { ...c, ...patch } : c)));
+    pushSnapshot();
   }
   function deleteConnection(connId: number) {
     setConnections((prev) => prev.filter((c) => c.id !== connId));
     setSelection(null);
+    pushSnapshot();
   }
 
   // ── Canvas-level mouse handlers ──────────────────────────────
@@ -275,12 +571,57 @@ export default function MapEditorPage() {
     const p = toSvg(e.clientX, e.clientY);
     if (tool === 'label') { addLabelAt(p.x, p.y); return; }
     if (tool === 'line') { setLineStart(null); return; }
-    setSelection(null); // select tool: click empty → deselect
+    // select tool: empty mousedown starts a marquee selection.
+    setMarquee({ sx: p.x, sy: p.y, cx: p.x, cy: p.y });
   }
+
+  // Snap a single dragged device/shape to nearby element anchors; record guides.
+  function applyGuides(kind: 'device' | 'shape', id: number, x: number, y: number, w: number, h: number) {
+    let gx: number | null = null;
+    let gy: number | null = null;
+    let outX = x;
+    let outY = y;
+    const myXs = [x, x + w / 2, x + w];
+    const myYs = [y, y + h / 2, y + h];
+    const others: { x: number; y: number; w: number; h: number }[] = [];
+    for (const d of devices) if (!(kind === 'device' && d.id === id)) others.push({ x: Number(d.x), y: Number(d.y), w: Number(d.width), h: Number(d.height) });
+    for (const s of shapes) if (!(kind === 'shape' && s.id === id)) others.push({ x: Number(s.x), y: Number(s.y), w: Number(s.width), h: Number(s.height) });
+    for (const o of others) {
+      const oXs = [o.x, o.x + o.w / 2, o.x + o.w];
+      const oYs = [o.y, o.y + o.h / 2, o.y + o.h];
+      for (let i = 0; i < 3 && gx === null; i++) {
+        for (const ox of oXs) {
+          if (Math.abs(myXs[i] - ox) <= GUIDE_TOL) { outX = x + (ox - myXs[i]); gx = ox; break; }
+        }
+      }
+      for (let i = 0; i < 3 && gy === null; i++) {
+        for (const oy of oYs) {
+          if (Math.abs(myYs[i] - oy) <= GUIDE_TOL) { outY = y + (oy - myYs[i]); gy = oy; break; }
+        }
+      }
+    }
+    setGuide({ x: gx, y: gy });
+    return { x: outX, y: outY };
+  }
+
   function onCanvasMouseMove(e: React.MouseEvent) {
     const p = toSvg(e.clientX, e.clientY);
     if (lineStart != null) setMouse(p);
+    if (marquee) { setMarquee({ ...marquee, cx: p.x, cy: p.y }); return; }
     if (!drag) return;
+
+    if (drag.kind === 'multi') {
+      let ddx = p.x - drag.sx;
+      let ddy = p.y - drag.sy;
+      if (snapEnabled) { ddx = Math.round(ddx / GRID) * GRID; ddy = Math.round(ddy / GRID) * GRID; }
+      const orig = drag.origins;
+      setDevices((prev) => prev.map((d) => orig[`device:${d.id}`] ? { ...d, x: orig[`device:${d.id}`].x + ddx, y: orig[`device:${d.id}`].y + ddy } : d));
+      setShapes((prev) => prev.map((s) => orig[`shape:${s.id}`] ? { ...s, x: orig[`shape:${s.id}`].x + ddx, y: orig[`shape:${s.id}`].y + ddy } : s));
+      setLabels((prev) => prev.map((l) => orig[`label:${l.id}`] ? { ...l, x: orig[`label:${l.id}`].x + ddx, y: orig[`label:${l.id}`].y + ddy } : l));
+      if (!drag.moved && (ddx !== 0 || ddy !== 0)) setDrag({ ...drag, moved: true });
+      return;
+    }
+
     if (drag.kind === 'resize') {
       const dx = p.x - drag.sx;
       const dy = p.y - drag.sy;
@@ -293,23 +634,69 @@ export default function MapEditorPage() {
       // Clamp to a minimum, keeping the anchored (opposite) edge fixed.
       if (nw < MIN_W) { if (h.includes('w')) nx = drag.ox + (drag.ow - MIN_W); nw = MIN_W; }
       if (nh < MIN_H) { if (h.includes('n')) ny = drag.oy + (drag.oh - MIN_H); nh = MIN_H; }
-      const geo = { x: nx, y: ny, width: Math.round(nw), height: Math.round(nh) };
+      const geo = { x: snap(nx), y: snap(ny), width: Math.round(snapEnabled ? snap(nw) : nw), height: Math.round(snapEnabled ? snap(nh) : nh) };
       if (drag.target === 'shape') {
         setShapes((prev) => prev.map((s) => (s.id === drag.id ? { ...s, ...geo } : s)));
       } else {
         setDevices((prev) => prev.map((d) => (d.id === drag.id ? { ...d, ...geo } : d)));
       }
+      if (!drag.moved) setDrag({ ...drag, moved: true });
       return;
     }
+
     if (drag.kind === 'device') {
-      setDevices((prev) => prev.map((d) => (d.id === drag.id ? { ...d, x: p.x - drag.dx, y: p.y - drag.dy } : d)));
+      let nx = snap(p.x - drag.dx);
+      let ny = snap(p.y - drag.dy);
+      const d0 = devices.find((d) => d.id === drag.id);
+      if (d0) { const g = applyGuides('device', drag.id, nx, ny, Number(d0.width), Number(d0.height)); nx = g.x; ny = g.y; }
+      setDevices((prev) => prev.map((d) => (d.id === drag.id ? { ...d, x: nx, y: ny } : d)));
+      if (!drag.moved) setDrag({ ...drag, moved: true });
     } else if (drag.kind === 'shape') {
-      setShapes((prev) => prev.map((s) => (s.id === drag.id ? { ...s, x: p.x - drag.dx, y: p.y - drag.dy } : s)));
+      let nx = snap(p.x - drag.dx);
+      let ny = snap(p.y - drag.dy);
+      const s0 = shapes.find((s) => s.id === drag.id);
+      if (s0) { const g = applyGuides('shape', drag.id, nx, ny, Number(s0.width), Number(s0.height)); nx = g.x; ny = g.y; }
+      setShapes((prev) => prev.map((s) => (s.id === drag.id ? { ...s, x: nx, y: ny } : s)));
+      if (!drag.moved) setDrag({ ...drag, moved: true });
     } else {
-      setLabels((prev) => prev.map((l) => (l.id === drag.id ? { ...l, x: p.x - drag.dx, y: p.y - drag.dy } : l)));
+      const nx = snap(p.x - drag.dx);
+      const ny = snap(p.y - drag.dy);
+      setLabels((prev) => prev.map((l) => (l.id === drag.id ? { ...l, x: nx, y: ny } : l)));
+      if (!drag.moved) setDrag({ ...drag, moved: true });
     }
   }
-  function onCanvasMouseUp() { setDrag(null); }
+
+  function onCanvasMouseUp() {
+    if (marquee) { commitMarquee(marquee); setMarquee(null); }
+    if (drag) {
+      if (drag.moved) pushSnapshot();
+      setDrag(null);
+    }
+    setGuide({ x: null, y: null });
+  }
+
+  // Select all devices/shapes/labels whose box intersects the marquee rect.
+  function commitMarquee(m: NonNullable<Marquee>) {
+    const minX = Math.min(m.sx, m.cx);
+    const maxX = Math.max(m.sx, m.cx);
+    const minY = Math.min(m.sy, m.cy);
+    const maxY = Math.max(m.sy, m.cy);
+    // Treat a tiny marquee (a click) as a deselect.
+    if (maxX - minX < 3 && maxY - minY < 3) { setSelection(null); setSelectedIds(new Set()); return; }
+    const hits = new Set<string>();
+    const intersects = (b: { x: number; y: number; w: number; h: number }) =>
+      b.x <= maxX && b.x + b.w >= minX && b.y <= maxY && b.y + b.h >= minY;
+    for (const d of devices) if (intersects({ x: Number(d.x), y: Number(d.y), w: Number(d.width), h: Number(d.height) })) hits.add(`device:${d.id}`);
+    for (const s of shapes) if (intersects({ x: Number(s.x), y: Number(s.y), w: Number(s.width), h: Number(s.height) })) hits.add(`shape:${s.id}`);
+    for (const l of labels) if (intersects({ x: Number(l.x), y: Number(l.y) - 12, w: Math.max(20, (l.text || '').length * 7), h: 16 })) hits.add(`label:${l.id}`);
+    setSelectedIds(hits);
+    if (hits.size === 1) {
+      const [k, idStr] = Array.from(hits)[0].split(':');
+      setSelection({ kind: k as any, id: Number(idStr) });
+    } else {
+      setSelection(null);
+    }
+  }
 
   // ── Background image upload ──────────────────────────────────
   async function onUploadBg(file: File) {
@@ -352,6 +739,7 @@ export default function MapEditorPage() {
         connections: connections.map((c) => ({
           from_item_id: c.from_item_id, to_item_id: c.to_item_id,
           color: c.color, line_style: c.line_style, label: c.label,
+          arrow: c.arrow, width: c.width,
         })),
         labels: labels.map((l) => ({
           x: l.x, y: l.y, text: l.text, font_size: l.font_size, color: l.color, bold: l.bold,
@@ -371,6 +759,8 @@ export default function MapEditorPage() {
       setLabels(m.labels);
       setShapes(m.shapes || []);
       setSelection(null);
+      setSelectedIds(new Set());
+      seedHistory({ devices: m.devices, connections: m.connections, labels: m.labels, shapes: m.shapes || [] });
       setSavedAt(Date.now());
       setTimeout(() => setSavedAt(null), 2500);
     } catch (e: any) {
@@ -415,6 +805,8 @@ export default function MapEditorPage() {
         name={name} setName={setName}
         tool={tool} setTool={setTool}
         onAddShape={addShape}
+        snapEnabled={snapEnabled} onToggleSnap={() => setSnapEnabled((v) => !v)}
+        onUndo={undo} onRedo={redo} canUndo={canUndo} canRedo={canRedo}
         canvasW={canvasW} canvasH={canvasH}
         onCanvasSize={(w, h) => { setCanvasW(w); setCanvasH(h); }}
         onUploadBg={onUploadBg} onRemoveBg={onRemoveBg} hasBg={!!bgImage}
@@ -471,11 +863,14 @@ export default function MapEditorPage() {
               <rect x="0" y="0" width={canvasW} height={canvasH} fill={bgColor} />
             )}
 
+            {/* Snap grid (faint, behind everything else) */}
+            {snapEnabled && <GridLayer w={canvasW} h={canvasH} />}
+
             {/* Decorative shapes (z-sorted, beneath connections/nodes) */}
             {[...shapes].sort((a, b) => (Number(a.z_index) || 0) - (Number(b.z_index) || 0) || a.id - b.id).map((s) => (
               <EditorShape
                 key={s.id} shape={s}
-                selected={selection?.kind === 'shape' && selection.id === s.id}
+                selected={selectedIds.has(`shape:${s.id}`) || (selection?.kind === 'shape' && selection.id === s.id)}
                 onMouseDown={(e) => onShapeMouseDown(e, s)}
                 onContext={(x, y) => setCtx({ x, y, kind: 'shape', id: s.id })}
               />
@@ -501,7 +896,7 @@ export default function MapEditorPage() {
             {[...devices].sort((a, b) => (Number(a.z_index) || 0) - (Number(b.z_index) || 0) || a.id - b.id).map((d) => (
               <EditorDeviceNode
                 key={d.id} device={d}
-                selected={selection?.kind === 'device' && selection.id === d.id}
+                selected={selectedIds.has(`device:${d.id}`) || (selection?.kind === 'device' && selection.id === d.id)}
                 isLineStart={lineStart === d.id}
                 onMouseDown={(e) => onDeviceMouseDown(e, d)}
                 onContext={(x, y) => setCtx({ x, y, kind: 'device', id: d.id })}
@@ -511,7 +906,7 @@ export default function MapEditorPage() {
             {labels.map((l) => (
               <EditorLabel
                 key={l.id} label={l}
-                selected={selection?.kind === 'label' && selection.id === l.id}
+                selected={selectedIds.has(`label:${l.id}`) || (selection?.kind === 'label' && selection.id === l.id)}
                 editing={editingLabel === l.id}
                 onMouseDown={(e) => onLabelMouseDown(e, l)}
                 onStartEdit={() => { setSelection({ kind: 'label', id: l.id }); setEditingLabel(l.id); }}
@@ -524,17 +919,34 @@ export default function MapEditorPage() {
               />
             ))}
 
-            {/* Resize handles for the selected device/shape (select tool only) */}
-            {tool === 'select' && selection?.kind === 'device' && (() => {
+            {/* Resize handles — only for exactly one selected device/shape */}
+            {tool === 'select' && selectedIds.size <= 1 && selection?.kind === 'device' && (() => {
               const d = byId.get(selection.id);
               if (!d) return null;
               return <ResizeHandles item={d} target="device" onResizeStart={onResizeStart} />;
             })()}
-            {tool === 'select' && selection?.kind === 'shape' && (() => {
+            {tool === 'select' && selectedIds.size <= 1 && selection?.kind === 'shape' && (() => {
               const s = shapes.find((x) => x.id === selection.id);
               if (!s) return null;
               return <ResizeHandles item={s} target="shape" onResizeStart={onResizeStart} />;
             })()}
+
+            {/* Alignment guides (single-element drag) */}
+            {guide.x !== null && (
+              <line x1={guide.x} y1={0} x2={guide.x} y2={canvasH} stroke="#3b82f6" strokeWidth={1} strokeDasharray="4 3" pointerEvents="none" />
+            )}
+            {guide.y !== null && (
+              <line x1={0} y1={guide.y} x2={canvasW} y2={guide.y} stroke="#3b82f6" strokeWidth={1} strokeDasharray="4 3" pointerEvents="none" />
+            )}
+
+            {/* Marquee selection rectangle */}
+            {marquee && (
+              <rect
+                x={Math.min(marquee.sx, marquee.cx)} y={Math.min(marquee.sy, marquee.cy)}
+                width={Math.abs(marquee.cx - marquee.sx)} height={Math.abs(marquee.cy - marquee.sy)}
+                fill="rgba(59,130,246,0.08)" stroke="#3b82f6" strokeWidth={1} strokeDasharray="5 4" pointerEvents="none"
+              />
+            )}
           </svg>
 
           {ctx && (
@@ -552,6 +964,14 @@ export default function MapEditorPage() {
           )}
         </div>
 
+        {selectedIds.size > 1 ? (
+          <MultiSelectPanel
+            count={selectedIds.size}
+            onAlign={alignSelected}
+            onDistribute={distributeSelected}
+            onDelete={deleteSelected}
+          />
+        ) : (
         <SelectionPanel
           selection={selection}
           device={selection?.kind === 'device' ? devices.find((d) => d.id === selection.id) || null : null}
@@ -571,19 +991,70 @@ export default function MapEditorPage() {
           onLabelChange={updateLabel}
           onLabelDelete={deleteLabel}
         />
+        )}
       </div>
+    </div>
+  );
+}
+
+// ── Snap grid backdrop (top-level component) ───────────────────
+function GridLayer({ w, h }: { w: number; h: number }) {
+  const step = 50; // draw lines every 50 units so the grid stays faint
+  const lines: React.ReactNode[] = [];
+  for (let x = step; x < w; x += step) {
+    lines.push(<line key={`gx${x}`} x1={x} y1={0} x2={x} y2={h} stroke="#e2e8f0" strokeWidth={1} />);
+  }
+  for (let y = step; y < h; y += step) {
+    lines.push(<line key={`gy${y}`} x1={0} y1={y} x2={w} y2={y} stroke="#e2e8f0" strokeWidth={1} />);
+  }
+  return <g pointerEvents="none">{lines}</g>;
+}
+
+// ── Multi-selection panel (align / distribute / delete) ────────
+function MultiSelectPanel({
+  count, onAlign, onDistribute, onDelete,
+}: {
+  count: number;
+  onAlign: (edge: 'left' | 'center' | 'right' | 'top' | 'middle' | 'bottom') => void;
+  onDistribute: (axis: 'h' | 'v') => void;
+  onDelete: () => void;
+}) {
+  return (
+    <div className="sv-editor-props">
+      <h3>{count} selected</h3>
+      <div style={{ fontSize: 12, color: '#64748b', marginBottom: 4 }}>Align</div>
+      <div style={{ display: 'flex', gap: 6 }}>
+        <button className="sv-btn ghost sm" style={{ flex: 1 }} onClick={() => onAlign('left')}>Left</button>
+        <button className="sv-btn ghost sm" style={{ flex: 1 }} onClick={() => onAlign('center')}>Center</button>
+        <button className="sv-btn ghost sm" style={{ flex: 1 }} onClick={() => onAlign('right')}>Right</button>
+      </div>
+      <div style={{ display: 'flex', gap: 6 }}>
+        <button className="sv-btn ghost sm" style={{ flex: 1 }} onClick={() => onAlign('top')}>Top</button>
+        <button className="sv-btn ghost sm" style={{ flex: 1 }} onClick={() => onAlign('middle')}>Middle</button>
+        <button className="sv-btn ghost sm" style={{ flex: 1 }} onClick={() => onAlign('bottom')}>Bottom</button>
+      </div>
+      <div style={{ fontSize: 12, color: '#64748b', margin: '8px 0 4px' }}>Distribute</div>
+      <div style={{ display: 'flex', gap: 6 }}>
+        <button className="sv-btn ghost sm" style={{ flex: 1 }} onClick={() => onDistribute('h')}>Horizontally</button>
+        <button className="sv-btn ghost sm" style={{ flex: 1 }} onClick={() => onDistribute('v')}>Vertically</button>
+      </div>
+      <button className="sv-btn ghost sm" style={{ marginTop: 8 }} onClick={onDelete}>Delete selected</button>
     </div>
   );
 }
 
 // ── Editor toolbar (top-level component) ───────────────────────
 function EditorToolbar({
-  name, setName, tool, setTool, onAddShape, canvasW, canvasH, onCanvasSize,
+  name, setName, tool, setTool, onAddShape,
+  snapEnabled, onToggleSnap, onUndo, onRedo, canUndo, canRedo,
+  canvasW, canvasH, onCanvasSize,
   onUploadBg, onRemoveBg, hasBg, onSave, saving, savedAt, onView, onShare, isPublic, shareUrl,
 }: {
   name: string; setName: (v: string) => void;
   tool: Tool; setTool: (t: Tool) => void;
   onAddShape: (kind: string) => void;
+  snapEnabled: boolean; onToggleSnap: () => void;
+  onUndo: () => void; onRedo: () => void; canUndo: boolean; canRedo: boolean;
   canvasW: number; canvasH: number; onCanvasSize: (w: number, h: number) => void;
   onUploadBg: (f: File) => void; onRemoveBg: () => void; hasBg: boolean;
   onSave: () => void; saving: boolean; savedAt: number | null;
@@ -611,6 +1082,10 @@ function EditorToolbar({
             {SHAPE_GLYPHS.map((g) => <option key={g.key} value={g.key}>{g.label}</option>)}
           </optgroup>
         </select>
+        <button className={`sv-btn ghost sm ${snapEnabled ? 'active' : ''}`} onClick={onToggleSnap}
+          title="Snap to grid">Snap</button>
+        <button className="sv-btn ghost sm" onClick={onUndo} disabled={!canUndo} title="Undo (Ctrl+Z)">↶ Undo</button>
+        <button className="sv-btn ghost sm" onClick={onRedo} disabled={!canRedo} title="Redo (Ctrl+Shift+Z)">↷ Redo</button>
       </div>
 
       <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/gif" style={{ display: 'none' }}
@@ -689,6 +1164,32 @@ function EditorConnection({
   const b = deviceCenter(to);
   const mx = (a.cx + b.cx) / 2;
   const my = (a.cy + b.cy) / 2;
+  const stroke = selected ? '#3b82f6' : conn.color || DEFAULT_LINE;
+  const width = Number(conn.width) || 2;
+
+  // Directional arrowhead at the 'to' end (point b), oriented along a->b.
+  let arrowPath: string | null = null;
+  if (conn.arrow) {
+    const dx = b.cx - a.cx;
+    const dy = b.cy - a.cy;
+    const len = Math.hypot(dx, dy) || 1;
+    const ux = dx / len;
+    const uy = dy / len;
+    const px = -uy;
+    const py = ux;
+    const head = 12;
+    const half = 6;
+    const tipX = b.cx;
+    const tipY = b.cy;
+    const baseX = tipX - ux * head;
+    const baseY = tipY - uy * head;
+    const leftX = baseX + px * half;
+    const leftY = baseY + py * half;
+    const rightX = baseX - px * half;
+    const rightY = baseY - py * half;
+    arrowPath = `M${tipX} ${tipY} L${leftX} ${leftY} L${rightX} ${rightY} Z`;
+  }
+
   return (
     <g
       onMouseDown={(e) => { e.stopPropagation(); onSelect(); }}
@@ -699,10 +1200,11 @@ function EditorConnection({
       <line x1={a.cx} y1={a.cy} x2={b.cx} y2={b.cy} stroke="transparent" strokeWidth={14} />
       <line
         x1={a.cx} y1={a.cy} x2={b.cx} y2={b.cy}
-        stroke={selected ? '#3b82f6' : conn.color || DEFAULT_LINE}
-        strokeWidth={selected ? 3 : 2}
+        stroke={stroke}
+        strokeWidth={selected ? width + 1 : width}
         strokeDasharray={conn.line_style === 'dashed' ? '8 6' : undefined}
       />
+      {arrowPath && <path d={arrowPath} fill={stroke} />}
       {conn.label && (
         <text x={mx} y={my - 4} textAnchor="middle" fontSize={12} fill="#475569"
           style={{ paintOrder: 'stroke', stroke: '#fff', strokeWidth: 3 }}>{conn.label}</text>
@@ -1020,6 +1522,15 @@ function SelectionPanel({
             <option value="solid">Solid</option>
             <option value="dashed">Dashed</option>
           </select>
+        </label>
+        <label className="sv-field">Width
+          <input type="number" className="sv-input" value={Number(connection.width) || 2} min={1} max={12}
+            onChange={(e) => onConnChange(connection.id, { width: Math.max(1, Math.min(12, parseInt(e.target.value, 10) || 2)) })} />
+        </label>
+        <label className="sv-field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+          <input type="checkbox" checked={!!connection.arrow}
+            onChange={(e) => onConnChange(connection.id, { arrow: e.target.checked })} />
+          Arrow
         </label>
         <label className="sv-field">Label
           <input className="sv-input" value={connection.label || ''}

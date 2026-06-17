@@ -133,13 +133,39 @@ export function ConnectionLine({
 
   const mx = (a.cx + b.cx) / 2;
   const my = (a.cy + b.cy) / 2;
+  const width = Number(conn.width) || 2;
+
+  // Directional arrowhead at the 'to' end (point b), oriented along a->b.
+  let arrowPath: string | null = null;
+  if (conn.arrow) {
+    const dx = b.cx - a.cx;
+    const dy = b.cy - a.cy;
+    const len = Math.hypot(dx, dy) || 1;
+    const ux = dx / len;          // unit vector a->b
+    const uy = dy / len;
+    const px = -uy;               // perpendicular unit vector
+    const py = ux;
+    const head = 12;              // arrowhead length
+    const half = 6;               // arrowhead half-width
+    const tipX = b.cx;
+    const tipY = b.cy;
+    const baseX = tipX - ux * head;
+    const baseY = tipY - uy * head;
+    const leftX = baseX + px * half;
+    const leftY = baseY + py * half;
+    const rightX = baseX - px * half;
+    const rightY = baseY - py * half;
+    arrowPath = `M${tipX} ${tipY} L${leftX} ${leftY} L${rightX} ${rightY} Z`;
+  }
+
   return (
     <g>
       <line
         x1={a.cx} y1={a.cy} x2={b.cx} y2={b.cy}
-        stroke={stroke} strokeWidth={2}
+        stroke={stroke} strokeWidth={width}
         strokeDasharray={conn.line_style === 'dashed' ? '8 6' : undefined}
       />
+      {arrowPath && <path d={arrowPath} fill={stroke} />}
       {conn.label && (
         <text x={mx} y={my - 4} textAnchor="middle" fontSize={12} fill="#475569"
           style={{ paintOrder: 'stroke', stroke: '#ffffff', strokeWidth: 3 }}>

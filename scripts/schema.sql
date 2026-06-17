@@ -478,6 +478,12 @@ ALTER TABLE map_devices ADD COLUMN IF NOT EXISTS z_index    INTEGER NOT NULL DEF
 ALTER TABLE map_devices ADD COLUMN IF NOT EXISTS node_style TEXT    NOT NULL DEFAULT 'box';  -- 'box' | 'icon'
 ALTER TABLE map_labels  ADD COLUMN IF NOT EXISTS z_index    INTEGER NOT NULL DEFAULT 0;
 
+-- Connection styling: optional directional arrowhead (at the 'to' end) and
+-- adjustable stroke thickness. Additive + idempotent; old rows default to a
+-- plain 2px line with no arrow.
+ALTER TABLE map_connections ADD COLUMN IF NOT EXISTS arrow BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE map_connections ADD COLUMN IF NOT EXISTS width INTEGER NOT NULL DEFAULT 2;
+
 -- Decorative, non-device elements: basic shapes (rect/ellipse/arrow/line/text)
 -- and built-in network glyphs (cloud/internet/router/switch/firewall/server/...).
 -- The glyph artwork lives in client code; here we only store the kind + geometry

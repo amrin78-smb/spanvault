@@ -32,6 +32,12 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.33.0': [
+    'Map editor power tools: multi-select (shift-click or drag a marquee), then move, delete, align (left/center/right/top/middle/bottom) or distribute the whole selection at once',
+    'Undo / redo (Ctrl+Z / Ctrl+Shift+Z, or the toolbar buttons) across all edits, plus copy/paste (Ctrl+C / Ctrl+V) of shapes and text',
+    'Snap-to-grid toggle and live alignment guides — drag a node and it snaps to line up with its neighbours, with blue guide lines showing the match',
+    'Connections can now show a directional arrowhead and an adjustable line thickness (set per connection in the properties panel)',
+  ],
   '1.32.0': [
     'Map editor can now add decorative, non-device elements: pick from the new "+ Shape / Icon" menu to drop network glyphs (cloud, internet, WAN, router, switch, firewall, server, load balancer, access point, database, building) or basic shapes (rectangle, ellipse, zone box, line, arrow, text). Each is draggable, resizable (8 handles), colorable (fill / line color / width), and supports bring-to-front / send-to-back',
     'Zone boxes and text annotations let you label regions of the diagram (e.g. DMZ, WAN edge, a site); shapes render on the map view and public share too',
@@ -2847,9 +2853,10 @@ app.put('/api/maps/:id/layout', wrap(async (req, res) => {
       const to = idMap.get(String(c.to_item_id));
       if (!from || !to) continue; // skip dangling connections
       await client.query(`
-        INSERT INTO map_connections (map_id, from_item_id, to_item_id, color, line_style, label)
-        VALUES ($1,$2,$3,$4,$5,$6)
-      `, [id, from, to, c.color || '#94a3b8', c.line_style || 'solid', c.label || null]);
+        INSERT INTO map_connections (map_id, from_item_id, to_item_id, color, line_style, label, arrow, width)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+      `, [id, from, to, c.color || '#94a3b8', c.line_style || 'solid', c.label || null,
+          !!c.arrow, safeInt(c.width, 2)]);
     }
 
     for (const l of labels) {
