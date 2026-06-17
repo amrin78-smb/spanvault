@@ -42,6 +42,10 @@ export default function SVGMapView({
             last_seen_at: d.last_seen_at,
             alert_suppressed: d.alert_suppressed,
             is_gateway: d.is_gateway,
+            latest_cpu_pct: d.latest_cpu_pct,
+            latest_mem_pct: d.latest_mem_pct,
+            uptime_24h_pct: d.uptime_24h_pct,
+            alert_count: d.alert_count,
           };
         }
         setLive(next);
@@ -234,11 +238,30 @@ export function DeviceNode({
   const color = suppressed ? '#94a3b8' : statusFill(status, false);
   const pulse = !suppressed && (status === 'down' || status === 'warning');
   const cursor = interactive && device.device_id ? 'pointer' : 'default';
+  const alertCount = Number(device.alert_count) || 0;
 
-  const tip =
-    `${name}\n${ip}${device.site_name ? ` · ${device.site_name}` : ''}\n` +
+  const tipLines = [
+    `${name}${ip ? `  ${ip}` : ''}${device.site_name ? ` · ${device.site_name}` : ''}`,
     `Status: ${suppressed ? 'suppressed' : status}` +
-    (device.last_response_ms != null ? ` · ${Number(device.last_response_ms).toFixed(0)} ms` : '');
+      (device.last_response_ms != null ? ` · ${Number(device.last_response_ms).toFixed(0)} ms` : ''),
+  ];
+  const metricBits: string[] = [];
+  if (device.latest_cpu_pct != null) metricBits.push(`CPU ${Number(device.latest_cpu_pct).toFixed(0)}%`);
+  if (device.latest_mem_pct != null) metricBits.push(`Mem ${Number(device.latest_mem_pct).toFixed(0)}%`);
+  if (device.uptime_24h_pct != null) metricBits.push(`Uptime ${Number(device.uptime_24h_pct).toFixed(1)}% (24h)`);
+  if (metricBits.length) tipLines.push(metricBits.join(' · '));
+  if (alertCount > 0) tipLines.push(`${alertCount} active alert${alertCount > 1 ? 's' : ''}`);
+  const tip = tipLines.join('\n');
+
+  // Red alert-count badge pinned to the node's top-right corner.
+  const badge = alertCount > 0 && !suppressed ? (
+    <g pointerEvents="none">
+      <circle cx={x + w} cy={y} r={9} fill="#dc2626" stroke="#fff" strokeWidth={1.5} />
+      <text x={x + w} y={y + 3.6} textAnchor="middle" fontSize={11} fontWeight={700} fill="#fff">
+        {alertCount > 9 ? '9+' : alertCount}
+      </text>
+    </g>
+  ) : null;
 
   // ── Icon style: device glyph + label beneath (never overflows) ──
   if (device.node_style === 'icon') {
@@ -255,6 +278,7 @@ export function DeviceNode({
         {device.is_gateway && <text x={x + 2} y={y + 14} fontSize={14}>⭐</text>}
         <text x={cx} y={y + h + 14} textAnchor="middle" fontSize={13} fontWeight={700} fill="#1a2744" style={halo}>{name}</text>
         {ip && <text x={cx} y={y + h + 28} textAnchor="middle" fontSize={10} fill="#475569" style={halo}>{ip}</text>}
+        {badge}
       </g>
     );
   }
@@ -280,6 +304,7 @@ export function DeviceNode({
         </div>
       </foreignObject>
       {device.is_gateway && <text x={x + 5} y={y + 16} fontSize={14}>⭐</text>}
+      {badge}
     </g>
   );
 }

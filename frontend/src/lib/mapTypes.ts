@@ -20,6 +20,11 @@ export type MapDevice = {
   last_seen_at?: string | null;
   is_gateway?: boolean | null;
   alert_suppressed?: boolean | null;
+  // Live metrics for tooltips + alert badge (present on GET /api/maps/:id):
+  latest_cpu_pct?: number | null;
+  latest_mem_pct?: number | null;
+  uptime_24h_pct?: number | null;
+  alert_count?: number | null;
 };
 
 export type MapConnection = {
@@ -136,6 +141,10 @@ export function normalizeMap(m: FullMap): FullMap {
       z_index: Number(d.z_index ?? 0),
       node_style: d.node_style || 'box',
       icon_type: d.icon_type || 'auto',
+      latest_cpu_pct: d.latest_cpu_pct == null ? null : Number(d.latest_cpu_pct),
+      latest_mem_pct: d.latest_mem_pct == null ? null : Number(d.latest_mem_pct),
+      uptime_24h_pct: d.uptime_24h_pct == null ? null : Number(d.uptime_24h_pct),
+      alert_count: d.alert_count == null ? null : Number(d.alert_count),
     })),
     connections: (m.connections || []).map((c) => ({
       ...c,

@@ -32,6 +32,11 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.36.0': [
+    'Map nodes now show a red alert-count badge (top-right corner) when a device has active alerts, so problem devices stand out on the live view and public share; the badge clears when alerts resolve and refreshes on the 30s poll',
+    'Richer node tooltips: hovering a device now shows CPU %, memory %, and 24h uptime alongside name/IP/site/status/latency (pulled live from SNMP + ping history)',
+    'The map payload (GET /api/maps/:id) now includes per-node latest CPU/memory, 24h uptime, and active alert count via lightweight lateral joins',
+  ],
   '1.35.0': [
     'Network maps are now a live NOC weathermap: a connection can be bound to a specific interface on each end device (picked in the connection properties panel) and is then coloured by live link utilization — green under 25%, through yellow/amber, to red at 90%+ — with an animated traffic-flow overlay and a util% / throughput label',
     'Set a link Capacity (Mbps) to drive the utilization %; without it the link still colours by interface up/down status. A bound interface reporting "down" draws the link dashed-red with a DOWN tag',
@@ -2746,9 +2751,26 @@ async function fetchFullMap(mapId) {
            md.z_index, md.node_style,
            d.name AS device_name, d.ip_address, d.site_name,
            d.current_status, d.last_response_ms, d.last_seen_at,
-           d.is_gateway, d.alert_suppressed
+           d.is_gateway, d.alert_suppressed,
+           cpu.value AS latest_cpu_pct, mem.value AS latest_mem_pct,
+           avail.uptime_24h_pct,
+           (SELECT COUNT(*)::int FROM alerts al WHERE al.device_id = d.id AND al.status = 'active') AS alert_count
     FROM map_devices md
     LEFT JOIN monitored_devices d ON d.id = md.device_id
+    LEFT JOIN LATERAL (
+      SELECT value FROM snmp_results
+      WHERE device_id = d.id AND metric_name = 'cpu_pct' ORDER BY ts DESC LIMIT 1
+    ) cpu ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT value FROM snmp_results
+      WHERE device_id = d.id AND metric_name = 'mem_pct' ORDER BY ts DESC LIMIT 1
+    ) mem ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT ROUND((1 - (SUM(CASE WHEN status <> 'up' THEN 1 ELSE 0 END)::numeric
+                    / NULLIF(COUNT(*), 0))) * 100, 1) AS uptime_24h_pct
+      FROM ping_results
+      WHERE device_id = d.id AND ts >= NOW() - INTERVAL '24 hours'
+    ) avail ON TRUE
     WHERE md.map_id = $1
     ORDER BY md.id
   `, [mapId]);
