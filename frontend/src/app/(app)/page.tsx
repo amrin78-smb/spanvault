@@ -101,6 +101,11 @@ type WirelessIntel = {
   critical_util_count: number;
   problem_clients: number;
 };
+type ServiceCheck = {
+  id: number; name: string; type: 'http' | 'tcp' | 'ssl' | 'dns' | string;
+  target: string; group_id: number | null; current_status: string;
+  last_response_ms: number | null; last_detail: string | null; last_checked_at: string | null;
+};
 
 const REFRESH_MS = 30000;
 
@@ -240,6 +245,7 @@ export default function DashboardPage() {
   const leastReliable = useApi<LeastReliable[]>('/api/dashboard/least-reliable', REFRESH_MS);
   const topTalkers = useApi<TopTalker[]>('/api/dashboard/top-talkers', REFRESH_MS);
   const maintenance = useApi<MaintenanceData>('/api/dashboard/maintenance', REFRESH_MS);
+  const services = useApi<ServiceCheck[]>('/api/service-checks', REFRESH_MS);
 
   const updatedAt = useUpdatedAt(summary.data);
   const ago = useSecondsAgo(updatedAt);
@@ -250,7 +256,7 @@ export default function DashboardPage() {
     trend.reload(); sites.reload(); events.reload(); agentOffline.reload();
     intel.reload(); ops.reload(); incidents.reload(); sla.reload();
     capacity.reload(); patterns.reload(); leastReliable.reload(); topTalkers.reload();
-    maintenance.reload();
+    maintenance.reload(); services.reload();
   });
 
   const s = summary.data;
@@ -320,6 +326,7 @@ export default function DashboardPage() {
             />
             <WirelessApsTile />
             <AgentsTile canManageAgents={canManageAgents} agentsOnline={s.agents_online} agentsTotal={s.agents_total} />
+            <ServicesTile checks={services.data || []} />
           </div>
         </>
       ) : null}
@@ -368,6 +375,7 @@ export default function DashboardPage() {
             <RecentEvents api={events} />
           </div>
         </div>
+        <ServiceProblems checks={services.data || []} />
         <WirelessHealthCard />
       </div>
     </div>
@@ -557,6 +565,93 @@ function AgentsTile({ canManageAgents, agentsOnline, agentsTotal }: {
 
 type WirelessSummaryLite = { total_aps: number; online_aps: number; offline_aps: number; total_clients: number };
 type WirelessSsidLite = { total_ssids: number; active_ssids: number };
+
+// ── Services KPI tile (self-hides when no service checks defined) ─
+// Inline strip tile; returns null until at least one service check exists.
+function ServicesTile({ checks }: { checks: ServiceCheck[] }) {
+  if (!checks.length) return null;
+  const total = checks.length;
+  let up = 0, down = 0, warning = 0;
+  for (const c of checks) {
+    const st = (c.current_status || '').toLowerCase();
+    if (st === 'up') up += 1;
+    else if (st === 'down') down += 1;
+    else if (st === 'warning') warning += 1;
+  }
+  const color = down > 0 ? 'var(--red)' : warning > 0 ? 'var(--yellow)' : 'var(--green)';
+  return (
+    <Link
+      href="/services"
+      className={down > 0 ? 'sv-stat pulse' : undefined}
+      style={{
+        display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 2,
+        height: 74, padding: '10px 13px', borderRadius: 'var(--radius-sm)',
+        background: 'var(--bg-card)', border: '1px solid var(--border)',
+        borderLeft: `3px solid ${color}`, textDecoration: 'none', minWidth: 0,
+      }}
+    >
+      <span style={{ fontSize: 21, fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1 }}>
+        {up}/{total}
+      </span>
+      <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', fontWeight: 600 }}>
+        Services
+      </div>
+      <div style={{ fontSize: 9, color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+        {down} down · {warning} warning
+      </div>
+    </Link>
+  );
+}
+
+// ── Service problems list card (self-hides when no problems) ───
+// Down/warning service checks only; down sorts before warning. Hides the whole
+// card when everything is healthy, so it never strands an empty card in a flex row.
+function ServiceProblems({ checks }: { checks: ServiceCheck[] }) {
+  const rows = checks
+    .filter((c) => {
+      const st = (c.current_status || '').toLowerCase();
+      return st === 'down' || st === 'warning';
+    })
+    .sort((a, b) => statusRank(a.current_status.toLowerCase()) - statusRank(b.current_status.toLowerCase()));
+  if (!rows.length) return null;
+  return (
+    <div style={{ ...CARD_STYLE, flex: 1, minWidth: 0, height: 220 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+        <StatusDot status="down" size={11} />
+        <span style={SECTION_HEADING}>Service Problems</span>
+        <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--text-muted)' }}>{rows.length}</span>
+      </div>
+      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', margin: '0 -4px', padding: '0 4px' }}>
+        {rows.map((c) => (
+          <Link
+            key={c.id}
+            href="/services"
+            style={{
+              display: 'flex', alignItems: 'center', gap: 8, height: 36, fontSize: 12.5,
+              borderBottom: '1px solid var(--border-light)', textDecoration: 'none',
+            }}
+          >
+            <StatusDot status={c.current_status} size={10} />
+            <span style={{ fontWeight: 600, color: 'var(--text-primary)', whiteSpace: 'nowrap' }}>{c.name}</span>
+            <span style={{
+              flexShrink: 0, fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.03em',
+              color: 'var(--text-muted)', background: 'var(--border)', padding: '1px 6px', borderRadius: 4,
+            }}>
+              {(c.type || '').toUpperCase()}
+            </span>
+            <span style={{ color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {c.target}
+            </span>
+            <span style={{ flex: 1 }} />
+            <span style={{ color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 180 }}>
+              {c.last_detail || '—'}
+            </span>
+          </Link>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 // ── Anomaly banner (slim, single-line, blue) ───────────────────
 function AnomalyBanner({ data }: { data: Overview | null }) {

@@ -32,6 +32,12 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.30.0': [
+    'Services page is far more compact: multi-type groups now collapse to a single row showing a per-type status chip for each check (HTTP/TCP/SSL/DNS, each with its own up/down/warning dot), so you see every check\'s state at a glance — click to expand the per-type detail rows. Edit and Delete now live only at the group level (the per-type rows are read-only), removing the button clutter',
+    'Added a search box and an All/Down/Warning/Up status filter to the Services page so you can jump straight to problem checks instead of scrolling',
+    'You can now edit a whole service group at once (change shared settings or which types are monitored) — adds/removes the underlying checks to match (PUT /api/service-checks/group/:id)',
+    'Dashboard now surfaces services: a Services KPI tile (up / total, with down/warning counts, links to Services) and a Service Problems card listing any down/warning checks. Both self-hide when there are no services / no problems',
+  ],
   '1.29.0': [
     'Service checks can now monitor multiple types for one target in a single action — tick any of HTTP / TCP / SSL / DNS in the New Service Check dialog and SpanVault creates one check per type, deriving each one\'s target and ports automatically (HTTP keeps the URL, TCP/SSL/DNS use the host, TCP/SSL get a port, SSL gets a cert-expiry warning). No more adding the same server four times',
     'The checks created together are shown as a single collapsible group on the Services page (one row per target with per-type sub-rows and an aggregate status), with a one-click "Delete group" to remove them all',
@@ -5998,6 +6004,100 @@ app.delete('/api/service-checks/group/:groupId', wrap(async (req, res) => {
     try { await pushConfigToAgentId(aid); } catch (e) { console.error('[service-checks] push config failed:', e.message); }
   }
   res.json({ ok: true, deleted: r.rowCount });
+}));
+
+// Edit a multi-type group as a unit, reconciling which types it monitors.
+// Body (bulk shape): { name, target, types:[...], site_id, site_name, agent_id, interval_seconds, params }
+app.put('/api/service-checks/group/:groupId', wrap(async (req, res) => {
+  const groupId = req.params.groupId;
+  const b = req.body || {};
+
+  // Load existing rows in the group.
+  const existing = await sv.query(`SELECT * FROM service_checks WHERE group_id = $1`, [groupId]);
+  if (!existing.rows.length) return res.status(404).json({ error: 'Service group not found' });
+
+  const name   = (b.name || '').trim();
+  const target = (b.target || '').trim();
+  if (!name)   return res.status(400).json({ error: 'name is required' });
+  if (!target) return res.status(400).json({ error: 'target is required' });
+
+  // Dedupe + validate types (non-empty subset of SERVICE_TYPES).
+  const types = Array.isArray(b.types)
+    ? Array.from(new Set(b.types.map((t) => String(t || '').trim().toLowerCase())))
+    : [];
+  if (!types.length || !types.every((t) => SERVICE_TYPES.includes(t))) {
+    return res.status(400).json({ error: 'types must be a non-empty array of http, tcp, ssl, dns' });
+  }
+
+  const siteId   = b.site_id  != null && b.site_id  !== '' ? parseInt(b.site_id, 10) : null;
+  const agentId  = b.agent_id != null && b.agent_id !== '' ? parseInt(b.agent_id, 10) : null;
+  const interval = safeInt(b.interval_seconds, 60);
+  const shared   = b.params && typeof b.params === 'object' ? b.params : {};
+  const typeSet  = new Set(types);
+
+  const client = await sv.connect();
+  try {
+    await client.query('BEGIN');
+
+    // Track which existing-row ids we keep (one per kept type); the rest are removable.
+    const keepIds = new Set();
+    const byType = new Map();
+    for (const row of existing.rows) {
+      if (!byType.has(row.type)) byType.set(row.type, []);
+      byType.get(row.type).push(row);
+    }
+
+    for (const type of types) {
+      const d = deriveServiceCheck(target, type, shared);
+      const matches = byType.get(type) || [];
+      if (matches.length) {
+        // Update the first existing row of this type (keep id, group_id, status, history).
+        const found = matches[0];
+        keepIds.add(found.id);
+        await client.query(
+          `UPDATE service_checks SET
+             name = $2, target = $3, site_id = $4, site_name = $5, agent_id = $6,
+             interval_seconds = $7, params = $8, updated_at = NOW()
+           WHERE id = $1`,
+          [found.id, name, d.target, siteId, b.site_name || null, agentId, interval, JSON.stringify(d.params)]
+        );
+      } else {
+        // No existing row of this type — insert a new one in the same group.
+        await client.query(
+          `INSERT INTO service_checks
+             (name, type, target, site_id, site_name, agent_id, interval_seconds, params, group_id, current_status, active)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'unknown',TRUE)`,
+          [name, type, d.target, siteId, b.site_name || null, agentId, interval, JSON.stringify(d.params), groupId]
+        );
+      }
+    }
+
+    // Delete every existing row not in the new type set, plus duplicate-type extras.
+    const removeIds = existing.rows
+      .filter((row) => !typeSet.has(row.type) || !keepIds.has(row.id))
+      .map((row) => row.id);
+    if (removeIds.length) {
+      await client.query(`DELETE FROM service_checks WHERE id = ANY($1::int[])`, [removeIds]);
+    }
+
+    await client.query('COMMIT');
+  } catch (e) {
+    try { await client.query('ROLLBACK'); } catch (_) {}
+    throw e;
+  } finally {
+    client.release();
+  }
+
+  // Refresh both the old agents (moved/removed) and the new agent so all configs update.
+  const agentIds = Array.from(new Set(
+    existing.rows.map((r) => r.agent_id).concat([agentId]).filter((a) => a != null)
+  ));
+  for (const aid of agentIds) {
+    try { await pushConfigToAgentId(aid); } catch (e) { console.error('[service-checks] push config failed:', e.message); }
+  }
+
+  const result = await sv.query(`SELECT * FROM service_checks WHERE group_id = $1 ORDER BY type`, [groupId]);
+  res.json(result.rows);
 }));
 
 app.get('/api/service-checks/:id/results', wrap(async (req, res) => {
