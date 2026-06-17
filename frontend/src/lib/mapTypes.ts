@@ -11,6 +11,7 @@ export type MapDevice = {
   z_index: number;
   width: number;
   height: number;
+  locked?: boolean;      // editor: can't be moved/resized while locked
   // Joined live device fields (present on GET, absent for unlinked nodes):
   device_name?: string | null;
   ip_address?: string | null;
@@ -61,6 +62,7 @@ export type MapLabel = {
   color: string;
   bold: boolean;
   z_index: number;
+  locked?: boolean;
 };
 
 // Decorative, non-device element: a basic shape (rect/ellipse/line/arrow/text/
@@ -80,6 +82,7 @@ export type MapShape = {
   text_color: string;
   rotation: number;
   z_index: number;
+  locked?: boolean;
 };
 
 export type FullMap = {
@@ -142,6 +145,7 @@ export function normalizeMap(m: FullMap): FullMap {
       z_index: Number(d.z_index ?? 0),
       node_style: d.node_style || 'box',
       icon_type: d.icon_type || 'auto',
+      locked: !!d.locked,
       latest_cpu_pct: d.latest_cpu_pct == null ? null : Number(d.latest_cpu_pct),
       latest_mem_pct: d.latest_mem_pct == null ? null : Number(d.latest_mem_pct),
       uptime_24h_pct: d.uptime_24h_pct == null ? null : Number(d.uptime_24h_pct),
@@ -166,6 +170,7 @@ export function normalizeMap(m: FullMap): FullMap {
       y: Number(l.y),
       font_size: Number(l.font_size),
       z_index: Number(l.z_index ?? 0),
+      locked: !!l.locked,
     })),
     shapes: (m.shapes || []).map((s) => ({
       ...s,
@@ -177,6 +182,7 @@ export function normalizeMap(m: FullMap): FullMap {
       font_size: Number(s.font_size ?? 14),
       rotation: Number(s.rotation ?? 0),
       z_index: Number(s.z_index ?? 0),
+      locked: !!s.locked,
     })),
   };
 }

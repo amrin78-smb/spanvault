@@ -496,6 +496,11 @@ ALTER TABLE map_connections ADD COLUMN IF NOT EXISTS capacity_bps  BIGINT;
 -- Connection routing style: 'straight' (default) or 'elbow' (orthogonal/Manhattan).
 ALTER TABLE map_connections ADD COLUMN IF NOT EXISTS routing TEXT NOT NULL DEFAULT 'straight';
 
+-- Locked elements can't be moved/resized in the editor (e.g. background zones).
+ALTER TABLE map_devices ADD COLUMN IF NOT EXISTS locked BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE map_shapes  ADD COLUMN IF NOT EXISTS locked BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE map_labels  ADD COLUMN IF NOT EXISTS locked BOOLEAN NOT NULL DEFAULT FALSE;
+
 -- Decorative, non-device elements: basic shapes (rect/ellipse/arrow/line/text)
 -- and built-in network glyphs (cloud/internet/router/switch/firewall/server/...).
 -- The glyph artwork lives in client code; here we only store the kind + geometry

@@ -260,9 +260,9 @@ export default function MapEditorPage() {
   function nudgeSelected(dx: number, dy: number) {
     if (selectedIds.size === 0) return;
     const has = (k: string) => selectedIds.has(k);
-    setDevices((prev) => prev.map((d) => (has(`device:${d.id}`) ? { ...d, x: Number(d.x) + dx, y: Number(d.y) + dy } : d)));
-    setShapes((prev) => prev.map((s) => (has(`shape:${s.id}`) ? { ...s, x: Number(s.x) + dx, y: Number(s.y) + dy } : s)));
-    setLabels((prev) => prev.map((l) => (has(`label:${l.id}`) ? { ...l, x: Number(l.x) + dx, y: Number(l.y) + dy } : l)));
+    setDevices((prev) => prev.map((d) => (has(`device:${d.id}`) && !d.locked ? { ...d, x: Number(d.x) + dx, y: Number(d.y) + dy } : d)));
+    setShapes((prev) => prev.map((s) => (has(`shape:${s.id}`) && !s.locked ? { ...s, x: Number(s.x) + dx, y: Number(s.y) + dy } : s)));
+    setLabels((prev) => prev.map((l) => (has(`label:${l.id}`) && !l.locked ? { ...l, x: Number(l.x) + dx, y: Number(l.y) + dy } : l)));
     pushSnapshot();
   }
 
@@ -287,6 +287,10 @@ export default function MapEditorPage() {
     } else if (action === 'duplicate') {
       if (kind === 'shape') { const s = shapes.find((v) => v.id === id); if (s) { clipboard.current = { shapes: [{ ...s }], labels: [] }; pasteClipboard(); } }
       else if (kind === 'label') { const l = labels.find((v) => v.id === id); if (l) { clipboard.current = { shapes: [], labels: [{ ...l }] }; pasteClipboard(); } }
+    } else if (action === 'lock') {
+      if (kind === 'device') { const d = devices.find((v) => v.id === id); if (d) updateDevice(id, { locked: !d.locked }); }
+      else if (kind === 'shape') { const s = shapes.find((v) => v.id === id); if (s) updateShape(id, { locked: !s.locked }); }
+      else if (kind === 'label') { const l = labels.find((v) => v.id === id); if (l) updateLabel(id, { locked: !l.locked }); }
     }
   }
 
@@ -325,9 +329,9 @@ export default function MapEditorPage() {
     return out;
   }
   function moveElemTo(kind: string, id: number, x: number, y: number) {
-    if (kind === 'device') setDevices((prev) => prev.map((d) => (d.id === id ? { ...d, x, y } : d)));
-    else if (kind === 'shape') setShapes((prev) => prev.map((s) => (s.id === id ? { ...s, x, y } : s)));
-    else if (kind === 'label') setLabels((prev) => prev.map((l) => (l.id === id ? { ...l, x, y: y + 12 } : l)));
+    if (kind === 'device') setDevices((prev) => prev.map((d) => (d.id === id && !d.locked ? { ...d, x, y } : d)));
+    else if (kind === 'shape') setShapes((prev) => prev.map((s) => (s.id === id && !s.locked ? { ...s, x, y } : s)));
+    else if (kind === 'label') setLabels((prev) => prev.map((l) => (l.id === id && !l.locked ? { ...l, x, y: y + 12 } : l)));
   }
   function alignSelected(edge: 'left' | 'center' | 'right' | 'top' | 'middle' | 'bottom') {
     const boxes = selectedBoxes();
@@ -433,9 +437,9 @@ export default function MapEditorPage() {
     selectedIds.forEach((k) => {
       const [kind, idStr] = k.split(':');
       const id = Number(idStr);
-      if (kind === 'device') { const d = devices.find((v) => v.id === id); if (d) origins[k] = { x: Number(d.x), y: Number(d.y) }; }
-      else if (kind === 'shape') { const s = shapes.find((v) => v.id === id); if (s) origins[k] = { x: Number(s.x), y: Number(s.y) }; }
-      else if (kind === 'label') { const l = labels.find((v) => v.id === id); if (l) origins[k] = { x: Number(l.x), y: Number(l.y) }; }
+      if (kind === 'device') { const d = devices.find((v) => v.id === id); if (d && !d.locked) origins[k] = { x: Number(d.x), y: Number(d.y) }; }
+      else if (kind === 'shape') { const s = shapes.find((v) => v.id === id); if (s && !s.locked) origins[k] = { x: Number(s.x), y: Number(s.y) }; }
+      else if (kind === 'label') { const l = labels.find((v) => v.id === id); if (l && !l.locked) origins[k] = { x: Number(l.x), y: Number(l.y) }; }
     });
     return { kind: 'multi', id: startId, sx: p.x, sy: p.y, origins, moved: false };
   }
@@ -447,6 +451,7 @@ export default function MapEditorPage() {
     if (tool === 'select') {
       const key = `device:${d.id}`;
       const p = toSvg(e.clientX, e.clientY);
+      if (d.locked) { selectElement('device', d.id, e.shiftKey); return; }
       if (e.shiftKey) { selectElement('device', d.id, true); return; }
       // If clicking an already-multi-selected element, start a group move.
       if (selectedIds.size > 1 && selectedIds.has(key)) {
@@ -552,6 +557,7 @@ export default function MapEditorPage() {
     if (tool !== 'select') return;
     const key = `shape:${s.id}`;
     const p = toSvg(e.clientX, e.clientY);
+    if (s.locked) { selectElement('shape', s.id, e.shiftKey); return; }
     if (e.shiftKey) { selectElement('shape', s.id, true); return; }
     if (selectedIds.size > 1 && selectedIds.has(key)) {
       setSelection({ kind: 'shape', id: s.id });
@@ -587,6 +593,7 @@ export default function MapEditorPage() {
     if (tool === 'select') {
       const key = `label:${l.id}`;
       const p = toSvg(e.clientX, e.clientY);
+      if (l.locked) { selectElement('label', l.id, e.shiftKey); return; }
       if (e.shiftKey) { selectElement('label', l.id, true); return; }
       if (selectedIds.size > 1 && selectedIds.has(key)) {
         setSelection({ kind: 'label', id: l.id });
@@ -748,9 +755,9 @@ export default function MapEditorPage() {
     const hits = new Set<string>();
     const intersects = (b: { x: number; y: number; w: number; h: number }) =>
       b.x <= maxX && b.x + b.w >= minX && b.y <= maxY && b.y + b.h >= minY;
-    for (const d of devices) if (intersects({ x: Number(d.x), y: Number(d.y), w: Number(d.width), h: Number(d.height) })) hits.add(`device:${d.id}`);
-    for (const s of shapes) if (intersects({ x: Number(s.x), y: Number(s.y), w: Number(s.width), h: Number(s.height) })) hits.add(`shape:${s.id}`);
-    for (const l of labels) if (intersects({ x: Number(l.x), y: Number(l.y) - 12, w: Math.max(20, (l.text || '').length * 7), h: 16 })) hits.add(`label:${l.id}`);
+    for (const d of devices) if (!d.locked && intersects({ x: Number(d.x), y: Number(d.y), w: Number(d.width), h: Number(d.height) })) hits.add(`device:${d.id}`);
+    for (const s of shapes) if (!s.locked && intersects({ x: Number(s.x), y: Number(s.y), w: Number(s.width), h: Number(s.height) })) hits.add(`shape:${s.id}`);
+    for (const l of labels) if (!l.locked && intersects({ x: Number(l.x), y: Number(l.y) - 12, w: Math.max(20, (l.text || '').length * 7), h: 16 })) hits.add(`label:${l.id}`);
     setSelectedIds(hits);
     if (hits.size === 1) {
       const [k, idStr] = Array.from(hits)[0].split(':');
@@ -796,7 +803,7 @@ export default function MapEditorPage() {
         devices: devices.map((d) => ({
           id: d.id, device_id: d.device_id, x: d.x, y: d.y,
           label: d.label, icon_type: d.icon_type, node_style: d.node_style,
-          z_index: d.z_index, width: d.width, height: d.height,
+          z_index: d.z_index, width: d.width, height: d.height, locked: d.locked,
         })),
         connections: connections.map((c) => ({
           from_item_id: c.from_item_id, to_item_id: c.to_item_id,
@@ -806,13 +813,13 @@ export default function MapEditorPage() {
         })),
         labels: labels.map((l) => ({
           x: l.x, y: l.y, text: l.text, font_size: l.font_size, color: l.color, bold: l.bold,
-          z_index: l.z_index,
+          z_index: l.z_index, locked: l.locked,
         })),
         shapes: shapes.map((s) => ({
           kind: s.kind, x: s.x, y: s.y, width: s.width, height: s.height,
           fill: s.fill, stroke: s.stroke, stroke_width: s.stroke_width,
           text: s.text, font_size: s.font_size, text_color: s.text_color,
-          rotation: s.rotation, z_index: s.z_index,
+          rotation: s.rotation, z_index: s.z_index, locked: s.locked,
         })),
       });
       // Re-hydrate from saved state so temp ids become real ids.
@@ -986,12 +993,12 @@ export default function MapEditorPage() {
             {/* Resize handles — only for exactly one selected device/shape */}
             {tool === 'select' && selectedIds.size <= 1 && selection?.kind === 'device' && (() => {
               const d = byId.get(selection.id);
-              if (!d) return null;
+              if (!d || d.locked) return null;
               return <ResizeHandles item={d} target="device" onResizeStart={onResizeStart} />;
             })()}
             {tool === 'select' && selectedIds.size <= 1 && selection?.kind === 'shape' && (() => {
               const s = shapes.find((x) => x.id === selection.id);
-              if (!s) return null;
+              if (!s || s.locked) return null;
               return <ResizeHandles item={s} target="shape" onResizeStart={onResizeStart} />;
             })()}
 
@@ -1016,6 +1023,9 @@ export default function MapEditorPage() {
           {ctx && (
             <ContextMenu
               ctx={ctx}
+              locked={ctx.kind === 'device' ? !!devices.find((d) => d.id === ctx.id)?.locked
+                : ctx.kind === 'shape' ? !!shapes.find((s) => s.id === ctx.id)?.locked
+                : ctx.kind === 'label' ? !!labels.find((l) => l.id === ctx.id)?.locked : false}
               onClose={() => setCtx(null)}
               onAction={(action) => { handleCtxAction(action, ctx); setCtx(null); }}
             />
@@ -1387,6 +1397,7 @@ function EditorDeviceNode({
         {device.is_gateway && <text x={x + 2} y={y + 14} fontSize={14}>⭐</text>}
         <text x={cx} y={y + h + 14} textAnchor="middle" fontSize={13} fontWeight={700} fill="#1a2744" style={halo}>{name}</text>
         {ip && <text x={cx} y={y + h + 28} textAnchor="middle" fontSize={10} fill="#475569" style={halo}>{ip}</text>}
+        {device.locked && <text x={x + w - 13} y={y + 13} fontSize={12}>🔒</text>}
       </g>
     );
   }
@@ -1416,6 +1427,7 @@ function EditorDeviceNode({
         </div>
       </foreignObject>
       {device.is_gateway && <text x={x + 5} y={y + 16} fontSize={14}>⭐</text>}
+      {device.locked && <text x={x + w - 13} y={y + 13} fontSize={12}>🔒</text>}
     </g>
   );
 }
@@ -1469,6 +1481,7 @@ function EditorShape({
         <rect x={x - 3} y={y - 3} width={w + 6} height={h + 6} fill="none"
           stroke="#3b82f6" strokeWidth={1.5} strokeDasharray="5 4" pointerEvents="none" />
       )}
+      {shape.locked && <text x={x + w - 13} y={y + 13} fontSize={12} pointerEvents="none">🔒</text>}
     </g>
   );
 }
@@ -1513,9 +1526,9 @@ function EditorLabel({
 
 // ── Right-click context menu (top-level component) ─────────────
 function ContextMenu({
-  ctx, onClose, onAction,
+  ctx, locked, onClose, onAction,
 }: {
-  ctx: NonNullable<Ctx>; onClose: () => void; onAction: (action: string) => void;
+  ctx: NonNullable<Ctx>; locked?: boolean; onClose: () => void; onAction: (action: string) => void;
 }) {
   useEffect(() => {
     const close = () => onClose();
@@ -1528,6 +1541,7 @@ function ContextMenu({
   const items: [string, string][] = [];
   if (ctx.kind === 'shape' || ctx.kind === 'label') items.push(['duplicate', 'Duplicate']);
   if (ctx.kind === 'device' || ctx.kind === 'shape') { items.push(['front', 'Bring to front']); items.push(['back', 'Send to back']); }
+  if (ctx.kind !== 'connection') items.push(['lock', locked ? 'Unlock' : 'Lock']);
   items.push(['delete', deleteText]);
   return (
     <div className="sv-ctxmenu" style={{ left: ctx.x, top: ctx.y }} onClick={(e) => e.stopPropagation()}>
