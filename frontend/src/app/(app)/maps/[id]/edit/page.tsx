@@ -1068,11 +1068,11 @@ function EditorToolbar({
 
       <div className="sv-editor-tools">
         {(['select', 'line', 'label'] as Tool[]).map((t) => (
-          <button key={t} className={`sv-btn ghost sm ${tool === t ? 'active' : ''}`} onClick={() => setTool(t)}>
+          <button key={t} className={`sv-btn ghost sm tint-slate ${tool === t ? 'active' : ''}`} onClick={() => setTool(t)}>
             {t === 'select' ? 'Select' : t === 'line' ? 'Line' : 'Label'}
           </button>
         ))}
-        <select className="sv-select sm" value="" title="Add a shape or icon"
+        <select className="sv-select sm tint-violet" value="" title="Add a shape or icon"
           onChange={(e) => { if (e.target.value) { onAddShape(e.target.value); e.target.value = ''; } }}>
           <option value="">+ Shape / Icon…</option>
           <optgroup label="Shapes">
@@ -1082,16 +1082,16 @@ function EditorToolbar({
             {SHAPE_GLYPHS.map((g) => <option key={g.key} value={g.key}>{g.label}</option>)}
           </optgroup>
         </select>
-        <button className={`sv-btn ghost sm ${snapEnabled ? 'active' : ''}`} onClick={onToggleSnap}
+        <button className={`sv-btn ghost sm tint-amber ${snapEnabled ? 'on' : ''}`} onClick={onToggleSnap}
           title="Snap to grid">Snap</button>
-        <button className="sv-btn ghost sm" onClick={onUndo} disabled={!canUndo} title="Undo (Ctrl+Z)">↶ Undo</button>
-        <button className="sv-btn ghost sm" onClick={onRedo} disabled={!canRedo} title="Redo (Ctrl+Shift+Z)">↷ Redo</button>
+        <button className="sv-btn ghost sm tint-blue" onClick={onUndo} disabled={!canUndo} title="Undo (Ctrl+Z)">↶ Undo</button>
+        <button className="sv-btn ghost sm tint-blue" onClick={onRedo} disabled={!canRedo} title="Redo (Ctrl+Shift+Z)">↷ Redo</button>
       </div>
 
       <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/gif" style={{ display: 'none' }}
         onChange={(e) => { const f = e.target.files?.[0]; if (f) onUploadBg(f); e.target.value = ''; }} />
-      <button className="sv-btn ghost sm" onClick={() => fileRef.current?.click()}>Upload BG</button>
-      {hasBg && <button className="sv-btn ghost sm" onClick={onRemoveBg} title="Remove background">🗑 BG</button>}
+      <button className="sv-btn ghost sm tint-teal" onClick={() => fileRef.current?.click()}>Upload BG</button>
+      {hasBg && <button className="sv-btn ghost sm tint-red" onClick={onRemoveBg} title="Remove background">🗑 BG</button>}
 
       <select className="sv-select sm" value={presetKey}
         onChange={(e) => { const p = CANVAS_PRESETS.find((x) => x.key === e.target.value); if (p) onCanvasSize(p.w, p.h); }}>
@@ -1102,8 +1102,8 @@ function EditorToolbar({
       <div style={{ flex: 1 }} />
 
       {shareUrl && <span className="sv-editor-shareurl" title={shareUrl}>{shareUrl}</span>}
-      <button className="sv-btn ghost sm" onClick={onShare}>{isPublic ? '🔓 Public' : '🔒 Share'}</button>
-      <button className="sv-btn ghost sm" onClick={onView}>View Map ↗</button>
+      <button className={`sv-btn ghost sm ${isPublic ? 'tint-green on' : 'tint-blue'}`} onClick={onShare}>{isPublic ? '🔓 Public' : '🔒 Share'}</button>
+      <button className="sv-btn ghost sm tint-violet" onClick={onView}>View Map ↗</button>
       <button className="sv-btn" onClick={onSave} disabled={saving}>
         {saving ? 'Saving…' : savedAt ? '✓ Saved' : 'Save'}
       </button>
@@ -1112,37 +1112,90 @@ function EditorToolbar({
 }
 
 // ── Device palette (top-level component) ───────────────────────
+// Devices are grouped into collapsible per-site trees so the list stays
+// manageable as the inventory grows. While searching, every matching group is
+// forced open so results are never hidden behind a collapsed header.
 function DevicePalette({
   devices, loading, search, setSearch, usedDeviceIds,
 }: {
   devices: PaletteDevice[]; loading: boolean;
   search: string; setSearch: (v: string) => void; usedDeviceIds: Set<number>;
 }) {
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+
+  // Group the (already search-filtered) devices by site name, alphabetically;
+  // devices with no site fall into an "Unassigned" group sorted last.
+  const groupMap = new Map<string, PaletteDevice[]>();
+  for (const d of devices) {
+    const key = d.site_name || 'Unassigned';
+    const arr = groupMap.get(key);
+    if (arr) arr.push(d); else groupMap.set(key, [d]);
+  }
+  const groups = Array.from(groupMap.entries())
+    .map(([site, items]) => ({ site, items: [...items].sort((a, b) => a.name.localeCompare(b.name)) }))
+    .sort((a, b) => {
+      if (a.site === 'Unassigned') return 1;
+      if (b.site === 'Unassigned') return -1;
+      return a.site.localeCompare(b.site);
+    });
+
+  const searching = search.trim().length > 0;
+
+  function toggle(site: string) {
+    setCollapsed((prev) => {
+      const n = new Set(prev);
+      if (n.has(site)) n.delete(site); else n.add(site);
+      return n;
+    });
+  }
+
   return (
     <div className="sv-editor-palette">
       <input className="sv-input sm" placeholder="Search devices…" value={search} onChange={(e) => setSearch(e.target.value)} />
       <div className="list">
         {loading ? (
           <Loading />
-        ) : devices.length === 0 ? (
+        ) : groups.length === 0 ? (
           <p className="sv-muted" style={{ fontSize: 13, padding: '8px 4px' }}>No devices.</p>
         ) : (
-          devices.map((d) => {
-            const used = usedDeviceIds.has(d.id);
+          groups.map((g) => {
+            const open = searching || !collapsed.has(g.site);
+            const usedCount = g.items.filter((d) => usedDeviceIds.has(d.id)).length;
             return (
-              <div
-                key={d.id}
-                className={`pal-item ${used ? 'used' : ''}`}
-                draggable={!used}
-                onDragStart={(e) => {
-                  e.dataTransfer.setData('application/sv-device', JSON.stringify(d));
-                  e.dataTransfer.effectAllowed = 'copy';
-                }}
-                title={used ? 'Already on this map' : 'Drag onto the canvas to add'}
-              >
-                <StatusDot status={d.current_status} size={9} />
-                <span className="nm">{d.name}</span>
-                <span className="ip">{d.ip_address}</span>
+              <div className="pal-group" key={g.site}>
+                <button
+                  type="button"
+                  className={`pal-group-head ${open ? 'open' : ''}`}
+                  onClick={() => toggle(g.site)}
+                  title={open ? 'Collapse' : 'Expand'}
+                >
+                  <span className="chev" aria-hidden>▸</span>
+                  <span className="site">{g.site}</span>
+                  <span className="count">{usedCount > 0 ? `${usedCount}/${g.items.length}` : g.items.length}</span>
+                </button>
+                {open && (
+                  <div className="pal-group-body">
+                    {g.items.map((d) => {
+                      const used = usedDeviceIds.has(d.id);
+                      return (
+                        <div
+                          key={d.id}
+                          className={`pal-item ${used ? 'used' : ''}`}
+                          draggable={!used}
+                          onDragStart={(e) => {
+                            e.dataTransfer.setData('application/sv-device', JSON.stringify(d));
+                            e.dataTransfer.effectAllowed = 'copy';
+                          }}
+                          title={used ? 'Already on this map' : 'Drag onto the canvas to add'}
+                        >
+                          <StatusDot status={d.current_status} size={9} />
+                          <span className="nm">{d.name}</span>
+                          <span className="ip">{d.ip_address}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             );
           })

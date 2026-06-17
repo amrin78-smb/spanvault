@@ -737,6 +737,38 @@ a { color: inherit; text-decoration: none; }
 .sv-btn.ghost:hover { background: var(--bg-primary); }
 .sv-btn.sm { padding: 5px 11px; font-size: 12.5px; }
 
+/* Colored ghost-button tints (map editor toolbar — enterprise look). Each tint
+   shows colored text + a soft tinted fill at rest, and fills solid on hover. */
+.sv-btn.tint-blue   { color: #2563eb; border-color: rgba(37,99,235,0.35);  background: rgba(37,99,235,0.08); }
+.sv-btn.tint-green  { color: #16a34a; border-color: rgba(22,163,74,0.35);  background: rgba(22,163,74,0.10); }
+.sv-btn.tint-amber  { color: #b45309; border-color: rgba(217,119,6,0.35);  background: rgba(217,119,6,0.10); }
+.sv-btn.tint-violet { color: #7c3aed; border-color: rgba(124,58,237,0.35); background: rgba(124,58,237,0.09); }
+.sv-btn.tint-teal   { color: #0d9488; border-color: rgba(13,148,136,0.35); background: rgba(13,148,136,0.10); }
+.sv-btn.tint-red    { color: #dc2626; border-color: rgba(220,38,38,0.35);  background: rgba(220,38,38,0.08); }
+.sv-btn.tint-slate  { color: #475569; border-color: rgba(71,85,105,0.30);  background: rgba(71,85,105,0.06); }
+.sv-btn.tint-blue:hover:not(:disabled)   { background: #2563eb; border-color: #2563eb; color: #fff; }
+.sv-btn.tint-green:hover:not(:disabled)  { background: #16a34a; border-color: #16a34a; color: #fff; }
+.sv-btn.tint-amber:hover:not(:disabled)  { background: #d97706; border-color: #d97706; color: #fff; }
+.sv-btn.tint-violet:hover:not(:disabled) { background: #7c3aed; border-color: #7c3aed; color: #fff; }
+.sv-btn.tint-teal:hover:not(:disabled)   { background: #0d9488; border-color: #0d9488; color: #fff; }
+.sv-btn.tint-red:hover:not(:disabled)    { background: #dc2626; border-color: #dc2626; color: #fff; }
+.sv-btn.tint-slate:hover:not(:disabled)  { background: #475569; border-color: #475569; color: #fff; }
+/* ".on" = an active toggle (Snap on, map Public) shown filled. */
+.sv-btn.tint-amber.on { background: #d97706; border-color: #d97706; color: #fff; }
+.sv-btn.tint-green.on { background: #16a34a; border-color: #16a34a; color: #fff; }
+/* Tinted <select> keeps colored text/border (no hover-fill). */
+.sv-select.tint-violet { color: #7c3aed; border-color: rgba(124,58,237,0.35); }
+[data-theme="dark"] .sv-btn.tint-blue   { color: #93c5fd; }
+[data-theme="dark"] .sv-btn.tint-green  { color: #86efac; }
+[data-theme="dark"] .sv-btn.tint-amber  { color: #fcd34d; }
+[data-theme="dark"] .sv-btn.tint-violet { color: #c4b5fd; }
+[data-theme="dark"] .sv-btn.tint-teal   { color: #5eead4; }
+[data-theme="dark"] .sv-btn.tint-red    { color: #fca5a5; }
+[data-theme="dark"] .sv-btn.tint-slate  { color: #cbd5e1; }
+[data-theme="dark"] .sv-select.tint-violet { color: #c4b5fd; }
+[data-theme="dark"] .sv-btn.tint-amber.on,
+[data-theme="dark"] .sv-btn.tint-green.on { color: #fff; }
+
 .sv-input, .sv-select {
   padding: 9px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm);
   font-size: 13.5px; background: var(--bg-card); color: var(--text-primary); font-family: inherit;
@@ -1498,7 +1530,28 @@ body.sv-noc .sv-content:has(.sv-tabs.sticky) > :first-child { padding-top: 28px;
   background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px;
   display: flex; flex-direction: column; gap: 8px; max-height: 78vh;
 }
-.sv-editor-palette .list { overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+.sv-editor-palette .list { overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
+
+/* Collapsible per-site device tree in the editor palette. */
+.pal-group { display: flex; flex-direction: column; }
+.pal-group-head {
+  display: flex; align-items: center; gap: 7px; width: 100%;
+  padding: 6px 8px; border: 1px solid var(--border); background: var(--bg-primary);
+  border-left: 3px solid var(--primary); border-radius: 7px;
+  cursor: pointer; font-family: inherit; color: var(--text-primary); text-align: left;
+}
+.pal-group-head:hover { background: var(--border-light); }
+.pal-group-head .chev { font-size: 10px; color: var(--text-muted); transition: transform 0.15s; flex-shrink: 0; }
+.pal-group-head.open .chev { transform: rotate(90deg); }
+.pal-group-head .site {
+  font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.pal-group-head .count {
+  margin-left: auto; flex-shrink: 0; font-size: 11px; font-weight: 600; color: var(--text-muted);
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px; padding: 1px 7px;
+}
+.pal-group-body { display: flex; flex-direction: column; gap: 2px; padding: 4px 0 2px 8px; }
 .pal-item {
   display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 7px;
   cursor: grab; font-size: 13px; border: 1px solid transparent;

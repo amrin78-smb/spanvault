@@ -32,6 +32,11 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.34.0': [
+    'Map editor device palette is now organised as a collapsible tree grouped by site — each site is a header showing the device count (and how many are already placed, e.g. 2/5); click to expand/collapse so the list stays tidy as the inventory grows',
+    'Searching the palette auto-expands every matching site group so results are never hidden behind a collapsed header; devices with no site fall under an "Unassigned" group listed last',
+    'Refreshed the map editor toolbar with colored buttons for a cleaner, enterprise look: Undo/Redo and Share in blue, Snap in amber (filled when on), Upload BG in teal, Remove BG in red, Shape/Icon and View Map in violet, and Public maps shown in green',
+  ],
   '1.33.0': [
     'Map editor power tools: multi-select (shift-click or drag a marquee), then move, delete, align (left/center/right/top/middle/bottom) or distribute the whole selection at once',
     'Undo / redo (Ctrl+Z / Ctrl+Shift+Z, or the toolbar buttons) across all edits, plus copy/paste (Ctrl+C / Ctrl+V) of shapes and text',
