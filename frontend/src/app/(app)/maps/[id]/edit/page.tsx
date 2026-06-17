@@ -7,7 +7,7 @@ import { StatusDot } from '@/components/StatusDot';
 import { Loading, ErrorBox } from '@/components/ui';
 import {
   type FullMap, type MapDevice, type MapConnection, type MapLabel, type MapShape, type MapSummary,
-  statusFill, deviceCenter, normalizeMap, connLive, fmtBps, utilColor, elbowPoints,
+  statusFill, deviceCenter, normalizeMap, connLive, fmtBps, utilColor, elbowPoints, nodeAnchorBox, edgePoint,
 } from '@/lib/mapTypes';
 import {
   MapGlyph, GlyphSwatch, DEVICE_GLYPHS, deviceGlyphFor, BASIC_SHAPES, SHAPE_GLYPHS,
@@ -604,6 +604,9 @@ export default function MapEditorPage() {
   function onShapeMouseDown(e: React.MouseEvent, s: MapShape) {
     e.stopPropagation();
     setCtx(null);
+    // Decorative shapes are never connection endpoints — clicking one in line
+    // mode cancels the pending connection (only monitored devices can connect).
+    if (tool === 'line') { setLineStart(null); return; }
     if (tool !== 'select') return;
     const key = `shape:${s.id}`;
     const p = toSvg(e.clientX, e.clientY);
@@ -1372,8 +1375,11 @@ function EditorConnection({
   selected: boolean; onSelect: () => void; onContext: (x: number, y: number) => void;
 }) {
   if (!from || !to) return null;
-  const a = deviceCenter(from);
-  const b = deviceCenter(to);
+  // Anchor to node edges (glyph box for icon nodes) so lines touch the perimeter.
+  const ca = deviceCenter(from);
+  const cb = deviceCenter(to);
+  const a = edgePoint(nodeAnchorBox(from), cb.cx, cb.cy);
+  const b = edgePoint(nodeAnchorBox(to), ca.cx, ca.cy);
   const elbow = conn.routing === 'elbow';
   const geo = elbow ? elbowPoints(a, b) : null;
   const mx = geo ? geo.mx : (a.cx + b.cx) / 2;

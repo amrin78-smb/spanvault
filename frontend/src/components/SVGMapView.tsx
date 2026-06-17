@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { apiGet } from '@/lib/api';
 import {
   type FullMap, type MapDevice, type MapConnection, type MapLabel, type MapShape,
-  statusFill, deviceCenter, connLive, utilColor, fmtBps, elbowPoints,
+  statusFill, deviceCenter, connLive, utilColor, fmtBps, elbowPoints, nodeAnchorBox, edgePoint,
 } from '@/lib/mapTypes';
 import { MapGlyph, deviceGlyphFor, isGlyphKind } from '@/lib/mapIcons';
 
@@ -240,8 +240,12 @@ export function ConnectionLine({
   to?: MapDevice;
 }) {
   if (!from || !to) return null;
-  const a = deviceCenter(from);
-  const b = deviceCenter(to);
+  // Anchor each end to the node's edge (glyph box for icon nodes) so the line
+  // touches the perimeter instead of running into the middle of the icon.
+  const ca = deviceCenter(from);
+  const cb = deviceCenter(to);
+  const a = edgePoint(nodeAnchorBox(from), cb.cx, cb.cy);
+  const b = edgePoint(nodeAnchorBox(to), ca.cx, ca.cy);
   const geo = conn.routing === 'elbow' ? elbowPoints(a, b) : null;
 
   // A connection bound to interface(s) becomes a live weathermap link: colour by

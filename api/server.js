@@ -32,6 +32,10 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.42.1': [
+    'Connector lines now attach to the edge of a node instead of its centre — for icon-style devices the line stops at the icon\'s glyph box rather than running into the middle of the icon, so connections look clean (applies to straight and elbow routing, editor and live view)',
+    'Clarified that connections only link monitored devices: clicking a decorative shape (cloud, building, etc.) while drawing a line now cancels the pending connection (shapes were never valid endpoints; this removes the ambiguity)',
+  ],
   '1.42.0': [
     'Drill-down sub-maps (Phase 4): a map node can now open a child map (campus → building → rack). Set a node\'s "Drill-down to map" target in the editor; on the live view that node shows a ⊞ badge and clicking it opens the linked map instead of the device page. Cleared automatically if the target map is deleted',
     'NOC Wallboard (Phase 3): a new full-screen rotating display at /maps/wall (linked from the Maps page) cycles through all maps with live status, with play/pause, prev/next, an interval selector (10/15/30/60s) and a fullscreen toggle — ideal for an operations wall display',

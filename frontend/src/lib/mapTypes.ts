@@ -200,6 +200,34 @@ export function deviceCenter(d: MapDevice): { cx: number; cy: number } {
   return { cx: Number(d.x) + Number(d.width) / 2, cy: Number(d.y) + Number(d.height) / 2 };
 }
 
+// The box a connector should attach to. For box-style nodes that's the whole
+// node rect; for icon-style nodes it's the (square, centred) glyph box, so a
+// connector touches the icon's edge rather than passing into its middle.
+export function nodeAnchorBox(d: MapDevice): { x: number; y: number; w: number; h: number } {
+  const x = Number(d.x), y = Number(d.y), w = Number(d.width), h = Number(d.height);
+  if (d.node_style === 'icon') {
+    const gs = Math.max(24, Math.min(w, h));
+    return { x: x + (w - gs) / 2, y: y + Math.max(0, (h - gs) / 2), w: gs, h: gs };
+  }
+  return { x, y, w, h };
+}
+
+// Point where the ray from a box's centre toward (tx,ty) exits the box — i.e.
+// the perimeter attach point for a connector heading toward the other node.
+export function edgePoint(
+  box: { x: number; y: number; w: number; h: number }, tx: number, ty: number,
+): { cx: number; cy: number } {
+  const cx = box.x + box.w / 2;
+  const cy = box.y + box.h / 2;
+  const dx = tx - cx;
+  const dy = ty - cy;
+  if (dx === 0 && dy === 0) return { cx, cy };
+  const sx = dx !== 0 ? (box.w / 2) / Math.abs(dx) : Infinity;
+  const sy = dy !== 0 ? (box.h / 2) / Math.abs(dy) : Infinity;
+  const t = Math.min(sx, sy); // first edge the ray crosses
+  return { cx: cx + dx * t, cy: cy + dy * t };
+}
+
 // Orthogonal (Manhattan) connector between two centres: a 3-segment path that
 // bends along the dominant axis. Returns the SVG path `d`, a label anchor, and
 // the unit vector of the final segment (for orienting an arrowhead).
