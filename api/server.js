@@ -32,6 +32,11 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.27.9': [
+    'Agents now collect CPU and memory from HP/Aruba ProCurve switches (e.g. 5406Rzl2), which publish those in their own MIB rather than the standard HOST-RESOURCES MIB — previously such switches returned only uptime over SNMP. The agent reads sysObjectID to identify the vendor and falls back to the vendor CPU/memory OIDs when the standard ones are empty',
+    'Agent SNMP log line now shows the metrics collected (cpu=…% mem=…%) and the detected vendor, making it obvious when a device is only returning uptime',
+    'Bumped bundled agent to v1.3.2 (auto-applied to connected agents via self-update)',
+  ],
   '1.27.8': [
     'Fixed agent-monitored devices collecting only ICMP and never SNMP (e.g. CPU on a discovered switch) — when an agent discovered a device with a non-default SNMP community, adoption silently replaced it with "public", so every SNMP poll failed. The agent now reports the working community/version it found during discovery, that is stored on the discovered device, and adoption keeps it instead of guessing public/2c',
     'Editing a device\'s SNMP settings now pushes the new config to its agent immediately (was only applied on the agent\'s next reconnect), so correcting the community on an already-adopted device takes effect at once',

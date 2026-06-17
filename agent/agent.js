@@ -25,7 +25,7 @@ const crypto = require('crypto');
 
 const CONFIG_PATH = path.join(__dirname, 'config.json');
 const BUFFER_PATH = path.join(__dirname, 'buffer.json');
-const VERSION = '1.3.1';
+const VERSION = '1.3.2';
 const MAX_BUFFER = 500;
 
 // ── Config ────────────────────────────────────────────────────
@@ -487,11 +487,44 @@ async function doPing(device) {
 
 // ── SNMP ──────────────────────────────────────────────────────
 const SNMP_OID = {
+  sys_object_id: '1.3.6.1.2.1.1.2.0',
   cpu_pct:   '1.3.6.1.2.1.25.3.3.1.2.1',
   mem_used:  '1.3.6.1.2.1.25.2.3.1.6.1',
   mem_total: '1.3.6.1.2.1.25.2.3.1.5.1',
   uptime:    '1.3.6.1.2.1.1.3.0',
 };
+
+// Vendor CPU/memory OIDs, keyed by SNMP enterprise number (the arc after
+// 1.3.6.1.4.1 in sysObjectID). Used only when the standard HOST-RESOURCES MIB
+// returns nothing — common on enterprise switches that publish CPU/mem in their
+// own MIB. cpu must read 0-100. memTotal/memFree are bytes; % = (total-free)/total.
+const VENDOR_SNMP = {
+  // HP / Aruba ProCurve / ArubaOS-Switch (STATISTICS-MIB + hpLocalMem)
+  11: {
+    name: 'HP/Aruba ProCurve',
+    cpu:      '1.3.6.1.4.1.11.2.14.11.5.1.9.6.1.0',       // hpSwitchCpuStat (%)
+    memTotal: '1.3.6.1.4.1.11.2.14.11.5.1.1.2.1.1.1.5.1', // hpLocalMemTotalBytes
+    memFree:  '1.3.6.1.4.1.11.2.14.11.5.1.1.2.1.1.1.6.1', // hpLocalMemFreeBytes
+  },
+};
+
+// sysObjectID comes back as an OID string (1.3.6.1.4.1.<enterprise>...). Pull the
+// enterprise arc so we can pick a vendor OID set.
+function enterpriseOf(sysObjId) {
+  const m = String(sysObjId || '').match(/^1\.3\.6\.1\.4\.1\.(\d+)/);
+  return m ? parseInt(m[1], 10) : null;
+}
+
+// Raw (non-numeric) SNMP get — sysObjectID is an OID, not a number, so it can't
+// go through snmpGet (which coerces to Number). Resolves the raw value or null.
+function snmpGetRaw(session, oid) {
+  return new Promise((resolve) => {
+    session.get([oid], (err, vbs) => {
+      if (err || !vbs || !vbs[0] || snmp.isVarbindError(vbs[0])) return resolve(null);
+      resolve(vbs[0].value);
+    });
+  });
+}
 
 // Resolves { value, err }. err is a short reason string when the value could not
 // be read (timeout, noSuchObject/noSuchInstance, non-numeric) so doSnmp can log
@@ -563,6 +596,11 @@ async function doSnmp(device) {
 
   const label = `${device.name || device.id} (${device.ip_address})`;
   try {
+    // Identify the vendor up front so CPU/mem can fall back to its MIB if the
+    // standard HOST-RESOURCES OIDs are empty (e.g. HP/Aruba ProCurve switches).
+    const sysObjId = await snmpGetRaw(session, SNMP_OID.sys_object_id);
+    const vendor = VENDOR_SNMP[enterpriseOf(sysObjId)] || null;
+
     const [cpuR, memUsedR, memTotalR, uptimeR] = await Promise.all([
       snmpGet(session, SNMP_OID.cpu_pct),
       snmpGet(session, SNMP_OID.mem_used),
@@ -570,20 +608,40 @@ async function doSnmp(device) {
       snmpGet(session, SNMP_OID.uptime),
     ]);
 
-    // CPU: prefer hrProcessorLoad.1; if absent, walk the processor table and average.
+    // CPU: standard hrProcessorLoad.1 → walk the processor table → vendor MIB.
     let cpu = cpuR.value;
+    let cpuOid = SNMP_OID.cpu_pct;
     if (cpu === null) cpu = await snmpWalkAvg(session, '1.3.6.1.2.1.25.3.3.1.2');
+    if (cpu === null && vendor && vendor.cpu) {
+      const r = await snmpGet(session, vendor.cpu);
+      if (r.value !== null) { cpu = r.value; cpuOid = vendor.cpu; }
+    }
+
+    // Memory %: standard hrStorage → vendor total/free bytes.
+    let memPct = null;
+    let memOid = SNMP_OID.mem_used;
+    if (memUsedR.value !== null && memTotalR.value !== null && memTotalR.value > 0) {
+      memPct = Math.round((memUsedR.value / memTotalR.value) * 1000) / 10;
+    } else if (vendor && vendor.memTotal && vendor.memFree) {
+      const [tot, free] = await Promise.all([
+        snmpGet(session, vendor.memTotal),
+        snmpGet(session, vendor.memFree),
+      ]);
+      if (tot.value !== null && free.value !== null && tot.value > 0) {
+        memPct = Math.round(((tot.value - free.value) / tot.value) * 1000) / 10;
+        memOid = vendor.memTotal;
+      }
+    }
 
     let sent = 0;
     if (cpu !== null) {
       send({ type: 'snmp_result', device_id: device.id, ts,
-             oid: SNMP_OID.cpu_pct, metric_name: 'cpu_pct', value: cpu });
+             oid: cpuOid, metric_name: 'cpu_pct', value: cpu });
       sent++;
     }
-    if (memUsedR.value !== null && memTotalR.value !== null && memTotalR.value > 0) {
+    if (memPct !== null) {
       send({ type: 'snmp_result', device_id: device.id, ts,
-             oid: SNMP_OID.mem_used, metric_name: 'mem_pct',
-             value: Math.round((memUsedR.value / memTotalR.value) * 1000) / 10 });
+             oid: memOid, metric_name: 'mem_pct', value: memPct });
       sent++;
     }
     if (uptimeR.value !== null) {
@@ -600,7 +658,9 @@ async function doSnmp(device) {
         `community="${device.snmp_version === '3' ? 'v3' : (device.snmp_community || 'public')}") — ${reason}`);
     } else {
       console.log(`[Agent] SNMP ${label}: ${sent} metric(s)` +
-        (cpu !== null ? ` cpu=${cpu}%` : ''));
+        (cpu !== null ? ` cpu=${cpu}%` : '') +
+        (memPct !== null ? ` mem=${memPct}%` : '') +
+        (vendor ? ` [${vendor.name}]` : ''));
     }
   } catch (e) {
     console.error(`[Agent] SNMP error for ${label}:`, e.message);
