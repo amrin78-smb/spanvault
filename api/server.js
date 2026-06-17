@@ -32,6 +32,11 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.41.0': [
+    'Map elements can now be grouped: select 2+ devices/shapes/labels and press Ctrl+G (or use the Group button) to bind them — clicking any member then selects and moves the whole group as one. Ctrl+Shift+G (or Ungroup) releases them',
+    'Grouping is saved with the layout (a group_id tag on map devices/shapes/labels) and survives reload; locked members inside a group still stay put while the rest of the group moves',
+    'This completes the Tier-2 editor pass (elbow routing, lock, align toolbar, grouping)',
+  ],
   '1.40.0': [
     'Map elements can now be locked: right-click a device, shape or label and choose Lock to pin it in place (a 🔒 marker shows on locked items). Locked elements can\'t be dragged, resized, marquee-selected, nudged or aligned — ideal for background zones/images you want to stay put while you arrange devices on top. Right-click again to Unlock',
     'Lock state is saved with the map layout (new locked flag on map devices/shapes/labels)',
@@ -2766,7 +2771,7 @@ async function fetchFullMap(mapId) {
   if (!map) return null;
   const devices = await sv.query(`
     SELECT md.id, md.device_id, md.x, md.y, md.label, md.icon_type, md.width, md.height,
-           md.z_index, md.node_style, md.locked,
+           md.z_index, md.node_style, md.locked, md.group_id,
            d.name AS device_name, d.ip_address, d.site_name,
            d.current_status, d.last_response_ms, d.last_seen_at,
            d.is_gateway, d.alert_suppressed,
@@ -2938,11 +2943,12 @@ app.put('/api/maps/:id/layout', wrap(async (req, res) => {
     const idMap = new Map(); // client device id → new db id
     for (const d of devices) {
       const r = await client.query(`
-        INSERT INTO map_devices (map_id, device_id, x, y, label, icon_type, width, height, z_index, node_style, locked)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id
+        INSERT INTO map_devices (map_id, device_id, x, y, label, icon_type, width, height, z_index, node_style, locked, group_id)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id
       `, [id, d.device_id || null, Number(d.x) || 0, Number(d.y) || 0,
           d.label || null, d.icon_type || 'circle', safeInt(d.width, 120), safeInt(d.height, 60),
-          safeInt(d.z_index, 0), d.node_style === 'icon' ? 'icon' : 'box', !!d.locked]);
+          safeInt(d.z_index, 0), d.node_style === 'icon' ? 'icon' : 'box', !!d.locked,
+          Number.isFinite(Number(d.group_id)) ? Number(d.group_id) : null]);
       if (d.id !== undefined && d.id !== null) idMap.set(String(d.id), r.rows[0].id);
     }
 
@@ -2963,10 +2969,11 @@ app.put('/api/maps/:id/layout', wrap(async (req, res) => {
     for (const l of labels) {
       if (!l || l.text === undefined || l.text === null) continue;
       await client.query(`
-        INSERT INTO map_labels (map_id, x, y, text, font_size, color, bold, z_index, locked)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+        INSERT INTO map_labels (map_id, x, y, text, font_size, color, bold, z_index, locked, group_id)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
       `, [id, Number(l.x) || 0, Number(l.y) || 0, String(l.text),
-          safeInt(l.font_size, 14), l.color || '#1a2744', !!l.bold, safeInt(l.z_index, 0), !!l.locked]);
+          safeInt(l.font_size, 14), l.color || '#1a2744', !!l.bold, safeInt(l.z_index, 0), !!l.locked,
+          Number.isFinite(Number(l.group_id)) ? Number(l.group_id) : null]);
     }
 
     // Decorative shapes — replace-all, but only when the client sent them.
@@ -2976,13 +2983,14 @@ app.put('/api/maps/:id/layout', wrap(async (req, res) => {
         if (!s || !s.kind) continue;
         await client.query(`
           INSERT INTO map_shapes
-            (map_id, kind, x, y, width, height, fill, stroke, stroke_width, text, font_size, text_color, rotation, z_index, locked)
-          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+            (map_id, kind, x, y, width, height, fill, stroke, stroke_width, text, font_size, text_color, rotation, z_index, locked, group_id)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
         `, [id, String(s.kind), Number(s.x) || 0, Number(s.y) || 0,
             safeInt(s.width, 120), safeInt(s.height, 80),
             s.fill || null, s.stroke || null, safeInt(s.stroke_width, 2),
             s.text != null ? String(s.text) : null, safeInt(s.font_size, 14),
-            s.text_color || '#1a2744', Number(s.rotation) || 0, safeInt(s.z_index, 0), !!s.locked]);
+            s.text_color || '#1a2744', Number(s.rotation) || 0, safeInt(s.z_index, 0), !!s.locked,
+            Number.isFinite(Number(s.group_id)) ? Number(s.group_id) : null]);
       }
     }
 

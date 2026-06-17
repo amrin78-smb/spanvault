@@ -12,6 +12,7 @@ export type MapDevice = {
   width: number;
   height: number;
   locked?: boolean;      // editor: can't be moved/resized while locked
+  group_id?: number | null; // editor: elements sharing a group_id move/select together
   // Joined live device fields (present on GET, absent for unlinked nodes):
   device_name?: string | null;
   ip_address?: string | null;
@@ -63,6 +64,7 @@ export type MapLabel = {
   bold: boolean;
   z_index: number;
   locked?: boolean;
+  group_id?: number | null;
 };
 
 // Decorative, non-device element: a basic shape (rect/ellipse/line/arrow/text/
@@ -83,6 +85,7 @@ export type MapShape = {
   rotation: number;
   z_index: number;
   locked?: boolean;
+  group_id?: number | null;
 };
 
 export type FullMap = {
@@ -146,6 +149,7 @@ export function normalizeMap(m: FullMap): FullMap {
       node_style: d.node_style || 'box',
       icon_type: d.icon_type || 'auto',
       locked: !!d.locked,
+      group_id: d.group_id == null ? null : Number(d.group_id),
       latest_cpu_pct: d.latest_cpu_pct == null ? null : Number(d.latest_cpu_pct),
       latest_mem_pct: d.latest_mem_pct == null ? null : Number(d.latest_mem_pct),
       uptime_24h_pct: d.uptime_24h_pct == null ? null : Number(d.uptime_24h_pct),
@@ -171,6 +175,7 @@ export function normalizeMap(m: FullMap): FullMap {
       font_size: Number(l.font_size),
       z_index: Number(l.z_index ?? 0),
       locked: !!l.locked,
+      group_id: l.group_id == null ? null : Number(l.group_id),
     })),
     shapes: (m.shapes || []).map((s) => ({
       ...s,
@@ -183,6 +188,7 @@ export function normalizeMap(m: FullMap): FullMap {
       rotation: Number(s.rotation ?? 0),
       z_index: Number(s.z_index ?? 0),
       locked: !!s.locked,
+      group_id: s.group_id == null ? null : Number(s.group_id),
     })),
   };
 }

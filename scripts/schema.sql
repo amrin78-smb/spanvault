@@ -501,6 +501,12 @@ ALTER TABLE map_devices ADD COLUMN IF NOT EXISTS locked BOOLEAN NOT NULL DEFAULT
 ALTER TABLE map_shapes  ADD COLUMN IF NOT EXISTS locked BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE map_labels  ADD COLUMN IF NOT EXISTS locked BOOLEAN NOT NULL DEFAULT FALSE;
 
+-- Grouping: elements sharing a non-null group_id move/select together. group_id
+-- is a client-assigned tag (not a FK); it persists as-is across layout saves.
+ALTER TABLE map_devices ADD COLUMN IF NOT EXISTS group_id INTEGER;
+ALTER TABLE map_shapes  ADD COLUMN IF NOT EXISTS group_id INTEGER;
+ALTER TABLE map_labels  ADD COLUMN IF NOT EXISTS group_id INTEGER;
+
 -- Decorative, non-device elements: basic shapes (rect/ellipse/arrow/line/text)
 -- and built-in network glyphs (cloud/internet/router/switch/firewall/server/...).
 -- The glyph artwork lives in client code; here we only store the kind + geometry

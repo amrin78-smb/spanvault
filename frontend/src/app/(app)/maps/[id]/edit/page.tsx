@@ -219,6 +219,7 @@ export default function MapEditorPage() {
       if (meta && (e.key === 'c' || e.key === 'C')) { if (!inField(e.target)) { e.preventDefault(); copySelection(); } return; }
       if (meta && (e.key === 'v' || e.key === 'V')) { if (!inField(e.target)) { e.preventDefault(); pasteClipboard(); } return; }
       if (meta && (e.key === 'd' || e.key === 'D')) { if (!inField(e.target)) { e.preventDefault(); duplicateSelection(); } return; }
+      if (meta && (e.key === 'g' || e.key === 'G')) { if (!inField(e.target)) { e.preventDefault(); if (e.shiftKey) ungroupSelected(); else groupSelected(); } return; }
       if (inField(e.target) || editingLabel != null) return;
       if ((e.key === 'Delete' || e.key === 'Backspace') && selectedIds.size > 0) { e.preventDefault(); deleteSelected(); return; }
       // Arrow-key nudge (1 unit, 10 with Shift) when something is selected.
@@ -432,9 +433,9 @@ export default function MapEditorPage() {
   }
 
   // Build a multi-move drag capturing every selected element's origin.
-  function buildMultiDrag(startId: number, p: { x: number; y: number }): Drag {
+  function buildMultiDrag(startId: number, p: { x: number; y: number }, keys: Set<string> = selectedIds): Drag {
     const origins: Record<string, { x: number; y: number }> = {};
-    selectedIds.forEach((k) => {
+    keys.forEach((k) => {
       const [kind, idStr] = k.split(':');
       const id = Number(idStr);
       if (kind === 'device') { const d = devices.find((v) => v.id === id); if (d && !d.locked) origins[k] = { x: Number(d.x), y: Number(d.y) }; }
@@ -442,6 +443,54 @@ export default function MapEditorPage() {
       else if (kind === 'label') { const l = labels.find((v) => v.id === id); if (l && !l.locked) origins[k] = { x: Number(l.x), y: Number(l.y) }; }
     });
     return { kind: 'multi', id: startId, sx: p.x, sy: p.y, origins, moved: false };
+  }
+
+  // ── Grouping ──────────────────────────────────────────────────
+  // All selection keys belonging to the same group as (kind,id), or null if the
+  // element isn't grouped.
+  function groupKeysFor(kind: 'device' | 'shape' | 'label', id: number): Set<string> | null {
+    let gid: number | null | undefined;
+    if (kind === 'device') gid = devices.find((d) => d.id === id)?.group_id;
+    else if (kind === 'shape') gid = shapes.find((s) => s.id === id)?.group_id;
+    else gid = labels.find((l) => l.id === id)?.group_id;
+    if (gid == null) return null;
+    const keys = new Set<string>();
+    devices.forEach((d) => { if (d.group_id === gid) keys.add(`device:${d.id}`); });
+    shapes.forEach((s) => { if (s.group_id === gid) keys.add(`shape:${s.id}`); });
+    labels.forEach((l) => { if (l.group_id === gid) keys.add(`label:${l.id}`); });
+    return keys;
+  }
+  function toggleGroupSelection(grp: Set<string>) {
+    setSelectedIds((prev) => {
+      const n = new Set(prev);
+      const allIn = Array.from(grp).every((k) => n.has(k));
+      grp.forEach((k) => { if (allIn) n.delete(k); else n.add(k); });
+      return n;
+    });
+  }
+  // Grouped mousedown: select the whole group (toggle on shift) and, on a plain
+  // click, start a group move. Returns true when the element was grouped.
+  function handleGroupedMouseDown(kind: 'device' | 'shape' | 'label', id: number, p: { x: number; y: number }, shift: boolean): boolean {
+    const grp = groupKeysFor(kind, id);
+    if (!grp) return false;
+    setSelection({ kind, id } as Selection);
+    if (shift) { toggleGroupSelection(grp); }
+    else { setSelectedIds(grp); setDrag(buildMultiDrag(id, p, grp)); }
+    return true;
+  }
+  function groupSelected() {
+    if (selectedIds.size < 2) return;
+    const gid = nextTemp(); // unique negative tag; persists as an integer
+    setDevices((prev) => prev.map((d) => (selectedIds.has(`device:${d.id}`) ? { ...d, group_id: gid } : d)));
+    setShapes((prev) => prev.map((s) => (selectedIds.has(`shape:${s.id}`) ? { ...s, group_id: gid } : s)));
+    setLabels((prev) => prev.map((l) => (selectedIds.has(`label:${l.id}`) ? { ...l, group_id: gid } : l)));
+    pushSnapshot();
+  }
+  function ungroupSelected() {
+    setDevices((prev) => prev.map((d) => (selectedIds.has(`device:${d.id}`) ? { ...d, group_id: null } : d)));
+    setShapes((prev) => prev.map((s) => (selectedIds.has(`shape:${s.id}`) ? { ...s, group_id: null } : s)));
+    setLabels((prev) => prev.map((l) => (selectedIds.has(`label:${l.id}`) ? { ...l, group_id: null } : l)));
+    pushSnapshot();
   }
 
   // ── Device interactions ──────────────────────────────────────
@@ -452,6 +501,7 @@ export default function MapEditorPage() {
       const key = `device:${d.id}`;
       const p = toSvg(e.clientX, e.clientY);
       if (d.locked) { selectElement('device', d.id, e.shiftKey); return; }
+      if (handleGroupedMouseDown('device', d.id, p, e.shiftKey)) return;
       if (e.shiftKey) { selectElement('device', d.id, true); return; }
       // If clicking an already-multi-selected element, start a group move.
       if (selectedIds.size > 1 && selectedIds.has(key)) {
@@ -558,6 +608,7 @@ export default function MapEditorPage() {
     const key = `shape:${s.id}`;
     const p = toSvg(e.clientX, e.clientY);
     if (s.locked) { selectElement('shape', s.id, e.shiftKey); return; }
+    if (handleGroupedMouseDown('shape', s.id, p, e.shiftKey)) return;
     if (e.shiftKey) { selectElement('shape', s.id, true); return; }
     if (selectedIds.size > 1 && selectedIds.has(key)) {
       setSelection({ kind: 'shape', id: s.id });
@@ -594,6 +645,7 @@ export default function MapEditorPage() {
       const key = `label:${l.id}`;
       const p = toSvg(e.clientX, e.clientY);
       if (l.locked) { selectElement('label', l.id, e.shiftKey); return; }
+      if (handleGroupedMouseDown('label', l.id, p, e.shiftKey)) return;
       if (e.shiftKey) { selectElement('label', l.id, true); return; }
       if (selectedIds.size > 1 && selectedIds.has(key)) {
         setSelection({ kind: 'label', id: l.id });
@@ -803,7 +855,7 @@ export default function MapEditorPage() {
         devices: devices.map((d) => ({
           id: d.id, device_id: d.device_id, x: d.x, y: d.y,
           label: d.label, icon_type: d.icon_type, node_style: d.node_style,
-          z_index: d.z_index, width: d.width, height: d.height, locked: d.locked,
+          z_index: d.z_index, width: d.width, height: d.height, locked: d.locked, group_id: d.group_id,
         })),
         connections: connections.map((c) => ({
           from_item_id: c.from_item_id, to_item_id: c.to_item_id,
@@ -813,13 +865,13 @@ export default function MapEditorPage() {
         })),
         labels: labels.map((l) => ({
           x: l.x, y: l.y, text: l.text, font_size: l.font_size, color: l.color, bold: l.bold,
-          z_index: l.z_index, locked: l.locked,
+          z_index: l.z_index, locked: l.locked, group_id: l.group_id,
         })),
         shapes: shapes.map((s) => ({
           kind: s.kind, x: s.x, y: s.y, width: s.width, height: s.height,
           fill: s.fill, stroke: s.stroke, stroke_width: s.stroke_width,
           text: s.text, font_size: s.font_size, text_color: s.text_color,
-          rotation: s.rotation, z_index: s.z_index, locked: s.locked,
+          rotation: s.rotation, z_index: s.z_index, locked: s.locked, group_id: s.group_id,
         })),
       });
       // Re-hydrate from saved state so temp ids become real ids.
@@ -1041,6 +1093,8 @@ export default function MapEditorPage() {
             count={selectedIds.size}
             onAlign={alignSelected}
             onDistribute={distributeSelected}
+            onGroup={groupSelected}
+            onUngroup={ungroupSelected}
             onDelete={deleteSelected}
           />
         ) : (
@@ -1086,11 +1140,13 @@ function GridLayer({ w, h }: { w: number; h: number }) {
 
 // ── Multi-selection panel (align / distribute / delete) ────────
 function MultiSelectPanel({
-  count, onAlign, onDistribute, onDelete,
+  count, onAlign, onDistribute, onGroup, onUngroup, onDelete,
 }: {
   count: number;
   onAlign: (edge: 'left' | 'center' | 'right' | 'top' | 'middle' | 'bottom') => void;
   onDistribute: (axis: 'h' | 'v') => void;
+  onGroup: () => void;
+  onUngroup: () => void;
   onDelete: () => void;
 }) {
   return (
@@ -1111,6 +1167,11 @@ function MultiSelectPanel({
       <div style={{ display: 'flex', gap: 6 }}>
         <button className="sv-btn ghost sm" style={{ flex: 1 }} onClick={() => onDistribute('h')}>Horizontally</button>
         <button className="sv-btn ghost sm" style={{ flex: 1 }} onClick={() => onDistribute('v')}>Vertically</button>
+      </div>
+      <div style={{ fontSize: 12, color: '#64748b', margin: '8px 0 4px' }}>Group</div>
+      <div style={{ display: 'flex', gap: 6 }}>
+        <button className="sv-btn ghost sm" style={{ flex: 1 }} onClick={onGroup} title="Ctrl+G">Group</button>
+        <button className="sv-btn ghost sm" style={{ flex: 1 }} onClick={onUngroup} title="Ctrl+Shift+G">Ungroup</button>
       </div>
       <button className="sv-btn ghost sm" style={{ marginTop: 8 }} onClick={onDelete}>Delete selected</button>
     </div>
