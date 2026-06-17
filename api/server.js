@@ -32,6 +32,9 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.28.1': [
+    'Fixed the Intelligence tables (Anomalies, Health Scores, etc.) hiding their first data row behind the column headers — the sticky header had a 44px top offset while sitting inside a horizontal-scroll wrapper, which shifted the header down over the first row at the top of the table (e.g. "2 active" anomalies but only one visible). Headers now stick flush at the top, so every row shows',
+  ],
   '1.28.0': [
     'Agent-polled devices now get the SAME SNMP coverage as locally-polled ones — full interface stats (status/throughput/utilization), vendor CPU/memory across all 16 supported vendor families, and any custom-OID sensors. Previously a remote agent could only ever report CPU/memory/uptime and ignored sensor selection entirely',
     'Unified the SNMP brain: the server now pushes each agent device a fetch plan (the exact OIDs its detected vendor needs), the agent fetches them raw, and the server interprets them through the same parser registry the central collector uses. Adding a new device vendor is now a single collector parser file that instantly benefits both local and agent-polled devices — no more hardcoded OIDs living separately in the agent',
