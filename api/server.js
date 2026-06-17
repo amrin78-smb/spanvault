@@ -32,6 +32,12 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.31.0': [
+    'Network map nodes are now resizable — select a node and drag any of its 8 handles, or set an exact width/height in the properties panel. Long device names no longer touch/overflow the box edge: in Box style the label wraps inside the node, and the new Icon style puts the label beneath the glyph (unbounded)',
+    'Each node can be switched between Box style (filled status box) and Icon style (a device glyph — router/switch/firewall/server/AP/etc., colored by status — with the name beneath). Icons are picked automatically from the device type or chosen manually',
+    'Added stacking order (Bring to front / Send to back) so overlapping nodes layer the way you want',
+    'Map storage now supports decorative, non-device elements (a new map_shapes table) and renders them on the map view/public share; the editor palette to add them (cloud, internet, network glyphs, shapes) lands next',
+  ],
   '1.30.0': [
     'Services page is far more compact: multi-type groups now collapse to a single row showing a per-type status chip for each check (HTTP/TCP/SSL/DNS, each with its own up/down/warning dot), so you see every check\'s state at a glance — click to expand the per-type detail rows. Edit and Delete now live only at the group level (the per-type rows are read-only), removing the button clutter',
     'Added a search box and an All/Down/Warning/Up status filter to the Services page so you can jump straight to problem checks instead of scrolling',
@@ -2715,6 +2721,7 @@ async function fetchFullMap(mapId) {
   if (!map) return null;
   const devices = await sv.query(`
     SELECT md.id, md.device_id, md.x, md.y, md.label, md.icon_type, md.width, md.height,
+           md.z_index, md.node_style,
            d.name AS device_name, d.ip_address, d.site_name,
            d.current_status, d.last_response_ms, d.last_seen_at,
            d.is_gateway, d.alert_suppressed
@@ -2729,7 +2736,14 @@ async function fetchFullMap(mapId) {
   const labels = await sv.query(
     `SELECT * FROM map_labels WHERE map_id = $1 ORDER BY id`, [mapId]
   );
-  return { ...map, devices: devices.rows, connections: connections.rows, labels: labels.rows };
+  // Decorative shapes/icons (map_shapes is a later migration; degrade gracefully
+  // on an un-migrated DB rather than 500-ing the whole map).
+  let shapes = [];
+  try {
+    const sh = await sv.query(`SELECT * FROM map_shapes WHERE map_id = $1 ORDER BY z_index, id`, [mapId]);
+    shapes = sh.rows;
+  } catch (_e) { shapes = []; }
+  return { ...map, devices: devices.rows, connections: connections.rows, labels: labels.rows, shapes };
 }
 
 // List all maps (with a device count for the cards).
@@ -2798,6 +2812,9 @@ app.put('/api/maps/:id/layout', wrap(async (req, res) => {
   const devices = Array.isArray(b.devices) ? b.devices : [];
   const connections = Array.isArray(b.connections) ? b.connections : [];
   const labels = Array.isArray(b.labels) ? b.labels : [];
+  // Only touch shapes when the client actually sends a `shapes` array, so older
+  // clients that don't know about shapes don't wipe them.
+  const shapes = Array.isArray(b.shapes) ? b.shapes : null;
 
   const exists = await sv.query(`SELECT id FROM sv_maps WHERE id = $1`, [id]);
   if (!exists.rows[0]) return res.status(404).json({ error: 'Map not found' });
@@ -2812,10 +2829,11 @@ app.put('/api/maps/:id/layout', wrap(async (req, res) => {
     const idMap = new Map(); // client device id → new db id
     for (const d of devices) {
       const r = await client.query(`
-        INSERT INTO map_devices (map_id, device_id, x, y, label, icon_type, width, height)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id
+        INSERT INTO map_devices (map_id, device_id, x, y, label, icon_type, width, height, z_index, node_style)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id
       `, [id, d.device_id || null, Number(d.x) || 0, Number(d.y) || 0,
-          d.label || null, d.icon_type || 'circle', safeInt(d.width, 120), safeInt(d.height, 60)]);
+          d.label || null, d.icon_type || 'circle', safeInt(d.width, 120), safeInt(d.height, 60),
+          safeInt(d.z_index, 0), d.node_style === 'icon' ? 'icon' : 'box']);
       if (d.id !== undefined && d.id !== null) idMap.set(String(d.id), r.rows[0].id);
     }
 
@@ -2832,10 +2850,27 @@ app.put('/api/maps/:id/layout', wrap(async (req, res) => {
     for (const l of labels) {
       if (!l || l.text === undefined || l.text === null) continue;
       await client.query(`
-        INSERT INTO map_labels (map_id, x, y, text, font_size, color, bold)
-        VALUES ($1,$2,$3,$4,$5,$6,$7)
+        INSERT INTO map_labels (map_id, x, y, text, font_size, color, bold, z_index)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
       `, [id, Number(l.x) || 0, Number(l.y) || 0, String(l.text),
-          safeInt(l.font_size, 14), l.color || '#1a2744', !!l.bold]);
+          safeInt(l.font_size, 14), l.color || '#1a2744', !!l.bold, safeInt(l.z_index, 0)]);
+    }
+
+    // Decorative shapes — replace-all, but only when the client sent them.
+    if (shapes) {
+      await client.query(`DELETE FROM map_shapes WHERE map_id = $1`, [id]);
+      for (const s of shapes) {
+        if (!s || !s.kind) continue;
+        await client.query(`
+          INSERT INTO map_shapes
+            (map_id, kind, x, y, width, height, fill, stroke, stroke_width, text, font_size, text_color, rotation, z_index)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+        `, [id, String(s.kind), Number(s.x) || 0, Number(s.y) || 0,
+            safeInt(s.width, 120), safeInt(s.height, 80),
+            s.fill || null, s.stroke || null, safeInt(s.stroke_width, 2),
+            s.text != null ? String(s.text) : null, safeInt(s.font_size, 14),
+            s.text_color || '#1a2744', Number(s.rotation) || 0, safeInt(s.z_index, 0)]);
+      }
     }
 
     await client.query(`UPDATE sv_maps SET updated_at = NOW() WHERE id = $1`, [id]);

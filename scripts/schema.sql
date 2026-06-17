@@ -471,6 +471,36 @@ CREATE TABLE IF NOT EXISTS map_labels (
 );
 CREATE INDEX IF NOT EXISTS idx_map_labels_map ON map_labels(map_id);
 
+-- Map overhaul: per-node rendering style + stacking order, and free-form
+-- decorative elements (shapes/icons like cloud/internet/router that are NOT
+-- monitored devices). All additive + idempotent.
+ALTER TABLE map_devices ADD COLUMN IF NOT EXISTS z_index    INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE map_devices ADD COLUMN IF NOT EXISTS node_style TEXT    NOT NULL DEFAULT 'box';  -- 'box' | 'icon'
+ALTER TABLE map_labels  ADD COLUMN IF NOT EXISTS z_index    INTEGER NOT NULL DEFAULT 0;
+
+-- Decorative, non-device elements: basic shapes (rect/ellipse/arrow/line/text)
+-- and built-in network glyphs (cloud/internet/router/switch/firewall/server/...).
+-- The glyph artwork lives in client code; here we only store the kind + geometry
+-- + styling, so this table stays tiny.
+CREATE TABLE IF NOT EXISTS map_shapes (
+  id           SERIAL PRIMARY KEY,
+  map_id       INTEGER NOT NULL REFERENCES sv_maps(id) ON DELETE CASCADE,
+  kind         TEXT NOT NULL,                       -- rect|ellipse|line|arrow|text|zone|cloud|internet|wan|router|switch|firewall|server|loadbalancer|ap|database|building
+  x            NUMERIC NOT NULL DEFAULT 100,
+  y            NUMERIC NOT NULL DEFAULT 100,
+  width        NUMERIC NOT NULL DEFAULT 120,
+  height       NUMERIC NOT NULL DEFAULT 80,
+  fill         TEXT,
+  stroke       TEXT,
+  stroke_width INTEGER NOT NULL DEFAULT 2,
+  text         TEXT,
+  font_size    INTEGER NOT NULL DEFAULT 14,
+  text_color   TEXT NOT NULL DEFAULT '#1a2744',
+  rotation     NUMERIC NOT NULL DEFAULT 0,
+  z_index      INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_map_shapes_map ON map_shapes(map_id);
+
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO spanvault_user;
 GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO spanvault_user;
 

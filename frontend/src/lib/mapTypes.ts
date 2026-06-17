@@ -6,7 +6,9 @@ export type MapDevice = {
   x: number;
   y: number;
   label: string | null;
-  icon_type: string;
+  icon_type: string;     // device glyph key (see mapIcons): 'auto' | 'router' | 'switch' | ...
+  node_style: string;    // 'box' (filled status box) | 'icon' (glyph + label beneath)
+  z_index: number;
   width: number;
   height: number;
   // Joined live device fields (present on GET, absent for unlinked nodes):
@@ -37,6 +39,26 @@ export type MapLabel = {
   font_size: number;
   color: string;
   bold: boolean;
+  z_index: number;
+};
+
+// Decorative, non-device element: a basic shape (rect/ellipse/line/arrow/text/
+// zone) or a built-in network glyph (cloud/internet/router/switch/...).
+export type MapShape = {
+  id: number;
+  kind: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  fill: string | null;
+  stroke: string | null;
+  stroke_width: number;
+  text: string | null;
+  font_size: number;
+  text_color: string;
+  rotation: number;
+  z_index: number;
 };
 
 export type FullMap = {
@@ -54,6 +76,7 @@ export type FullMap = {
   devices: MapDevice[];
   connections: MapConnection[];
   labels: MapLabel[];
+  shapes: MapShape[];
 };
 
 export type MapSummary = {
@@ -95,6 +118,9 @@ export function normalizeMap(m: FullMap): FullMap {
       y: Number(d.y),
       width: Number(d.width),
       height: Number(d.height),
+      z_index: Number(d.z_index ?? 0),
+      node_style: d.node_style || 'box',
+      icon_type: d.icon_type || 'auto',
     })),
     connections: m.connections || [],
     labels: (m.labels || []).map((l) => ({
@@ -102,6 +128,18 @@ export function normalizeMap(m: FullMap): FullMap {
       x: Number(l.x),
       y: Number(l.y),
       font_size: Number(l.font_size),
+      z_index: Number(l.z_index ?? 0),
+    })),
+    shapes: (m.shapes || []).map((s) => ({
+      ...s,
+      x: Number(s.x),
+      y: Number(s.y),
+      width: Number(s.width),
+      height: Number(s.height),
+      stroke_width: Number(s.stroke_width ?? 2),
+      font_size: Number(s.font_size ?? 14),
+      rotation: Number(s.rotation ?? 0),
+      z_index: Number(s.z_index ?? 0),
     })),
   };
 }

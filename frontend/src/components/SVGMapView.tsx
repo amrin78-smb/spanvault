@@ -4,9 +4,10 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { apiGet } from '@/lib/api';
 import {
-  type FullMap, type MapDevice, type MapConnection, type MapLabel,
+  type FullMap, type MapDevice, type MapConnection, type MapLabel, type MapShape,
   statusFill, deviceCenter,
 } from '@/lib/mapTypes';
+import { MapGlyph, deviceGlyphFor, isGlyphKind } from '@/lib/mapIcons';
 
 const DEFAULT_LINE = '#94a3b8';
 
@@ -84,13 +85,18 @@ export default function SVGMapView({
         <rect x="0" y="0" width={map.canvas_w} height={map.canvas_h} fill={map.bg_color || '#f8fafc'} />
       )}
 
+      {/* Decorative shapes (z-sorted, beneath the nodes) */}
+      {[...(map.shapes || [])].sort((a, b) => (Number(a.z_index) || 0) - (Number(b.z_index) || 0) || a.id - b.id).map((s) => (
+        <ShapeEl key={`s-${s.id}`} shape={s} />
+      ))}
+
       {/* Connections (under the nodes) */}
       {(map.connections || []).map((c) => (
         <ConnectionLine key={c.id} conn={c} from={byId.get(c.from_item_id)} to={byId.get(c.to_item_id)} />
       ))}
 
-      {/* Device nodes */}
-      {devices.map((d) => (
+      {/* Device nodes (z-sorted) */}
+      {[...devices].sort((a, b) => (Number(a.z_index) || 0) - (Number(b.z_index) || 0) || a.id - b.id).map((d) => (
         <DeviceNode key={d.id} device={d} interactive={interactive} onClick={onNodeClick} />
       ))}
 
@@ -156,41 +162,107 @@ export function DeviceNode({
   const suppressed = !!device.alert_suppressed;
   const name = device.label || device.device_name || 'Device';
   const ip = device.ip_address || '';
-  const { cx, cy } = deviceCenter(device);
+  const x = Number(device.x);
+  const y = Number(device.y);
   const w = Number(device.width);
   const h = Number(device.height);
-  const fill = suppressed ? 'url(#sv-suppressed-stripe)' : statusFill(status, false);
+  const cx = x + w / 2;
+  const color = suppressed ? '#94a3b8' : statusFill(status, false);
   const pulse = !suppressed && (status === 'down' || status === 'warning');
+  const cursor = interactive && device.device_id ? 'pointer' : 'default';
 
   const tip =
     `${name}\n${ip}${device.site_name ? ` · ${device.site_name}` : ''}\n` +
     `Status: ${suppressed ? 'suppressed' : status}` +
     (device.last_response_ms != null ? ` · ${Number(device.last_response_ms).toFixed(0)} ms` : '');
 
+  // ── Icon style: device glyph + label beneath (never overflows) ──
+  if (device.node_style === 'icon') {
+    const glyphKind = device.icon_type && device.icon_type !== 'auto'
+      ? device.icon_type : deviceGlyphFor(device.device_name);
+    const gs = Math.max(24, Math.min(w, h));
+    const gx = cx - gs / 2;
+    const gy = y + Math.max(0, (h - gs) / 2);
+    const halo = { paintOrder: 'stroke' as const, stroke: '#fff', strokeWidth: 3 };
+    return (
+      <g onClick={() => onClick(device)} style={{ cursor }} className={pulse ? 'sv-mapnode-pulse' : undefined}>
+        <title>{tip}</title>
+        <MapGlyph kind={glyphKind} x={gx} y={gy} size={gs} color={color} />
+        {device.is_gateway && <text x={x + 2} y={y + 14} fontSize={14}>⭐</text>}
+        <text x={cx} y={y + h + 14} textAnchor="middle" fontSize={13} fontWeight={700} fill="#1a2744" style={halo}>{name}</text>
+        {ip && <text x={cx} y={y + h + 28} textAnchor="middle" fontSize={10} fill="#475569" style={halo}>{ip}</text>}
+      </g>
+    );
+  }
+
+  // ── Box style: filled status box, label wraps inside ──
+  const fill = suppressed ? 'url(#sv-suppressed-stripe)' : color;
   return (
-    <g
-      onClick={() => onClick(device)}
-      style={{ cursor: interactive && device.device_id ? 'pointer' : 'default' }}
-    >
+    <g onClick={() => onClick(device)} style={{ cursor }}>
       <title>{tip}</title>
       <rect
-        x={device.x} y={device.y} width={w} height={h} rx={8} ry={8}
+        x={x} y={y} width={w} height={h} rx={8} ry={8}
         fill={fill} stroke="#0f172a" strokeOpacity={0.15} strokeWidth={1}
         className={pulse ? 'sv-mapnode-pulse' : undefined}
       />
-      <text x={cx} y={cy - 2} textAnchor="middle" fontSize={13} fontWeight={700} fill="#ffffff">
-        {name.length > 18 ? name.slice(0, 17) + '…' : name}
-      </text>
-      {ip && (
-        <text x={cx} y={cy + 14} textAnchor="middle" fontSize={10} fill="#ffffff" fillOpacity={0.85}>
-          {ip}
-        </text>
-      )}
-      {device.is_gateway && (
-        <text x={device.x + 5} y={device.y + 16} fontSize={14}>⭐</text>
-      )}
+      <foreignObject x={x} y={y} width={w} height={h} style={{ pointerEvents: 'none' }}>
+        <div style={{
+          width: '100%', height: '100%', display: 'flex', flexDirection: 'column',
+          alignItems: 'center', justifyContent: 'center', padding: '4px 6px',
+          boxSizing: 'border-box', textAlign: 'center', overflow: 'hidden', lineHeight: 1.15,
+        }}>
+          <div style={{ color: '#fff', fontWeight: 700, fontSize: 13, wordBreak: 'break-word' }}>{name}</div>
+          {ip && <div style={{ color: 'rgba(255,255,255,0.85)', fontSize: 10, wordBreak: 'break-word' }}>{ip}</div>}
+        </div>
+      </foreignObject>
+      {device.is_gateway && <text x={x + 5} y={y + 16} fontSize={14}>⭐</text>}
     </g>
   );
+}
+
+// ── Decorative shape / glyph (top-level component) ─────────────
+export function ShapeEl({ shape }: { shape: MapShape }) {
+  const x = Number(shape.x), y = Number(shape.y), w = Number(shape.width), h = Number(shape.height);
+  const fill = shape.fill || 'none';
+  const stroke = shape.stroke || '#334155';
+  const sw = Number(shape.stroke_width) || 2;
+  const rot = Number(shape.rotation) || 0;
+  const transform = rot ? `rotate(${rot} ${x + w / 2} ${y + h / 2})` : undefined;
+
+  if (isGlyphKind(shape.kind)) {
+    const gs = Math.min(w, h);
+    return <g transform={transform}><MapGlyph kind={shape.kind} x={x + (w - gs) / 2} y={y + (h - gs) / 2} size={gs} color={stroke} /></g>;
+  }
+  switch (shape.kind) {
+    case 'ellipse':
+      return <ellipse cx={x + w / 2} cy={y + h / 2} rx={w / 2} ry={h / 2} fill={fill} stroke={stroke} strokeWidth={sw} transform={transform} />;
+    case 'line':
+      return <line x1={x} y1={y} x2={x + w} y2={y + h} stroke={stroke} strokeWidth={sw} transform={transform} />;
+    case 'arrow':
+      return (
+        <g transform={transform}>
+          <line x1={x} y1={y + h / 2} x2={x + w - 8} y2={y + h / 2} stroke={stroke} strokeWidth={sw} />
+          <path d={`M${x + w} ${y + h / 2} L${x + w - 12} ${y + h / 2 - 7} L${x + w - 12} ${y + h / 2 + 7} Z`} fill={stroke} />
+        </g>
+      );
+    case 'text':
+      return (
+        <text x={x} y={y + (Number(shape.font_size) || 14)} fontSize={Number(shape.font_size) || 14}
+          fill={shape.text_color || '#1a2744'} transform={transform}>{shape.text || ''}</text>
+      );
+    case 'zone':
+      return (
+        <g transform={transform}>
+          <rect x={x} y={y} width={w} height={h} rx={6} fill={shape.fill || 'rgba(59,130,246,0.06)'}
+            stroke={stroke} strokeWidth={sw} strokeDasharray="6 4" />
+          {shape.text && <text x={x + 8} y={y + (Number(shape.font_size) || 13) + 4} fontSize={Number(shape.font_size) || 13}
+            fill={shape.text_color || '#475569'} fontWeight={600}>{shape.text}</text>}
+        </g>
+      );
+    case 'rect':
+    default:
+      return <rect x={x} y={y} width={w} height={h} rx={4} fill={fill} stroke={stroke} strokeWidth={sw} transform={transform} />;
+  }
 }
 
 // ── Free-floating text label (top-level component) ─────────────

@@ -9,6 +9,7 @@ import {
   type FullMap, type MapDevice, type MapConnection, type MapLabel,
   statusFill, deviceCenter, normalizeMap,
 } from '@/lib/mapTypes';
+import { MapGlyph, GlyphSwatch, DEVICE_GLYPHS, deviceGlyphFor } from '@/lib/mapIcons';
 
 const DEFAULT_LINE = '#94a3b8';
 const CANVAS_PRESETS = [
@@ -28,7 +29,13 @@ type Selection =
   | { kind: 'label'; id: number }
   | null;
 type Ctx = { x: number; y: number; kind: 'device' | 'connection' | 'label'; id: number } | null;
-type Drag = { kind: 'device' | 'label'; id: number; dx: number; dy: number } | null;
+type Drag =
+  | { kind: 'device' | 'label'; id: number; dx: number; dy: number }
+  | { kind: 'resize'; id: number; handle: string; ox: number; oy: number; ow: number; oh: number; sx: number; sy: number }
+  | null;
+
+const MIN_W = 60;
+const MIN_H = 40;
 
 export default function MapEditorPage() {
   const { id } = useParams<{ id: string }>();
@@ -139,7 +146,7 @@ export default function MapEditorPage() {
     const w = 120, h = 60;
     const d: MapDevice = {
       id: nextTemp(), device_id: pd.id, x: x - w / 2, y: y - h / 2,
-      label: null, icon_type: 'circle', width: w, height: h,
+      label: null, icon_type: 'auto', node_style: 'box', z_index: 0, width: w, height: h,
       device_name: pd.name, ip_address: pd.ip_address, site_name: pd.site_name,
       current_status: pd.current_status, is_gateway: false, alert_suppressed: false,
     };
@@ -150,6 +157,25 @@ export default function MapEditorPage() {
     setDevices((prev) => prev.filter((d) => d.id !== deviceId));
     setConnections((prev) => prev.filter((c) => c.from_item_id !== deviceId && c.to_item_id !== deviceId));
     setSelection(null);
+  }
+  function updateDevice(deviceId: number, patch: Partial<MapDevice>) {
+    setDevices((prev) => prev.map((d) => (d.id === deviceId ? { ...d, ...patch } : d)));
+  }
+  function deviceToFront(deviceId: number) {
+    const max = devices.reduce((m, d) => Math.max(m, Number(d.z_index) || 0), 0);
+    updateDevice(deviceId, { z_index: max + 1 });
+  }
+  function deviceToBack(deviceId: number) {
+    const min = devices.reduce((m, d) => Math.min(m, Number(d.z_index) || 0), 0);
+    updateDevice(deviceId, { z_index: min - 1 });
+  }
+  // Start a resize drag from one of a node's 8 handles.
+  function onResizeStart(e: React.MouseEvent, d: MapDevice, handle: string) {
+    e.stopPropagation();
+    setSelection({ kind: 'device', id: d.id });
+    const p = toSvg(e.clientX, e.clientY);
+    setDrag({ kind: 'resize', id: d.id, handle,
+      ox: Number(d.x), oy: Number(d.y), ow: Number(d.width), oh: Number(d.height), sx: p.x, sy: p.y });
   }
 
   // ── Label interactions ───────────────────────────────────────
@@ -163,7 +189,7 @@ export default function MapEditorPage() {
     }
   }
   function addLabelAt(x: number, y: number) {
-    const l: MapLabel = { id: nextTemp(), x, y, text: 'New label', font_size: 16, color: '#1a2744', bold: false };
+    const l: MapLabel = { id: nextTemp(), x, y, text: 'New label', font_size: 16, color: '#1a2744', bold: false, z_index: 0 };
     setLabels((prev) => [...prev, l]);
     setSelection({ kind: 'label', id: l.id });
     setEditingLabel(l.id);
@@ -197,6 +223,22 @@ export default function MapEditorPage() {
     const p = toSvg(e.clientX, e.clientY);
     if (lineStart != null) setMouse(p);
     if (!drag) return;
+    if (drag.kind === 'resize') {
+      const dx = p.x - drag.sx;
+      const dy = p.y - drag.sy;
+      const h = drag.handle;
+      let { ox: nx, oy: ny, ow: nw, oh: nh } = drag;
+      if (h.includes('e')) nw = drag.ow + dx;
+      if (h.includes('s')) nh = drag.oh + dy;
+      if (h.includes('w')) { nw = drag.ow - dx; nx = drag.ox + dx; }
+      if (h.includes('n')) { nh = drag.oh - dy; ny = drag.oy + dy; }
+      // Clamp to a minimum, keeping the anchored (opposite) edge fixed.
+      if (nw < MIN_W) { if (h.includes('w')) nx = drag.ox + (drag.ow - MIN_W); nw = MIN_W; }
+      if (nh < MIN_H) { if (h.includes('n')) ny = drag.oy + (drag.oh - MIN_H); nh = MIN_H; }
+      setDevices((prev) => prev.map((d) => (d.id === drag.id
+        ? { ...d, x: nx, y: ny, width: Math.round(nw), height: Math.round(nh) } : d)));
+      return;
+    }
     if (drag.kind === 'device') {
       setDevices((prev) => prev.map((d) => (d.id === drag.id ? { ...d, x: p.x - drag.dx, y: p.y - drag.dy } : d)));
     } else {
@@ -240,7 +282,8 @@ export default function MapEditorPage() {
       const full = await apiSend<FullMap>(`/api/maps/${id}/layout`, 'PUT', {
         devices: devices.map((d) => ({
           id: d.id, device_id: d.device_id, x: d.x, y: d.y,
-          label: d.label, icon_type: d.icon_type, width: d.width, height: d.height,
+          label: d.label, icon_type: d.icon_type, node_style: d.node_style,
+          z_index: d.z_index, width: d.width, height: d.height,
         })),
         connections: connections.map((c) => ({
           from_item_id: c.from_item_id, to_item_id: c.to_item_id,
@@ -248,6 +291,7 @@ export default function MapEditorPage() {
         })),
         labels: labels.map((l) => ({
           x: l.x, y: l.y, text: l.text, font_size: l.font_size, color: l.color, bold: l.bold,
+          z_index: l.z_index,
         })),
       });
       // Re-hydrate from saved state so temp ids become real ids.
@@ -372,7 +416,7 @@ export default function MapEditorPage() {
               />
             )}
 
-            {devices.map((d) => (
+            {[...devices].sort((a, b) => (Number(a.z_index) || 0) - (Number(b.z_index) || 0) || a.id - b.id).map((d) => (
               <EditorDeviceNode
                 key={d.id} device={d}
                 selected={selection?.kind === 'device' && selection.id === d.id}
@@ -397,6 +441,13 @@ export default function MapEditorPage() {
                 onContext={(x, y) => setCtx({ x, y, kind: 'label', id: l.id })}
               />
             ))}
+
+            {/* Resize handles for the selected device (select tool only) */}
+            {tool === 'select' && selection?.kind === 'device' && (() => {
+              const d = byId.get(selection.id);
+              if (!d) return null;
+              return <ResizeHandles device={d} onResizeStart={onResizeStart} />;
+            })()}
           </svg>
 
           {ctx && (
@@ -415,8 +466,13 @@ export default function MapEditorPage() {
 
         <SelectionPanel
           selection={selection}
+          device={selection?.kind === 'device' ? devices.find((d) => d.id === selection.id) || null : null}
           connection={selection?.kind === 'connection' ? connections.find((c) => c.id === selection.id) || null : null}
           label={selection?.kind === 'label' ? labels.find((l) => l.id === selection.id) || null : null}
+          onDeviceChange={updateDevice}
+          onDeviceFront={deviceToFront}
+          onDeviceBack={deviceToBack}
+          onDeviceRemove={removeDevice}
           onConnChange={updateConnection}
           onConnDelete={deleteConnection}
           onLabelChange={updateLabel}
@@ -562,10 +618,40 @@ function EditorDeviceNode({
   const suppressed = !!device.alert_suppressed;
   const name = device.label || device.device_name || 'Device';
   const ip = device.ip_address || '';
-  const { cx, cy } = deviceCenter(device);
+  const x = Number(device.x);
+  const y = Number(device.y);
   const w = Number(device.width);
   const h = Number(device.height);
-  const fill = suppressed ? 'url(#sv-suppressed-stripe)' : statusFill(status, false);
+  const cx = x + w / 2;
+  const color = suppressed ? '#94a3b8' : statusFill(status, false);
+  const sel = selected || isLineStart;
+
+  // ── Icon style: a device glyph with the label beneath it (never overflows) ──
+  if (device.node_style === 'icon') {
+    const glyphKind = device.icon_type && device.icon_type !== 'auto'
+      ? device.icon_type : deviceGlyphFor(device.device_name);
+    const gs = Math.max(24, Math.min(w, h));
+    const gx = cx - gs / 2;
+    const gy = y + Math.max(0, (h - gs) / 2);
+    const halo = { paintOrder: 'stroke' as const, stroke: '#fff', strokeWidth: 3 };
+    return (
+      <g
+        onMouseDown={onMouseDown}
+        onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); onContext(e.clientX, e.clientY); }}
+        style={{ cursor: 'move' }}
+      >
+        {sel && <rect x={x - 3} y={y - 3} width={w + 6} height={h + 6} rx={6} fill="none"
+          stroke="#3b82f6" strokeWidth={1.5} strokeDasharray="5 4" />}
+        <MapGlyph kind={glyphKind} x={gx} y={gy} size={gs} color={color} />
+        {device.is_gateway && <text x={x + 2} y={y + 14} fontSize={14}>⭐</text>}
+        <text x={cx} y={y + h + 14} textAnchor="middle" fontSize={13} fontWeight={700} fill="#1a2744" style={halo}>{name}</text>
+        {ip && <text x={cx} y={y + h + 28} textAnchor="middle" fontSize={10} fill="#475569" style={halo}>{ip}</text>}
+      </g>
+    );
+  }
+
+  // ── Box style: filled status box, label wraps inside (no edge overflow) ──
+  const fill = suppressed ? 'url(#sv-suppressed-stripe)' : color;
   return (
     <g
       onMouseDown={onMouseDown}
@@ -573,16 +659,48 @@ function EditorDeviceNode({
       style={{ cursor: 'move' }}
     >
       <rect
-        x={device.x} y={device.y} width={w} height={h} rx={8} ry={8} fill={fill}
-        stroke={selected || isLineStart ? '#3b82f6' : '#0f172a'}
-        strokeOpacity={selected || isLineStart ? 1 : 0.15}
-        strokeWidth={selected || isLineStart ? 2.5 : 1}
+        x={x} y={y} width={w} height={h} rx={8} ry={8} fill={fill}
+        stroke={sel ? '#3b82f6' : '#0f172a'}
+        strokeOpacity={sel ? 1 : 0.15}
+        strokeWidth={sel ? 2.5 : 1}
       />
-      <text x={cx} y={cy - 2} textAnchor="middle" fontSize={13} fontWeight={700} fill="#fff">
-        {name.length > 18 ? name.slice(0, 17) + '…' : name}
-      </text>
-      {ip && <text x={cx} y={cy + 14} textAnchor="middle" fontSize={10} fill="#fff" fillOpacity={0.85}>{ip}</text>}
-      {device.is_gateway && <text x={device.x + 5} y={device.y + 16} fontSize={14}>⭐</text>}
+      <foreignObject x={x} y={y} width={w} height={h} style={{ pointerEvents: 'none' }}>
+        <div style={{
+          width: '100%', height: '100%', display: 'flex', flexDirection: 'column',
+          alignItems: 'center', justifyContent: 'center', padding: '4px 6px',
+          boxSizing: 'border-box', textAlign: 'center', overflow: 'hidden', lineHeight: 1.15,
+        }}>
+          <div style={{ color: '#fff', fontWeight: 700, fontSize: 13, wordBreak: 'break-word' }}>{name}</div>
+          {ip && <div style={{ color: 'rgba(255,255,255,0.85)', fontSize: 10, wordBreak: 'break-word' }}>{ip}</div>}
+        </div>
+      </foreignObject>
+      {device.is_gateway && <text x={x + 5} y={y + 16} fontSize={14}>⭐</text>}
+    </g>
+  );
+}
+
+// ── Resize handles for the selected device (top-level component) ───
+function ResizeHandles({ device, onResizeStart }: {
+  device: MapDevice; onResizeStart: (e: React.MouseEvent, d: MapDevice, handle: string) => void;
+}) {
+  const x = Number(device.x), y = Number(device.y), w = Number(device.width), h = Number(device.height);
+  const hs = 8;
+  const pts: [string, number, number][] = [
+    ['nw', x, y], ['n', x + w / 2, y], ['ne', x + w, y],
+    ['e', x + w, y + h / 2], ['se', x + w, y + h], ['s', x + w / 2, y + h],
+    ['sw', x, y + h], ['w', x, y + h / 2],
+  ];
+  const cursors: Record<string, string> = {
+    nw: 'nwse-resize', se: 'nwse-resize', ne: 'nesw-resize', sw: 'nesw-resize',
+    n: 'ns-resize', s: 'ns-resize', e: 'ew-resize', w: 'ew-resize',
+  };
+  return (
+    <g>
+      <rect x={x} y={y} width={w} height={h} fill="none" stroke="#3b82f6" strokeWidth={1} strokeDasharray="4 3" pointerEvents="none" />
+      {pts.map(([k, hx, hy]) => (
+        <rect key={k} x={hx - hs / 2} y={hy - hs / 2} width={hs} height={hs} fill="#fff" stroke="#3b82f6" strokeWidth={1.5}
+          style={{ cursor: cursors[k] }} onMouseDown={(e) => onResizeStart(e, device, k)} />
+      ))}
     </g>
   );
 }
@@ -647,15 +765,62 @@ function ContextMenu({
 
 // ── Selection properties panel (top-level component) ───────────
 function SelectionPanel({
-  selection, connection, label, onConnChange, onConnDelete, onLabelChange, onLabelDelete,
+  selection, device, connection, label,
+  onDeviceChange, onDeviceFront, onDeviceBack, onDeviceRemove,
+  onConnChange, onConnDelete, onLabelChange, onLabelDelete,
 }: {
   selection: Selection;
+  device: MapDevice | null;
   connection: MapConnection | null; label: MapLabel | null;
+  onDeviceChange: (id: number, patch: Partial<MapDevice>) => void;
+  onDeviceFront: (id: number) => void;
+  onDeviceBack: (id: number) => void;
+  onDeviceRemove: (id: number) => void;
   onConnChange: (id: number, patch: Partial<MapConnection>) => void;
   onConnDelete: (id: number) => void;
   onLabelChange: (id: number, patch: Partial<MapLabel>) => void;
   onLabelDelete: (id: number) => void;
 }) {
+  if (selection?.kind === 'device' && device) {
+    const effectiveGlyph = device.icon_type && device.icon_type !== 'auto'
+      ? device.icon_type : deviceGlyphFor(device.device_name);
+    return (
+      <div className="sv-editor-props">
+        <h3>{device.device_name || 'Device'}</h3>
+        <label className="sv-field">Style
+          <select className="sv-select" value={device.node_style || 'box'}
+            onChange={(e) => onDeviceChange(device.id, { node_style: e.target.value })}>
+            <option value="box">Box (status fill)</option>
+            <option value="icon">Icon (glyph + label)</option>
+          </select>
+        </label>
+        <label className="sv-field">Icon
+          <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <select className="sv-select" style={{ flex: 1 }} value={device.icon_type || 'auto'}
+              onChange={(e) => onDeviceChange(device.id, { icon_type: e.target.value })}>
+              {DEVICE_GLYPHS.map((g) => <option key={g.key} value={g.key}>{g.label}</option>)}
+            </select>
+            <GlyphSwatch kind={effectiveGlyph} size={24} />
+          </span>
+        </label>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <label className="sv-field" style={{ flex: 1 }}>Width
+            <input type="number" className="sv-input" value={Math.round(Number(device.width))} min={MIN_W} max={600}
+              onChange={(e) => onDeviceChange(device.id, { width: Math.max(MIN_W, parseInt(e.target.value, 10) || MIN_W) })} />
+          </label>
+          <label className="sv-field" style={{ flex: 1 }}>Height
+            <input type="number" className="sv-input" value={Math.round(Number(device.height))} min={MIN_H} max={600}
+              onChange={(e) => onDeviceChange(device.id, { height: Math.max(MIN_H, parseInt(e.target.value, 10) || MIN_H) })} />
+          </label>
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button className="sv-btn ghost sm" style={{ flex: 1 }} onClick={() => onDeviceFront(device.id)}>Bring to front</button>
+          <button className="sv-btn ghost sm" style={{ flex: 1 }} onClick={() => onDeviceBack(device.id)}>Send to back</button>
+        </div>
+        <button className="sv-btn ghost sm" onClick={() => onDeviceRemove(device.id)}>Remove from map</button>
+      </div>
+    );
+  }
   if (selection?.kind === 'connection' && connection) {
     return (
       <div className="sv-editor-props">
