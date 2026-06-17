@@ -27,7 +27,7 @@ const ping       = require('ping');
 const nodemailer = require('nodemailer');
 const { detectVendor } = require('./parsers');
 const { createSession, get, OID } = require('./snmp-session');
-const { collectCandidates } = require('./discovery');
+const { collectCandidates, candidatesToSamples } = require('./discovery');
 const { discoverAndStore } = require('./topology');
 const { startWirelessCollector } = require('./wirelessCollector');
 
@@ -326,45 +326,9 @@ async function snmpPollDevice(device) {
     try { session.close(); } catch (_e) { /* ignore */ }
   }
 
-  // Map candidates → rows to persist.
-  let samples;
-  if (sensors.length) {
-    // Selective: keep only enabled sensors, write with the sensor's metric_name.
-    const byKey = new Map(sensors.map((s) => [s.sensor_key, s]));
-    samples = [];
-    for (const c of candidates) {
-      const sensor = byKey.get(c.key);
-      if (!sensor) continue;
-      samples.push({
-        metric_name: sensor.metric_name, value: c.value, oid: c.oid,
-        if_index: c.if_index, if_name: c.if_name,
-      });
-    }
-  } else {
-    // Backward-compatible: write the standard shared metric_names.
-    samples = candidates.map((c) => ({
-      metric_name: c.std_metric, value: c.value, oid: c.oid,
-      if_index: c.if_index, if_name: c.if_name,
-    }));
-  }
-
-  // Derive interface utilization % from in/out bps + link speed (ifHighSpeed).
-  // Stored as if_<idx>_<dir>_util_pct samples and used for the bandwidth_pct rule
-  // and weather-map link coloring.
-  const utilSamples = [];
-  for (const c of candidates) {
-    if (c.category !== 'interface' || c.value == null || !c.speed_mbps) continue;
-    if (!/_in_bps$|_out_bps$/.test(c.metric || '')) continue;
-    const speedBps = Number(c.speed_mbps) * 1e6;
-    if (!(speedBps > 0)) continue;
-    const dir = /_in_bps$/.test(c.metric) ? 'in' : 'out';
-    const util = Math.min(100, Math.round((Number(c.value) / speedBps) * 1000) / 10);
-    utilSamples.push({
-      metric_name: `if_${c.if_index}_${dir}_util_pct`, value: util,
-      oid: null, if_index: c.if_index, if_name: c.if_name,
-    });
-  }
-  if (utilSamples.length) samples = samples.concat(utilSamples);
+  // Map candidates → rows to persist (selective vs standard set + interface
+  // utilization %). Shared with the remote-agent batch handler in ws-server.js.
+  const samples = candidatesToSamples(candidates, sensors);
 
   // Persist samples (skip ones with no value — e.g. bps on the first poll).
   let written = 0;

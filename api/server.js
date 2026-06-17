@@ -32,6 +32,12 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.28.0': [
+    'Agent-polled devices now get the SAME SNMP coverage as locally-polled ones — full interface stats (status/throughput/utilization), vendor CPU/memory across all 16 supported vendor families, and any custom-OID sensors. Previously a remote agent could only ever report CPU/memory/uptime and ignored sensor selection entirely',
+    'Unified the SNMP brain: the server now pushes each agent device a fetch plan (the exact OIDs its detected vendor needs), the agent fetches them raw, and the server interprets them through the same parser registry the central collector uses. Adding a new device vendor is now a single collector parser file that instantly benefits both local and agent-polled devices — no more hardcoded OIDs living separately in the agent',
+    'Agents auto-detect device vendor (via sysDescr) and the server records it, so the right vendor OIDs are pushed on the next poll',
+    'Bundled agent bumped to v1.4.0 (auto-applied to connected agents via self-update); older agents keep working via the legacy CPU/mem/uptime path until they update',
+  ],
   '1.27.9': [
     'Agents now collect CPU and memory from HP/Aruba ProCurve switches (e.g. 5406Rzl2), which publish those in their own MIB rather than the standard HOST-RESOURCES MIB — previously such switches returned only uptime over SNMP. The agent reads sysObjectID to identify the vendor and falls back to the vendor CPU/memory OIDs when the standard ones are empty',
     'Agent SNMP log line now shows the metrics collected (cpu=…% mem=…%) and the detected vendor, making it obvious when a device is only returning uptime',

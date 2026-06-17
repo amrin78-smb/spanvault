@@ -18,8 +18,17 @@ const path = require('path');
 const crypto = require('crypto');
 const { WebSocketServer } = require('ws');
 const { Pool } = require('pg');
+const { OID } = require('../collector/snmp-session');
+const { detectVendor } = require('../collector/parsers');
+const {
+  collectCandidates, candidatesToSamples, buildFetchPlan, PrefetchedSession,
+} = require('../collector/discovery');
 
 const AGENT_JS = path.join(__dirname, '..', 'agent', 'agent.js');
+
+// Per-device interface octet history for bps deltas on agent-polled devices
+// (mirrors the collector's ifPrev for locally-polled devices).
+const agentIfPrev = new Map();
 
 // Fingerprint + version of the canonical agent.js, advertised to agents so they
 // can self-update. Cached and refreshed when the file's mtime changes.
@@ -201,8 +210,28 @@ async function pushConfigToAgent(ws, agentId) {
     const devices = await sv.query(`
       SELECT id, name, ip_address, snmp_enabled, snmp_version, snmp_community,
              snmp_port, snmp_v3_user, snmp_v3_auth_pass, snmp_v3_priv_pass,
-             poll_interval_seconds, ping_threshold_ms, ping_failures_before_down
+             poll_interval_seconds, ping_threshold_ms, ping_failures_before_down,
+             device_vendor
       FROM monitored_devices WHERE agent_id=$1 AND active=TRUE`, [agentId]);
+
+    // Attach a per-device SNMP fetch plan (the exact OIDs collectCandidates reads
+    // for the device's detected vendor, plus any custom-OID sensors). The agent
+    // fetches these raw and ships an snmp_batch; the server interprets centrally
+    // via the shared collector logic — so agent-polled devices get the same
+    // vendor/interface/sensor coverage as locally-polled ones, with no OID
+    // knowledge living in the agent.
+    for (const d of devices.rows) {
+      if (!d.snmp_enabled) continue;
+      const plan = buildFetchPlan(d.device_vendor);
+      try {
+        const custom = await sv.query(
+          `SELECT oid FROM device_sensors
+            WHERE device_id=$1 AND is_custom=TRUE AND enabled=TRUE AND oid IS NOT NULL`,
+          [d.id]);
+        for (const c of custom.rows) if (c.oid && plan.gets.indexOf(c.oid) === -1) plan.gets.push(c.oid);
+      } catch (_e) { /* device_sensors may be un-migrated — skip custom OIDs */ }
+      d.snmp_plan = plan;
+    }
 
     const settings = await sv.query(
       `SELECT key, value FROM app_settings
@@ -230,6 +259,87 @@ async function pushConfigToAgent(ws, agentId) {
   } catch (err) {
     console.error('[WS] pushConfigToAgent error:', err.message);
   }
+}
+
+// Interpret a remote agent's raw SNMP batch through the shared collector logic
+// and persist the results. The agent fetched the OIDs named in its pushed plan;
+// here we replay them via a PrefetchedSession so collectCandidates() runs exactly
+// as it does for locally-polled devices (vendor CPU/mem fold-in, interface
+// status/bps/utilization, sensor selection).
+async function handleSnmpBatch(agent, msg) {
+  const deviceId = msg.device_id;
+  if (!deviceId) return;
+
+  // Reconstruct varbind values; the agent base64-encodes Buffers as { b: ... }.
+  const dec = (v) => (v && typeof v === 'object' && typeof v.b === 'string')
+    ? Buffer.from(v.b, 'base64') : v;
+  const asStr = (v) => (v == null) ? '' : (Buffer.isBuffer(v) ? v.toString() : String(v));
+  const walks = {};
+  for (const base of Object.keys(msg.walks || {})) {
+    walks[base] = (msg.walks[base] || []).map((r) => ({ oid: r.oid, value: dec(r.value) }));
+  }
+  const gets = {};
+  for (const o of Object.keys(msg.gets || {})) gets[o] = dec(msg.gets[o]);
+
+  // Detect vendor from sysDescr; persist + re-push config when it changes so the
+  // next batch already includes that vendor's OIDs.
+  const vendor = detectVendor(asStr(gets[OID.sysDescr]));
+  try {
+    const vr = await sv.query(`SELECT device_vendor FROM monitored_devices WHERE id=$1`, [deviceId]);
+    const prevVendor = vr.rows[0] ? vr.rows[0].device_vendor : null;
+    if (vendor && vendor !== prevVendor) {
+      await sv.query(`UPDATE monitored_devices SET device_vendor=$2, updated_at=NOW() WHERE id=$1`, [deviceId, vendor]);
+      try { await pushConfigToAgentId(agent.id); } catch (_e) { /* best-effort re-push */ }
+    }
+  } catch (_e) { /* device_vendor column may be un-migrated — proceed with detected vendor */ }
+
+  // Interpret + persist via the shared collector path.
+  let prev = agentIfPrev.get(deviceId);
+  if (!prev) { prev = new Map(); agentIfPrev.set(deviceId, prev); }
+  const session = new PrefetchedSession({ walks, gets });
+  const candidates = await collectCandidates(session, vendor, prev, Date.now());
+
+  let sensors = [];
+  try {
+    const sr = await sv.query(
+      `SELECT sensor_key, sensor_name, category, metric_name, oid
+         FROM device_sensors WHERE device_id=$1 AND enabled=TRUE`, [deviceId]);
+    sensors = sr.rows;
+  } catch (_e) { sensors = []; }
+  const samples = candidatesToSamples(candidates, sensors);
+
+  // Uptime — continuity with the legacy agent path (sysUpTime timeticks).
+  const upt = Number(asStr(gets[OID.sysUpTime]));
+  if (isFinite(upt) && upt > 0) {
+    samples.push({ metric_name: 'uptime', value: upt, oid: OID.sysUpTime, if_index: null, if_name: null });
+  }
+
+  const ts = msg.ts || new Date();
+  let written = 0;
+  for (const s of samples) {
+    if (s.value === null || s.value === undefined || !isFinite(s.value)) continue;
+    await sv.query(
+      `INSERT INTO snmp_results (device_id, ts, oid, metric_name, value, if_index, if_name, agent_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [deviceId, ts, s.oid || null, s.metric_name, s.value, s.if_index || null, s.if_name || null, agent.id]);
+    written += 1;
+  }
+
+  // Custom-OID sensors — arbitrary OIDs the agent fetched as part of the plan.
+  try {
+    const cr = await sv.query(
+      `SELECT oid, sensor_name FROM device_sensors
+        WHERE device_id=$1 AND is_custom=TRUE AND enabled=TRUE AND oid IS NOT NULL`, [deviceId]);
+    for (const cs of cr.rows) {
+      const val = Number(asStr(gets[cs.oid]));
+      if (!isFinite(val)) continue;
+      await sv.query(
+        `INSERT INTO snmp_results (device_id, ts, oid, metric_name, value, if_index, if_name, agent_id)
+         VALUES ($1,$2,$3,$4,$5,NULL,NULL,$6)`,
+        [deviceId, ts, cs.oid, cs.sensor_name, val, agent.id]);
+      written += 1;
+    }
+  } catch (_e) { /* skip custom sensors if table un-migrated */ }
 }
 
 // Push fresh config to an agent by id, if it is currently connected.
@@ -296,6 +406,13 @@ async function handleAgentMessage(agent, msg) {
         [msg.device_id, msg.ts || new Date(), msg.oid, msg.metric_name,
          msg.value, msg.if_index || null, msg.if_name || null, agent.id]
       );
+      break;
+
+    case 'snmp_batch':
+      // Raw varbinds the agent fetched for its server-pushed plan. The server
+      // interprets them centrally through the shared collector logic, so adding a
+      // vendor stays a single collector parser file and instantly covers agents.
+      await handleSnmpBatch(agent, msg);
       break;
 
     case 'service_result':

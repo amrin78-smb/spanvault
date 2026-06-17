@@ -25,7 +25,7 @@ const crypto = require('crypto');
 
 const CONFIG_PATH = path.join(__dirname, 'config.json');
 const BUFFER_PATH = path.join(__dirname, 'buffer.json');
-const VERSION = '1.3.2';
+const VERSION = '1.4.0';
 const MAX_BUFFER = 500;
 
 // ── Config ────────────────────────────────────────────────────
@@ -454,7 +454,77 @@ function schedulePoll(device) {
 
 async function pollDevice(device) {
   await doPing(device);
-  if (device.snmp_enabled) await doSnmp(device);
+  if (!device.snmp_enabled) return;
+  // When the server pushes a fetch plan, act as a raw SNMP transport: fetch the
+  // named OIDs and ship them for central interpretation (full vendor/interface/
+  // sensor coverage). Fall back to the built-in metric poll for older servers
+  // that don't send a plan.
+  if (device.snmp_plan && (device.snmp_plan.walks || device.snmp_plan.gets)) {
+    await runSnmpPlan(device);
+  } else {
+    await doSnmp(device);
+  }
+}
+
+// Raw subtree walk → [{oid, value}] (best-effort, never rejects).
+function snmpWalkRaw(session, baseOid) {
+  return new Promise((resolve) => {
+    const out = [];
+    try {
+      session.subtree(baseOid, 20, (vbs) => {
+        for (const vb of vbs || []) {
+          if (!snmp.isVarbindError(vb)) out.push({ oid: vb.oid, value: vb.value });
+        }
+      }, () => resolve(out));
+    } catch (_e) { resolve(out); }
+  });
+}
+
+// Raw multi-OID GET → [{oid, value}] (errors → []).
+function snmpGetRawMany(session, oids) {
+  return new Promise((resolve) => {
+    try {
+      session.get(oids, (err, vbs) => {
+        if (err || !vbs) return resolve([]);
+        const out = [];
+        for (const vb of vbs) {
+          if (!snmp.isVarbindError(vb)) out.push({ oid: vb.oid, value: vb.value });
+        }
+        resolve(out);
+      });
+    } catch (_e) { resolve([]); }
+  });
+}
+
+// Execute a server-pushed fetch plan and ship the raw varbinds as an snmp_batch.
+// Buffers (Counter64 / OctetString / MAC) are base64-encoded so they survive JSON.
+async function runSnmpPlan(device) {
+  const session = createSnmpSession(device);
+  const label = `${device.name || device.id} (${device.ip_address})`;
+  const plan = device.snmp_plan || {};
+  const enc = (v) => Buffer.isBuffer(v) ? { b: v.toString('base64') } : v;
+  try {
+    const walks = {};
+    let walkCount = 0;
+    for (const base of plan.walks || []) {
+      const rows = await snmpWalkRaw(session, base);
+      walks[base] = rows.map((r) => ({ oid: r.oid, value: enc(r.value) }));
+      walkCount += rows.length;
+    }
+    const gets = {};
+    const getOids = plan.gets || [];
+    for (let i = 0; i < getOids.length; i += 16) {
+      const chunk = getOids.slice(i, i + 16);
+      const rows = await snmpGetRawMany(session, chunk);
+      for (const r of rows) gets[r.oid] = enc(r.value);
+    }
+    send({ type: 'snmp_batch', device_id: device.id, ts: new Date().toISOString(), walks, gets });
+    console.log(`[Agent] SNMP ${label}: shipped batch (${walkCount} walk varbinds, ${Object.keys(gets).length} scalars)`);
+  } catch (e) {
+    console.error(`[Agent] SNMP plan error for ${label}:`, e.message);
+  } finally {
+    try { session.close(); } catch (_e) { /* ignore */ }
+  }
 }
 
 // ── ICMP ──────────────────────────────────────────────────────

@@ -320,6 +320,88 @@ async function collectCandidates(session, vendor, prev, now, want) {
   return system.concat(candidates);
 }
 
+// ── Shared map: collectCandidates() output → snmp_results rows ──
+// Used by both the local collector and the remote-agent batch handler so the
+// two persist identically. sensors = enabled device_sensors rows (empty array
+// → backward-compatible standard shared metric_names). Derives interface
+// utilization % from in/out bps + link speed, same as the collector core.
+function candidatesToSamples(candidates, sensors) {
+  let samples;
+  if (sensors && sensors.length) {
+    const byKey = new Map(sensors.map((s) => [s.sensor_key, s]));
+    samples = [];
+    for (const c of candidates) {
+      const sensor = byKey.get(c.key);
+      if (!sensor) continue;
+      samples.push({
+        metric_name: sensor.metric_name, value: c.value, oid: c.oid,
+        if_index: c.if_index, if_name: c.if_name,
+      });
+    }
+  } else {
+    samples = candidates.map((c) => ({
+      metric_name: c.std_metric, value: c.value, oid: c.oid,
+      if_index: c.if_index, if_name: c.if_name,
+    }));
+  }
+  const utilSamples = [];
+  for (const c of candidates) {
+    if (c.category !== 'interface' || c.value == null || !c.speed_mbps) continue;
+    if (!/_in_bps$|_out_bps$/.test(c.metric || '')) continue;
+    const speedBps = Number(c.speed_mbps) * 1e6;
+    if (!(speedBps > 0)) continue;
+    const dir = /_in_bps$/.test(c.metric) ? 'in' : 'out';
+    const util = Math.min(100, Math.round((Number(c.value) / speedBps) * 1000) / 10);
+    utilSamples.push({
+      metric_name: `if_${c.if_index}_${dir}_util_pct`, value: util,
+      oid: null, if_index: c.if_index, if_name: c.if_name,
+    });
+  }
+  return utilSamples.length ? samples.concat(utilSamples) : samples;
+}
+
+// Enumerate exactly the OIDs collectCandidates() reads for a vendor, so a remote
+// agent can fetch them in one batch and the server can replay them through a
+// PrefetchedSession. Returns { walks: [subtree bases], gets: [scalar OIDs] }.
+// (sysDescr/sysName/sysUpTime are always fetched so the server can detect the
+// vendor and record uptime.)
+function buildFetchPlan(vendor) {
+  const walks = [
+    OID.hrProcessorLoad, OID.hrStorageType, OID.hrStorageSize, OID.hrStorageUsed,
+    OID.ifName, OID.ifDescr, OID.ifAlias, OID.ifHighSpeed, OID.ifPhysAddress,
+    OID.ifOperStatus, OID.ifHCInOctets, OID.ifHCOutOctets,
+  ];
+  const gets = [OID.sysDescr, OID.sysName, OID.sysUpTime];
+  const parser = getParser(vendor || 'generic');
+  for (const m of parser.metrics || []) {
+    if (m.kind === 'table') walks.push(m.oid); else gets.push(m.oid);
+  }
+  return { walks: Array.from(new Set(walks)), gets: Array.from(new Set(gets)) };
+}
+
+// A stand-in net-snmp session backed by varbinds an agent already fetched, so
+// collectCandidates() runs unchanged server-side. Implements just the surface
+// snmp-session.js's walk()/get() use: subtree(base, maxRep, feed, done) and
+// get(oids, cb). raw = { walks: { base: [{oid,value}] }, gets: { oid: value } }.
+class PrefetchedSession {
+  constructor(raw) {
+    this._walks = (raw && raw.walks) || {};
+    this._gets = (raw && raw.gets) || {};
+  }
+  subtree(baseOid, _maxRep, feedCb, doneCb) {
+    try { if (typeof feedCb === 'function') feedCb(this._walks[baseOid] || []); } catch (_e) { /* ignore */ }
+    if (typeof doneCb === 'function') doneCb();
+  }
+  get(oids, cb) {
+    const vbs = (oids || []).map((o) => ({
+      oid: o,
+      value: Object.prototype.hasOwnProperty.call(this._gets, o) ? this._gets[o] : null,
+    }));
+    cb(null, vbs);
+  }
+  close() { /* no-op */ }
+}
+
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
 // Bound an SNMP operation so an unreachable device can't hang the request.
@@ -402,4 +484,7 @@ async function snmpTest(device, overallMs) {
   }
 }
 
-module.exports = { collectCandidates, discoverDevice, snmpTest, fmtValue, unitFor };
+module.exports = {
+  collectCandidates, discoverDevice, snmpTest, fmtValue, unitFor,
+  candidatesToSamples, buildFetchPlan, PrefetchedSession,
+};
