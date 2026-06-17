@@ -6,10 +6,13 @@ import { useApi, apiGet, apiSend } from '@/lib/api';
 import { StatusDot } from '@/components/StatusDot';
 import { Loading, ErrorBox } from '@/components/ui';
 import {
-  type FullMap, type MapDevice, type MapConnection, type MapLabel,
+  type FullMap, type MapDevice, type MapConnection, type MapLabel, type MapShape,
   statusFill, deviceCenter, normalizeMap,
 } from '@/lib/mapTypes';
-import { MapGlyph, GlyphSwatch, DEVICE_GLYPHS, deviceGlyphFor } from '@/lib/mapIcons';
+import {
+  MapGlyph, GlyphSwatch, DEVICE_GLYPHS, deviceGlyphFor, BASIC_SHAPES, SHAPE_GLYPHS,
+} from '@/lib/mapIcons';
+import { ShapeEl } from '@/components/SVGMapView';
 
 const DEFAULT_LINE = '#94a3b8';
 const CANVAS_PRESETS = [
@@ -27,15 +30,22 @@ type Selection =
   | { kind: 'device'; id: number }
   | { kind: 'connection'; id: number }
   | { kind: 'label'; id: number }
+  | { kind: 'shape'; id: number }
   | null;
-type Ctx = { x: number; y: number; kind: 'device' | 'connection' | 'label'; id: number } | null;
+type Ctx = { x: number; y: number; kind: 'device' | 'connection' | 'label' | 'shape'; id: number } | null;
 type Drag =
-  | { kind: 'device' | 'label'; id: number; dx: number; dy: number }
-  | { kind: 'resize'; id: number; handle: string; ox: number; oy: number; ow: number; oh: number; sx: number; sy: number }
+  | { kind: 'device' | 'label' | 'shape'; id: number; dx: number; dy: number }
+  | { kind: 'resize'; id: number; target: 'device' | 'shape'; handle: string; ox: number; oy: number; ow: number; oh: number; sx: number; sy: number }
   | null;
 
 const MIN_W = 60;
 const MIN_H = 40;
+
+// <input type="color"> needs a 6-digit hex; non-hex (rgba/null) → '' so the
+// caller can fall back to a default.
+function normalizeColor(c: string | null | undefined): string {
+  return c && /^#[0-9a-f]{6}$/i.test(c) ? c : '';
+}
 
 export default function MapEditorPage() {
   const { id } = useParams<{ id: string }>();
@@ -54,6 +64,7 @@ export default function MapEditorPage() {
   const [devices, setDevices] = useState<MapDevice[]>([]);
   const [connections, setConnections] = useState<MapConnection[]>([]);
   const [labels, setLabels] = useState<MapLabel[]>([]);
+  const [shapes, setShapes] = useState<MapShape[]>([]);
 
   const [tool, setTool] = useState<Tool>('select');
   const [selection, setSelection] = useState<Selection>(null);
@@ -87,6 +98,7 @@ export default function MapEditorPage() {
     setDevices(m.devices);
     setConnections(m.connections);
     setLabels(m.labels);
+    setShapes(m.shapes || []);
   }, [loaded.data]);
 
   // ESC cancels an in-progress connection / context menu / label edit.
@@ -169,13 +181,59 @@ export default function MapEditorPage() {
     const min = devices.reduce((m, d) => Math.min(m, Number(d.z_index) || 0), 0);
     updateDevice(deviceId, { z_index: min - 1 });
   }
-  // Start a resize drag from one of a node's 8 handles.
-  function onResizeStart(e: React.MouseEvent, d: MapDevice, handle: string) {
+  // Start a resize drag from one of an element's 8 handles (device or shape).
+  function onResizeStart(
+    e: React.MouseEvent,
+    item: { id: number; x: number; y: number; width: number; height: number },
+    target: 'device' | 'shape', handle: string,
+  ) {
     e.stopPropagation();
-    setSelection({ kind: 'device', id: d.id });
+    setSelection({ kind: target, id: item.id });
     const p = toSvg(e.clientX, e.clientY);
-    setDrag({ kind: 'resize', id: d.id, handle,
-      ox: Number(d.x), oy: Number(d.y), ow: Number(d.width), oh: Number(d.height), sx: p.x, sy: p.y });
+    setDrag({ kind: 'resize', id: item.id, target, handle,
+      ox: Number(item.x), oy: Number(item.y), ow: Number(item.width), oh: Number(item.height), sx: p.x, sy: p.y });
+  }
+
+  // ── Shape interactions ───────────────────────────────────────
+  function addShape(kind: string) {
+    const isGlyph = SHAPE_GLYPHS.some((g) => g.key === kind);
+    const w = kind === 'line' || kind === 'arrow' ? 140 : (isGlyph ? 80 : 140);
+    const h = kind === 'line' ? 2 : kind === 'arrow' ? 40 : (isGlyph ? 80 : 90);
+    const cx = canvasW / 2, cy = canvasH / 2;
+    const s: MapShape = {
+      id: nextTemp(), kind, x: cx - w / 2, y: cy - h / 2, width: w, height: h,
+      fill: isGlyph || kind === 'line' || kind === 'arrow' || kind === 'text' ? null
+        : kind === 'zone' ? 'rgba(59,130,246,0.06)' : '#dbeafe',
+      stroke: '#334155', stroke_width: 2,
+      text: kind === 'text' ? 'Text' : kind === 'zone' ? 'Zone' : null,
+      font_size: 14, text_color: '#1a2744', rotation: 0, z_index: 0,
+    };
+    setShapes((prev) => [...prev, s]);
+    setSelection({ kind: 'shape', id: s.id });
+    setTool('select');
+  }
+  function onShapeMouseDown(e: React.MouseEvent, s: MapShape) {
+    e.stopPropagation();
+    setCtx(null);
+    if (tool !== 'select') return;
+    setSelection({ kind: 'shape', id: s.id });
+    const p = toSvg(e.clientX, e.clientY);
+    setDrag({ kind: 'shape', id: s.id, dx: p.x - Number(s.x), dy: p.y - Number(s.y) });
+  }
+  function updateShape(shapeId: number, patch: Partial<MapShape>) {
+    setShapes((prev) => prev.map((s) => (s.id === shapeId ? { ...s, ...patch } : s)));
+  }
+  function deleteShape(shapeId: number) {
+    setShapes((prev) => prev.filter((s) => s.id !== shapeId));
+    setSelection(null);
+  }
+  function shapeToFront(shapeId: number) {
+    const max = shapes.reduce((m, s) => Math.max(m, Number(s.z_index) || 0), 0);
+    updateShape(shapeId, { z_index: max + 1 });
+  }
+  function shapeToBack(shapeId: number) {
+    const min = shapes.reduce((m, s) => Math.min(m, Number(s.z_index) || 0), 0);
+    updateShape(shapeId, { z_index: min - 1 });
   }
 
   // ── Label interactions ───────────────────────────────────────
@@ -235,12 +293,18 @@ export default function MapEditorPage() {
       // Clamp to a minimum, keeping the anchored (opposite) edge fixed.
       if (nw < MIN_W) { if (h.includes('w')) nx = drag.ox + (drag.ow - MIN_W); nw = MIN_W; }
       if (nh < MIN_H) { if (h.includes('n')) ny = drag.oy + (drag.oh - MIN_H); nh = MIN_H; }
-      setDevices((prev) => prev.map((d) => (d.id === drag.id
-        ? { ...d, x: nx, y: ny, width: Math.round(nw), height: Math.round(nh) } : d)));
+      const geo = { x: nx, y: ny, width: Math.round(nw), height: Math.round(nh) };
+      if (drag.target === 'shape') {
+        setShapes((prev) => prev.map((s) => (s.id === drag.id ? { ...s, ...geo } : s)));
+      } else {
+        setDevices((prev) => prev.map((d) => (d.id === drag.id ? { ...d, ...geo } : d)));
+      }
       return;
     }
     if (drag.kind === 'device') {
       setDevices((prev) => prev.map((d) => (d.id === drag.id ? { ...d, x: p.x - drag.dx, y: p.y - drag.dy } : d)));
+    } else if (drag.kind === 'shape') {
+      setShapes((prev) => prev.map((s) => (s.id === drag.id ? { ...s, x: p.x - drag.dx, y: p.y - drag.dy } : s)));
     } else {
       setLabels((prev) => prev.map((l) => (l.id === drag.id ? { ...l, x: p.x - drag.dx, y: p.y - drag.dy } : l)));
     }
@@ -293,12 +357,19 @@ export default function MapEditorPage() {
           x: l.x, y: l.y, text: l.text, font_size: l.font_size, color: l.color, bold: l.bold,
           z_index: l.z_index,
         })),
+        shapes: shapes.map((s) => ({
+          kind: s.kind, x: s.x, y: s.y, width: s.width, height: s.height,
+          fill: s.fill, stroke: s.stroke, stroke_width: s.stroke_width,
+          text: s.text, font_size: s.font_size, text_color: s.text_color,
+          rotation: s.rotation, z_index: s.z_index,
+        })),
       });
       // Re-hydrate from saved state so temp ids become real ids.
       const m = normalizeMap(full);
       setDevices(m.devices);
       setConnections(m.connections);
       setLabels(m.labels);
+      setShapes(m.shapes || []);
       setSelection(null);
       setSavedAt(Date.now());
       setTimeout(() => setSavedAt(null), 2500);
@@ -343,6 +414,7 @@ export default function MapEditorPage() {
       <EditorToolbar
         name={name} setName={setName}
         tool={tool} setTool={setTool}
+        onAddShape={addShape}
         canvasW={canvasW} canvasH={canvasH}
         onCanvasSize={(w, h) => { setCanvasW(w); setCanvasH(h); }}
         onUploadBg={onUploadBg} onRemoveBg={onRemoveBg} hasBg={!!bgImage}
@@ -399,6 +471,16 @@ export default function MapEditorPage() {
               <rect x="0" y="0" width={canvasW} height={canvasH} fill={bgColor} />
             )}
 
+            {/* Decorative shapes (z-sorted, beneath connections/nodes) */}
+            {[...shapes].sort((a, b) => (Number(a.z_index) || 0) - (Number(b.z_index) || 0) || a.id - b.id).map((s) => (
+              <EditorShape
+                key={s.id} shape={s}
+                selected={selection?.kind === 'shape' && selection.id === s.id}
+                onMouseDown={(e) => onShapeMouseDown(e, s)}
+                onContext={(x, y) => setCtx({ x, y, kind: 'shape', id: s.id })}
+              />
+            ))}
+
             {connections.map((c) => (
               <EditorConnection
                 key={c.id} conn={c} from={byId.get(c.from_item_id)} to={byId.get(c.to_item_id)}
@@ -442,11 +524,16 @@ export default function MapEditorPage() {
               />
             ))}
 
-            {/* Resize handles for the selected device (select tool only) */}
+            {/* Resize handles for the selected device/shape (select tool only) */}
             {tool === 'select' && selection?.kind === 'device' && (() => {
               const d = byId.get(selection.id);
               if (!d) return null;
-              return <ResizeHandles device={d} onResizeStart={onResizeStart} />;
+              return <ResizeHandles item={d} target="device" onResizeStart={onResizeStart} />;
+            })()}
+            {tool === 'select' && selection?.kind === 'shape' && (() => {
+              const s = shapes.find((x) => x.id === selection.id);
+              if (!s) return null;
+              return <ResizeHandles item={s} target="shape" onResizeStart={onResizeStart} />;
             })()}
           </svg>
 
@@ -457,6 +544,7 @@ export default function MapEditorPage() {
               onAction={() => {
                 if (ctx.kind === 'device') removeDevice(ctx.id);
                 else if (ctx.kind === 'connection') deleteConnection(ctx.id);
+                else if (ctx.kind === 'shape') deleteShape(ctx.id);
                 else deleteLabel(ctx.id);
                 setCtx(null);
               }}
@@ -467,12 +555,17 @@ export default function MapEditorPage() {
         <SelectionPanel
           selection={selection}
           device={selection?.kind === 'device' ? devices.find((d) => d.id === selection.id) || null : null}
+          shape={selection?.kind === 'shape' ? shapes.find((s) => s.id === selection.id) || null : null}
           connection={selection?.kind === 'connection' ? connections.find((c) => c.id === selection.id) || null : null}
           label={selection?.kind === 'label' ? labels.find((l) => l.id === selection.id) || null : null}
           onDeviceChange={updateDevice}
           onDeviceFront={deviceToFront}
           onDeviceBack={deviceToBack}
           onDeviceRemove={removeDevice}
+          onShapeChange={updateShape}
+          onShapeFront={shapeToFront}
+          onShapeBack={shapeToBack}
+          onShapeDelete={deleteShape}
           onConnChange={updateConnection}
           onConnDelete={deleteConnection}
           onLabelChange={updateLabel}
@@ -485,11 +578,12 @@ export default function MapEditorPage() {
 
 // ── Editor toolbar (top-level component) ───────────────────────
 function EditorToolbar({
-  name, setName, tool, setTool, canvasW, canvasH, onCanvasSize,
+  name, setName, tool, setTool, onAddShape, canvasW, canvasH, onCanvasSize,
   onUploadBg, onRemoveBg, hasBg, onSave, saving, savedAt, onView, onShare, isPublic, shareUrl,
 }: {
   name: string; setName: (v: string) => void;
   tool: Tool; setTool: (t: Tool) => void;
+  onAddShape: (kind: string) => void;
   canvasW: number; canvasH: number; onCanvasSize: (w: number, h: number) => void;
   onUploadBg: (f: File) => void; onRemoveBg: () => void; hasBg: boolean;
   onSave: () => void; saving: boolean; savedAt: number | null;
@@ -507,6 +601,16 @@ function EditorToolbar({
             {t === 'select' ? 'Select' : t === 'line' ? 'Line' : 'Label'}
           </button>
         ))}
+        <select className="sv-select sm" value="" title="Add a shape or icon"
+          onChange={(e) => { if (e.target.value) { onAddShape(e.target.value); e.target.value = ''; } }}>
+          <option value="">+ Shape / Icon…</option>
+          <optgroup label="Shapes">
+            {BASIC_SHAPES.map((b) => <option key={b.key} value={b.key}>{b.label}</option>)}
+          </optgroup>
+          <optgroup label="Network icons">
+            {SHAPE_GLYPHS.map((g) => <option key={g.key} value={g.key}>{g.label}</option>)}
+          </optgroup>
+        </select>
       </div>
 
       <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/gif" style={{ display: 'none' }}
@@ -679,11 +783,13 @@ function EditorDeviceNode({
   );
 }
 
-// ── Resize handles for the selected device (top-level component) ───
-function ResizeHandles({ device, onResizeStart }: {
-  device: MapDevice; onResizeStart: (e: React.MouseEvent, d: MapDevice, handle: string) => void;
+// ── Resize handles for the selected element (top-level component) ───
+function ResizeHandles({ item, target, onResizeStart }: {
+  item: { id: number; x: number; y: number; width: number; height: number };
+  target: 'device' | 'shape';
+  onResizeStart: (e: React.MouseEvent, item: { id: number; x: number; y: number; width: number; height: number }, target: 'device' | 'shape', handle: string) => void;
 }) {
-  const x = Number(device.x), y = Number(device.y), w = Number(device.width), h = Number(device.height);
+  const x = Number(item.x), y = Number(item.y), w = Number(item.width), h = Number(item.height);
   const hs = 8;
   const pts: [string, number, number][] = [
     ['nw', x, y], ['n', x + w / 2, y], ['ne', x + w, y],
@@ -699,8 +805,33 @@ function ResizeHandles({ device, onResizeStart }: {
       <rect x={x} y={y} width={w} height={h} fill="none" stroke="#3b82f6" strokeWidth={1} strokeDasharray="4 3" pointerEvents="none" />
       {pts.map(([k, hx, hy]) => (
         <rect key={k} x={hx - hs / 2} y={hy - hs / 2} width={hs} height={hs} fill="#fff" stroke="#3b82f6" strokeWidth={1.5}
-          style={{ cursor: cursors[k] }} onMouseDown={(e) => onResizeStart(e, device, k)} />
+          style={{ cursor: cursors[k] }} onMouseDown={(e) => onResizeStart(e, item, target, k)} />
       ))}
+    </g>
+  );
+}
+
+// ── Editor decorative shape (top-level component) ──────────────
+function EditorShape({
+  shape, selected, onMouseDown, onContext,
+}: {
+  shape: MapShape; selected: boolean;
+  onMouseDown: (e: React.MouseEvent) => void; onContext: (x: number, y: number) => void;
+}) {
+  const x = Number(shape.x), y = Number(shape.y), w = Number(shape.width), h = Number(shape.height);
+  return (
+    <g
+      onMouseDown={onMouseDown}
+      onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); onContext(e.clientX, e.clientY); }}
+      style={{ cursor: 'move' }}
+    >
+      {/* Transparent hit area so thin/empty shapes (line, glyph outline) are grabbable */}
+      <rect x={x} y={y} width={Math.max(w, 10)} height={Math.max(h, 10)} fill="transparent" />
+      <ShapeEl shape={shape} />
+      {selected && (
+        <rect x={x - 3} y={y - 3} width={w + 6} height={h + 6} fill="none"
+          stroke="#3b82f6" strokeWidth={1.5} strokeDasharray="5 4" pointerEvents="none" />
+      )}
     </g>
   );
 }
@@ -755,7 +886,8 @@ function ContextMenu({
     return () => window.removeEventListener('click', close);
   }, [onClose]);
   const labelText = ctx.kind === 'device' ? 'Remove from map'
-    : ctx.kind === 'connection' ? 'Delete connection' : 'Delete label';
+    : ctx.kind === 'connection' ? 'Delete connection'
+    : ctx.kind === 'shape' ? 'Delete shape' : 'Delete label';
   return (
     <div className="sv-ctxmenu" style={{ left: ctx.x, top: ctx.y }} onClick={(e) => e.stopPropagation()}>
       <button onClick={onAction}>{labelText}</button>
@@ -765,22 +897,75 @@ function ContextMenu({
 
 // ── Selection properties panel (top-level component) ───────────
 function SelectionPanel({
-  selection, device, connection, label,
+  selection, device, shape, connection, label,
   onDeviceChange, onDeviceFront, onDeviceBack, onDeviceRemove,
+  onShapeChange, onShapeFront, onShapeBack, onShapeDelete,
   onConnChange, onConnDelete, onLabelChange, onLabelDelete,
 }: {
   selection: Selection;
   device: MapDevice | null;
+  shape: MapShape | null;
   connection: MapConnection | null; label: MapLabel | null;
   onDeviceChange: (id: number, patch: Partial<MapDevice>) => void;
   onDeviceFront: (id: number) => void;
   onDeviceBack: (id: number) => void;
   onDeviceRemove: (id: number) => void;
+  onShapeChange: (id: number, patch: Partial<MapShape>) => void;
+  onShapeFront: (id: number) => void;
+  onShapeBack: (id: number) => void;
+  onShapeDelete: (id: number) => void;
   onConnChange: (id: number, patch: Partial<MapConnection>) => void;
   onConnDelete: (id: number) => void;
   onLabelChange: (id: number, patch: Partial<MapLabel>) => void;
   onLabelDelete: (id: number) => void;
 }) {
+  if (selection?.kind === 'shape' && shape) {
+    const hasFill = !['line', 'arrow'].includes(shape.kind);
+    const hasText = ['text', 'zone'].includes(shape.kind);
+    return (
+      <div className="sv-editor-props">
+        <h3>{(SHAPE_GLYPHS.find((g) => g.key === shape.kind) || BASIC_SHAPES.find((b) => b.key === shape.kind))?.label || 'Shape'}</h3>
+        {hasFill && (
+          <label className="sv-field">Fill
+            <input type="color" className="sv-input" value={normalizeColor(shape.fill) || '#dbeafe'}
+              onChange={(e) => onShapeChange(shape.id, { fill: e.target.value })} style={{ height: 36, padding: 3 }} />
+          </label>
+        )}
+        <label className="sv-field">Line color
+          <input type="color" className="sv-input" value={normalizeColor(shape.stroke) || '#334155'}
+            onChange={(e) => onShapeChange(shape.id, { stroke: e.target.value })} style={{ height: 36, padding: 3 }} />
+        </label>
+        <label className="sv-field">Line width
+          <input type="number" className="sv-input" value={Number(shape.stroke_width) || 2} min={1} max={12}
+            onChange={(e) => onShapeChange(shape.id, { stroke_width: parseInt(e.target.value, 10) || 2 })} />
+        </label>
+        {hasFill && !hasText && (
+          <button className="sv-btn ghost sm" onClick={() => onShapeChange(shape.id, { fill: null })}>Clear fill</button>
+        )}
+        {hasText && (
+          <>
+            <label className="sv-field">Text
+              <input className="sv-input" value={shape.text || ''}
+                onChange={(e) => onShapeChange(shape.id, { text: e.target.value })} />
+            </label>
+            <label className="sv-field">Text size
+              <input type="number" className="sv-input" value={Number(shape.font_size) || 14} min={8} max={72}
+                onChange={(e) => onShapeChange(shape.id, { font_size: parseInt(e.target.value, 10) || 14 })} />
+            </label>
+            <label className="sv-field">Text color
+              <input type="color" className="sv-input" value={normalizeColor(shape.text_color) || '#1a2744'}
+                onChange={(e) => onShapeChange(shape.id, { text_color: e.target.value })} style={{ height: 36, padding: 3 }} />
+            </label>
+          </>
+        )}
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button className="sv-btn ghost sm" style={{ flex: 1 }} onClick={() => onShapeFront(shape.id)}>Bring to front</button>
+          <button className="sv-btn ghost sm" style={{ flex: 1 }} onClick={() => onShapeBack(shape.id)}>Send to back</button>
+        </div>
+        <button className="sv-btn ghost sm" onClick={() => onShapeDelete(shape.id)}>Delete shape</button>
+      </div>
+    );
+  }
   if (selection?.kind === 'device' && device) {
     const effectiveGlyph = device.icon_type && device.icon_type !== 'auto'
       ? device.icon_type : deviceGlyphFor(device.device_name);

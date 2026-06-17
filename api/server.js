@@ -32,6 +32,11 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.32.0': [
+    'Map editor can now add decorative, non-device elements: pick from the new "+ Shape / Icon" menu to drop network glyphs (cloud, internet, WAN, router, switch, firewall, server, load balancer, access point, database, building) or basic shapes (rectangle, ellipse, zone box, line, arrow, text). Each is draggable, resizable (8 handles), colorable (fill / line color / width), and supports bring-to-front / send-to-back',
+    'Zone boxes and text annotations let you label regions of the diagram (e.g. DMZ, WAN edge, a site); shapes render on the map view and public share too',
+    'Decorative icons are built-in inline SVG (no added dependency) and store as tiny rows, so this adds negligible app size and database footprint',
+  ],
   '1.31.0': [
     'Network map nodes are now resizable — select a node and drag any of its 8 handles, or set an exact width/height in the properties panel. Long device names no longer touch/overflow the box edge: in Box style the label wraps inside the node, and the new Icon style puts the label beneath the glyph (unbounded)',
     'Each node can be switched between Box style (filled status box) and Icon style (a device glyph — router/switch/firewall/server/AP/etc., colored by status — with the name beneath). Icons are picked automatically from the device type or chosen manually',
