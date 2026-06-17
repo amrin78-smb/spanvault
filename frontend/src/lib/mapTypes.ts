@@ -13,6 +13,7 @@ export type MapDevice = {
   height: number;
   locked?: boolean;      // editor: can't be moved/resized while locked
   group_id?: number | null; // editor: elements sharing a group_id move/select together
+  drill_map_id?: number | null; // clicking this node opens the referenced child map
   // Joined live device fields (present on GET, absent for unlinked nodes):
   device_name?: string | null;
   ip_address?: string | null;
@@ -150,6 +151,7 @@ export function normalizeMap(m: FullMap): FullMap {
       icon_type: d.icon_type || 'auto',
       locked: !!d.locked,
       group_id: d.group_id == null ? null : Number(d.group_id),
+      drill_map_id: d.drill_map_id == null ? null : Number(d.drill_map_id),
       latest_cpu_pct: d.latest_cpu_pct == null ? null : Number(d.latest_cpu_pct),
       latest_mem_pct: d.latest_mem_pct == null ? null : Number(d.latest_mem_pct),
       uptime_24h_pct: d.uptime_24h_pct == null ? null : Number(d.uptime_24h_pct),

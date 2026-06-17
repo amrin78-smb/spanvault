@@ -32,6 +32,11 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.42.0': [
+    'Drill-down sub-maps (Phase 4): a map node can now open a child map (campus → building → rack). Set a node\'s "Drill-down to map" target in the editor; on the live view that node shows a ⊞ badge and clicking it opens the linked map instead of the device page. Cleared automatically if the target map is deleted',
+    'NOC Wallboard (Phase 3): a new full-screen rotating display at /maps/wall (linked from the Maps page) cycles through all maps with live status, with play/pause, prev/next, an interval selector (10/15/30/60s) and a fullscreen toggle — ideal for an operations wall display',
+    'Map export (Phase 3): export the current map from the view page as SVG (lossless) or PNG. SVG preserves everything including HTML node labels; PNG rasterizes for easy sharing (HTML labels may not appear in PNG in some browsers — use SVG for full fidelity)',
+  ],
   '1.41.0': [
     'Map elements can now be grouped: select 2+ devices/shapes/labels and press Ctrl+G (or use the Group button) to bind them — clicking any member then selects and moves the whole group as one. Ctrl+Shift+G (or Ungroup) releases them',
     'Grouping is saved with the layout (a group_id tag on map devices/shapes/labels) and survives reload; locked members inside a group still stay put while the rest of the group moves',
@@ -2771,7 +2776,7 @@ async function fetchFullMap(mapId) {
   if (!map) return null;
   const devices = await sv.query(`
     SELECT md.id, md.device_id, md.x, md.y, md.label, md.icon_type, md.width, md.height,
-           md.z_index, md.node_style, md.locked, md.group_id,
+           md.z_index, md.node_style, md.locked, md.group_id, md.drill_map_id,
            d.name AS device_name, d.ip_address, d.site_name,
            d.current_status, d.last_response_ms, d.last_seen_at,
            d.is_gateway, d.alert_suppressed,
@@ -2943,12 +2948,13 @@ app.put('/api/maps/:id/layout', wrap(async (req, res) => {
     const idMap = new Map(); // client device id → new db id
     for (const d of devices) {
       const r = await client.query(`
-        INSERT INTO map_devices (map_id, device_id, x, y, label, icon_type, width, height, z_index, node_style, locked, group_id)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id
+        INSERT INTO map_devices (map_id, device_id, x, y, label, icon_type, width, height, z_index, node_style, locked, group_id, drill_map_id)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id
       `, [id, d.device_id || null, Number(d.x) || 0, Number(d.y) || 0,
           d.label || null, d.icon_type || 'circle', safeInt(d.width, 120), safeInt(d.height, 60),
           safeInt(d.z_index, 0), d.node_style === 'icon' ? 'icon' : 'box', !!d.locked,
-          Number.isFinite(Number(d.group_id)) ? Number(d.group_id) : null]);
+          Number.isFinite(Number(d.group_id)) ? Number(d.group_id) : null,
+          Number.isFinite(Number(d.drill_map_id)) ? Number(d.drill_map_id) : null]);
       if (d.id !== undefined && d.id !== null) idMap.set(String(d.id), r.rows[0].id);
     }
 

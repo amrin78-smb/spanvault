@@ -50,6 +50,7 @@ export default function MapsPage() {
       <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
         <h1 className="sv-page-title" style={{ margin: 0 }}>Maps</h1>
         <div style={{ flex: 1 }} />
+        <a className="sv-btn ghost sm tint-violet" href="/maps/wall" target="_blank" rel="noopener noreferrer" title="Full-screen rotating wallboard">Wallboard ↗</a>
         {canEdit && <button className="sv-btn" onClick={() => setShowCreate(true)}>+ New Map</button>}
       </div>
       <p className="sv-page-sub">Design interactive network maps with live device status.</p>

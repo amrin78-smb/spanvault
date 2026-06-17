@@ -507,6 +507,10 @@ ALTER TABLE map_devices ADD COLUMN IF NOT EXISTS group_id INTEGER;
 ALTER TABLE map_shapes  ADD COLUMN IF NOT EXISTS group_id INTEGER;
 ALTER TABLE map_labels  ADD COLUMN IF NOT EXISTS group_id INTEGER;
 
+-- Drill-down: a node can open a child map (campus → building → rack). References
+-- another sv_maps row; cleared if that map is deleted.
+ALTER TABLE map_devices ADD COLUMN IF NOT EXISTS drill_map_id INTEGER REFERENCES sv_maps(id) ON DELETE SET NULL;
+
 -- Decorative, non-device elements: basic shapes (rect/ellipse/arrow/line/text)
 -- and built-in network glyphs (cloud/internet/router/switch/firewall/server/...).
 -- The glyph artwork lives in client code; here we only store the kind + geometry

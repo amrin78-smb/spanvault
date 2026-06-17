@@ -6,7 +6,7 @@ import { useApi, apiGet, apiSend } from '@/lib/api';
 import { StatusDot } from '@/components/StatusDot';
 import { Loading, ErrorBox } from '@/components/ui';
 import {
-  type FullMap, type MapDevice, type MapConnection, type MapLabel, type MapShape,
+  type FullMap, type MapDevice, type MapConnection, type MapLabel, type MapShape, type MapSummary,
   statusFill, deviceCenter, normalizeMap, connLive, fmtBps, utilColor, elbowPoints,
 } from '@/lib/mapTypes';
 import {
@@ -856,6 +856,7 @@ export default function MapEditorPage() {
           id: d.id, device_id: d.device_id, x: d.x, y: d.y,
           label: d.label, icon_type: d.icon_type, node_style: d.node_style,
           z_index: d.z_index, width: d.width, height: d.height, locked: d.locked, group_id: d.group_id,
+          drill_map_id: d.drill_map_id,
         })),
         connections: connections.map((c) => ({
           from_item_id: c.from_item_id, to_item_id: c.to_item_id,
@@ -1105,6 +1106,7 @@ export default function MapEditorPage() {
           connection={selection?.kind === 'connection' ? connections.find((c) => c.id === selection.id) || null : null}
           connFromDevice={selConn ? devices.find((d) => d.id === selConn.from_item_id) || null : null}
           connToDevice={selConn ? devices.find((d) => d.id === selConn.to_item_id) || null : null}
+          currentMapId={Number(id)}
           label={selection?.kind === 'label' ? labels.find((l) => l.id === selection.id) || null : null}
           onDeviceChange={updateDevice}
           onDeviceFront={deviceToFront}
@@ -1659,9 +1661,26 @@ function ConnLiveReadout({ connection }: { connection: MapConnection }) {
   );
 }
 
+// ── Drill-down target picker (top-level component) ─────────────
+function DrillMapSelect({ currentMapId, value, onChange }: {
+  currentMapId: number; value: number | null; onChange: (v: number | null) => void;
+}) {
+  const maps = useApi<MapSummary[]>('/api/maps', 0);
+  const rows = (maps.data || []).filter((m) => m.id !== currentMapId);
+  return (
+    <label className="sv-field">Drill-down to map
+      <select className="sv-select" value={value == null ? '' : String(value)}
+        onChange={(e) => onChange(e.target.value === '' ? null : parseInt(e.target.value, 10))}>
+        <option value="">— none (opens device page) —</option>
+        {rows.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+      </select>
+    </label>
+  );
+}
+
 // ── Selection properties panel (top-level component) ───────────
 function SelectionPanel({
-  selection, device, shape, connection, connFromDevice, connToDevice, label,
+  selection, device, shape, connection, connFromDevice, connToDevice, label, currentMapId,
   onDeviceChange, onDeviceFront, onDeviceBack, onDeviceRemove,
   onShapeChange, onShapeFront, onShapeBack, onShapeDelete,
   onConnChange, onConnDelete, onLabelChange, onLabelDelete,
@@ -1673,6 +1692,7 @@ function SelectionPanel({
   connFromDevice: MapDevice | null;
   connToDevice: MapDevice | null;
   label: MapLabel | null;
+  currentMapId: number;
   onDeviceChange: (id: number, patch: Partial<MapDevice>) => void;
   onDeviceFront: (id: number) => void;
   onDeviceBack: (id: number) => void;
@@ -1765,6 +1785,8 @@ function SelectionPanel({
               onChange={(e) => onDeviceChange(device.id, { height: Math.max(MIN_H, parseInt(e.target.value, 10) || MIN_H) })} />
           </label>
         </div>
+        <DrillMapSelect currentMapId={currentMapId} value={device.drill_map_id ?? null}
+          onChange={(v) => onDeviceChange(device.id, { drill_map_id: v })} />
         <div style={{ display: 'flex', gap: 8 }}>
           <button className="sv-btn ghost sm" style={{ flex: 1 }} onClick={() => onDeviceFront(device.id)}>Bring to front</button>
           <button className="sv-btn ghost sm" style={{ flex: 1 }} onClick={() => onDeviceBack(device.id)}>Send to back</button>

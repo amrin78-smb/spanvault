@@ -139,7 +139,9 @@ export default function SVGMapView({
 
   function onNodeClick(d: MapDevice) {
     if (justPanned.current) return; // ignore the click that ends a pan-drag
-    if (interactive && d.device_id) router.push(`/devices/${d.device_id}`);
+    if (!interactive) return;
+    if (d.drill_map_id) { router.push(`/maps/${d.drill_map_id}`); return; } // drill into child map
+    if (d.device_id) router.push(`/devices/${d.device_id}`);
   }
 
   // Status tally for the legend (only statuses actually present are shown).
@@ -333,7 +335,8 @@ export function DeviceNode({
   const cx = x + w / 2;
   const color = suppressed ? '#94a3b8' : statusFill(status, false);
   const pulse = !suppressed && (status === 'down' || status === 'warning');
-  const cursor = interactive && device.device_id ? 'pointer' : 'default';
+  const drill = device.drill_map_id != null;
+  const cursor = interactive && (device.device_id || drill) ? 'pointer' : 'default';
   const alertCount = Number(device.alert_count) || 0;
 
   const tipLines = [
@@ -347,7 +350,16 @@ export function DeviceNode({
   if (device.uptime_24h_pct != null) metricBits.push(`Uptime ${Number(device.uptime_24h_pct).toFixed(1)}% (24h)`);
   if (metricBits.length) tipLines.push(metricBits.join(' · '));
   if (alertCount > 0) tipLines.push(`${alertCount} active alert${alertCount > 1 ? 's' : ''}`);
+  if (drill) tipLines.push('↳ Opens sub-map');
   const tip = tipLines.join('\n');
+
+  // Navy "sub-map" badge at the bottom-right when this node drills into a child map.
+  const drillMark = drill ? (
+    <g pointerEvents="none">
+      <circle cx={x + w} cy={y + h} r={8} fill="#1a2744" stroke="#fff" strokeWidth={1.5} />
+      <text x={x + w} y={y + h + 3.4} textAnchor="middle" fontSize={10} fontWeight={700} fill="#fff">⊞</text>
+    </g>
+  ) : null;
 
   // Red alert-count badge pinned to the node's top-right corner.
   const badge = alertCount > 0 && !suppressed ? (
@@ -375,6 +387,7 @@ export function DeviceNode({
         <text x={cx} y={y + h + 14} textAnchor="middle" fontSize={13} fontWeight={700} fill="#1a2744" style={halo}>{name}</text>
         {ip && <text x={cx} y={y + h + 28} textAnchor="middle" fontSize={10} fill="#475569" style={halo}>{ip}</text>}
         {badge}
+        {drillMark}
       </g>
     );
   }
@@ -401,6 +414,7 @@ export function DeviceNode({
       </foreignObject>
       {device.is_gateway && <text x={x + 5} y={y + 16} fontSize={14}>⭐</text>}
       {badge}
+      {drillMark}
     </g>
   );
 }
