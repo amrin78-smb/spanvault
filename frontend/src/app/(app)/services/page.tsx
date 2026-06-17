@@ -25,6 +25,7 @@ export type ServiceCheck = {
   name: string;
   type: ServiceType;
   target: string;
+  group_id: string | null;
   site_id: number | null;
   site_name: string | null;
   agent_id: number | null;
@@ -60,6 +61,20 @@ function typeLabel(t: string): string {
   return (t || '').toUpperCase();
 }
 
+// Severity ranking for aggregating a group's worst child status.
+const STATUS_RANK: Record<string, number> = { down: 3, warning: 2, unknown: 1, up: 0 };
+
+function worstStatus(checks: ServiceCheck[]): string {
+  let worst = 'up';
+  let rank = -1;
+  for (const c of checks) {
+    const s = dotStatus(c.current_status);
+    const r = STATUS_RANK[s] ?? 1;
+    if (r > rank) { rank = r; worst = s; }
+  }
+  return worst;
+}
+
 // ════════════════════════════════════════════════════════════
 // Top-level components (never nested — CLAUDE.md rule).
 // ════════════════════════════════════════════════════════════
@@ -77,7 +92,10 @@ function ServiceCheckModal({
   useEscape(onClose);
   const editing = !!initial;
   const [name, setName] = useState(initial?.name || '');
+  // Edit mode: single type. Create mode: a set of selected types.
   const [type, setType] = useState<ServiceType>(initial?.type || 'http');
+  const [types, setTypes] = useState<Set<ServiceType>>(
+    new Set<ServiceType>(initial ? [initial.type] : ['http']));
   const [target, setTarget] = useState(initial?.target || '');
   const [siteId, setSiteId] = useState<string>(initial?.site_id != null ? String(initial.site_id) : '');
   const [agentId, setAgentId] = useState<string>(initial?.agent_id != null ? String(initial.agent_id) : '');
@@ -94,6 +112,16 @@ function ServiceCheckModal({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  function toggleType(t: ServiceType) {
+    setTypes((prev) => {
+      const next = new Set(prev);
+      if (next.has(t)) next.delete(t);
+      else next.add(t);
+      return next;
+    });
+  }
+
+  // Single-type params (edit mode).
   function buildParams(): ServiceParams {
     const p: ServiceParams = {};
     const t = timeoutMs.trim();
@@ -111,25 +139,58 @@ function ServiceCheckModal({
     return p;
   }
 
+  // Flat shared params for the bulk create shape — include only keys relevant
+  // to the union of selected types, omitting empty strings.
+  function buildSharedParams(): ServiceParams {
+    const p: ServiceParams = {};
+    const t = timeoutMs.trim();
+    if (t) p.timeout_ms = parseInt(t, 10);
+    if (types.has('http')) {
+      if (expectStatus.trim()) p.expect_status = parseInt(expectStatus, 10);
+      if (keyword.trim()) p.keyword = keyword.trim();
+    }
+    if (types.has('tcp') || types.has('ssl')) {
+      if (port.trim()) p.port = parseInt(port, 10);
+    }
+    if (types.has('ssl')) {
+      if (sslWarnDays.trim()) p.ssl_warn_days = parseInt(sslWarnDays, 10);
+    }
+    return p;
+  }
+
   async function save() {
     if (!name.trim()) { setError('Name is required'); return; }
     if (!target.trim()) { setError('Target is required'); return; }
+    if (!editing && types.size === 0) { setError('Select at least one check type'); return; }
     setSaving(true);
     setError(null);
     const site = siteId ? sites.find((s) => s.id === parseInt(siteId, 10)) : null;
-    const body = {
-      name: name.trim(),
-      type,
-      target: target.trim(),
-      site_id: siteId ? parseInt(siteId, 10) : null,
-      site_name: site ? site.name : null,
-      agent_id: agentId ? parseInt(agentId, 10) : null,
-      interval_seconds: parseInt(interval, 10) || 60,
-      params: buildParams(),
-    };
     try {
-      if (editing && initial) await apiSend(`/api/service-checks/${initial.id}`, 'PUT', body);
-      else await apiSend('/api/service-checks', 'POST', body);
+      if (editing && initial) {
+        const body = {
+          name: name.trim(),
+          type,
+          target: target.trim(),
+          site_id: siteId ? parseInt(siteId, 10) : null,
+          site_name: site ? site.name : null,
+          agent_id: agentId ? parseInt(agentId, 10) : null,
+          interval_seconds: parseInt(interval, 10) || 60,
+          params: buildParams(),
+        };
+        await apiSend(`/api/service-checks/${initial.id}`, 'PUT', body);
+      } else {
+        const body = {
+          name: name.trim(),
+          target: target.trim(),
+          types: TYPE_OPTIONS.map((o) => o.value).filter((v) => types.has(v)),
+          site_id: siteId ? parseInt(siteId, 10) : null,
+          site_name: site ? site.name : null,
+          agent_id: agentId ? parseInt(agentId, 10) : null,
+          interval_seconds: parseInt(interval, 10) || 60,
+          params: buildSharedParams(),
+        };
+        await apiSend('/api/service-checks', 'POST', body);
+      }
       onSaved();
     } catch (e: any) {
       setError(e?.message || 'Failed to save service check');
@@ -153,11 +214,27 @@ function ServiceCheckModal({
           />
         </label>
 
-        <label className="sv-field" style={{ marginTop: 12 }}>Type
-          <select className="sv-select" value={type} onChange={(e) => setType(e.target.value as ServiceType)}>
-            {TYPE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-          </select>
-        </label>
+        {editing ? (
+          <label className="sv-field" style={{ marginTop: 12 }}>Type
+            <select className="sv-select" value={type} onChange={(e) => setType(e.target.value as ServiceType)}>
+              {TYPE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+          </label>
+        ) : (
+          <div className="sv-field" style={{ marginTop: 12 }}>Check types
+            <div style={{ display: 'flex', gap: 16, marginTop: 6, flexWrap: 'wrap' }}>
+              {TYPE_OPTIONS.map((o) => (
+                <label key={o.value} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer', fontWeight: 400 }}>
+                  <input type="checkbox" checked={types.has(o.value)} onChange={() => toggleType(o.value)} />
+                  {o.label}
+                </label>
+              ))}
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+              Select one or more — each type becomes a check sharing this target.
+            </div>
+          </div>
+        )}
 
         <label className="sv-field" style={{ marginTop: 12 }}>Target
           <input
@@ -165,15 +242,22 @@ function ServiceCheckModal({
             value={target}
             onChange={(e) => setTarget(e.target.value)}
             placeholder={
-              type === 'http' ? 'https://example.com/health'
-              : type === 'dns' ? 'example.com'
-              : 'host.example.com'
+              editing
+                ? (type === 'http' ? 'https://example.com/health'
+                  : type === 'dns' ? 'example.com'
+                  : 'host.example.com')
+                : (types.has('http') ? 'https://example.com/health' : 'example.com')
             }
           />
+          {!editing && types.has('http') && (types.has('tcp') || types.has('ssl') || types.has('dns')) && (
+            <span style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+              Use a full URL for HTTP; the host part is reused for TCP/SSL/DNS.
+            </span>
+          )}
         </label>
 
-        {/* Type-specific params */}
-        {type === 'http' && (
+        {/* Type-specific params — union of selected types in create mode, the single type in edit mode */}
+        {(editing ? type === 'http' : types.has('http')) && (
           <div style={{ display: 'flex', gap: 12, marginTop: 12 }}>
             <label className="sv-field" style={{ flex: '0 0 140px' }}>Expect status
               <input className="sv-input" value={expectStatus}
@@ -185,13 +269,19 @@ function ServiceCheckModal({
             </label>
           </div>
         )}
-        {(type === 'tcp' || type === 'ssl') && (
+        {(editing ? (type === 'tcp' || type === 'ssl') : (types.has('tcp') || types.has('ssl'))) && (
           <label className="sv-field" style={{ marginTop: 12 }}>Port
             <input className="sv-input" value={port}
-              onChange={(e) => setPort(e.target.value)} placeholder={type === 'ssl' ? '443' : 'e.g. 22'} />
+              onChange={(e) => setPort(e.target.value)}
+              placeholder={editing ? (type === 'ssl' ? '443' : 'e.g. 22') : '443'} />
+            {!editing && (
+              <span style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+                blank = 443 for SSL / derived from URL for TCP
+              </span>
+            )}
           </label>
         )}
-        {type === 'ssl' && (
+        {(editing ? type === 'ssl' : types.has('ssl')) && (
           <label className="sv-field" style={{ marginTop: 12 }}>Warn when cert expires within (days)
             <input className="sv-input" value={sslWarnDays}
               onChange={(e) => setSslWarnDays(e.target.value)} placeholder="14" />
@@ -287,6 +377,104 @@ function ServiceRow({ check, canEdit, onEdit, onDelete }: {
   );
 }
 
+// A multi-type group: header row + indented child sub-rows.
+function GroupedServiceRows({ groupId, checks, canEdit, colCount, onEdit, onDelete, onDeleteGroup }: {
+  groupId: string;
+  checks: ServiceCheck[];
+  canEdit: boolean;
+  colCount: number;
+  onEdit: (c: ServiceCheck) => void;
+  onDelete: (c: ServiceCheck) => void;
+  onDeleteGroup: (groupId: string, name: string) => void;
+}) {
+  const worst = worstStatus(checks);
+  const worstCheck = checks.slice().sort(
+    (a, b) => (STATUS_RANK[dotStatus(b.current_status)] ?? 1) - (STATUS_RANK[dotStatus(a.current_status)] ?? 1)
+  )[0];
+  const name = checks[0]?.name || 'Group';
+  const target = checks[0]?.target || '';
+  return (
+    <>
+      <tr style={{ height: 44, background: 'var(--bg-subtle, rgba(0,0,0,0.02))' }}>
+        <td style={{ width: 28, paddingLeft: 12 }}>
+          <StatusDot status={worst} size={10} title={worst} />
+        </td>
+        <td style={{ whiteSpace: 'nowrap', fontWeight: 700, color: 'var(--text-primary)' }}>
+          {name}
+          <span style={{ display: 'inline-flex', gap: 4, marginLeft: 8, verticalAlign: 'middle' }}>
+            {checks.map((c) => (
+              <span key={c.id} className="sv-type-badge" style={{ fontSize: 10 }}>{typeLabel(c.type)}</span>
+            ))}
+          </span>
+        </td>
+        <td style={{ width: 1, whiteSpace: 'nowrap' }}>
+          <span className="sv-type-badge" style={{ fontSize: 10 }}>{checks.length} types</span>
+        </td>
+        <td style={{ fontSize: 12, color: 'var(--text-primary)', maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+          title={target}>
+          {target}
+        </td>
+        <td style={{ fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+          {checks[0]?.agent_name || 'Central'}
+        </td>
+        <td />
+        <td style={{ fontSize: 12, color: 'var(--text-muted)', maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+          title={worstCheck?.last_detail || ''}>
+          {worstCheck?.last_detail || '—'}
+        </td>
+        <td />
+        {canEdit && (
+          <td style={{ width: 1, textAlign: 'right', whiteSpace: 'nowrap' }}>
+            <button className="sv-btn ghost sm" style={{ height: 24, padding: '0 10px', fontSize: 11 }}
+              onClick={() => onDeleteGroup(groupId, name)}>Delete group</button>
+          </td>
+        )}
+      </tr>
+      {checks.map((c) => (
+        <tr key={c.id} style={{ height: 40 }}>
+          <td style={{ width: 28, paddingLeft: 28 }}>
+            <StatusDot status={dotStatus(c.current_status)} size={9} title={c.current_status} />
+          </td>
+          <td style={{ whiteSpace: 'nowrap', paddingLeft: 28, color: 'var(--text-muted)', fontSize: 12 }}>
+            <span className="sv-type-badge">{typeLabel(c.type)}</span>
+            {!c.active && (
+              <span className="sv-type-badge" style={{ fontSize: 10, marginLeft: 8 }}>Paused</span>
+            )}
+          </td>
+          <td style={{ width: 1 }} />
+          <td style={{ fontSize: 12, color: 'var(--text-muted)', maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+            title={c.target}>
+            {c.target}
+          </td>
+          <td style={{ fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+            {c.agent_name || 'Central'}
+          </td>
+          <td style={{ fontSize: 12, color: 'var(--text-primary)', whiteSpace: 'nowrap', textAlign: 'right' }}>
+            {c.last_response_ms != null ? `${c.last_response_ms} ms` : '—'}
+          </td>
+          <td style={{ fontSize: 12, color: 'var(--text-muted)', maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+            title={c.last_detail || ''}>
+            {c.last_detail || '—'}
+          </td>
+          <td style={{ fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap', textAlign: 'right' }}>
+            {fmtRel(c.last_checked_at)}
+          </td>
+          {canEdit && (
+            <td style={{ width: 1, textAlign: 'right', whiteSpace: 'nowrap' }}>
+              <span style={{ display: 'inline-flex', gap: 6 }}>
+                <button className="sv-btn ghost sm" style={{ height: 24, padding: '0 10px', fontSize: 11 }}
+                  onClick={() => onEdit(c)}>Edit</button>
+                <button className="sv-btn ghost sm" style={{ height: 24, padding: '0 10px', fontSize: 11 }}
+                  onClick={() => onDelete(c)}>Delete</button>
+              </span>
+            </td>
+          )}
+        </tr>
+      ))}
+    </>
+  );
+}
+
 // ════════════════════════════════════════════════════════════
 // Page
 // ════════════════════════════════════════════════════════════
@@ -309,11 +497,38 @@ export default function ServicesPage() {
     checks.reload();
   }
 
+  async function handleDeleteGroup(groupId: string, name: string) {
+    if (!confirm(`Delete all checks in group "${name}"?`)) return;
+    await apiSend(`/api/service-checks/group/${groupId}`, 'DELETE');
+    checks.reload();
+  }
+
   const list = checks.data || [];
   const up = list.filter((c) => (c.current_status || '').toLowerCase() === 'up').length;
   const down = list.filter((c) => (c.current_status || '').toLowerCase() === 'down').length;
   const warning = list.filter((c) => (c.current_status || '').toLowerCase() === 'warning').length;
   const colCount = canEdit ? 9 : 8;
+
+  // Build a render order: each grouped set renders together (header + children),
+  // ungrouped checks render as individual rows. Order follows first appearance.
+  type Block =
+    | { kind: 'single'; check: ServiceCheck }
+    | { kind: 'group'; groupId: string; checks: ServiceCheck[] };
+  const groups = new Map<string, ServiceCheck[]>();
+  const blocks: Block[] = [];
+  for (const c of list) {
+    if (c.group_id) {
+      let g = groups.get(c.group_id);
+      if (!g) {
+        g = [];
+        groups.set(c.group_id, g);
+        blocks.push({ kind: 'group', groupId: c.group_id, checks: g });
+      }
+      g.push(c);
+    } else {
+      blocks.push({ kind: 'single', check: c });
+    }
+  }
 
   return (
     <div>
@@ -348,14 +563,27 @@ export default function ServicesPage() {
               </tr>
             </thead>
             <tbody>
-              {list.map((c) => (
-                <ServiceRow
-                  key={c.id}
-                  check={c}
-                  canEdit={canEdit}
-                  onEdit={openEdit}
-                  onDelete={handleDelete}
-                />
+              {blocks.map((b) => (
+                b.kind === 'group' ? (
+                  <GroupedServiceRows
+                    key={`g-${b.groupId}`}
+                    groupId={b.groupId}
+                    checks={b.checks}
+                    canEdit={canEdit}
+                    colCount={colCount}
+                    onEdit={openEdit}
+                    onDelete={handleDelete}
+                    onDeleteGroup={handleDeleteGroup}
+                  />
+                ) : (
+                  <ServiceRow
+                    key={b.check.id}
+                    check={b.check}
+                    canEdit={canEdit}
+                    onEdit={openEdit}
+                    onDelete={handleDelete}
+                  />
+                )
               ))}
             </tbody>
           </table>

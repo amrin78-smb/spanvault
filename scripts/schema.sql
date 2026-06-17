@@ -405,6 +405,10 @@ CREATE TABLE IF NOT EXISTS service_check_results (
   detail      TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_svc_results ON service_check_results(check_id, ts DESC);
+
+-- group_id ties the per-type checks created together for one target; NULL = standalone.
+ALTER TABLE service_checks ADD COLUMN IF NOT EXISTS group_id UUID;
+CREATE INDEX IF NOT EXISTS idx_svc_group ON service_checks(group_id);
 -- Service-level alerts reference the check, not a device.
 ALTER TABLE alerts ADD COLUMN IF NOT EXISTS service_check_id INTEGER REFERENCES service_checks(id) ON DELETE CASCADE;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_alerts_active_service_unique

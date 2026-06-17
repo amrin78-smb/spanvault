@@ -32,6 +32,11 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.29.0': [
+    'Service checks can now monitor multiple types for one target in a single action — tick any of HTTP / TCP / SSL / DNS in the New Service Check dialog and SpanVault creates one check per type, deriving each one\'s target and ports automatically (HTTP keeps the URL, TCP/SSL/DNS use the host, TCP/SSL get a port, SSL gets a cert-expiry warning). No more adding the same server four times',
+    'The checks created together are shown as a single collapsible group on the Services page (one row per target with per-type sub-rows and an aggregate status), with a one-click "Delete group" to remove them all',
+    'Editing an individual check still works per-type as before',
+  ],
   '1.28.1': [
     'Fixed the Intelligence tables (Anomalies, Health Scores, etc.) hiding their first data row behind the column headers — the sticky header had a 44px top offset while sitting inside a horizontal-scroll wrapper, which shifted the header down over the first row at the top of the table (e.g. "2 active" anomalies but only one visible). Headers now stick flush at the top, so every row shows',
   ],
@@ -5802,10 +5807,56 @@ app.delete('/api/notification-routes/:id', wrap(async (req, res) => {
 // migration — every read degrades to [] on an un-migrated DB.
 const SERVICE_TYPES = ['http', 'tcp', 'ssl', 'dns'];
 
+// Derive a per-type { target, params } from one shared base target + flat shared
+// params, so a single bulk action can fan out into http/tcp/ssl/dns checks.
+function deriveServiceCheck(baseTarget, type, shared) {
+  shared = shared || {};
+  const hasScheme    = /^[a-z][a-z0-9+.-]*:\/\//i.test(baseTarget);
+  const scheme       = hasScheme ? baseTarget.split('://')[0].toLowerCase() : 'http';
+  const afterScheme  = hasScheme ? baseTarget.slice(baseTarget.indexOf('://') + 3) : baseTarget;
+  const hostport     = afterScheme.split('/')[0];   // strip path
+  const host         = hostport.split(':')[0];      // strip :port
+  let embeddedPort   = parseInt((hostport.split(':')[1] || ''), 10);
+  if (isNaN(embeddedPort)) embeddedPort = null;
+  const sharedPort   = (shared.port != null && shared.port !== '') ? parseInt(shared.port, 10) : null;
+  const sharedWarn   = (shared.ssl_warn_days != null && shared.ssl_warn_days !== '') ? parseInt(shared.ssl_warn_days, 10) : null;
+  const timeoutRaw   = shared.timeout_ms;
+  const timeout      = (timeoutRaw != null && timeoutRaw !== '' && Number.isFinite(Number(timeoutRaw))) ? Number(timeoutRaw) : null;
+
+  if (type === 'http') {
+    const params = {};
+    if (shared.expect_status != null && shared.expect_status !== '') params.expect_status = shared.expect_status;
+    if (shared.keyword != null && shared.keyword !== '') params.keyword = shared.keyword;
+    if (timeout != null) params.timeout_ms = timeout;
+    return { target: hasScheme ? baseTarget : ('http://' + baseTarget), params };
+  }
+  if (type === 'tcp') {
+    const port = embeddedPort != null ? embeddedPort
+               : (sharedPort != null && !isNaN(sharedPort)) ? sharedPort
+               : (scheme === 'https' ? 443 : 80);
+    const params = { port };
+    if (timeout != null) params.timeout_ms = timeout;
+    return { target: host, params };
+  }
+  if (type === 'ssl') {
+    const port = embeddedPort != null ? embeddedPort
+               : (sharedPort != null && !isNaN(sharedPort)) ? sharedPort
+               : 443;
+    const params = { port, ssl_warn_days: (sharedWarn != null && !isNaN(sharedWarn)) ? sharedWarn : 14 };
+    if (timeout != null) params.timeout_ms = timeout;
+    return { target: host, params };
+  }
+  // dns
+  const params = {};
+  if (timeout != null) params.timeout_ms = timeout;
+  return { target: host, params };
+}
+
 app.get('/api/service-checks', wrap(async (_req, res) => {
   try {
     const r = await sv.query(`
       SELECT sc.id, sc.name, sc.type, sc.target, sc.site_id, sc.site_name,
+             sc.group_id,
              sc.agent_id, ag.name AS agent_name,
              sc.interval_seconds, sc.params,
              sc.current_status, sc.last_response_ms, sc.last_detail, sc.last_checked_at, sc.active,
@@ -5823,6 +5874,55 @@ app.get('/api/service-checks', wrap(async (_req, res) => {
 
 app.post('/api/service-checks', wrap(async (req, res) => {
   const b = req.body || {};
+  const isBulk = Array.isArray(b.types) && b.types.length > 0;
+
+  if (isBulk) {
+    // BULK: one target, multiple check types created together (optionally grouped).
+    const name   = (b.name || '').trim();
+    const target = (b.target || '').trim();
+    if (!name)   return res.status(400).json({ error: 'name is required' });
+    if (!target) return res.status(400).json({ error: 'target is required' });
+
+    // Dedupe + validate types.
+    const types = Array.from(new Set(b.types.map((t) => String(t || '').trim().toLowerCase())));
+    if (!types.length || !types.every((t) => SERVICE_TYPES.includes(t))) {
+      return res.status(400).json({ error: 'types must be a non-empty array of http, tcp, ssl, dns' });
+    }
+
+    const siteId   = b.site_id != null && b.site_id !== '' ? parseInt(b.site_id, 10) : null;
+    const agentId  = b.agent_id != null && b.agent_id !== '' ? parseInt(b.agent_id, 10) : null;
+    const interval = safeInt(b.interval_seconds, 60);
+    const shared   = b.params && typeof b.params === 'object' ? b.params : {};
+    const groupId  = types.length > 1 ? require('crypto').randomUUID() : null;
+
+    const client = await sv.connect();
+    const created = [];
+    try {
+      await client.query('BEGIN');
+      for (const type of types) {
+        const d = deriveServiceCheck(target, type, shared);
+        const r = await client.query(
+          `INSERT INTO service_checks
+             (name, type, target, site_id, site_name, agent_id, interval_seconds, params, group_id, current_status, active)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'unknown',TRUE) RETURNING *`,
+          [name, type, d.target, siteId, b.site_name || null, agentId, interval, JSON.stringify(d.params), groupId]
+        );
+        created.push(r.rows[0]);
+      }
+      await client.query('COMMIT');
+    } catch (e) {
+      try { await client.query('ROLLBACK'); } catch (_) {}
+      throw e;
+    } finally {
+      client.release();
+    }
+
+    // Refresh the owning agent's config once so it picks up all new checks.
+    if (agentId) { try { await pushConfigToAgentId(agentId); } catch (e) { console.error('[service-checks] push config failed:', e.message); } }
+    return res.status(201).json(created);
+  }
+
+  // SINGLE (existing behavior, group_id stays NULL).
   const name = (b.name || '').trim();
   const type = (b.type || '').trim().toLowerCase();
   const target = (b.target || '').trim();
@@ -5887,6 +5987,17 @@ app.delete('/api/service-checks/:id', wrap(async (req, res) => {
   await sv.query(`DELETE FROM service_checks WHERE id = $1`, [id]);
   if (oldAgentId) { try { await pushConfigToAgentId(oldAgentId); } catch (e) { console.error('[service-checks] push config failed:', e.message); } }
   res.json({ ok: true });
+}));
+
+// Delete every check created together as one group (bulk multi-type action).
+app.delete('/api/service-checks/group/:groupId', wrap(async (req, res) => {
+  const groupId = req.params.groupId;
+  const r = await sv.query(`DELETE FROM service_checks WHERE group_id = $1 RETURNING agent_id`, [groupId]);
+  const agentIds = Array.from(new Set(r.rows.map((x) => x.agent_id).filter((a) => a != null)));
+  for (const aid of agentIds) {
+    try { await pushConfigToAgentId(aid); } catch (e) { console.error('[service-checks] push config failed:', e.message); }
+  }
+  res.json({ ok: true, deleted: r.rowCount });
 }));
 
 app.get('/api/service-checks/:id/results', wrap(async (req, res) => {
