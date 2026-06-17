@@ -1492,6 +1492,27 @@ body.sv-noc .sv-content:has(.sv-tabs.sticky) > :first-child { padding-top: 28px;
 }
 .sv-mapnode-pulse { animation: sv-mapnode-pulse 1.4s ease-in-out infinite; }
 
+/* Map view zoom/pan controls + status legend (overlay on the canvas). */
+.sv-map-zoomctl {
+  position: absolute; top: 10px; right: 10px; display: flex; align-items: center; gap: 4px;
+  background: rgba(255,255,255,0.92); border: 1px solid var(--border); border-radius: 8px;
+  padding: 3px 4px; box-shadow: var(--shadow-sm); backdrop-filter: blur(2px); z-index: 2;
+}
+.sv-map-zoomctl button {
+  width: 26px; height: 26px; border: none; background: transparent; border-radius: 6px;
+  font-size: 16px; line-height: 1; cursor: pointer; color: #1a2744; display: flex; align-items: center; justify-content: center;
+}
+.sv-map-zoomctl button:hover { background: var(--bg-primary); }
+.sv-map-zoomctl .lvl { font-size: 11px; color: var(--text-muted); min-width: 34px; text-align: center; }
+.sv-map-legend {
+  position: absolute; left: 10px; bottom: 10px; display: flex; flex-wrap: wrap; gap: 10px;
+  background: rgba(255,255,255,0.92); border: 1px solid var(--border); border-radius: 8px;
+  padding: 6px 10px; box-shadow: var(--shadow-sm); backdrop-filter: blur(2px); z-index: 2; font-size: 12px; color: #1a2744;
+}
+.sv-map-legend .item { display: inline-flex; align-items: center; gap: 5px; }
+.sv-map-legend .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+.sv-map-legend b { font-weight: 700; }
+
 /* Weathermap link flow: white dashes travelling from→to along a live link. */
 @keyframes sv-link-flow { to { stroke-dashoffset: -30; } }
 .sv-link-flow { animation: sv-link-flow 0.9s linear infinite; }

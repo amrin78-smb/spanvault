@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { apiGet } from '@/lib/api';
 import {
@@ -26,6 +26,70 @@ export default function SVGMapView({
   const router = useRouter();
   const [live, setLive] = useState<Record<number, Partial<MapDevice>>>({});
   const [liveConns, setLiveConns] = useState<Record<number, Partial<MapConnection>>>({});
+
+  // ── Zoom / pan (screen-space CSS transform on a wrapper) ──
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const panning = useRef<{ sx: number; sy: number; ox: number; oy: number; moved: boolean } | null>(null);
+  const justPanned = useRef(false);
+  const ZMIN = 0.3, ZMAX = 4;
+  const clampZ = (z: number) => Math.max(ZMIN, Math.min(ZMAX, z));
+
+  // Wheel zoom toward the cursor (non-passive so we can preventDefault scroll).
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    function onWheel(e: WheelEvent) {
+      e.preventDefault();
+      const rect = el!.getBoundingClientRect();
+      const cx = e.clientX - rect.left, cy = e.clientY - rect.top;
+      setZoom((z) => {
+        const nz = clampZ(z * (e.deltaY < 0 ? 1.1 : 1 / 1.1));
+        const k = nz / z;
+        setPan((p) => ({ x: cx - (cx - p.x) * k, y: cy - (cy - p.y) * k }));
+        return nz;
+      });
+    }
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, []);
+
+  // Drag to pan (window listeners so the drag survives leaving the element).
+  useEffect(() => {
+    function move(e: MouseEvent) {
+      const p = panning.current;
+      if (!p) return;
+      const dx = e.clientX - p.sx, dy = e.clientY - p.sy;
+      if (Math.abs(dx) + Math.abs(dy) > 3) p.moved = true;
+      setPan({ x: p.ox + dx, y: p.oy + dy });
+    }
+    function up() {
+      const p = panning.current;
+      if (p && p.moved) { justPanned.current = true; setTimeout(() => { justPanned.current = false; }, 0); }
+      panning.current = null;
+    }
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', up);
+    return () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); };
+  }, []);
+
+  function onWrapMouseDown(e: React.MouseEvent) {
+    if (e.button !== 0) return;
+    panning.current = { sx: e.clientX, sy: e.clientY, ox: pan.x, oy: pan.y, moved: false };
+  }
+  function zoomByCenter(factor: number) {
+    const el = wrapRef.current;
+    const cx = el ? el.clientWidth / 2 : 0;
+    const cy = el ? el.clientHeight / 2 : 0;
+    setZoom((z) => {
+      const nz = clampZ(z * factor);
+      const k = nz / z;
+      setPan((p) => ({ x: cx - (cx - p.x) * k, y: cy - (cy - p.y) * k }));
+      return nz;
+    });
+  }
+  function resetView() { setZoom(1); setPan({ x: 0, y: 0 }); }
 
   useEffect(() => {
     if (!refreshUrl) return;
@@ -74,10 +138,29 @@ export default function SVGMapView({
   const connections: MapConnection[] = (map.connections || []).map((c) => ({ ...c, ...(liveConns[c.id] || {}) }));
 
   function onNodeClick(d: MapDevice) {
+    if (justPanned.current) return; // ignore the click that ends a pan-drag
     if (interactive && d.device_id) router.push(`/devices/${d.device_id}`);
   }
 
+  // Status tally for the legend (only statuses actually present are shown).
+  const counts: Record<string, number> = { up: 0, down: 0, warning: 0, unknown: 0 };
+  for (const d of devices) {
+    if (d.alert_suppressed) { counts.unknown++; continue; }
+    const s = (d.current_status || 'unknown').toLowerCase();
+    counts[s in counts ? s : 'unknown']++;
+  }
+  const legendItems = ([
+    ['up', '#22c55e', 'Up'], ['down', '#ef4444', 'Down'],
+    ['warning', '#eab308', 'Warning'], ['unknown', '#94a3b8', 'Unknown'],
+  ] as const).filter(([k]) => counts[k] > 0);
+
   return (
+    <div className="sv-mapview-wrap" ref={wrapRef} onMouseDown={onWrapMouseDown}
+      style={{ position: 'relative', width: '100%', height: '100%', overflow: 'hidden', cursor: panning.current ? 'grabbing' : 'grab' }}>
+    <div className="sv-mapview-zoom" style={{
+      width: '100%', height: '100%', transformOrigin: '0 0',
+      transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+    }}>
     <svg
       className="sv-mapview"
       viewBox={`0 0 ${map.canvas_w} ${map.canvas_h}`}
@@ -121,6 +204,28 @@ export default function SVGMapView({
         <MapLabelText key={l.id} label={l} />
       ))}
     </svg>
+    </div>
+
+      {/* Zoom controls */}
+      <div className="sv-map-zoomctl" onMouseDown={(e) => e.stopPropagation()}>
+        <button type="button" title="Zoom in" onClick={() => zoomByCenter(1.2)}>+</button>
+        <button type="button" title="Zoom out" onClick={() => zoomByCenter(1 / 1.2)}>−</button>
+        <button type="button" title="Fit / reset" onClick={resetView}>⤢</button>
+        <span className="lvl">{Math.round(zoom * 100)}%</span>
+      </div>
+
+      {/* Status legend */}
+      {legendItems.length > 0 && (
+        <div className="sv-map-legend" onMouseDown={(e) => e.stopPropagation()}>
+          {legendItems.map(([k, color, label]) => (
+            <span key={k} className="item">
+              <span className="dot" style={{ background: color }} />
+              {label} <b>{counts[k]}</b>
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 

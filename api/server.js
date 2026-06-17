@@ -32,6 +32,11 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.37.0': [
+    'Network map view now supports zoom and pan: scroll-wheel to zoom toward the cursor, drag the canvas to pan, and on-screen +/−/fit controls with a live zoom-level readout. Large diagrams are finally navigable without everything shrinking to fit',
+    'Added a status legend overlay (bottom-left) showing live up/down/warning/unknown device counts for the map; only statuses actually present are listed',
+    'Pan-drag is distinguished from a click, so panning the canvas no longer accidentally drills into a device. Applies to both the in-app view and the public share page',
+  ],
   '1.36.0': [
     'Map nodes now show a red alert-count badge (top-right corner) when a device has active alerts, so problem devices stand out on the live view and public share; the badge clears when alerts resolve and refreshes on the 30s poll',
     'Richer node tooltips: hovering a device now shows CPU %, memory %, and 24h uptime alongside name/IP/site/status/latency (pulled live from SNMP + ping history)',
