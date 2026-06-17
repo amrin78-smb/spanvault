@@ -92,6 +92,7 @@ export default function MapEditorPage() {
   const [search, setSearch] = useState('');
   const [saving, setSaving] = useState(false);
   const [savedAt, setSavedAt] = useState<number | null>(null);
+  const [dirty, setDirty] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [shareUrl, setShareUrl] = useState<string | null>(null);
 
@@ -126,6 +127,7 @@ export default function MapEditorPage() {
     histIndex.current = 0;
     setCanUndo(false);
     setCanRedo(false);
+    setDirty(false);
   }
   function pushSnapshot() {
     const snap = cloneSnap(arraysRef.current);
@@ -136,6 +138,7 @@ export default function MapEditorPage() {
     histIndex.current = history.current.length - 1;
     setCanUndo(histIndex.current > 0);
     setCanRedo(false);
+    setDirty(true);
   }
   function restoreSnapshot(s: Snapshot) {
     const c = cloneSnap(s);
@@ -189,6 +192,14 @@ export default function MapEditorPage() {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
+  // Warn before leaving/reloading with unsaved layout changes.
+  useEffect(() => {
+    if (!dirty) return;
+    function onBeforeUnload(e: BeforeUnloadEvent) { e.preventDefault(); e.returnValue = ''; }
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [dirty]);
+
   // Editing keyboard: undo/redo, delete, copy/paste. Skip while typing in a field.
   useEffect(() => {
     function inField(t: EventTarget | null): boolean {
@@ -207,8 +218,24 @@ export default function MapEditorPage() {
       if (meta && (e.key === 'y' || e.key === 'Y')) { e.preventDefault(); redo(); return; }
       if (meta && (e.key === 'c' || e.key === 'C')) { if (!inField(e.target)) { e.preventDefault(); copySelection(); } return; }
       if (meta && (e.key === 'v' || e.key === 'V')) { if (!inField(e.target)) { e.preventDefault(); pasteClipboard(); } return; }
-      if ((e.key === 'Delete' || e.key === 'Backspace') && !inField(e.target) && editingLabel == null) {
-        if (selectedIds.size > 0) { e.preventDefault(); deleteSelected(); }
+      if (meta && (e.key === 'd' || e.key === 'D')) { if (!inField(e.target)) { e.preventDefault(); duplicateSelection(); } return; }
+      if (inField(e.target) || editingLabel != null) return;
+      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedIds.size > 0) { e.preventDefault(); deleteSelected(); return; }
+      // Arrow-key nudge (1 unit, 10 with Shift) when something is selected.
+      if (selectedIds.size > 0 && ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
+        e.preventDefault();
+        const step = e.shiftKey ? 10 : 1;
+        if (e.key === 'ArrowUp') nudgeSelected(0, -step);
+        else if (e.key === 'ArrowDown') nudgeSelected(0, step);
+        else if (e.key === 'ArrowLeft') nudgeSelected(-step, 0);
+        else nudgeSelected(step, 0);
+        return;
+      }
+      // Tool hotkeys (no modifier): V=select, L=line, T=label.
+      if (!meta && !e.altKey) {
+        if (e.key === 'v' || e.key === 'V') { setTool('select'); }
+        else if (e.key === 'l' || e.key === 'L') { setTool('line'); }
+        else if (e.key === 't' || e.key === 'T') { setTool('label'); }
       }
     }
     window.addEventListener('keydown', onKey);
@@ -228,6 +255,40 @@ export default function MapEditorPage() {
   }
 
   const usedDeviceIds = new Set(devices.map((d) => d.device_id).filter((v): v is number => v != null));
+
+  // Nudge every selected element by (dx,dy) user units (arrow keys).
+  function nudgeSelected(dx: number, dy: number) {
+    if (selectedIds.size === 0) return;
+    const has = (k: string) => selectedIds.has(k);
+    setDevices((prev) => prev.map((d) => (has(`device:${d.id}`) ? { ...d, x: Number(d.x) + dx, y: Number(d.y) + dy } : d)));
+    setShapes((prev) => prev.map((s) => (has(`shape:${s.id}`) ? { ...s, x: Number(s.x) + dx, y: Number(s.y) + dy } : s)));
+    setLabels((prev) => prev.map((l) => (has(`label:${l.id}`) ? { ...l, x: Number(l.x) + dx, y: Number(l.y) + dy } : l)));
+    pushSnapshot();
+  }
+
+  // Duplicate the selection (shapes + labels) in place with a small offset.
+  function duplicateSelection() {
+    copySelection();
+    pasteClipboard();
+  }
+
+  // Right-click context-menu action dispatch.
+  function handleCtxAction(action: string, c: NonNullable<Ctx>) {
+    const { kind, id } = c;
+    if (action === 'delete') {
+      if (kind === 'device') removeDevice(id);
+      else if (kind === 'connection') deleteConnection(id);
+      else if (kind === 'shape') deleteShape(id);
+      else deleteLabel(id);
+    } else if (action === 'front') {
+      if (kind === 'device') deviceToFront(id); else if (kind === 'shape') shapeToFront(id);
+    } else if (action === 'back') {
+      if (kind === 'device') deviceToBack(id); else if (kind === 'shape') shapeToBack(id);
+    } else if (action === 'duplicate') {
+      if (kind === 'shape') { const s = shapes.find((v) => v.id === id); if (s) { clipboard.current = { shapes: [{ ...s }], labels: [] }; pasteClipboard(); } }
+      else if (kind === 'label') { const l = labels.find((v) => v.id === id); if (l) { clipboard.current = { shapes: [], labels: [{ ...l }] }; pasteClipboard(); } }
+    }
+  }
 
   // ── Delete all currently selected elements ───────────────────
   function deleteSelected() {
@@ -813,7 +874,7 @@ export default function MapEditorPage() {
         canvasW={canvasW} canvasH={canvasH}
         onCanvasSize={(w, h) => { setCanvasW(w); setCanvasH(h); }}
         onUploadBg={onUploadBg} onRemoveBg={onRemoveBg} hasBg={!!bgImage}
-        onSave={save} saving={saving} savedAt={savedAt}
+        onSave={save} saving={saving} savedAt={savedAt} dirty={dirty}
         onView={() => window.open(`/maps/${id}`, '_blank')}
         onShare={toggleShare} isPublic={isPublic} shareUrl={shareUrl}
       />
@@ -956,13 +1017,7 @@ export default function MapEditorPage() {
             <ContextMenu
               ctx={ctx}
               onClose={() => setCtx(null)}
-              onAction={() => {
-                if (ctx.kind === 'device') removeDevice(ctx.id);
-                else if (ctx.kind === 'connection') deleteConnection(ctx.id);
-                else if (ctx.kind === 'shape') deleteShape(ctx.id);
-                else deleteLabel(ctx.id);
-                setCtx(null);
-              }}
+              onAction={(action) => { handleCtxAction(action, ctx); setCtx(null); }}
             />
           )}
         </div>
@@ -1053,7 +1108,7 @@ function EditorToolbar({
   name, setName, tool, setTool, onAddShape,
   snapEnabled, onToggleSnap, onUndo, onRedo, canUndo, canRedo,
   canvasW, canvasH, onCanvasSize,
-  onUploadBg, onRemoveBg, hasBg, onSave, saving, savedAt, onView, onShare, isPublic, shareUrl,
+  onUploadBg, onRemoveBg, hasBg, onSave, saving, savedAt, dirty, onView, onShare, isPublic, shareUrl,
 }: {
   name: string; setName: (v: string) => void;
   tool: Tool; setTool: (t: Tool) => void;
@@ -1062,7 +1117,7 @@ function EditorToolbar({
   onUndo: () => void; onRedo: () => void; canUndo: boolean; canRedo: boolean;
   canvasW: number; canvasH: number; onCanvasSize: (w: number, h: number) => void;
   onUploadBg: (f: File) => void; onRemoveBg: () => void; hasBg: boolean;
-  onSave: () => void; saving: boolean; savedAt: number | null;
+  onSave: () => void; saving: boolean; savedAt: number | null; dirty: boolean;
   onView: () => void; onShare: () => void; isPublic: boolean; shareUrl: string | null;
 }) {
   const fileRef = useRef<HTMLInputElement | null>(null);
@@ -1107,6 +1162,7 @@ function EditorToolbar({
       <div style={{ flex: 1 }} />
 
       {shareUrl && <span className="sv-editor-shareurl" title={shareUrl}>{shareUrl}</span>}
+      <span className={`sv-editor-dirty ${dirty ? '' : 'saved'}`}>{dirty ? '● Unsaved' : '✓ Saved'}</span>
       <button className={`sv-btn ghost sm ${isPublic ? 'tint-green on' : 'tint-blue'}`} onClick={onShare}>{isPublic ? '🔓 Public' : '🔒 Share'}</button>
       <button className="sv-btn ghost sm tint-violet" onClick={onView}>View Map ↗</button>
       <button className="sv-btn" onClick={onSave} disabled={saving}>
@@ -1438,19 +1494,26 @@ function EditorLabel({
 function ContextMenu({
   ctx, onClose, onAction,
 }: {
-  ctx: NonNullable<Ctx>; onClose: () => void; onAction: () => void;
+  ctx: NonNullable<Ctx>; onClose: () => void; onAction: (action: string) => void;
 }) {
   useEffect(() => {
     const close = () => onClose();
     window.addEventListener('click', close);
     return () => window.removeEventListener('click', close);
   }, [onClose]);
-  const labelText = ctx.kind === 'device' ? 'Remove from map'
+  const deleteText = ctx.kind === 'device' ? 'Remove from map'
     : ctx.kind === 'connection' ? 'Delete connection'
     : ctx.kind === 'shape' ? 'Delete shape' : 'Delete label';
+  const items: [string, string][] = [];
+  if (ctx.kind === 'shape' || ctx.kind === 'label') items.push(['duplicate', 'Duplicate']);
+  if (ctx.kind === 'device' || ctx.kind === 'shape') { items.push(['front', 'Bring to front']); items.push(['back', 'Send to back']); }
+  items.push(['delete', deleteText]);
   return (
     <div className="sv-ctxmenu" style={{ left: ctx.x, top: ctx.y }} onClick={(e) => e.stopPropagation()}>
-      <button onClick={onAction}>{labelText}</button>
+      {items.map(([action, label]) => (
+        <button key={action} className={action === 'delete' ? 'danger' : undefined}
+          onClick={() => onAction(action)}>{label}</button>
+      ))}
     </div>
   );
 }

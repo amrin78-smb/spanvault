@@ -32,6 +32,11 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.38.0': [
+    'Map editor now guards against losing work: an "● Unsaved / ✓ Saved" indicator in the toolbar tracks pending changes, and the browser warns before you reload or navigate away with unsaved edits',
+    'Keyboard ergonomics: arrow keys nudge the selection (1px, or 10px with Shift), Ctrl/Cmd+D duplicates selected shapes/labels, and V / L / T switch between the Select, Line and Label tools',
+    'Right-click menu is now contextual with multiple actions — Duplicate (shapes/labels), Bring to front / Send to back (devices/shapes), and Delete — instead of delete-only',
+  ],
   '1.37.0': [
     'Network map view now supports zoom and pan: scroll-wheel to zoom toward the cursor, drag the canvas to pan, and on-screen +/−/fit controls with a live zoom-level readout. Large diagrams are finally navigable without everything shrinking to fit',
     'Added a status legend overlay (bottom-left) showing live up/down/warning/unknown device counts for the map; only statuses actually present are listed',

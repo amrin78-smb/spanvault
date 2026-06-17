@@ -1604,9 +1604,12 @@ body.sv-noc .sv-content:has(.sv-tabs.sticky) > :first-child { padding-top: 28px;
 }
 .sv-ctxmenu button {
   display: block; width: 100%; text-align: left; padding: 8px 10px; border: none;
-  background: none; cursor: pointer; font-size: 13px; border-radius: 6px; color: var(--sv-down);
+  background: none; cursor: pointer; font-size: 13px; border-radius: 6px; color: var(--text-primary);
 }
 .sv-ctxmenu button:hover { background: var(--bg-primary); }
+.sv-ctxmenu button.danger { color: var(--sv-down); }
+.sv-editor-dirty { font-size: 12px; font-weight: 600; color: #b45309; white-space: nowrap; }
+.sv-editor-dirty.saved { color: #16a34a; }
 
 .sv-editor-props {
   background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px;
