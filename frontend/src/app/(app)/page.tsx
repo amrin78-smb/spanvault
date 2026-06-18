@@ -123,7 +123,7 @@ const CARD_STYLE: React.CSSProperties = {
   minWidth: 0,
 };
 const SECTION_HEADING: React.CSSProperties = {
-  fontSize: 12,
+  fontSize: 'var(--text-sm)',
   textTransform: 'uppercase',
   fontWeight: 600,
   color: 'var(--text-muted)',
@@ -277,7 +277,7 @@ export default function DashboardPage() {
       <UpdatedNotice />
       <RedirectNotice />
       <PageHeader title="Dashboard" subtitle="Live network health across all monitored devices.">
-        <span className="sv-muted" style={{ fontSize: 13 }}>
+        <span className="sv-muted" style={{ fontSize: 'var(--text-base)' }}>
           {updatedAt ? `Updated ${ago === 0 ? 'just now' : `${ago} second${ago === 1 ? '' : 's'} ago`}` : 'Loading…'}
         </span>
         <NocViewButton />
@@ -401,7 +401,7 @@ function RedirectNotice() {
       onClick={() => setMsg(null)}
       style={{
         display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px',
-        marginBottom: 12, borderRadius: 'var(--radius-sm)', fontSize: 13, fontWeight: 600,
+        marginBottom: 12, borderRadius: 'var(--radius-sm)', fontSize: 'var(--text-base)', fontWeight: 600,
         cursor: 'pointer', color: '#92400e', background: 'rgba(217,119,6,0.10)',
         border: '1px solid rgba(217,119,6,0.30)',
       }}
@@ -430,7 +430,7 @@ function UpdatedNotice() {
       onClick={() => setShow(false)}
       style={{
         display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px',
-        marginBottom: 12, borderRadius: 'var(--radius-sm)', fontSize: 13, fontWeight: 600,
+        marginBottom: 12, borderRadius: 'var(--radius-sm)', fontSize: 'var(--text-base)', fontWeight: 600,
         cursor: 'pointer', color: '#166534', background: 'rgba(22,163,74,0.10)',
         border: '1px solid rgba(22,163,74,0.30)',
       }}
@@ -462,10 +462,10 @@ function StatTile({
       }}
     >
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-        <span style={{ fontSize: 21, fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1 }}>{value}</span>
-        {trend && arrow ? <span style={{ fontSize: 13, fontWeight: 700, color: trendColor }}>{arrow}</span> : null}
+        <span style={{ fontSize: 'var(--text-xl)', fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1 }}>{value}</span>
+        {trend && arrow ? <span style={{ fontSize: 'var(--text-base)', fontWeight: 700, color: trendColor }}>{arrow}</span> : null}
       </div>
-      <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', fontWeight: 600 }}>
+      <div style={{ fontSize: 'var(--text-xs)', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', fontWeight: 600 }}>
         {label}
       </div>
     </Link>
@@ -487,12 +487,12 @@ function HealthScoreTile({ data }: { data: Overview | null }) {
       }}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-        <span style={{ fontSize: 21, fontWeight: 800, color: c, lineHeight: 1 }}>
+        <span style={{ fontSize: 'var(--text-xl)', fontWeight: 800, color: c, lineHeight: 1 }}>
           {score != null ? Math.round(score) : '—'}
         </span>
         {data && <GradeBadge grade={data.overall_grade} />}
       </div>
-      <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', fontWeight: 600 }}>
+      <div style={{ fontSize: 'var(--text-xs)', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', fontWeight: 600 }}>
         Health
       </div>
     </Link>
@@ -521,13 +521,13 @@ function WirelessApsTile() {
         borderLeft: `3px solid ${wifiColor}`, textDecoration: 'none', minWidth: 0,
       }}
     >
-      <span style={{ fontSize: 21, fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1 }}>
+      <span style={{ fontSize: 'var(--text-xl)', fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1 }}>
         {w.online_aps}/{w.total_aps}
       </span>
-      <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', fontWeight: 600 }}>
+      <div style={{ fontSize: 'var(--text-xs)', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', fontWeight: 600 }}>
         Wireless APs
       </div>
-      <div style={{ fontSize: 9, color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+      <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
         {clients} client{clients === 1 ? '' : 's'} · {ssidCount} SSID{ssidCount === 1 ? '' : 's'}
       </div>
     </Link>
@@ -553,10 +553,10 @@ function AgentsTile({ canManageAgents, agentsOnline, agentsTotal }: {
         borderLeft: `3px solid ${down ? 'var(--red)' : 'var(--green)'}`, textDecoration: 'none', minWidth: 0,
       }}
     >
-      <span style={{ fontSize: 21, fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1 }}>
+      <span style={{ fontSize: 'var(--text-xl)', fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1 }}>
         {agentsOnline}/{agentsTotal}
       </span>
-      <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', fontWeight: 600 }}>
+      <div style={{ fontSize: 'var(--text-xs)', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', fontWeight: 600 }}>
         Agents
       </div>
     </Link>
@@ -590,13 +590,13 @@ function ServicesTile({ checks }: { checks: ServiceCheck[] }) {
         borderLeft: `3px solid ${color}`, textDecoration: 'none', minWidth: 0,
       }}
     >
-      <span style={{ fontSize: 21, fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1 }}>
+      <span style={{ fontSize: 'var(--text-xl)', fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1 }}>
         {up}/{total}
       </span>
-      <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', fontWeight: 600 }}>
+      <div style={{ fontSize: 'var(--text-xs)', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', fontWeight: 600 }}>
         Services
       </div>
-      <div style={{ fontSize: 9, color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+      <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
         {down} down · {warning} warning
       </div>
     </Link>
@@ -619,7 +619,7 @@ function ServiceProblems({ checks }: { checks: ServiceCheck[] }) {
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
         <StatusDot status="down" size={11} />
         <span style={SECTION_HEADING}>Service Problems</span>
-        <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--text-muted)' }}>{rows.length}</span>
+        <span style={{ marginLeft: 'auto', fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>{rows.length}</span>
       </div>
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', margin: '0 -4px', padding: '0 4px' }}>
         {rows.map((c) => (
@@ -627,14 +627,14 @@ function ServiceProblems({ checks }: { checks: ServiceCheck[] }) {
             key={c.id}
             href="/services"
             style={{
-              display: 'flex', alignItems: 'center', gap: 8, height: 36, fontSize: 12.5,
+              display: 'flex', alignItems: 'center', gap: 8, height: 36, fontSize: 'var(--text-sm)',
               borderBottom: '1px solid var(--border-light)', textDecoration: 'none',
             }}
           >
             <StatusDot status={c.current_status} size={10} />
             <span style={{ fontWeight: 600, color: 'var(--text-primary)', whiteSpace: 'nowrap' }}>{c.name}</span>
             <span style={{
-              flexShrink: 0, fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.03em',
+              flexShrink: 0, fontSize: 'var(--text-xs)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.03em',
               color: 'var(--text-muted)', background: 'var(--border)', padding: '1px 6px', borderRadius: 4,
             }}>
               {(c.type || '').toUpperCase()}
@@ -662,7 +662,7 @@ function AnomalyBanner({ data }: { data: Overview | null }) {
       href="/intelligence#anomalies"
       style={{
         display: 'flex', alignItems: 'center', gap: 8, padding: '8px 14px',
-        marginBottom: 12, borderRadius: 'var(--radius-sm)', fontSize: 13, fontWeight: 600,
+        marginBottom: 12, borderRadius: 'var(--radius-sm)', fontSize: 'var(--text-base)', fontWeight: 600,
         color: '#1d4ed8', background: 'rgba(37,99,235,0.10)',
         border: '1px solid rgba(37,99,235,0.30)', textDecoration: 'none',
       }}
@@ -682,7 +682,7 @@ function AtRiskDevices({ data }: { data: Overview | null }) {
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
         <StatusDot status="warning" size={11} />
         <span style={SECTION_HEADING}>At Risk</span>
-        <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--text-muted)' }}>{atRisk.length}</span>
+        <span style={{ marginLeft: 'auto', fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>{atRisk.length}</span>
       </div>
       {atRisk.length ? (
         <>
@@ -690,7 +690,7 @@ function AtRiskDevices({ data }: { data: Overview | null }) {
             {atRisk.map((d: HealthRow) => {
               const s = intelNum(d.score);
               return (
-                <div key={d.id} style={{ display: 'flex', alignItems: 'center', gap: 8, height: 36, borderBottom: '1px solid var(--border-light)', fontSize: 12.5 }}>
+                <div key={d.id} style={{ display: 'flex', alignItems: 'center', gap: 8, height: 36, borderBottom: '1px solid var(--border-light)', fontSize: 'var(--text-sm)' }}>
                   <span style={{ color: 'var(--yellow)' }}>⚠</span>
                   <Link href={`/devices/${d.id}`} style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{d.name}</Link>
                   <span style={{ flex: 1 }} />
@@ -705,7 +705,7 @@ function AtRiskDevices({ data }: { data: Overview | null }) {
           </div>
         </>
       ) : (
-        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
+        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', fontSize: 'var(--text-base)' }}>
           No at-risk devices ✓
         </div>
       )}
@@ -738,7 +738,7 @@ function ActiveProblems({ api }: { api: Api<Problem[]> }) {
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
         {hasProblems && <StatusDot status="down" size={11} />}
         <span style={SECTION_HEADING}>Active Problems</span>
-        {hasProblems && <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--text-muted)' }}>{sorted.length}</span>}
+        {hasProblems && <span style={{ marginLeft: 'auto', fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>{sorted.length}</span>}
       </div>
 
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', margin: '0 -4px', padding: '0 4px' }}>
@@ -751,8 +751,8 @@ function ActiveProblems({ api }: { api: Api<Problem[]> }) {
             height: '100%', display: 'flex', flexDirection: 'column',
             alignItems: 'center', justifyContent: 'center', gap: 4, color: 'var(--green)',
           }}>
-            <div style={{ fontSize: 28 }}>✓</div>
-            <div style={{ fontSize: 13, fontWeight: 600 }}>All systems operational</div>
+            <div style={{ fontSize: 'var(--text-2xl)' }}>✓</div>
+            <div style={{ fontSize: 'var(--text-base)', fontWeight: 600 }}>All systems operational</div>
           </div>
         ) : (
           sorted.map((p) => {
@@ -761,14 +761,14 @@ function ActiveProblems({ api }: { api: Api<Problem[]> }) {
             const ms = num(p.last_response_ms);
             return (
               <div key={p.id}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, height: 36, fontSize: 12.5, borderBottom: '1px solid var(--border-light)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, height: 36, fontSize: 'var(--text-sm)', borderBottom: '1px solid var(--border-light)' }}>
                   <StatusDot status={p.current_status} size={10} />
                   <Link href={`/devices/${p.id}`} style={{ fontWeight: 600, color: 'var(--text-primary)', whiteSpace: 'nowrap' }}>{p.name}</Link>
                   {gwDown && (
                     <span
                       title="Site gateway is down"
                       style={{
-                        fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.03em',
+                        fontSize: 'var(--text-xs)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.03em',
                         color: '#fff', background: 'var(--red)', padding: '1px 6px', borderRadius: 4, whiteSpace: 'nowrap',
                       }}
                     >
@@ -859,7 +859,7 @@ function SlowestDevices({ api }: { api: Api<Worst[]> }) {
 function Th({ children, style }: { children: React.ReactNode; style?: React.CSSProperties }) {
   return (
     <th style={{
-      fontSize: 11, textTransform: 'uppercase', fontWeight: 600, color: 'var(--text-muted)',
+      fontSize: 'var(--text-xs)', textTransform: 'uppercase', fontWeight: 600, color: 'var(--text-muted)',
       padding: '8px 12px', letterSpacing: '0.03em', borderBottom: '1px solid var(--border)', ...style,
     }}>{children}</th>
   );
@@ -867,7 +867,7 @@ function Th({ children, style }: { children: React.ReactNode; style?: React.CSSP
 function Td({ children, style }: { children: React.ReactNode; style?: React.CSSProperties }) {
   return (
     <td style={{
-      fontSize: 12.5, color: 'var(--text-primary)', padding: '8px 12px',
+      fontSize: 'var(--text-sm)', color: 'var(--text-primary)', padding: '8px 12px',
       borderBottom: '1px solid var(--border-light)', ...style,
     }}>{children}</td>
   );
@@ -899,7 +899,7 @@ function SiteHealthCard({ api }: { api: Api<SiteHealth[]> }) {
             const pills = [`${st.up_count} up`, `${st.down_count} down`];
             if (st.warning_count) pills.push(`${st.warning_count} warn`);
             return (
-              <div key={st.site_id} style={{ display: 'flex', alignItems: 'center', gap: 10, height: 36, fontSize: 12.5 }}>
+              <div key={st.site_id} style={{ display: 'flex', alignItems: 'center', gap: 10, height: 36, fontSize: 'var(--text-sm)' }}>
                 <span style={{ width: 130, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {st.site_id ? (
                     <Link href={`/sites/${st.site_id}`} style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{st.site_name}</Link>
@@ -975,7 +975,7 @@ function NetworkTrendChart({ data }: { data: TrendPoint[] }) {
           formatter={(v: any) => [`${Number(v).toFixed(1)}%`, 'Availability']}
         />
         <ReferenceLine y={95} stroke="#C8102E" strokeDasharray="4 4"
-          label={{ value: '95%', position: 'right', fontSize: 11, fill: '#C8102E' }} />
+          label={{ value: '95%', position: 'right', fontSize: 'var(--text-xs)', fill: '#C8102E' }} />
         <Area type="monotone" dataKey="pct" stroke="#2e9e5b" strokeWidth={2}
           fill="url(#svAvail)" connectNulls isAnimationActive={false} />
       </AreaChart>
@@ -1025,7 +1025,7 @@ function RecentEvents({ api }: { api: Api<EventRow[]> }) {
       {rows.map((e) => {
         const { icon, text } = describeEvent(e);
         return (
-          <div key={e.id} style={{ display: 'flex', alignItems: 'center', gap: 8, height: 32, fontSize: 12.5, borderBottom: '1px solid var(--border-light)', padding: '0 4px' }}>
+          <div key={e.id} style={{ display: 'flex', alignItems: 'center', gap: 8, height: 32, fontSize: 'var(--text-sm)', borderBottom: '1px solid var(--border-light)', padding: '0 4px' }}>
             <span title={fmtTime(e.event_at)} style={{ width: 64, color: 'var(--text-muted)', whiteSpace: 'nowrap', flexShrink: 0 }}>{fmtRel(e.event_at)}</span>
             <span style={{ flexShrink: 0 }}>{icon}</span>
             <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -1054,13 +1054,13 @@ function AgentOfflineGroup({ api }: { api: Api<AgentOfflineRow[]> }) {
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
         <StatusDot status="warning" size={11} />
         <span style={SECTION_HEADING}>Agent Offline</span>
-        <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--text-muted)' }}>{rows.length}</span>
+        <span style={{ marginLeft: 'auto', fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>{rows.length}</span>
       </div>
       {rows.map((r) => (
-        <div key={r.agent_id} style={{ display: 'flex', alignItems: 'center', gap: 8, height: 36, fontSize: 12.5, borderBottom: '1px solid var(--border-light)' }}>
+        <div key={r.agent_id} style={{ display: 'flex', alignItems: 'center', gap: 8, height: 36, fontSize: 'var(--text-sm)', borderBottom: '1px solid var(--border-light)' }}>
           <span style={{ color: 'var(--yellow)' }}>⚠</span>
           <Link href={`/agents/${r.agent_id}`} style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{r.agent_name}</Link>
-          {r.hostname && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>· {r.hostname}</span>}
+          {r.hostname && <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)' }}>· {r.hostname}</span>}
           <span style={{ flex: 1 }} />
           <span style={{ color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
             {r.device_count} device{r.device_count === 1 ? '' : 's'} unreachable · last seen {fmtRel(r.last_seen_at)}
@@ -1097,8 +1097,8 @@ function OpsTile({ value, label, color, alert }: {
         borderLeft: `3px solid ${color}`, minWidth: 0,
       }}
     >
-      <span style={{ fontSize: 21, fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1 }}>{value}</span>
-      <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', fontWeight: 600 }}>
+      <span style={{ fontSize: 'var(--text-xl)', fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1 }}>{value}</span>
+      <div style={{ fontSize: 'var(--text-xs)', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', fontWeight: 600 }}>
         {label}
       </div>
     </div>
@@ -1119,7 +1119,7 @@ function OpenIncidents({ api }: { api: Api<OpenIncident[]> }) {
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
         {has && <StatusDot status="down" size={11} />}
         <span style={SECTION_HEADING}>Open Incidents</span>
-        {has && <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--text-muted)' }}>{rows.length}</span>}
+        {has && <span style={{ marginLeft: 'auto', fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>{rows.length}</span>}
       </div>
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', margin: '0 -4px', padding: '0 4px' }}>
         {api.loading && !api.data ? (
@@ -1131,14 +1131,14 @@ function OpenIncidents({ api }: { api: Api<OpenIncident[]> }) {
             height: '100%', display: 'flex', flexDirection: 'column',
             alignItems: 'center', justifyContent: 'center', gap: 4, color: 'var(--green)',
           }}>
-            <div style={{ fontSize: 28 }}>✓</div>
-            <div style={{ fontSize: 13, fontWeight: 600 }}>No open incidents</div>
+            <div style={{ fontSize: 'var(--text-2xl)' }}>✓</div>
+            <div style={{ fontSize: 'var(--text-base)', fontWeight: 600 }}>No open incidents</div>
           </div>
         ) : (
           rows.map((i) => {
             const age = durSince(i.started_at);
             return (
-              <div key={i.id} style={{ display: 'flex', alignItems: 'center', gap: 8, height: 36, fontSize: 12.5, borderBottom: '1px solid var(--border-light)' }}>
+              <div key={i.id} style={{ display: 'flex', alignItems: 'center', gap: 8, height: 36, fontSize: 'var(--text-sm)', borderBottom: '1px solid var(--border-light)' }}>
                 <StatusDot status={severityDotStatus(i.severity)} size={10} />
                 {i.root_cause_device_id ? (
                   <Link href={`/devices/${i.root_cause_device_id}`} style={{ fontWeight: 600, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -1173,13 +1173,13 @@ function SlaTile({ api }: { api: Api<Sla> }) {
         borderLeft: `3px solid ${c}`, minWidth: 0,
       }}
     >
-      <span style={{ fontSize: 21, fontWeight: 800, color: c, lineHeight: 1 }}>
+      <span style={{ fontSize: 'var(--text-xl)', fontWeight: 800, color: c, lineHeight: 1 }}>
         {pct != null ? `${pct.toFixed(1)}%` : '—'}
       </span>
-      <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', fontWeight: 600 }}>
+      <div style={{ fontSize: 'var(--text-xs)', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', fontWeight: 600 }}>
         SLA 30d
       </div>
-      <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+      <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)' }}>
         Target {target != null ? `${Number(target).toFixed(1)}%` : '—'}
       </div>
     </div>
@@ -1196,9 +1196,9 @@ function SlaBreaches({ api }: { api: Api<Sla> }) {
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
         <span style={SECTION_HEADING}>SLA Breaches (30d)</span>
         {target != null && (
-          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>target {Number(target).toFixed(1)}%</span>
+          <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)' }}>target {Number(target).toFixed(1)}%</span>
         )}
-        {hasBreaches && <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--text-muted)' }}>{rows.length}</span>}
+        {hasBreaches && <span style={{ marginLeft: 'auto', fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>{rows.length}</span>}
       </div>
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', margin: '0 -4px', padding: '0 4px' }}>
         {api.loading && !api.data ? (
@@ -1210,14 +1210,14 @@ function SlaBreaches({ api }: { api: Api<Sla> }) {
             height: '100%', display: 'flex', flexDirection: 'column',
             alignItems: 'center', justifyContent: 'center', gap: 4, color: 'var(--green)',
           }}>
-            <div style={{ fontSize: 28 }}>✓</div>
-            <div style={{ fontSize: 13, fontWeight: 600 }}>All devices meeting SLA</div>
+            <div style={{ fontSize: 'var(--text-2xl)' }}>✓</div>
+            <div style={{ fontSize: 'var(--text-base)', fontWeight: 600 }}>All devices meeting SLA</div>
           </div>
         ) : (
           rows.map((d) => {
             const pct = num(d.uptime_pct);
             return (
-              <div key={d.id} style={{ display: 'flex', alignItems: 'center', gap: 10, height: 36, fontSize: 12.5 }}>
+              <div key={d.id} style={{ display: 'flex', alignItems: 'center', gap: 10, height: 36, fontSize: 'var(--text-sm)' }}>
                 <span style={{ width: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   <Link href={`/devices/${d.id}`} style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{d.name}</Link>
                   {d.site_name && <span style={{ color: 'var(--text-muted)' }}> · {d.site_name}</span>}
@@ -1260,7 +1260,7 @@ function ApproachingCapacity({ api }: { api: Api<CapacityRow[]> }) {
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
         {hasRows && <StatusDot status="warning" size={11} />}
         <span style={SECTION_HEADING}>Approaching Capacity</span>
-        {hasRows && <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--text-muted)' }}>{rows.length}</span>}
+        {hasRows && <span style={{ marginLeft: 'auto', fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>{rows.length}</span>}
       </div>
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', margin: '0 -4px', padding: '0 4px' }}>
         {api.loading && !api.data ? (
@@ -1272,8 +1272,8 @@ function ApproachingCapacity({ api }: { api: Api<CapacityRow[]> }) {
             height: '100%', display: 'flex', flexDirection: 'column',
             alignItems: 'center', justifyContent: 'center', gap: 4, color: 'var(--green)',
           }}>
-            <div style={{ fontSize: 28 }}>✓</div>
-            <div style={{ fontSize: 13, fontWeight: 600 }}>No capacity concerns</div>
+            <div style={{ fontSize: 'var(--text-2xl)' }}>✓</div>
+            <div style={{ fontSize: 'var(--text-base)', fontWeight: 600 }}>No capacity concerns</div>
           </div>
         ) : (
           rows.map((c) => {
@@ -1282,7 +1282,7 @@ function ApproachingCapacity({ api }: { api: Api<CapacityRow[]> }) {
             return (
               <div
                 key={`${c.id}-${c.metric}`}
-                style={{ display: 'flex', alignItems: 'center', gap: 10, height: 36, fontSize: 12.5, borderBottom: '1px solid var(--border-light)' }}
+                style={{ display: 'flex', alignItems: 'center', gap: 10, height: 36, fontSize: 'var(--text-sm)', borderBottom: '1px solid var(--border-light)' }}
               >
                 <Link
                   href={`/devices/${c.id}`}
@@ -1348,7 +1348,7 @@ function RecurringPatterns({ api }: { api: Api<PatternRow[]> }) {
     <div style={{ ...CARD_STYLE, height: 220 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
         <span style={SECTION_HEADING}>Recurring Patterns</span>
-        {rows.length > 0 && <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--text-muted)' }}>{rows.length}</span>}
+        {rows.length > 0 && <span style={{ marginLeft: 'auto', fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>{rows.length}</span>}
       </div>
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', margin: '0 -4px', padding: '0 4px' }}>
         {api.loading && !api.data ? (
@@ -1362,7 +1362,7 @@ function RecurringPatterns({ api }: { api: Api<PatternRow[]> }) {
             const conf = num(p.confidence);
             const pct = conf != null ? Math.round(conf * 100) : null;
             return (
-              <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 8, height: 36, fontSize: 12.5, borderBottom: '1px solid var(--border-light)' }}>
+              <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 8, height: 36, fontSize: 'var(--text-sm)', borderBottom: '1px solid var(--border-light)' }}>
                 <span style={{ flexShrink: 0 }}>🔁</span>
                 <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   <Link href={`/devices/${p.device_id}`} style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
@@ -1375,7 +1375,7 @@ function RecurringPatterns({ api }: { api: Api<PatternRow[]> }) {
                   <span
                     title={`${p.occurrence_count} occurrence${p.occurrence_count === 1 ? '' : 's'}`}
                     style={{
-                      flexShrink: 0, fontSize: 11, fontWeight: 700, color: '#fff',
+                      flexShrink: 0, fontSize: 'var(--text-xs)', fontWeight: 700, color: '#fff',
                       background: confColor(pct), padding: '1px 7px', borderRadius: 10, whiteSpace: 'nowrap',
                     }}
                   >
@@ -1457,7 +1457,7 @@ function TopTalkers({ api }: { api: Api<TopTalker[]> }) {
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
         <span style={SECTION_HEADING}>Top Talkers</span>
         {rows.length > 0 && (
-          <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--text-muted)' }}>{rows.length}</span>
+          <span style={{ marginLeft: 'auto', fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>{rows.length}</span>
         )}
       </div>
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', margin: '0 -4px', padding: '0 4px' }}>
@@ -1471,7 +1471,7 @@ function TopTalkers({ api }: { api: Api<TopTalker[]> }) {
           rows.map((t) => (
             <div
               key={`${t.device_id}-${t.if_index}`}
-              style={{ display: 'flex', alignItems: 'center', gap: 8, height: 36, fontSize: 12.5, borderBottom: '1px solid var(--border-light)' }}
+              style={{ display: 'flex', alignItems: 'center', gap: 8, height: 36, fontSize: 'var(--text-sm)', borderBottom: '1px solid var(--border-light)' }}
             >
               <Link
                 href={`/devices/${t.device_id}`}
@@ -1504,15 +1504,15 @@ function MaintenanceGroup({ api }: { api: Api<MaintenanceData> }) {
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
         <span aria-hidden style={{ color: '#2563eb' }}>🛠</span>
         <span style={SECTION_HEADING}>Maintenance</span>
-        <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--text-muted)' }}>{rows.length}</span>
+        <span style={{ marginLeft: 'auto', fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>{rows.length}</span>
       </div>
       {rows.map((m) => {
         const isActive = m.state === 'active';
         return (
-          <div key={m.id} style={{ display: 'flex', alignItems: 'center', gap: 8, height: 36, fontSize: 12.5, borderBottom: '1px solid var(--border-light)' }}>
+          <div key={m.id} style={{ display: 'flex', alignItems: 'center', gap: 8, height: 36, fontSize: 'var(--text-sm)', borderBottom: '1px solid var(--border-light)' }}>
             <span
               style={{
-                fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.03em',
+                fontSize: 'var(--text-xs)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.03em',
                 color: isActive ? '#fff' : 'var(--text-muted)',
                 background: isActive ? '#2563eb' : 'var(--border)',
                 padding: '1px 6px', borderRadius: 4, whiteSpace: 'nowrap', flexShrink: 0,
@@ -1523,7 +1523,7 @@ function MaintenanceGroup({ api }: { api: Api<MaintenanceData> }) {
             <Link href={`/devices/${m.device_id}`} style={{ fontWeight: 600, color: 'var(--text-primary)', whiteSpace: 'nowrap' }}>
               {m.device_name}
             </Link>
-            {m.site_name && <span style={{ fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>· {m.site_name}</span>}
+            {m.site_name && <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>· {m.site_name}</span>}
             {m.reason && (
               <span style={{ color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>— {m.reason}</span>
             )}
@@ -1548,18 +1548,18 @@ function WirelessHealthCard() {
     <div style={{ ...CARD_STYLE, flex: 1, minWidth: 0, borderLeft: `3px solid ${c}`, height: 220, overflow: 'hidden' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
         <span style={SECTION_HEADING}>Wireless Health</span>
-        <Link href="/wireless" className="sv-dash-link" style={{ marginLeft: 'auto', fontSize: 12 }}>View →</Link>
+        <Link href="/wireless" className="sv-dash-link" style={{ marginLeft: 'auto', fontSize: 'var(--text-sm)' }}>View →</Link>
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
-        <span style={{ fontSize: 26, fontWeight: 800, color: c, lineHeight: 1 }}>{d.overall_score}</span>
+        <span style={{ fontSize: 'var(--text-2xl)', fontWeight: 800, color: c, lineHeight: 1 }}>{d.overall_score}</span>
         <GradeBadge grade={d.overall_grade} />
-        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+        <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)' }}>
           {d.controllers_with_intel} controller{d.controllers_with_intel === 1 ? '' : 's'}
         </span>
       </div>
       <IntelBar label="Interference" score={d.interference_score} />
       <IntelBar label="Capacity" score={d.capacity_score} />
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 'auto', paddingTop: 10, fontSize: 11.5 }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 'auto', paddingTop: 10, fontSize: 'var(--text-xs)' }}>
         <WirelessChip n={d.overloaded_aps} label="overloaded AP" color="var(--yellow)" />
         <WirelessChip n={d.co_channel_pairs} label="co-channel pair" color="var(--yellow)" />
         <WirelessChip n={d.problem_clients} label="problem client" color="var(--red)" />
@@ -1572,7 +1572,7 @@ function IntelBar({ label, score }: { label: string; score: number }) {
   const pct = Math.max(0, Math.min(100, score));
   return (
     <div style={{ marginBottom: 8 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11.5, marginBottom: 3 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 'var(--text-xs)', marginBottom: 3 }}>
         <span style={{ color: 'var(--text-muted)' }}>{label}</span>
         <span style={{ color: c, fontWeight: 600 }}>{score}</span>
       </div>

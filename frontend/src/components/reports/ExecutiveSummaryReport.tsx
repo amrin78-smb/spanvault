@@ -31,7 +31,7 @@ type Executive = {
 
 // ── Shared REPORT OUTPUT style constants (module scope) ─────────
 const SECTION_TITLE: React.CSSProperties = {
-  fontSize: 12,
+  fontSize: 'var(--text-sm)',
   textTransform: 'uppercase',
   fontWeight: 600,
   color: 'var(--text-muted)',
@@ -57,16 +57,16 @@ const STAT_CARD: React.CSSProperties = {
   flexDirection: 'column',
   justifyContent: 'center',
 };
-const STAT_VALUE: React.CSSProperties = { fontSize: 24, fontWeight: 800, lineHeight: 1.1 };
+const STAT_VALUE: React.CSSProperties = { fontSize: 'var(--text-2xl)', fontWeight: 800, lineHeight: 1.1 };
 const STAT_LABEL: React.CSSProperties = {
-  fontSize: 11,
+  fontSize: 'var(--text-xs)',
   textTransform: 'uppercase',
   color: 'var(--text-muted)',
   letterSpacing: '0.04em',
   marginTop: 4,
 };
 const TH: React.CSSProperties = {
-  fontSize: 11,
+  fontSize: 'var(--text-xs)',
   textTransform: 'uppercase',
   fontWeight: 600,
   letterSpacing: '0.06em',
@@ -75,7 +75,7 @@ const TH: React.CSSProperties = {
   textAlign: 'left',
 };
 const TD: React.CSSProperties = {
-  fontSize: 12.5,
+  fontSize: 'var(--text-sm)',
   color: 'var(--text-primary)',
   padding: '8px 12px',
   height: 36,
@@ -98,19 +98,19 @@ const VS_ROW: React.CSSProperties = {
   fontVariantNumeric: 'tabular-nums',
 };
 const VS_LABEL: React.CSSProperties = {
-  fontSize: 12.5,
+  fontSize: 'var(--text-sm)',
   fontWeight: 600,
   color: 'var(--text-primary)',
 };
 const VS_VALUE: React.CSSProperties = {
-  fontSize: 14,
+  fontSize: 'var(--text-md)',
   fontWeight: 700,
   color: 'var(--text-primary)',
   textAlign: 'right',
-  fontFamily: 'var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace)',
+  fontFamily: 'var(--font-mono)',
 };
 const VS_DELTA: React.CSSProperties = {
-  fontSize: 12,
+  fontSize: 'var(--text-sm)',
   fontWeight: 600,
   textAlign: 'right',
   minWidth: 150,
@@ -157,7 +157,7 @@ export default function ExecutiveSummaryReport({ data }: { data: Executive }) {
       <div style={{ marginBottom: 16 }}>
         <h1
           style={{
-            fontSize: 20,
+            fontSize: 'var(--text-xl)',
             fontWeight: 700,
             lineHeight: 1.2,
             margin: 0,
@@ -166,7 +166,7 @@ export default function ExecutiveSummaryReport({ data }: { data: Executive }) {
         >
           {data.headline || 'Network availability summary'}
         </h1>
-        <div className="sv-muted" style={{ marginTop: 4, fontSize: 12 }}>
+        <div className="sv-muted" style={{ marginTop: 4, fontSize: 'var(--text-sm)' }}>
           Reporting period: {data.period || ''} · Generated{' '}
           {data.generated_at ? new Date(data.generated_at).toLocaleString() : '—'}
         </div>
@@ -181,7 +181,7 @@ export default function ExecutiveSummaryReport({ data }: { data: Executive }) {
             <div
               style={{
                 marginTop: 4,
-                fontSize: 11,
+                fontSize: 'var(--text-xs)',
                 fontWeight: 600,
                 color: deltaPositive ? 'var(--green)' : 'var(--primary)',
               }}
@@ -274,10 +274,10 @@ export default function ExecutiveSummaryReport({ data }: { data: Executive }) {
           <div style={{ ...SECTION_TITLE, color: 'var(--primary)' }}>
             Biggest Incident
           </div>
-          <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text-primary)' }}>
+          <div style={{ fontSize: 'var(--text-md)', fontWeight: 600, color: 'var(--text-primary)' }}>
             {data.biggest_incident.title}
           </div>
-          <div className="sv-muted" style={{ marginTop: 4, fontSize: 12.5 }}>
+          <div className="sv-muted" style={{ marginTop: 4, fontSize: 'var(--text-sm)' }}>
             Lasted{' '}
             {data.biggest_incident.duration_minutes === null
               ? '—'
@@ -293,7 +293,7 @@ export default function ExecutiveSummaryReport({ data }: { data: Executive }) {
         {recommendations.length > 0 ? (
           <ul style={{ margin: 0, paddingLeft: 20, lineHeight: 1.6 }}>
             {recommendations.map((r, i) => (
-              <li key={i} style={{ fontSize: 12.5, color: 'var(--text-primary)' }}>
+              <li key={i} style={{ fontSize: 'var(--text-sm)', color: 'var(--text-primary)' }}>
                 {r}
               </li>
             ))}

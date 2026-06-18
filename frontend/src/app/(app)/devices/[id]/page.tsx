@@ -67,7 +67,7 @@ const SECTION_CARD: CSSProperties = {
   borderRadius: 'var(--radius-sm)', padding: '16px 20px', marginBottom: 16,
 };
 const SECTION_HEADING: CSSProperties = {
-  fontSize: 12, fontWeight: 600, textTransform: 'uppercase', color: 'var(--text-muted)',
+  fontSize: 'var(--text-sm)', fontWeight: 600, textTransform: 'uppercase', color: 'var(--text-muted)',
   letterSpacing: '0.06em', margin: '0 0 8px',
 };
 const GRAPH_CARD: CSSProperties = {
@@ -80,7 +80,7 @@ const GRAPH_HEADER: CSSProperties = {
   gap: 8, marginBottom: 6, minHeight: 22,
 };
 const GRAPH_TITLE: CSSProperties = {
-  fontSize: 12, fontWeight: 600, textTransform: 'uppercase', color: 'var(--text-muted)',
+  fontSize: 'var(--text-sm)', fontWeight: 600, textTransform: 'uppercase', color: 'var(--text-muted)',
   letterSpacing: '0.06em', margin: 0, overflow: 'hidden', textOverflow: 'ellipsis',
   whiteSpace: 'nowrap',
 };
@@ -89,7 +89,7 @@ const GRAPH_GRID: CSSProperties = {
   display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 12, marginBottom: 16,
 };
 const TAB_BTN_BASE: CSSProperties = {
-  fontSize: 11, padding: '2px 8px', borderRadius: 6, border: '1px solid var(--border)',
+  fontSize: 'var(--text-xs)', padding: '2px 8px', borderRadius: 6, border: '1px solid var(--border)',
   background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', lineHeight: 1.4,
 };
 const TAB_BTN_ACTIVE: CSSProperties = {
@@ -150,7 +150,7 @@ export default function DeviceDetailPage() {
           size={14}
           title={`${(d.current_status || 'unknown').replace(/^\w/, (c) => c.toUpperCase())} — last seen ${fmtRel(d.last_seen_at)}${d.last_response_ms != null ? `, ${Number(d.last_response_ms).toFixed(0)}ms` : ''}`}
         />
-        <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, letterSpacing: '-0.3px' }}>{d.name}</h1>
+        <h1 style={{ margin: 0, fontSize: 'var(--text-xl)', fontWeight: 700, letterSpacing: '-0.3px' }}>{d.name}</h1>
         <StatusBadge status={d.current_status} />
         {d.is_gateway && (
           <span className="sv-gw-badge" title={`Site gateway for ${d.site_name || 'this site'}`}>
@@ -164,7 +164,7 @@ export default function DeviceDetailPage() {
         {snmpOn && <TestSnmpButton deviceId={d.id} onResult={setToast} />}
         <PingNow deviceId={d.id} />
       </div>
-      <p style={{ color: 'var(--text-muted)', fontSize: 13, margin: '0 0 14px' }}>
+      <p style={{ color: 'var(--text-muted)', fontSize: 'var(--text-base)', margin: '0 0 14px' }}>
         {d.ip_address} · {d.device_type || 'Unknown type'} · {d.site_name || 'Unassigned'}
         {vendorLabel(d.device_vendor) && <> · {vendorLabel(d.device_vendor)}</>}
         {d.is_gateway && <> · ⭐ Gateway</>}
@@ -314,7 +314,7 @@ function PingNow({ deviceId }: { deviceId: number }) {
 
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-      {err && <span style={{ color: 'var(--sv-down)', fontSize: 13 }}>{err}</span>}
+      {err && <span style={{ color: 'var(--sv-down)', fontSize: 'var(--text-base)' }}>{err}</span>}
       {!err && result && (
         result.status === 'down' || result.ms == null ? (
           <span className="sv-badge down">Timeout</span>
@@ -484,7 +484,7 @@ function InterfaceTrafficChart({
   let lastOper: number | null = null;
   for (let i = data.length - 1; i >= 0; i--) { if (data[i].oper != null) { lastOper = data[i].oper as number; break; } }
   const badge = operSensor && lastOper != null ? (
-    <span className={`sv-badge ${lastOper >= 0.5 ? 'up' : 'down'}`} style={{ fontSize: 10 }}>
+    <span className={`sv-badge ${lastOper >= 0.5 ? 'up' : 'down'}`} style={{ fontSize: 'var(--text-xs)' }}>
       {lastOper >= 0.5 ? 'Up' : 'Down'}
     </span>
   ) : undefined;
@@ -508,7 +508,7 @@ function InterfaceTrafficChart({
               labelFormatter={tickLabel}
               formatter={(v: any, name: any) => [v == null ? '—' : fmtBps(Number(v)), name]}
             />
-            <Legend wrapperStyle={{ fontSize: 11 }} />
+            <Legend wrapperStyle={{ fontSize: 'var(--text-xs)' }} />
             <Line type="monotone" name="In" dataKey="in" stroke={TRAFFIC_IN_COLOR} strokeWidth={2} dot={false} connectNulls />
             <Line type="monotone" name="Out" dataKey="out" stroke={TRAFFIC_OUT_COLOR} strokeWidth={2} dot={false} connectNulls />
           </LineChart>
@@ -591,7 +591,7 @@ function CustomSensorChart({ deviceId, sensor, range, setRange }: { deviceId: nu
             <YAxis
               fontSize={11}
               width={48}
-              label={unit ? { value: unit, angle: -90, position: 'insideLeft', fontSize: 11 } : undefined}
+              label={unit ? { value: unit, angle: -90, position: 'insideLeft', fontSize: 'var(--text-xs)' } : undefined}
             />
             <Tooltip
               labelFormatter={tickLabel}
@@ -733,9 +733,9 @@ function statCardStyle(variant?: string): CSSProperties {
     display: 'flex', flexDirection: 'column', justifyContent: 'center',
   };
 }
-const STAT_VALUE: CSSProperties = { fontSize: 24, fontWeight: 800, lineHeight: 1.1, letterSpacing: '-0.5px' };
+const STAT_VALUE: CSSProperties = { fontSize: 'var(--text-2xl)', fontWeight: 800, lineHeight: 1.1, letterSpacing: '-0.5px' };
 const STAT_LABEL: CSSProperties = {
-  fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase',
+  fontSize: 'var(--text-xs)', color: 'var(--text-muted)', textTransform: 'uppercase',
   letterSpacing: '0.04em', marginTop: 6,
 };
 function QuickStats({ deviceId }: { deviceId: number }) {
@@ -752,7 +752,7 @@ function QuickStats({ deviceId }: { deviceId: number }) {
         <div style={STAT_LABEL}>Uptime (30 days)</div>
       </div>
       <div style={statCardStyle()}>
-        <div style={STAT_VALUE}>{avg != null ? `${avg}` : '—'}<span style={{ fontSize: 13, fontWeight: 600 }}> ms</span></div>
+        <div style={STAT_VALUE}>{avg != null ? `${avg}` : '—'}<span style={{ fontSize: 'var(--text-base)', fontWeight: 600 }}> ms</span></div>
         <div style={STAT_LABEL}>
           Avg Response (7d){base != null ? ` · baseline ${Math.round(base)}ms` : ''}
         </div>
@@ -821,7 +821,7 @@ type IfRow = { if_index: number; if_name: string; status: string | null; in_bps:
 // Compact grid cell — used in the expanded "show all" view.
 const COMPACT_TOGGLE: CSSProperties = {
   background: 'transparent', border: 'none', color: 'var(--primary)', cursor: 'pointer',
-  fontSize: 12, fontWeight: 600, padding: '4px 0',
+  fontSize: 'var(--text-sm)', fontWeight: 600, padding: '4px 0',
 };
 function IfGridCell({ r }: { r: IfRow }) {
   const bps =
@@ -834,12 +834,12 @@ function IfGridCell({ r }: { r: IfRow }) {
       style={{
         display: 'flex', alignItems: 'center', gap: 8, height: 28, padding: '0 8px',
         border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
-        background: 'var(--bg-primary)', fontSize: 12.5, minWidth: 0,
+        background: 'var(--bg-primary)', fontSize: 'var(--text-sm)', minWidth: 0,
       }}
     >
       <StatusDot status={r.status || 'unknown'} size={9} title={`Interface ${r.status || 'unknown'}`} />
       <span style={{ fontWeight: 600, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.if_name}</span>
-      <span style={{ marginLeft: 'auto', color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums', fontSize: 11.5 }}>{bps}</span>
+      <span style={{ marginLeft: 'auto', color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums', fontSize: 'var(--text-xs)' }}>{bps}</span>
     </div>
   );
 }
@@ -895,7 +895,7 @@ function InterfacePanel({ deviceId }: { deviceId: number }) {
           ))}
         </div>
       ) : (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 18, fontSize: 13.5 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 18, fontSize: 'var(--text-base)' }}>
           {upCount > 0 && (
             <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600 }}>
               <StatusDot status="up" size={10} title="Up" /> {upCount} Up
@@ -967,7 +967,7 @@ function ConnectedDevices({ deviceId }: { deviceId: number }) {
               key={i}
               style={{
                 display: 'flex', alignItems: 'center', gap: 8, height: 32,
-                borderBottom: '1px solid var(--border)', fontSize: 13, padding: '0 2px',
+                borderBottom: '1px solid var(--border)', fontSize: 'var(--text-base)', padding: '0 2px',
               }}
             >
               <span style={{ color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' }}>{c.from_port || '—'}</span>
@@ -987,7 +987,7 @@ function ConnectedDevices({ deviceId }: { deviceId: number }) {
           ))}
         </div>
       ) : (
-        <div style={{ fontSize: 13.5, fontWeight: 600 }}>
+        <div style={{ fontSize: 'var(--text-base)', fontWeight: 600 }}>
           Connected to {total} neighbor{total === 1 ? '' : 's'}
         </div>
       )}
@@ -1057,7 +1057,7 @@ function DeviceIntelligence({ deviceId }: { deviceId: number }) {
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
         <div style={{ ...SECTION_HEADING, margin: 0 }}>⚡ Intelligence</div>
         <div style={{ flex: 1 }} />
-        <Link href={`/intelligence?device=${deviceId}#health`} className="sv-dash-link" style={{ fontSize: 12, fontWeight: 600 }}>
+        <Link href={`/intelligence?device=${deviceId}#health`} className="sv-dash-link" style={{ fontSize: 'var(--text-sm)', fontWeight: 600 }}>
           View full intelligence →
         </Link>
       </div>
@@ -1077,19 +1077,19 @@ function DeviceIntelligence({ deviceId }: { deviceId: number }) {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8, minWidth: 0 }}>
             {health ? (
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                <span className="sv-muted" style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Health</span>
+                <span className="sv-muted" style={{ fontSize: 'var(--text-xs)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Health</span>
                 <ScoreBar score={health.score} />
                 <GradeBadge grade={health.grade} />
                 <TrendArrow trend={health.trend} />
                 {intelNum(health.uptime_pct) != null && (
-                  <span className="sv-muted" style={{ fontSize: 12 }}>Uptime {Number(health.uptime_pct).toFixed(1)}%</span>
+                  <span className="sv-muted" style={{ fontSize: 'var(--text-sm)' }}>Uptime {Number(health.uptime_pct).toFixed(1)}%</span>
                 )}
               </div>
             ) : (
-              <span className="sv-muted" style={{ fontSize: 12.5 }}>Health score not computed yet.</span>
+              <span className="sv-muted" style={{ fontSize: 'var(--text-sm)' }}>Health score not computed yet.</span>
             )}
             {baseline && (
-              <div style={{ fontSize: 12.5 }} title={`p99 ${Math.round(Number(baseline.p99))}ms · ${baseline.sample_count} samples`}>
+              <div style={{ fontSize: 'var(--text-sm)' }} title={`p99 ${Math.round(Number(baseline.p99))}ms · ${baseline.sample_count} samples`}>
                 Normal: <strong>{Math.round(Number(baseline.mean))}ms</strong>
                 {' '}(p95: {Math.round(Number(baseline.p95))}ms)
               </div>
@@ -1098,7 +1098,7 @@ function DeviceIntelligence({ deviceId }: { deviceId: number }) {
 
           {/* Right: anomaly count, pattern count, threshold recommendation (one line) */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8, minWidth: 0 }}>
-            <div style={{ display: 'flex', gap: 16, fontSize: 12.5, flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', gap: 16, fontSize: 'var(--text-sm)', flexWrap: 'wrap' }}>
               <span>
                 <strong style={{ color: anomalies.length ? 'var(--sv-down)' : 'var(--text-primary)' }}>{anomalies.length}</strong>
                 <span className="sv-muted"> active {anomalies.length === 1 ? 'anomaly' : 'anomalies'}</span>
@@ -1109,7 +1109,7 @@ function DeviceIntelligence({ deviceId }: { deviceId: number }) {
               </span>
             </div>
             {threshold ? (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', fontSize: 12.5 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', fontSize: 'var(--text-sm)' }}>
                 <span title={threshold.reasoning}>
                   Recommend threshold <strong style={{ color: 'var(--primary)' }}>{Math.round(Number(threshold.recommended_threshold))}ms</strong>
                   <span className="sv-muted"> (now {intelNum(threshold.current_threshold) ?? '—'}ms)</span>
@@ -1119,9 +1119,9 @@ function DeviceIntelligence({ deviceId }: { deviceId: number }) {
                 </button>
               </div>
             ) : applied != null ? (
-              <div style={{ fontSize: 12.5, color: 'var(--sv-up)' }}>✓ Threshold updated to {applied}ms</div>
+              <div style={{ fontSize: 'var(--text-sm)', color: 'var(--sv-up)' }}>✓ Threshold updated to {applied}ms</div>
             ) : (
-              <span className="sv-muted" style={{ fontSize: 12.5 }}>No threshold recommendation.</span>
+              <span className="sv-muted" style={{ fontSize: 'var(--text-sm)' }}>No threshold recommendation.</span>
             )}
           </div>
         </div>

@@ -157,16 +157,16 @@ export default function TopologyPage() {
           borderRadius: 'var(--radius-sm)',
         }}
       >
-        <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)' }}>
+        <span style={{ fontSize: 'var(--text-base)', fontWeight: 700, color: 'var(--text-primary)' }}>
           Network Topology
         </span>
         <span style={{ color: 'var(--border)' }}>·</span>
         {last ? (
-          <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>
+          <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>
             Last run: {fmtRel(last.last_run_at)} · {last.links_found} link{last.links_found === 1 ? '' : 's'} · {last.devices_discovered} device{last.devices_discovered === 1 ? '' : 's'}
           </span>
         ) : (
-          <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>
+          <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>
             Auto-discovered device connections via LLDP and CDP.
           </span>
         )}
@@ -256,7 +256,7 @@ function MapTab({
             gap: 16,
             alignItems: 'center',
             flexWrap: 'wrap',
-            fontSize: 12.5,
+            fontSize: 'var(--text-sm)',
             color: 'var(--text-muted)',
           }}
         >
@@ -315,7 +315,7 @@ function DependencyPanel({
         <button className="sv-btn ghost sm" onClick={onClose}>Dismiss</button>
       </div>
       {suggestions.length === 0 ? (
-        <div style={{ marginTop: 10, color: 'var(--text-muted)', fontSize: 13 }}>
+        <div style={{ marginTop: 10, color: 'var(--text-muted)', fontSize: 'var(--text-base)' }}>
           No dependency suggestions found.
         </div>
       ) : (
@@ -566,7 +566,7 @@ function FromDeviceRow({
             <StatusDot status="up" />
             <a
               href={`/devices/${group.from_device_id}`}
-              style={{ fontSize: 13, fontWeight: 600, textDecoration: 'underline' }}
+              style={{ fontSize: 'var(--text-base)', fontWeight: 600, textDecoration: 'underline' }}
               onClick={(e) => e.stopPropagation()}
             >
               {group.from_device_name}
@@ -574,11 +574,11 @@ function FromDeviceRow({
             {group.from_ip && (
               <>
                 <span style={{ color: 'var(--border)' }}>·</span>
-                <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{group.from_ip}</span>
+                <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>{group.from_ip}</span>
               </>
             )}
             <span style={{ color: 'var(--border)' }}>·</span>
-            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+            <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>
               {count} neighbor{count === 1 ? '' : 's'}
             </span>
           </div>
@@ -664,7 +664,7 @@ function NeighborDetailRow({
           ) : (
             <span>{name}</span>
           )}
-          {link.to_ip && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{link.to_ip}</div>}
+          {link.to_ip && <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)' }}>{link.to_ip}</div>}
         </div>
       </td>
       <td style={{ height: 36 }}>

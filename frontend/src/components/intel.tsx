@@ -89,7 +89,7 @@ export function GradeBadge({ grade }: { grade: string | null | undefined }) {
     <span style={{
       display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
       minWidth: 24, height: 24, padding: '0 7px', borderRadius: 6,
-      fontWeight: 700, fontSize: 13, color: c, background: `${c}1a`,
+      fontWeight: 700, fontSize: 'var(--text-base)', color: c, background: `${c}1a`,
     }}>{g}</span>
   );
 }
@@ -103,7 +103,7 @@ export function ScoreBar({ score, width = 120 }: { score: number | string | null
       <div style={{ width, height: 8, borderRadius: 5, background: 'var(--border)', overflow: 'hidden' }}>
         <div style={{ width: `${s != null ? Math.max(2, Math.min(100, s)) : 0}%`, height: '100%', background: c, borderRadius: 5 }} />
       </div>
-      <span style={{ fontSize: 13, fontWeight: 700, color: c, minWidth: 30, textAlign: 'right' }}>
+      <span style={{ fontSize: 'var(--text-base)', fontWeight: 700, color: c, minWidth: 30, textAlign: 'right' }}>
         {s != null ? Math.round(s) : '—'}
       </span>
     </div>
@@ -117,7 +117,7 @@ export function TrendArrow({ trend }: { trend: string | null | undefined }) {
   const color = t === 'improving' ? 'var(--sv-up)' : t === 'degrading' ? 'var(--sv-down)' : 'var(--sv-muted)';
   const label = t.charAt(0).toUpperCase() + t.slice(1);
   return (
-    <span style={{ color, fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap' }}>
+    <span style={{ color, fontSize: 'var(--text-base)', fontWeight: 600, whiteSpace: 'nowrap' }}>
       {arrow} {label}
     </span>
   );
@@ -128,7 +128,7 @@ export function ConfidenceStars({ confidence }: { confidence: number | string | 
   const c = n(confidence) ?? 0;
   const filled = Math.round(c * 5);
   return (
-    <span title={`${Math.round(c * 100)}% confidence`} style={{ color: 'var(--primary)', fontSize: 13, letterSpacing: 1 }}>
+    <span title={`${Math.round(c * 100)}% confidence`} style={{ color: 'var(--primary)', fontSize: 'var(--text-base)', letterSpacing: 1 }}>
       {'★'.repeat(filled)}<span style={{ color: 'var(--border)' }}>{'★'.repeat(5 - filled)}</span>
     </span>
   );

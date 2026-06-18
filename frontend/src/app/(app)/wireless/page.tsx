@@ -512,14 +512,14 @@ function StatCard({ value, label, sub, color, valueColor, onClick, title }: {
         transition: clickable ? 'box-shadow .12s, transform .12s' : undefined,
       }}
     >
-      <div style={{ fontSize: 24, fontWeight: 700, lineHeight: 1.1, color: valueColor }}>
+      <div style={{ fontSize: 'var(--text-2xl)', fontWeight: 700, lineHeight: 1.1, color: valueColor }}>
         {value}
       </div>
       {sub != null && (
-        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 1 }}>{sub}</div>
+        <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', marginTop: 1 }}>{sub}</div>
       )}
       <div style={{
-        fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase',
+        fontSize: 'var(--text-xs)', color: 'var(--text-muted)', textTransform: 'uppercase',
         letterSpacing: 0.4, marginTop: 2,
       }}>{label}</div>
     </div>
@@ -554,7 +554,7 @@ function SectionCard({ title, action, maxHeight, scroll, children, flex, minWidt
     }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
         <span style={{
-          fontSize: 12, fontWeight: 600, textTransform: 'uppercase',
+          fontSize: 'var(--text-sm)', fontWeight: 600, textTransform: 'uppercase',
           letterSpacing: 0.4, color: 'var(--text-muted)', flex: 1,
         }}>{title}</span>
         {action}
@@ -581,7 +581,7 @@ function EqualRow({ children, marginTop }: { children: React.ReactNode; marginTo
 function DrillHint({ label }: { label?: string }) {
   return (
     <span style={{
-      fontSize: 10.5, color: 'var(--text-muted)', fontWeight: 400,
+      fontSize: 'var(--text-xs)', color: 'var(--text-muted)', fontWeight: 400,
       textTransform: 'none', letterSpacing: 0, whiteSpace: 'nowrap',
     }}>{label || 'Click a row to drill in'}</span>
   );
@@ -589,10 +589,10 @@ function DrillHint({ label }: { label?: string }) {
 
 // Compact table styling helpers (32-36px rows, 12.5px font).
 const TH_STYLE: React.CSSProperties = {
-  fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.3,
+  fontSize: 'var(--text-xs)', textTransform: 'uppercase', letterSpacing: 0.3,
   color: 'var(--text-muted)', fontWeight: 600, padding: '8px 12px', textAlign: 'left',
 };
-const TD_STYLE: React.CSSProperties = { padding: '8px 12px', fontSize: 12.5 };
+const TD_STYLE: React.CSSProperties = { padding: '8px 12px', fontSize: 'var(--text-sm)' };
 
 // CPU/Mem style 4px progress bar, green<60 yellow<80 red.
 function ProgressBar({ pct, width }: { pct: number | null | undefined; width?: number }) {
@@ -614,7 +614,7 @@ function GradeBadge({ grade }: { grade: string }) {
   const c = gradeColor(grade);
   return (
     <span style={{
-      fontSize: 11, fontWeight: 700, color: c, border: `1px solid ${c}`,
+      fontSize: 'var(--text-xs)', fontWeight: 700, color: c, border: `1px solid ${c}`,
       borderRadius: 4, padding: '0 6px', lineHeight: '16px', display: 'inline-block',
     }}>{grade}</span>
   );
@@ -631,13 +631,13 @@ function ScoreCard({ label, score, grade }: { label: string; score: number; grad
       borderLeft: `3px solid ${scoreColor(v)}`,
     }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-        <span style={{ fontSize: 24, fontWeight: 700, color: scoreColor(v) }}>{v}</span>
-        <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>/100</span>
+        <span style={{ fontSize: 'var(--text-2xl)', fontWeight: 700, color: scoreColor(v) }}>{v}</span>
+        <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>/100</span>
         {grade && <GradeBadge grade={grade} />}
-        <span style={{ fontSize: 12, color: 'var(--text-muted)', marginLeft: 'auto' }} title="No historical trend data">→</span>
+        <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', marginLeft: 'auto' }} title="No historical trend data">→</span>
       </div>
       <div style={{
-        fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase',
+        fontSize: 'var(--text-xs)', color: 'var(--text-muted)', textTransform: 'uppercase',
         letterSpacing: 0.4, marginTop: 4,
       }}>{label}</div>
     </div>
@@ -897,7 +897,7 @@ function RogueApsTab() {
                 const color = rogueClassColor(r.classification);
                 return (
                   <tr key={r.id}>
-                    <td style={{ fontWeight: 600, fontFamily: 'monospace' }}>{r.bssid}</td>
+                    <td style={{ fontWeight: 600, fontFamily: 'var(--font-mono)' }}>{r.bssid}</td>
                     <td>{r.ssid || '—'}</td>
                     <td>
                       <span className="sv-badge" style={{ color, borderColor: color, textTransform: 'capitalize' }}>
@@ -950,7 +950,7 @@ function IntelBanner({ onView, coChannel, band5Pct }: {
         marginTop: 16, padding: '10px 16px', borderRadius: 'var(--radius-sm)',
         border: '1px solid color-mix(in srgb, #2563eb 35%, var(--border))',
         background: 'color-mix(in srgb, #2563eb 8%, transparent)',
-        fontSize: 13, color: 'var(--text-secondary)',
+        fontSize: 'var(--text-base)', color: 'var(--text-secondary)',
       }}
     >
       <span>
@@ -1204,7 +1204,7 @@ function OverviewTab({
               </tbody>
             </table>
           ) : (
-            <div style={{ color: 'var(--green)', fontWeight: 600, fontSize: 13 }}>All APs online ✓</div>
+            <div style={{ color: 'var(--green)', fontWeight: 600, fontSize: 'var(--text-base)' }}>All APs online ✓</div>
           )}
         </SectionCard>
 
@@ -1228,7 +1228,7 @@ function OverviewTab({
               </tbody>
             </table>
           ) : (
-            <div style={{ color: 'var(--green)', fontWeight: 600, fontSize: 13 }}>No congestion detected ✓</div>
+            <div style={{ color: 'var(--green)', fontWeight: 600, fontSize: 'var(--text-base)' }}>No congestion detected ✓</div>
           )}
         </SectionCard>
       </EqualRow>
@@ -1311,15 +1311,15 @@ function ControllerGroupHeader({
         border: '1px solid var(--border)', borderRadius: 8,
       }}
     >
-      <span style={{ fontSize: 11, color: 'var(--text-muted)', width: 12, textAlign: 'center' }}>
+      <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', width: 12, textAlign: 'center' }}>
         {collapsed ? '▶' : '▼'}
       </span>
       <StatusDot status={online ? 'up' : 'down'} />
       <span style={{ fontWeight: 700 }}>{controller.name}</span>
       <span className="sv-badge">{controller.vendor}</span>
       <span style={{ flex: 1 }} />
-      <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{summary}</span>
-      <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+      <span style={{ fontSize: 'var(--text-base)', color: 'var(--text-secondary)' }}>{summary}</span>
+      <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>
         {online ? `polled ${fmtRel(controller.last_polled_at)}` : `last seen ${fmtRel(controller.last_polled_at)}`}
       </span>
     </div>
@@ -1370,7 +1370,7 @@ function SortTh({ label, col, sort, onSort }: {
       title="Click to sort"
     >
       {label}
-      <span style={{ marginLeft: 4, color: active ? 'var(--sv-crimson)' : 'var(--text-muted)', fontSize: 10 }}>
+      <span style={{ marginLeft: 4, color: active ? 'var(--sv-crimson)' : 'var(--text-muted)', fontSize: 'var(--text-xs)'}}>
         {active ? (sort!.dir === 'asc' ? '▲' : '▼') : '↕'}
       </span>
     </th>
@@ -1685,7 +1685,7 @@ function ApDetailDrawer({
           <h2 style={{ margin: 0, flex: 1 }}>{ap.name}</h2>
           <button className="sv-btn ghost sm" onClick={onClose}>Close</button>
         </div>
-        <div style={{ color: 'var(--text-muted)', fontSize: 13, marginTop: 4 }}>
+        <div style={{ color: 'var(--text-muted)', fontSize: 'var(--text-base)', marginTop: 4 }}>
           {ap.site_name || '—'} · {ap.vendor || 'unknown vendor'} · {ap.status}
         </div>
 
@@ -1719,34 +1719,34 @@ function ApDetailDrawer({
         <h3 style={{ marginBottom: 6 }}>Current Stats</h3>
         <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 8 }}>
           <div>
-            <div style={{ fontSize: 22, fontWeight: 800 }}>{ap.clients_total}</div>
-            <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Total Clients</div>
+            <div style={{ fontSize: 'var(--text-xl)', fontWeight: 800 }}>{ap.clients_total}</div>
+            <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>Total Clients</div>
           </div>
           <div>
-            <div style={{ fontSize: 22, fontWeight: 800 }}>{ap.clients_2g}</div>
-            <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>2.4GHz</div>
+            <div style={{ fontSize: 'var(--text-xl)', fontWeight: 800 }}>{ap.clients_2g}</div>
+            <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>2.4GHz</div>
           </div>
           <div>
-            <div style={{ fontSize: 22, fontWeight: 800 }}>{ap.clients_5g}</div>
-            <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>5GHz</div>
+            <div style={{ fontSize: 'var(--text-xl)', fontWeight: 800 }}>{ap.clients_5g}</div>
+            <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>5GHz</div>
           </div>
           {ap.clients_6g > 0 && (
             <div>
-              <div style={{ fontSize: 22, fontWeight: 800 }}>{ap.clients_6g}</div>
-              <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>6GHz</div>
+              <div style={{ fontSize: 'var(--text-xl)', fontWeight: 800 }}>{ap.clients_6g}</div>
+              <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>6GHz</div>
             </div>
           )}
         </div>
 
         <div style={{ marginBottom: 8 }}>
-          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>
+          <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', marginBottom: 4 }}>
             2.4GHz {ap.radio_2g_channel != null ? `(Ch ${ap.radio_2g_channel}` : '(Ch —'}
             {ap.tx_power_2g != null ? `, ${ap.tx_power_2g} dBm)` : ')'}
           </div>
           <UtilBar pct={ap.radio_2g_util_pct || 0} />
         </div>
         <div style={{ marginBottom: 12 }}>
-          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>
+          <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', marginBottom: 4 }}>
             5GHz {ap.radio_5g_channel != null ? `(Ch ${ap.radio_5g_channel}` : '(Ch —'}
             {ap.tx_power_5g != null ? `, ${ap.tx_power_5g} dBm)` : ')'}
           </div>
@@ -1776,12 +1776,12 @@ function ApDetailDrawer({
         <h3 style={{ marginBottom: 6 }}>Throughput</h3>
         <div style={{ display: 'flex', gap: 16, marginBottom: 12 }}>
           <div>
-            <div style={{ fontSize: 18, fontWeight: 800 }}>{fmtBps(ap.throughput_in_bps)}</div>
-            <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>In</div>
+            <div style={{ fontSize: 'var(--text-lg)', fontWeight: 800 }}>{fmtBps(ap.throughput_in_bps)}</div>
+            <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>In</div>
           </div>
           <div>
-            <div style={{ fontSize: 18, fontWeight: 800 }}>{fmtBps(ap.throughput_out_bps)}</div>
-            <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Out</div>
+            <div style={{ fontSize: 'var(--text-lg)', fontWeight: 800 }}>{fmtBps(ap.throughput_out_bps)}</div>
+            <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>Out</div>
           </div>
         </div>
 
@@ -1793,7 +1793,7 @@ function ApDetailDrawer({
                 key={c.id}
                 style={{
                   display: 'flex', alignItems: 'center', gap: 10,
-                  padding: '6px 0', borderBottom: '1px solid var(--border-light)', fontSize: 13,
+                  padding: '6px 0', borderBottom: '1px solid var(--border-light)', fontSize: 'var(--text-base)',
                 }}
               >
                 <span style={{ flex: 1, minWidth: 0, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis' }}>
@@ -1817,7 +1817,7 @@ function ApDetailDrawer({
                 onClick={() => onViewAllClients(ap.id)}
                 style={{
                   marginTop: 8, background: 'none', border: 'none', padding: 0,
-                  color: 'var(--primary)', fontSize: 13, fontWeight: 600, cursor: 'pointer',
+                  color: 'var(--primary)', fontSize: 'var(--text-base)', fontWeight: 600, cursor: 'pointer',
                 }}
               >
                 View all {apClients.length} clients →
@@ -1825,7 +1825,7 @@ function ApDetailDrawer({
             )}
           </div>
         ) : (
-          <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 12 }}>
+          <div style={{ fontSize: 'var(--text-base)', color: 'var(--text-muted)', marginBottom: 12 }}>
             No clients connected
           </div>
         )}
@@ -1914,7 +1914,7 @@ function RadioBandStats({
       <div style={{ fontWeight: 700, marginBottom: 8 }}>{band}</div>
       <div style={{
         display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-        padding: '3px 0', fontSize: 13,
+        padding: '3px 0', fontSize: 'var(--text-base)',
       }}>
         <span style={{ color: 'var(--text-muted)' }}>Noise Floor</span>
         <span>
@@ -1926,21 +1926,21 @@ function RadioBandStats({
       </div>
       <div style={{
         display: 'flex', justifyContent: 'space-between',
-        padding: '3px 0', fontSize: 13,
+        padding: '3px 0', fontSize: 'var(--text-base)',
       }}>
         <span style={{ color: 'var(--text-muted)' }}>Channel Utilization</span>
         <span>{utilPct ?? '—'}%</span>
       </div>
       <div style={{
         display: 'flex', justifyContent: 'space-between',
-        padding: '3px 0', fontSize: 13,
+        padding: '3px 0', fontSize: 'var(--text-base)',
       }}>
         <span style={{ color: 'var(--text-muted)' }}>Retry Rate</span>
         <span>{retryRate ?? '—'}%</span>
       </div>
       <div style={{
         display: 'flex', justifyContent: 'space-between',
-        padding: '3px 0', fontSize: 13,
+        padding: '3px 0', fontSize: 'var(--text-base)',
       }}>
         <span style={{ color: 'var(--text-muted)' }}>Errors</span>
         <span>{rxErrors ?? '—'} RX / {txErrors ?? '—'} TX</span>
@@ -2177,7 +2177,7 @@ function ScoreBar({ label, value }: { label: string; value: number }) {
   return (
     <div style={{ marginBottom: 8 }}>
       <div style={{
-        display: 'flex', justifyContent: 'space-between', fontSize: 12,
+        display: 'flex', justifyContent: 'space-between', fontSize: 'var(--text-sm)',
         color: 'var(--text-muted)', marginBottom: 3,
       }}>
         <span>{label}</span>
@@ -2246,7 +2246,7 @@ function RecommendationsTable({
 
   if (!recs.length) {
     return (
-      <div style={{ color: 'var(--green)', fontWeight: 600, fontSize: 13 }}>
+      <div style={{ color: 'var(--green)', fontWeight: 600, fontSize: 'var(--text-base)' }}>
         ✓ No issues detected — wireless looks healthy.
       </div>
     );
@@ -2254,7 +2254,7 @@ function RecommendationsTable({
 
   if (!open) {
     return (
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--text-base)' }}>
         <span>{recs.length} recommendation{recs.length === 1 ? '' : 's'}</span>
         {(criticalCount > 0 || highCount > 0) && (
           <span style={{ color: 'var(--text-muted)' }}>
@@ -2323,8 +2323,8 @@ function ControllerMiniScoreCard({ row }: { row: IntelRow }) {
       padding: '10px 12px', marginBottom: 8,
     }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-        <span style={{ fontWeight: 700, fontSize: 13, flex: 1 }}>{row.controller_name}</span>
-        <span style={{ color: scoreColor(Number(row.overall_score)), fontWeight: 700, fontSize: 13 }}>
+        <span style={{ fontWeight: 700, fontSize: 'var(--text-base)', flex: 1 }}>{row.controller_name}</span>
+        <span style={{ color: scoreColor(Number(row.overall_score)), fontWeight: 700, fontSize: 'var(--text-base)' }}>
           {Math.round(Number(row.overall_score))}
         </span>
         <GradeBadge grade={row.overall_grade} />
@@ -2502,7 +2502,7 @@ function IntelligenceTab({ onViewApClients }: { onViewApClients?: (apId: number)
                   </Bar>
                 </BarChart>
               </ResponsiveContainer>
-              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+              <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', marginTop: 4 }}>
                 <span style={{ color: 'var(--green)' }}>■</span> Standard ·{' '}
                 <span style={{ color: '#f97316' }}>■</span> Non-standard
               </div>
@@ -2611,7 +2611,7 @@ function SignalCell({ rssi }: { rssi: number | null }) {
         background: signalColor(rssi), display: 'inline-block',
       }} />
       <span>{rssi != null ? `${rssi} dBm` : '—'}</span>
-      <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{signalLabel(rssi)}</span>
+      <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>{signalLabel(rssi)}</span>
     </span>
   );
 }
@@ -2902,7 +2902,7 @@ function SignalQualityBar({ rssi }: { rssi: number | null }) {
         )}
       </div>
       <div style={{
-        display: 'flex', justifyContent: 'space-between', fontSize: 11,
+        display: 'flex', justifyContent: 'space-between', fontSize: 'var(--text-xs)',
         color: 'var(--text-muted)', marginTop: 3,
       }}>
         <span>Poor</span><span>Excellent</span>
@@ -2964,7 +2964,7 @@ function ClientDetailPanel({ mac, onClose }: { mac: string; onClose: () => void 
           <div style={{ flex: 1, minWidth: 0 }}>
             <h2 style={{ margin: 0, wordBreak: 'break-all' }}>{mac}</h2>
             {c && (
-              <div style={{ color: 'var(--text-muted)', fontSize: 13, marginTop: 4 }}>
+              <div style={{ color: 'var(--text-muted)', fontSize: 'var(--text-base)', marginTop: 4 }}>
                 {c.ip_address || '—'}{c.hostname ? ` · ${c.hostname}` : ''}
               </div>
             )}
@@ -3017,7 +3017,7 @@ function ClientDetailPanel({ mac, onClose }: { mac: string; onClose: () => void 
                       key={`${ev.ts}-${i}`}
                       style={{
                         display: 'flex', alignItems: 'baseline', gap: 10,
-                        padding: '6px 0', borderBottom: '1px solid var(--border-light)', fontSize: 13,
+                        padding: '6px 0', borderBottom: '1px solid var(--border-light)', fontSize: 'var(--text-base)',
                       }}
                     >
                       <span style={{ color: 'var(--text-muted)', width: 64, flexShrink: 0 }}>
@@ -3034,13 +3034,13 @@ function ClientDetailPanel({ mac, onClose }: { mac: string; onClose: () => void 
                 })}
               </div>
             ) : (
-              <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 12 }}>
+              <div style={{ fontSize: 'var(--text-base)', color: 'var(--text-muted)', marginBottom: 12 }}>
                 No events in last 24h
               </div>
             )}
 
             {stats && (
-              <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginTop: 4 }}>
+              <div style={{ fontSize: 'var(--text-base)', color: 'var(--text-secondary)', marginTop: 4 }}>
                 Roams (24h): {Number(stats.total_roams_24h)} |{' '}
                 Avg Signal: {stats.avg_rssi_24h != null ? Number(stats.avg_rssi_24h) : '—'} dBm |{' '}
                 SSIDs used: {(stats.ssids_used || []).length}
@@ -3176,7 +3176,7 @@ function ApCapacityChart({ controllers }: { controllers: OverviewController[] })
             <XAxis type="number" fontSize={11} allowDecimals={false} />
             <YAxis type="category" dataKey="name" width={100} fontSize={11} />
             <Tooltip />
-            <Legend wrapperStyle={{ fontSize: 11 }} />
+            <Legend wrapperStyle={{ fontSize: 'var(--text-xs)' }} />
             <Bar dataKey="licensed" name="Licensed" fill="var(--border)" />
             <Bar dataKey="used" name="Used" fill="var(--green)" />
           </BarChart>
@@ -3186,7 +3186,7 @@ function ApCapacityChart({ controllers }: { controllers: OverviewController[] })
             <XAxis dataKey="name" fontSize={11} />
             <YAxis fontSize={11} allowDecimals={false} />
             <Tooltip />
-            <Legend wrapperStyle={{ fontSize: 11 }} />
+            <Legend wrapperStyle={{ fontSize: 'var(--text-xs)' }} />
             <Bar dataKey="licensed" name="Licensed" fill="var(--border)" />
             <Bar dataKey="used" name="Used" fill="var(--green)" />
           </BarChart>
@@ -3261,7 +3261,7 @@ function ControllerHealthTable({ controllers }: { controllers: OverviewControlle
 function HaStatusTable({ controllers }: { controllers: OverviewController[] }) {
   const haCtls = controllers.filter(controllerInHa);
   if (!haCtls.length) {
-    return <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>No HA configured</div>;
+    return <div style={{ color: 'var(--text-muted)', fontSize: 'var(--text-base)' }}>No HA configured</div>;
   }
   return (
     <div style={{ overflowX: 'auto' }}>
@@ -3306,7 +3306,7 @@ function ControllerEventsTimeline({ events }: { events: ControllerEvent[] }) {
         return (
           <div key={i} style={{
             display: 'flex', alignItems: 'center', gap: 10,
-            padding: '5px 0', borderBottom: '1px solid var(--border-light)', fontSize: 12.5,
+            padding: '5px 0', borderBottom: '1px solid var(--border-light)', fontSize: 'var(--text-sm)',
           }}>
             <span style={{ width: 96, color: 'var(--text-muted)', flexShrink: 0 }}>{fmtTime(e.ts)}</span>
             <span style={{ color: meta.color, fontWeight: 700, width: 14, textAlign: 'center', flexShrink: 0 }}>
@@ -3353,7 +3353,7 @@ function CapabilityResultModal({ result, onClose }: {
     <div className="sv-modal-backdrop" onMouseDown={onClose}>
       <div className="sv-modal" style={{ maxWidth: 680 }} onMouseDown={(e) => e.stopPropagation()}>
         <h2 style={{ marginTop: 0 }}>Capabilities — {result.name}</h2>
-        <p className="sv-muted" style={{ fontSize: 13, marginTop: -4 }}>
+        <p className="sv-muted" style={{ fontSize: 'var(--text-base)', marginTop: -4 }}>
           What SpanVault probed on this controller. Found {found} of {result.details.length}.
           {' '}A capability shows “not found” when this hardware/firmware doesn’t expose that OID.
         </p>
@@ -3368,7 +3368,7 @@ function CapabilityResultModal({ result, onClose }: {
                   <td style={{ color: d.found ? 'var(--green)' : 'var(--text-muted)', whiteSpace: 'nowrap' }}>
                     {d.found ? '✓ Found' : '✗ Not found'}
                   </td>
-                  <td><code style={{ fontSize: 11 }}>{d.oid || '—'}</code></td>
+                  <td><code style={{ fontSize: 'var(--text-xs)' }}>{d.oid || '—'}</code></td>
                   <td style={{ maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {d.found ? fmtSnmpVal(d.value) : '—'}
                   </td>
@@ -3407,7 +3407,7 @@ function ControllerDiagnosticsModal({ controller, onClose }: { controller: Contr
     <div className="sv-modal-backdrop" onMouseDown={onClose}>
       <div className="sv-modal" style={{ maxWidth: 760, maxHeight: '88vh', overflowY: 'auto' }} onMouseDown={(e) => e.stopPropagation()}>
         <h2 style={{ marginTop: 0 }}>SNMP Diagnostics — {controller.name}</h2>
-        <p className="sv-muted" style={{ fontSize: 13, marginTop: -4 }}>
+        <p className="sv-muted" style={{ fontSize: 'var(--text-base)', marginTop: -4 }}>
           Live walk of what this controller exposes over SNMP — use it to find the right OID when something
           (e.g. HA state) isn’t auto-detected.
         </p>
@@ -3424,7 +3424,7 @@ function ControllerDiagnosticsModal({ controller, onClose }: { controller: Contr
                     {meta.map(([k, v]) => (
                       <tr key={k}>
                         <td style={{ fontWeight: 600 }}>{k}</td>
-                        <td><code style={{ fontSize: 11 }}>{v.oid}</code></td>
+                        <td><code style={{ fontSize: 'var(--text-xs)' }}>{v.oid}</code></td>
                         <td style={{ color: v.value == null ? 'var(--text-muted)' : undefined }}>
                           {v.value == null ? 'no value' : fmtSnmpVal(v.value)}
                         </td>
@@ -3443,7 +3443,7 @@ function ControllerDiagnosticsModal({ controller, onClose }: { controller: Contr
                     {subtrees.map(([k, v]) => (
                       <tr key={k}>
                         <td>{k}</td>
-                        <td><code style={{ fontSize: 11 }}>{v.base}</code></td>
+                        <td><code style={{ fontSize: 'var(--text-xs)' }}>{v.base}</code></td>
                         <td>{v.count}{v.truncated ? '+' : ''}</td>
                       </tr>
                     ))}
@@ -3452,8 +3452,8 @@ function ControllerDiagnosticsModal({ controller, onClose }: { controller: Contr
               </>
             )}
             <details>
-              <summary style={{ cursor: 'pointer', fontSize: 13, color: 'var(--text-muted)' }}>Raw JSON</summary>
-              <pre style={{ maxHeight: 280, overflow: 'auto', fontSize: 11, background: 'var(--bg-code, #0b1020)', color: 'var(--text-code, #cbd5e1)', padding: 10, borderRadius: 6 }}>
+              <summary style={{ cursor: 'pointer', fontSize: 'var(--text-base)', color: 'var(--text-muted)' }}>Raw JSON</summary>
+              <pre style={{ maxHeight: 280, overflow: 'auto', fontSize: 'var(--text-xs)', background: 'var(--bg-code, #0b1020)', color: 'var(--text-code, #cbd5e1)', padding: 10, borderRadius: 6 }}>
                 {JSON.stringify(data, null, 2)}
               </pre>
             </details>
@@ -3491,7 +3491,7 @@ function CapabilitiesAccordion({
         onClick={() => setOpen((v) => !v)}
         style={{
           display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer',
-          padding: '12px 20px', fontSize: 12, fontWeight: 600,
+          padding: '12px 20px', fontSize: 'var(--text-sm)', fontWeight: 600,
           textTransform: 'uppercase', letterSpacing: 0.4, color: 'var(--text-muted)',
         }}
       >
@@ -3910,7 +3910,7 @@ function ControllerModal({
                   <option value="Standby">Standby</option>
                 </select>
               </label>
-              <span className="sv-muted" style={{ gridColumn: '1 / -1', fontSize: 11, marginTop: -6 }}>
+              <span className="sv-muted" style={{ gridColumn: '1 / -1', fontSize: 'var(--text-xs)', marginTop: -6 }}>
                 For controllers that don’t expose HA over SNMP (e.g. AOS-8 gateways). Pairing is applied to both controllers.
               </span>
             </>
@@ -3976,7 +3976,7 @@ function ControllerModal({
                         </>
                       )}
                       <div style={{
-                        gridColumn: '1 / -1', fontSize: 11, color: 'var(--text-muted)', marginTop: -4,
+                        gridColumn: '1 / -1', fontSize: 'var(--text-xs)', color: 'var(--text-muted)', marginTop: -4,
                       }}>
                         Editing SNMP credentials changes polling for the linked monitored device.
                       </div>
@@ -4106,7 +4106,7 @@ function DeviceSelector({
       }}>
         <div style={{ flex: 1 }}>
           <div style={{ fontWeight: 600 }}>{selected.name}</div>
-          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+          <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>
             {selected.ip_address || '—'}{selected.site_name ? ` · ${selected.site_name}` : ''}
           </div>
         </div>
@@ -4138,12 +4138,12 @@ function DeviceSelector({
             }}
           >
             <div style={{ fontWeight: 600 }}>{d.name}</div>
-            <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+            <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>
               {d.ip_address || '—'}{d.site_name ? ` · ${d.site_name}` : ''}
             </div>
           </div>
         )) : (
-          <div style={{ padding: '8px 12px', color: 'var(--text-muted)', fontSize: 13 }}>
+          <div style={{ padding: '8px 12px', color: 'var(--text-muted)', fontSize: 'var(--text-base)' }}>
             No matching devices.
           </div>
         )}

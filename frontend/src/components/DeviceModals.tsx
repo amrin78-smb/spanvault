@@ -125,7 +125,7 @@ export function DeviceForm({
       <div className="sv-modal" onMouseDown={(e) => e.stopPropagation()}>
         <h2>{device ? 'Edit Device' : 'Add Device'}</h2>
         {err && <ErrorBox message={err} />}
-        {loadingDevice && <p className="sv-muted" style={{ fontSize: 13, marginTop: 0 }}>Loading device settings…</p>}
+        {loadingDevice && <p className="sv-muted" style={{ fontSize: 'var(--text-base)', marginTop: 0 }}>Loading device settings…</p>}
         <div className="sv-form-grid">
           <label className="sv-field">Name
             <input className="sv-input" value={form.name} onChange={(e) => set('name', e.target.value)} />

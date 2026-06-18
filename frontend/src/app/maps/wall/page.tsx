@@ -29,7 +29,7 @@ function WallControls(props: {
     border: '1px solid #334155',
     borderRadius: 6,
     padding: '6px 12px',
-    fontSize: 13,
+    fontSize: 'var(--text-base)',
     cursor: 'pointer',
     lineHeight: 1.2,
   };
@@ -43,7 +43,7 @@ function WallControls(props: {
         background: '#0b1220',
         borderTop: '1px solid #1e293b',
         color: '#e2e8f0',
-        fontSize: 13,
+        fontSize: 'var(--text-base)',
         flexWrap: 'wrap',
       }}
     >
@@ -180,7 +180,7 @@ export default function MapWallPage() {
           <div style={centerMsg}>Loading…</div>
         ) : maps.length === 0 ? (
           <div style={centerMsg}>
-            <div style={{ fontSize: 22, fontWeight: 600 }}>No network maps yet</div>
+            <div style={{ fontSize: 'var(--text-xl)', fontWeight: 600 }}>No network maps yet</div>
             <div style={{ color: '#64748b', marginTop: 8 }}>
               Create a map in the Network Map designer to display it here.
             </div>

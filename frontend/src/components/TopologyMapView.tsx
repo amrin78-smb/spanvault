@@ -247,7 +247,7 @@ export default function TopologyMapView({
 
   if (included.length === 0) {
     return (
-      <div style={{ padding: 24, color: '#64748b', fontSize: 14 }}>
+      <div style={{ padding: 24, color: 'var(--text-muted)', fontSize: 'var(--text-md)' }}>
         No topology to display.
       </div>
     );

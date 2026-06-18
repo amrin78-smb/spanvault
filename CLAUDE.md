@@ -193,6 +193,36 @@ Never change this to a next.config.js rewrite approach.
 - Nav items: Dashboard, Devices, Alerts, Reports, Network Map, Settings
 - Stat cards: colored border-left (green=up, red=down, yellow=warning, grey=unknown)
 
+## Typography & design tokens (suite standard)
+Styling is a custom CSS design system in `frontend/src/app/globals.css` (CSS custom
+properties in `:root` + `[data-theme="dark"]`) — NOT Tailwind.
+
+- **Body font:** Inter (loaded via Google Fonts in globals.css).
+- **Monospace:** `var(--font-mono)` = `'JetBrains Mono', 'Fira Code', 'Consolas', 'Courier New', monospace`. One mono stack everywhere — never hardcode a mono font-family.
+
+**7-step type scale** (defined once in `:root`; sizes do NOT change per theme):
+
+| Token         | px   | Use |
+|---------------|------|-----|
+| `--text-xs`   | 11px | table headers, badges, micro-labels |
+| `--text-sm`   | 12px | secondary labels, captions |
+| `--text-base` | 13px | buttons, inputs, table body |
+| `--text-md`   | 14px | body text, card titles (base body size) |
+| `--text-lg`   | 16px | section / panel headings |
+| `--text-xl`   | 20px | page titles |
+| `--text-2xl`  | 28px | stat numbers / display |
+
+**Rule:** NEVER hardcode font sizes or colors that duplicate a token. Always use
+`var(--text-*)` for type and the color tokens (`--text-primary/-secondary/-muted`,
+`--bg-primary/-card`, `--border`, `--border-light`, `--primary`, `--primary-dark`, etc.).
+Hardcoded hex that duplicates a token breaks dark mode (hex doesn't flip themes).
+Display/hero sizes >= 34px (e.g. the NOC full-screen stat ~56px, the all-clear icon ~42px,
+loader glyphs) may stay literal — they are intentional display sizes, not body type.
+
+This is the **NocVault SUITE-WIDE standard** — the same scale and rule apply to
+ddivault, logvault, and netvault. SpanVault is the reference implementation; copy
+this pattern exactly into the other apps.
+
 ## Build status — all phases complete ✅
 Phase 1: scaffold, schema (scripts/schema.sql), config — done
 Phase 2: api/server.js — Express API (devices, alerts, rules, reports, settings, NetVault sync) — done

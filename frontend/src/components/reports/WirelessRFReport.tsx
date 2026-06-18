@@ -24,14 +24,14 @@ type WirelessRF = {
   ap_health_distribution: { A: number; B: number; C: number; D: number; F: number };
 };
 
-const SECTION_TITLE: React.CSSProperties = { fontSize: 12, textTransform: 'uppercase', fontWeight: 600, color: 'var(--text-muted)', letterSpacing: '0.06em', margin: '0 0 8px' };
+const SECTION_TITLE: React.CSSProperties = { fontSize: 'var(--text-sm)', textTransform: 'uppercase', fontWeight: 600, color: 'var(--text-muted)', letterSpacing: '0.06em', margin: '0 0 8px' };
 const PANEL: React.CSSProperties = { padding: 16 };
 const STAT_GRID: React.CSSProperties = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12, alignItems: 'stretch' };
 const STAT_CARD: React.CSSProperties = { background: 'var(--bg-card)', border: '1px solid var(--border)', borderLeftWidth: 3, borderLeftColor: 'var(--text-muted)', borderRadius: 'var(--radius-sm)', padding: '10px 14px', minHeight: 75, display: 'flex', flexDirection: 'column', justifyContent: 'center' };
-const STAT_VALUE: React.CSSProperties = { fontSize: 22, fontWeight: 800, lineHeight: 1.1 };
-const STAT_LABEL: React.CSSProperties = { fontSize: 11, textTransform: 'uppercase', color: 'var(--text-muted)', letterSpacing: '0.04em', marginTop: 4 };
-const TH: React.CSSProperties = { fontSize: 11, textTransform: 'uppercase', fontWeight: 600, letterSpacing: '0.06em', color: 'var(--text-muted)', padding: '8px 12px', textAlign: 'left' };
-const TD: React.CSSProperties = { fontSize: 12.5, color: 'var(--text-primary)', padding: '8px 12px', height: 36 };
+const STAT_VALUE: React.CSSProperties = { fontSize: 'var(--text-xl)', fontWeight: 800, lineHeight: 1.1 };
+const STAT_LABEL: React.CSSProperties = { fontSize: 'var(--text-xs)', textTransform: 'uppercase', color: 'var(--text-muted)', letterSpacing: '0.04em', marginTop: 4 };
+const TH: React.CSSProperties = { fontSize: 'var(--text-xs)', textTransform: 'uppercase', fontWeight: 600, letterSpacing: '0.06em', color: 'var(--text-muted)', padding: '8px 12px', textAlign: 'left' };
+const TD: React.CSSProperties = { fontSize: 'var(--text-sm)', color: 'var(--text-primary)', padding: '8px 12px', height: 36 };
 
 const GRADE_ORDER: Array<keyof WirelessRF['ap_health_distribution']> = ['A', 'B', 'C', 'D', 'F'];
 
@@ -77,9 +77,9 @@ function ChannelBars({ band, channels, color }: { band: string; channels: Channe
   const max = counts.length ? Math.max(...counts, 1) : 1;
   return (
     <div style={{ marginBottom: 16 }}>
-      <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 8 }}>{band}</div>
+      <div style={{ fontSize: 'var(--text-sm)', fontWeight: 600, color: 'var(--text-primary)', marginBottom: 8 }}>{band}</div>
       {keys.length === 0 ? (
-        <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>No channel data.</div>
+        <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>No channel data.</div>
       ) : (
         <div style={{ display: 'flex', alignItems: 'flex-end', gap: 10, height: 120, paddingTop: 4 }}>
           {keys.map((k) => {
@@ -87,7 +87,7 @@ function ChannelBars({ band, channels, color }: { band: string; channels: Channe
             const pct = Math.round((count / max) * 100);
             return (
               <div key={k} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flex: '0 0 auto', minWidth: 40 }}>
-                <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 4 }}>{count}</div>
+                <div style={{ fontSize: 'var(--text-xs)', fontWeight: 700, color: 'var(--text-primary)', marginBottom: 4 }}>{count}</div>
                 <div
                   style={{
                     width: 26,
@@ -98,7 +98,7 @@ function ChannelBars({ band, channels, color }: { band: string; channels: Channe
                   }}
                   title={`Channel ${k}: ${count}`}
                 />
-                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>{k}</div>
+                <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', marginTop: 6 }}>{k}</div>
               </div>
             );
           })}
@@ -112,7 +112,7 @@ function GradeBar({ grade, count, max }: { grade: string; count: number; max: nu
   const pct = Math.round((count / max) * 100);
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flex: '1 1 0', minWidth: 56 }}>
-      <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 4 }}>{count}</div>
+      <div style={{ fontSize: 'var(--text-xs)', fontWeight: 700, color: 'var(--text-primary)', marginBottom: 4 }}>{count}</div>
       <div
         style={{
           width: '100%',
@@ -165,7 +165,7 @@ export default function WirelessRFReport({ data }: { data: WirelessRF }) {
       <section style={PANEL}>
         <h3 style={SECTION_TITLE}>Recommendations</h3>
         {recommendations.length === 0 ? (
-          <div style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>
+          <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>
             No RF recommendations — the wireless environment looks healthy.
           </div>
         ) : (
@@ -178,7 +178,7 @@ export default function WirelessRFReport({ data }: { data: WirelessRF }) {
                   gap: 10,
                   padding: '8px 0',
                   borderBottom: i < recommendations.length - 1 ? '1px solid var(--border-light)' : 'none',
-                  fontSize: 12.5,
+                  fontSize: 'var(--text-sm)',
                   color: 'var(--text-primary)',
                 }}
               >

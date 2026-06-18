@@ -62,9 +62,9 @@ function SsoInner() {
     >
       {error ? (
         <>
-          <h2 style={{ color: '#C8102E' }}>Sign-in error</h2>
+          <h2 style={{ color: 'var(--primary)' }}>Sign-in error</h2>
           <p>{error}</p>
-          <a href={`${HUB}/login`} style={{ color: '#C8102E', marginTop: 12 }}>
+          <a href={`${HUB}/login`} style={{ color: 'var(--primary)', marginTop: 12 }}>
             Return to login
           </a>
         </>

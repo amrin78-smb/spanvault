@@ -143,18 +143,18 @@ function scopeLabel(a: Applied): string {
 // ── Shared inline-style constants ──────────────────────────────
 const CTRL_H = 32;
 const ctrlBase: React.CSSProperties = {
-  height: CTRL_H, padding: '0 10px', fontSize: 12,
+  height: CTRL_H, padding: '0 10px', fontSize: 'var(--text-sm)',
   borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)',
   background: 'var(--bg-card)', color: 'var(--text-primary)', fontFamily: 'inherit',
   outline: 'none',
 };
 const fieldLabel: React.CSSProperties = {
   display: 'inline-flex', alignItems: 'center', gap: 6,
-  fontSize: 11, fontWeight: 600, color: 'var(--text-muted)',
+  fontSize: 'var(--text-xs)', fontWeight: 600, color: 'var(--text-muted)',
   textTransform: 'uppercase', letterSpacing: '0.04em',
 };
 const presetBtn = (active: boolean): React.CSSProperties => ({
-  height: CTRL_H, padding: '0 11px', fontSize: 12, cursor: 'pointer',
+  height: CTRL_H, padding: '0 11px', fontSize: 'var(--text-sm)', cursor: 'pointer',
   borderRadius: 'var(--radius-sm)', fontWeight: 600,
   border: `1px solid ${active ? 'var(--primary)' : 'var(--border)'}`,
   background: active ? 'var(--primary)' : 'var(--bg-card)',
@@ -173,7 +173,7 @@ function TemplatePills({ active, onSelect }: { active: string; onSelect: (k: str
             onClick={() => onSelect(t.key)}
             style={{
               display: 'inline-flex', alignItems: 'center', gap: 6,
-              height: CTRL_H, padding: '0 12px', fontSize: 12, fontWeight: 600,
+              height: CTRL_H, padding: '0 12px', fontSize: 'var(--text-sm)', fontWeight: 600,
               cursor: 'pointer', borderRadius: 'var(--radius-sm)',
               border: `1px solid ${on ? 'var(--primary)' : 'var(--border)'}`,
               background: on ? 'var(--primary)' : 'var(--bg-card)',
@@ -181,7 +181,7 @@ function TemplatePills({ active, onSelect }: { active: string; onSelect: (k: str
               transition: 'all 0.12s',
             }}
           >
-            <span style={{ fontSize: 13, lineHeight: 1 }}>{t.icon}</span>
+            <span style={{ fontSize: 'var(--text-base)', lineHeight: 1 }}>{t.icon}</span>
             <span>{t.label}</span>
           </button>
         );
@@ -322,7 +322,7 @@ export default function ReportsPage() {
         <TemplatePills active={template} onSelect={setTemplate} />
 
         {/* Selected-template description */}
-        <div style={{ fontSize: 12, color: 'var(--text-muted)', fontStyle: 'italic', marginTop: 6, marginBottom: 12 }}>{tpl.desc}</div>
+        <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', fontStyle: 'italic', marginTop: 6, marginBottom: 12 }}>{tpl.desc}</div>
 
         {/* Controls — single inline row */}
         <div style={{
@@ -421,11 +421,11 @@ export default function ReportsPage() {
 
         {/* Saved Reports — slim inline chips */}
         <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6, marginBottom: 16 }}>
-          <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em', marginRight: 2 }}>
+          <span style={{ fontSize: 'var(--text-xs)', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em', marginRight: 2 }}>
             Saved:
           </span>
           {(saved.data?.length || 0) === 0 && (
-            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>none yet</span>
+            <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)' }}>none yet</span>
           )}
           {saved.data?.map((s) => (
             <span key={s.id} style={{
@@ -434,32 +434,32 @@ export default function ReportsPage() {
               background: 'var(--bg-card)',
             }}>
               <button onClick={() => loadSaved(s)} title={`Load "${s.name}"`}
-                style={{ border: 'none', background: 'transparent', cursor: 'pointer', fontSize: 11, fontWeight: 600, color: 'var(--text-primary)', padding: '0 8px', height: 24 }}>
+                style={{ border: 'none', background: 'transparent', cursor: 'pointer', fontSize: 'var(--text-xs)', fontWeight: 600, color: 'var(--text-primary)', padding: '0 8px', height: 24 }}>
                 {s.name}
               </button>
               <button onClick={() => deleteSaved(s.id)} title="Delete"
-                style={{ border: 'none', borderLeft: '1px solid var(--border)', background: 'transparent', cursor: 'pointer', color: 'var(--text-muted)', padding: '0 7px', height: 24, fontSize: 12 }}>
+                style={{ border: 'none', borderLeft: '1px solid var(--border)', background: 'transparent', cursor: 'pointer', color: 'var(--text-muted)', padding: '0 7px', height: 24, fontSize: 'var(--text-sm)' }}>
                 ×
               </button>
             </span>
           ))}
           {applied && !empty && !loading && !showSave && (
             <button onClick={() => setShowSave(true)}
-              style={{ display: 'inline-flex', alignItems: 'center', height: 24, border: '1px dashed var(--border)', borderRadius: 999, background: 'var(--bg-card)', cursor: 'pointer', fontSize: 11, fontWeight: 600, color: 'var(--primary)', padding: '0 10px' }}>
+              style={{ display: 'inline-flex', alignItems: 'center', height: 24, border: '1px dashed var(--border)', borderRadius: 999, background: 'var(--bg-card)', cursor: 'pointer', fontSize: 'var(--text-xs)', fontWeight: 600, color: 'var(--primary)', padding: '0 10px' }}>
               + Save this report
             </button>
           )}
           {applied && !empty && !loading && showSave && (
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-              <input style={{ ...ctrlBase, height: 24, fontSize: 11, width: 170 }} placeholder="Name this report…"
+              <input style={{ ...ctrlBase, height: 24, fontSize: 'var(--text-xs)', width: 170 }} placeholder="Name this report…"
                 value={saveName} autoFocus onChange={(e) => setSaveName(e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Enter') saveReport(); if (e.key === 'Escape') setShowSave(false); }} />
               <button onClick={saveReport} disabled={saving || !saveName.trim()}
-                style={{ ...presetBtn(true), height: 24, padding: '0 10px', fontSize: 11, opacity: saving || !saveName.trim() ? 0.5 : 1 }}>
+                style={{ ...presetBtn(true), height: 24, padding: '0 10px', fontSize: 'var(--text-xs)', opacity: saving || !saveName.trim() ? 0.5 : 1 }}>
                 {saving ? 'Saving…' : 'Save'}
               </button>
               <button onClick={() => { setShowSave(false); setSaveName(''); }}
-                style={{ ...presetBtn(false), height: 24, padding: '0 9px', fontSize: 11 }}>
+                style={{ ...presetBtn(false), height: 24, padding: '0 9px', fontSize: 'var(--text-xs)' }}>
                 ×
               </button>
             </span>
@@ -480,7 +480,7 @@ export default function ReportsPage() {
 
           {/* On-screen output header: report meta + Export PDF (top-right) */}
           <div className="sv-no-print" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, margin: '0 0 14px' }}>
-            <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+            <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>
               {tpl.label} · {rangeLabel(applied)} · {scopeLabel(applied)}
             </div>
             {!empty && !loading && !report.error && (

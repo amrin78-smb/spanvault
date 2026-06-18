@@ -44,12 +44,12 @@ function StatCardCompact({ label, value, accent, badge, hint }: {
       padding: '12px 16px', minHeight: 75, display: 'flex', flexDirection: 'column',
       justifyContent: 'center', boxShadow: 'var(--shadow-sm)',
     }}>
-      <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-muted)', fontWeight: 600 }}>{label}</div>
+      <div style={{ fontSize: 'var(--text-xs)', textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-muted)', fontWeight: 600 }}>{label}</div>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginTop: 4 }}>
-        <span style={{ fontSize: 24, fontWeight: 800, lineHeight: 1, color: accent }}>{value}</span>
+        <span style={{ fontSize: 'var(--text-2xl)', fontWeight: 800, lineHeight: 1, color: accent }}>{value}</span>
         {badge}
       </div>
-      {hint && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>{hint}</div>}
+      {hint && <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', marginTop: 3 }}>{hint}</div>}
     </div>
   );
 }
@@ -67,7 +67,7 @@ function SectionCard({ title, action, children, style, flush }: {
       display: 'flex', flexDirection: 'column', ...style,
     }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, ...(flush ? { padding: '16px 20px 0' } : null) }}>
-        <span style={{ fontSize: 12, textTransform: 'uppercase', fontWeight: 600, color: 'var(--text-muted)', letterSpacing: '0.06em' }}>{title}</span>
+        <span style={{ fontSize: 'var(--text-sm)', textTransform: 'uppercase', fontWeight: 600, color: 'var(--text-muted)', letterSpacing: '0.06em' }}>{title}</span>
         {action && <span style={{ marginLeft: 'auto' }}>{action}</span>}
       </div>
       {children}
@@ -89,7 +89,7 @@ function ScoreMiniBar({ score, width = 60, height = 4, showValue = true }: {
         <div style={{ width: `${s != null ? Math.max(2, Math.min(100, s)) : 0}%`, height: '100%', background: c, borderRadius: 2 }} />
       </div>
       {showValue && (
-        <span style={{ fontSize: 12, fontWeight: 700, color: c, minWidth: 24, textAlign: 'right' }}>
+        <span style={{ fontSize: 'var(--text-sm)', fontWeight: 700, color: c, minWidth: 24, textAlign: 'right' }}>
           {s != null ? Math.round(s) : '—'}
         </span>
       )}
@@ -183,7 +183,7 @@ function OverviewTab() {
       {/* ── Data coverage banner (slim, only if < 7 days) ── */}
       {coverage < 7 && (
         <div style={{
-          fontSize: 12.5, padding: '7px 14px', borderRadius: 'var(--radius-sm)',
+          fontSize: 'var(--text-sm)', padding: '7px 14px', borderRadius: 'var(--radius-sm)',
           background: 'rgba(217,119,6,0.10)', color: 'var(--yellow)', border: '1px solid rgba(217,119,6,0.25)',
         }}>
           ⚡ {coverage} day{coverage === 1 ? '' : 's'} of data collected — baselines reliable after 7 days, patterns after 30 days.
@@ -248,7 +248,7 @@ function OverviewTab() {
           action={<span className="sv-badge warning">{d.active_anomalies}</span>}
         >
           {!d.recent_anomalies.length ? (
-            <div style={{ fontSize: 12.5, color: 'var(--text-muted)', padding: '4px 0' }}>No active anomalies ✓</div>
+            <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', padding: '4px 0' }}>No active anomalies ✓</div>
           ) : (
             <div style={{ maxHeight: 180, overflowY: 'auto' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse' }}>
@@ -276,7 +276,7 @@ function OverviewTab() {
           action={<span className={`sv-badge ${d.active_incidents > 0 ? 'down' : 'resolved'}`}>{d.active_incidents}</span>}
         >
           {!d.recent_incidents.length ? (
-            <div style={{ fontSize: 12.5, color: 'var(--text-muted)', padding: '4px 0' }}>No active incidents ✓</div>
+            <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', padding: '4px 0' }}>No active incidents ✓</div>
           ) : (
             <div style={{ maxHeight: 180, overflowY: 'auto' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse' }}>
@@ -309,13 +309,13 @@ function OverviewTab() {
 // ── Shared compact-table cells (top-level helpers) ──────────────
 const ROW_STYLE: React.CSSProperties = { height: 36 };
 const TH_STYLE: React.CSSProperties = {
-  fontSize: 11, textTransform: 'uppercase', color: 'var(--text-muted)', fontWeight: 600,
+  fontSize: 'var(--text-xs)', textTransform: 'uppercase', color: 'var(--text-muted)', fontWeight: 600,
   letterSpacing: '0.06em', padding: '8px 12px', textAlign: 'left', whiteSpace: 'nowrap',
   borderBottom: '1px solid var(--border)', position: 'sticky', top: 0,
   background: 'var(--bg-card)', zIndex: 1,
 };
 const TD_STYLE: React.CSSProperties = {
-  fontSize: 12.5, color: 'var(--text-primary)', padding: '8px 12px',
+  fontSize: 'var(--text-sm)', color: 'var(--text-primary)', padding: '8px 12px',
   borderBottom: '1px solid var(--border-light)', verticalAlign: 'middle',
 };
 
@@ -455,7 +455,7 @@ function HealthTab() {
                     <IntelTD right>{up != null ? `${up.toFixed(1)}%` : '—'}</IntelTD>
                     <IntelTD>
                       {respScore != null
-                        ? <span style={{ color: respScore >= 15 ? 'var(--green)' : respScore >= 10 ? 'var(--yellow)' : 'var(--red)', fontWeight: 600, fontSize: 12 }}>{Math.round(respScore)}/20</span>
+                        ? <span style={{ color: respScore >= 15 ? 'var(--green)' : respScore >= 10 ? 'var(--yellow)' : 'var(--red)', fontWeight: 600, fontSize: 'var(--text-sm)' }}>{Math.round(respScore)}/20</span>
                         : <span style={{ color: 'var(--text-muted)' }}>—</span>}
                     </IntelTD>
                     <IntelTD right style={{ color: r.anomalies_7d > 0 ? 'var(--yellow)' : 'var(--text-muted)' }}>{r.anomalies_7d}</IntelTD>
@@ -582,7 +582,7 @@ function CapacityResult({ fc }: { fc: Forecast }) {
             </tbody>
           </table>
         </div>
-        <p style={{ fontSize: 11.5, color: 'var(--text-muted)', margin: '8px 20px 12px' }}>
+        <p style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', margin: '8px 20px 12px' }}>
           Based on {fc.days_collected} days of data. Peak observed: In {fmtBps(peakIn)} · Out {fmtBps(peakOut)}.
           Reference lines mark 80% and 95% of peak.
         </p>
@@ -703,7 +703,7 @@ function IncidentRowItem({ incident: i }: { incident: IncidentRow }) {
           </span>
         </IntelTD>
         <IntelTD>
-          {expandable && <span style={{ color: 'var(--text-muted)', marginRight: 6, fontSize: 10, display: 'inline-block', transform: open ? 'rotate(90deg)' : 'none', transition: 'transform 0.15s' }}>▶</span>}
+          {expandable && <span style={{ color: 'var(--text-muted)', marginRight: 6, fontSize: 'var(--text-xs)', display: 'inline-block', transform: open ? 'rotate(90deg)' : 'none', transition: 'transform 0.15s' }}>▶</span>}
           <strong>{i.title}</strong>
         </IntelTD>
         <IntelTD style={{ color: 'var(--text-muted)' }}>
@@ -720,9 +720,9 @@ function IncidentRowItem({ incident: i }: { incident: IncidentRow }) {
           <td colSpan={6} style={{ padding: '0 12px 10px 40px', background: 'var(--bg-primary)', borderBottom: '1px solid var(--border-light)' }}>
             {timeline.length > 0 && (
               <div style={{ paddingTop: 8 }}>
-                <div style={{ fontSize: 11, textTransform: 'uppercase', fontWeight: 600, color: 'var(--text-muted)', letterSpacing: '0.06em', marginBottom: 4 }}>Timeline</div>
+                <div style={{ fontSize: 'var(--text-xs)', textTransform: 'uppercase', fontWeight: 600, color: 'var(--text-muted)', letterSpacing: '0.06em', marginBottom: 4 }}>Timeline</div>
                 {timeline.map((t, idx) => (
-                  <div key={idx} style={{ height: 28, display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, fontFamily: 'ui-monospace, monospace' }}>
+                  <div key={idx} style={{ height: 28, display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--text-sm)', fontFamily: 'var(--font-mono)' }}>
                     <span style={{ color: 'var(--text-muted)' }}>{fmtTime(t.ts)}</span>
                     <span>{t.device} {t.event}</span>
                   </div>
@@ -730,7 +730,7 @@ function IncidentRowItem({ incident: i }: { incident: IncidentRow }) {
               </div>
             )}
             {i.affected_devices && i.affected_devices.length > 0 && (
-              <div style={{ paddingTop: 6, fontSize: 12 }}>
+              <div style={{ paddingTop: 6, fontSize: 'var(--text-sm)' }}>
                 <span style={{ color: 'var(--text-muted)' }}>Devices: </span>{i.affected_devices.join(', ')}
               </div>
             )}
@@ -795,7 +795,7 @@ function ThresholdsTab() {
       {toast && <div className="sv-toast ok" onClick={() => setToast(null)}>{toast}</div>}
 
       <div style={{
-        fontSize: 12.5, color: 'var(--text-secondary)', padding: '9px 14px',
+        fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', padding: '9px 14px',
         borderRadius: 'var(--radius-sm)', background: 'var(--bg-card)',
         border: '1px solid var(--border)', borderLeft: '3px solid var(--primary)',
       }}>
@@ -847,7 +847,7 @@ function ThresholdsTab() {
                       {canEdit ? (
                         <button
                           className="sv-btn sm"
-                          style={{ height: 24, padding: '0 10px', fontSize: 12 }}
+                          style={{ height: 24, padding: '0 10px', fontSize: 'var(--text-sm)' }}
                           onClick={() => apply(r)}
                           disabled={busy === r.device_id}
                         >

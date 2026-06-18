@@ -41,7 +41,7 @@ function escapeCsv(value: string): string {
 
 // ── Shared REPORT OUTPUT style constants (module scope) ─────────
 const SECTION_TITLE: React.CSSProperties = {
-  fontSize: 12,
+  fontSize: 'var(--text-sm)',
   textTransform: 'uppercase',
   fontWeight: 600,
   color: 'var(--text-muted)',
@@ -67,16 +67,16 @@ const STAT_CARD: React.CSSProperties = {
   flexDirection: 'column',
   justifyContent: 'center',
 };
-const STAT_VALUE: React.CSSProperties = { fontSize: 24, fontWeight: 800, lineHeight: 1.1 };
+const STAT_VALUE: React.CSSProperties = { fontSize: 'var(--text-2xl)', fontWeight: 800, lineHeight: 1.1 };
 const STAT_LABEL: React.CSSProperties = {
-  fontSize: 11,
+  fontSize: 'var(--text-xs)',
   textTransform: 'uppercase',
   color: 'var(--text-muted)',
   letterSpacing: '0.04em',
   marginTop: 4,
 };
 const TH: React.CSSProperties = {
-  fontSize: 11,
+  fontSize: 'var(--text-xs)',
   textTransform: 'uppercase',
   fontWeight: 600,
   letterSpacing: '0.06em',
@@ -85,7 +85,7 @@ const TH: React.CSSProperties = {
   textAlign: 'left',
 };
 const TD: React.CSSProperties = {
-  fontSize: 12.5,
+  fontSize: 'var(--text-sm)',
   color: 'var(--text-primary)',
   padding: '8px 12px',
   height: 36,
@@ -143,7 +143,7 @@ export default function SlaComplianceReport({ data }: { data: SlaCompliance }) {
     <div>
       <h2 style={SECTION_TITLE}>SLA Compliance</h2>
       {generated_at ? (
-        <div className="sv-muted" style={{ marginBottom: 12, fontSize: 11 }}>
+        <div className="sv-muted" style={{ marginBottom: 12, fontSize: 'var(--text-xs)' }}>
           Generated {generated_at}
         </div>
       ) : null}
@@ -163,18 +163,18 @@ export default function SlaComplianceReport({ data }: { data: SlaCompliance }) {
       >
         <div>
           <div style={STAT_LABEL}>SLA Target</div>
-          <div style={{ fontSize: 24, fontWeight: 800, lineHeight: 1.1, color: 'var(--primary)' }}>
+          <div style={{ fontSize: 'var(--text-2xl)', fontWeight: 800, lineHeight: 1.1, color: 'var(--primary)' }}>
             {sla_target}%
           </div>
         </div>
         <div style={{ textAlign: 'right' }}>
-          <div style={{ fontSize: 18, fontWeight: 700 }}>
+          <div style={{ fontSize: 'var(--text-lg)', fontWeight: 700 }}>
             {summary.meeting ?? 0}/{summary.total ?? 0}
           </div>
-          <div className="sv-muted" style={{ fontSize: 11 }}>
+          <div className="sv-muted" style={{ fontSize: 'var(--text-xs)' }}>
             devices meeting SLA
           </div>
-          <div style={{ marginTop: 4, fontSize: 12.5, fontWeight: 600 }}>
+          <div style={{ marginTop: 4, fontSize: 'var(--text-sm)', fontWeight: 600 }}>
             Overall uptime: {summary.overall_uptime_pct == null ? '—' : `${summary.overall_uptime_pct}%`}
           </div>
         </div>
@@ -273,7 +273,7 @@ export default function SlaComplianceReport({ data }: { data: SlaCompliance }) {
             const trends = riskAssessment.trends || [];
             if (atRisk.length === 0 && trends.length === 0) {
               return (
-                <div className="sv-muted" style={{ fontSize: 12.5 }}>
+                <div className="sv-muted" style={{ fontSize: 'var(--text-sm)' }}>
                   No SLA risks detected — all devices have comfortable headroom.
                 </div>
               );
@@ -281,7 +281,7 @@ export default function SlaComplianceReport({ data }: { data: SlaCompliance }) {
             return (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 {atRisk.map((r, index) => (
-                  <div key={`at-risk-${r.device_name}-${index}`} style={{ fontSize: 12.5 }}>
+                  <div key={`at-risk-${r.device_name}-${index}`} style={{ fontSize: 'var(--text-sm)' }}>
                     <span style={{ color: 'var(--yellow)', fontWeight: 700, marginRight: 6 }}>⚠</span>
                     At Risk: <strong>{r.device_name}</strong>
                     {r.site_name ? (
@@ -294,7 +294,7 @@ export default function SlaComplianceReport({ data }: { data: SlaCompliance }) {
                   </div>
                 ))}
                 {trends.map((t, index) => (
-                  <div key={`trend-${index}`} style={{ fontSize: 12.5 }}>
+                  <div key={`trend-${index}`} style={{ fontSize: 'var(--text-sm)' }}>
                     <span className="sv-muted" style={{ marginRight: 6 }}>›</span>
                     {t}
                   </div>

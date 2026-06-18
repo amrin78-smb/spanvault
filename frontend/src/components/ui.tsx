@@ -152,8 +152,8 @@ export function EmptyState({ icon, title, message, actionLabel, onAction }: {
           {icon}
         </div>
       )}
-      <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text-primary)' }}>{title}</div>
-      {message && <div style={{ fontSize: 13, marginTop: 6, maxWidth: 420 }}>{message}</div>}
+      <div style={{ fontSize: 'var(--text-md)', fontWeight: 600, color: 'var(--text-primary)' }}>{title}</div>
+      {message && <div style={{ fontSize: 'var(--text-base)', marginTop: 6, maxWidth: 420 }}>{message}</div>}
       {actionLabel && onAction && (
         <button className="btn btn-primary" style={{ marginTop: 18 }} onClick={onAction}>
           {actionLabel}
@@ -213,7 +213,7 @@ export function UtilBar({ pct, showLabel = true, width }: { pct: number; showLab
       <div className="util-track">
         <div className="util-fill" style={{ width: `${Math.min(100, p)}%`, background: color }} />
       </div>
-      {showLabel && <span style={{ fontSize: 11, fontWeight: 600, color, minWidth: 40, textAlign: 'right' }}>{p.toFixed(1)}%</span>}
+      {showLabel && <span style={{ fontSize: 'var(--text-xs)', fontWeight: 600, color, minWidth: 40, textAlign: 'right' }}>{p.toFixed(1)}%</span>}
     </div>
   );
 }
@@ -227,7 +227,7 @@ export function Trend({ delta, invert = false }: { delta: number; invert?: boole
   const bad  = invert ? down : up;
   const color = good ? 'var(--green)' : bad ? 'var(--red)' : 'var(--text-muted)';
   return (
-    <span style={{ color, fontSize: 12, fontWeight: 600 }}>
+    <span style={{ color, fontSize: 'var(--text-sm)', fontWeight: 600 }}>
       {arrow} {Math.abs(delta).toFixed(1)}
     </span>
   );

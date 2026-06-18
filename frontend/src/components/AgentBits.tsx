@@ -29,12 +29,12 @@ export function AgentConnectWaiter({ agentId }: { agentId: number }) {
         animation: online ? 'none' : 'pulse 1.4s ease-in-out infinite',
       }} />
       {online ? (
-        <span style={{ fontSize: 13, color: 'var(--text-primary)' }}>
+        <span style={{ fontSize: 'var(--text-base)', color: 'var(--text-primary)' }}>
           <strong>Connected!</strong> {agent.data?.hostname || 'agent'}
           {agent.data?.version ? ` · v${agent.data.version}` : ''} is online.
         </span>
       ) : (
-        <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+        <span style={{ fontSize: 'var(--text-base)', color: 'var(--text-muted)' }}>
           Waiting for the agent to connect… run the command above on the remote server.
         </span>
       )}
@@ -94,19 +94,19 @@ export function AgentLogs({ agentId, online }: { agentId: number; online: boolea
         <button className="sv-btn ghost sm" onClick={refresh} disabled={!online}>
           {polling ? 'Fetching…' : 'Fetch logs'}
         </button>
-        {!online && <span className="sv-muted" style={{ fontSize: 12 }}>Agent must be online.</span>}
+        {!online && <span className="sv-muted" style={{ fontSize: 'var(--text-sm)' }}>Agent must be online.</span>}
       </div>
       {msg && <div className="sv-err-inline">{msg}</div>}
       {lines.length ? (
         <pre style={{
-          margin: 0, maxHeight: 300, overflow: 'auto', fontSize: 11.5, lineHeight: 1.5,
+          margin: 0, maxHeight: 300, overflow: 'auto', fontSize: 'var(--text-xs)', lineHeight: 1.5,
           background: 'var(--bg-code, #0b1020)', color: 'var(--text-code, #cbd5e1)',
           padding: '10px 12px', borderRadius: 'var(--radius-sm)', whiteSpace: 'pre-wrap',
         }}>
           {lines.join('\n')}
         </pre>
       ) : (
-        <p className="sv-muted" style={{ fontSize: 13, margin: 0 }}>
+        <p className="sv-muted" style={{ fontSize: 'var(--text-base)', margin: 0 }}>
           No logs yet — click <strong>Fetch logs</strong> to pull the agent’s recent output.
         </p>
       )}
@@ -139,16 +139,16 @@ function fmtDuration(s: number | null): string {
 
 export function AgentHealth({ health, online }: { health: AgentHealthData; online: boolean }) {
   if (!online || !health) {
-    return <p className="sv-muted" style={{ fontSize: 13, margin: 0 }}>
+    return <p className="sv-muted" style={{ fontSize: 'var(--text-base)', margin: 0 }}>
       {online ? 'Waiting for the agent’s first health report…' : 'Agent offline — no live health data.'}
     </p>;
   }
   const metric = (label: string, v: number | null, unit = '%') => (
     <div style={{ flex: '1 1 80px', minWidth: 80 }}>
-      <div style={{ fontSize: 20, fontWeight: 800, color: pctColor(unit === '%' ? v : null) }}>
+      <div style={{ fontSize: 'var(--text-xl)', fontWeight: 800, color: pctColor(unit === '%' ? v : null) }}>
         {v == null ? '—' : `${v}${unit}`}
       </div>
-      <div style={{ fontSize: 11, textTransform: 'uppercase', color: 'var(--text-muted)', letterSpacing: '0.04em' }}>{label}</div>
+      <div style={{ fontSize: 'var(--text-xs)', textTransform: 'uppercase', color: 'var(--text-muted)', letterSpacing: '0.04em' }}>{label}</div>
     </div>
   );
   return (
@@ -158,13 +158,13 @@ export function AgentHealth({ health, online }: { health: AgentHealthData; onlin
         {metric('Host Mem', health.mem_pct)}
         {metric('Disk', health.disk_pct)}
         <div style={{ flex: '1 1 90px', minWidth: 90 }}>
-          <div style={{ fontSize: 20, fontWeight: 800, color: (health.buffer_depth || 0) > 0 ? 'var(--yellow)' : 'var(--text-primary)' }}>
+          <div style={{ fontSize: 'var(--text-xl)', fontWeight: 800, color: (health.buffer_depth || 0) > 0 ? 'var(--yellow)' : 'var(--text-primary)' }}>
             {health.buffer_depth ?? 0}
           </div>
-          <div style={{ fontSize: 11, textTransform: 'uppercase', color: 'var(--text-muted)', letterSpacing: '0.04em' }}>Buffered</div>
+          <div style={{ fontSize: 'var(--text-xs)', textTransform: 'uppercase', color: 'var(--text-muted)', letterSpacing: '0.04em' }}>Buffered</div>
         </div>
       </div>
-      <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 10 }}>
+      <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', marginTop: 10 }}>
         Agent up {fmtDuration(health.agent_uptime_s)} · host up {fmtDuration(health.host_uptime_s)} · polling {health.device_count ?? 0} device{health.device_count === 1 ? '' : 's'}
       </div>
     </div>
@@ -241,12 +241,12 @@ export function AgentDiscovery({ agentId, online }: { agentId: number; online: b
     <div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'flex-end', marginBottom: 10 }}>
         <label className="sv-field" style={{ margin: 0, flex: 1, minWidth: 200 }}>
-          <span style={{ fontSize: 12 }}>Subnets to scan <span className="sv-muted">(optional — blank = agent’s local /24)</span></span>
+          <span style={{ fontSize: 'var(--text-sm)' }}>Subnets to scan <span className="sv-muted">(optional — blank = agent’s local /24)</span></span>
           <input className="sv-input" value={subnets} onChange={(e) => setSubnets(e.target.value)}
             placeholder="e.g. 192.168.6.0/24, 10.0.0.0/24" disabled={scanning} />
         </label>
         <label className="sv-field" style={{ margin: 0, flex: 1, minWidth: 160 }}>
-          <span style={{ fontSize: 12 }}>SNMP communities <span className="sv-muted">(optional — blank = public)</span></span>
+          <span style={{ fontSize: 'var(--text-sm)' }}>SNMP communities <span className="sv-muted">(optional — blank = public)</span></span>
           <input className="sv-input" value={communities} onChange={(e) => setCommunities(e.target.value)}
             placeholder="e.g. public, private" disabled={scanning} />
         </label>
@@ -260,10 +260,10 @@ export function AgentDiscovery({ agentId, online }: { agentId: number; online: b
             Adopt {selected.size} selected
           </button>
         )}
-        {!online && <span className="sv-muted" style={{ fontSize: 12 }}>Agent must be online to scan.</span>}
+        {!online && <span className="sv-muted" style={{ fontSize: 'var(--text-sm)' }}>Agent must be online to scan.</span>}
         <span style={{ flex: 1 }} />
         {!!rows.length && (
-          <span className="sv-muted" style={{ fontSize: 12 }}>
+          <span className="sv-muted" style={{ fontSize: 'var(--text-sm)' }}>
             {rows.length} found · {adoptable.length} new
           </span>
         )}
@@ -272,7 +272,7 @@ export function AgentDiscovery({ agentId, online }: { agentId: number; online: b
       {msg && <div className="sv-err-inline" style={{ background: 'transparent', color: 'var(--text-muted)', borderColor: 'var(--border)' }}>{msg}</div>}
 
       {!rows.length ? (
-        <p className="sv-muted" style={{ fontSize: 13 }}>
+        <p className="sv-muted" style={{ fontSize: 'var(--text-base)' }}>
           No devices discovered yet. Click <strong>Scan for devices</strong> — the agent will sweep its
           local network (ICMP + SNMP) and list everything it finds here for one-click adoption.
         </p>
@@ -322,11 +322,11 @@ export function AgentDiscovery({ agentId, online }: { agentId: number; online: b
 }
 
 const DISC_TH: React.CSSProperties = {
-  fontSize: 11, textTransform: 'uppercase', color: 'var(--text-muted)', fontWeight: 600,
+  fontSize: 'var(--text-xs)', textTransform: 'uppercase', color: 'var(--text-muted)', fontWeight: 600,
   textAlign: 'left', padding: '6px 10px', borderBottom: '1px solid var(--border)',
 };
 const DISC_TD: React.CSSProperties = {
-  fontSize: 12.5, padding: '6px 10px', borderBottom: '1px solid var(--border)',
+  fontSize: 'var(--text-sm)', padding: '6px 10px', borderBottom: '1px solid var(--border)',
 };
 
 // ── Multi-select site list (checkboxes) ────────────────────────
@@ -335,7 +335,7 @@ export function SiteMultiSelect({
 }: {
   sites: Site[]; selected: Set<number>; onToggle: (id: number) => void;
 }) {
-  if (!sites.length) return <p className="sv-muted" style={{ fontSize: 13 }}>No sites available from NetVault.</p>;
+  if (!sites.length) return <p className="sv-muted" style={{ fontSize: 'var(--text-base)' }}>No sites available from NetVault.</p>;
   return (
     <div className="sv-site-picker">
       {sites.map((s) => (
@@ -403,7 +403,7 @@ export function NewAgentModal({
           <span style={{ marginBottom: 6 }}>Sites to poll
             <span className="sv-muted" style={{ fontWeight: 400 }}> — all devices in selected sites are polled by this agent</span>
           </span>
-          {sites.loading && !sites.data ? <p className="sv-muted" style={{ fontSize: 13 }}>Loading sites…</p>
+          {sites.loading && !sites.data ? <p className="sv-muted" style={{ fontSize: 'var(--text-base)' }}>Loading sites…</p>
             : <SiteMultiSelect sites={sites.data || []} selected={selected} onToggle={toggle} />}
         </div>
         <div className="sv-modal-actions">

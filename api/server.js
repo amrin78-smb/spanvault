@@ -32,6 +32,13 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.46.4': [
+    'Standardized typography across the app onto a single 7-step type scale (--text-xs through --text-2xl), collapsing ~25 ad-hoc font sizes down to 7 consistent steps for a cleaner, more uniform look',
+    'Unified every monospace element (kbd hints, OIDs, ports, BSSIDs, code blocks) onto one shared --font-mono token instead of several different mono stacks',
+    'Fixed several dark-mode color bugs by replacing hardcoded hex values with theme color tokens, so those elements now flip correctly between light and dark themes',
+    'Intentional display/hero sizes (NOC full-screen stats, the all-clear icon, loaders) were left at their large sizes by design',
+    'Visual/consistency cleanup only — no layout, feature, or behavior changes',
+  ],
   '1.46.3': [
     'Calibrated the UI to an enterprise network-operations console look while keeping the modern aesthetic: tightened card/panel/table/modal corners from 12px to 8px',
     'Tightened control corners (buttons, inputs, selects, segmented controls) from 8px to 6px for a crisper, more precise feel',

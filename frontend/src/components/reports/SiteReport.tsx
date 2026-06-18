@@ -75,7 +75,7 @@ function sortValue(row: SiteDeviceRow, key: SortKey): number | string {
 
 // ── Shared REPORT OUTPUT style constants (module scope) ─────────
 const SECTION_TITLE: React.CSSProperties = {
-  fontSize: 12,
+  fontSize: 'var(--text-sm)',
   textTransform: 'uppercase',
   fontWeight: 600,
   color: 'var(--text-muted)',
@@ -101,16 +101,16 @@ const STAT_CARD: React.CSSProperties = {
   flexDirection: 'column',
   justifyContent: 'center',
 };
-const STAT_VALUE: React.CSSProperties = { fontSize: 24, fontWeight: 800, lineHeight: 1.1 };
+const STAT_VALUE: React.CSSProperties = { fontSize: 'var(--text-2xl)', fontWeight: 800, lineHeight: 1.1 };
 const STAT_LABEL: React.CSSProperties = {
-  fontSize: 11,
+  fontSize: 'var(--text-xs)',
   textTransform: 'uppercase',
   color: 'var(--text-muted)',
   letterSpacing: '0.04em',
   marginBottom: 4,
 };
 const TH: React.CSSProperties = {
-  fontSize: 11,
+  fontSize: 'var(--text-xs)',
   textTransform: 'uppercase',
   fontWeight: 600,
   letterSpacing: '0.06em',
@@ -119,7 +119,7 @@ const TH: React.CSSProperties = {
   textAlign: 'left',
 };
 const TD: React.CSSProperties = {
-  fontSize: 12.5,
+  fontSize: 'var(--text-sm)',
   color: 'var(--text-primary)',
   padding: '8px 12px',
   height: 36,
@@ -171,8 +171,8 @@ export default function SiteReport({ data }: { data: SiteSummary }) {
   return (
     <div>
       {/* 1. Site header */}
-      <h2 style={{ margin: '0 0 4px', fontSize: 18, fontWeight: 700 }}>{data.site_name ?? '—'}</h2>
-      <div className="sv-muted" style={{ marginBottom: 16, fontSize: 12 }}>
+      <h2 style={{ margin: '0 0 4px', fontSize: 'var(--text-lg)', fontWeight: 700 }}>{data.site_name ?? '—'}</h2>
+      <div className="sv-muted" style={{ marginBottom: 16, fontSize: 'var(--text-sm)' }}>
         {summary.total ?? 0} devices · {fmtNum(summary.avg_uptime, 2)}% overall uptime ·{' '}
         {summary.total_alerts ?? 0} alerts
       </div>
@@ -202,7 +202,7 @@ export default function SiteReport({ data }: { data: SiteSummary }) {
           <h3 style={SECTION_TITLE}>Site Analysis</h3>
           <p
             style={{
-              fontSize: 13,
+              fontSize: 'var(--text-base)',
               lineHeight: 1.6,
               color: 'var(--text-primary)',
               maxWidth: '70ch',
@@ -262,7 +262,7 @@ export default function SiteReport({ data }: { data: SiteSummary }) {
                           width: 70,
                           height: 4,
                           borderRadius: 2,
-                          background: '#e2e8f0',
+                          background: 'var(--border)',
                           overflow: 'hidden',
                           flex: '0 0 auto',
                         }}

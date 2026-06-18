@@ -36,7 +36,7 @@ export default function SiteScopeBanner() {
         background: '#eff6ff',
         border: '1px solid #bfdbfe',
         color: '#1e3a5f',
-        fontSize: 13,
+        fontSize: 'var(--text-base)',
       }}
     >
       <span aria-hidden>ℹ</span>

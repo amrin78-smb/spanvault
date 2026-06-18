@@ -69,7 +69,7 @@ export default function UpdateNotifier() {
     <div style={{
       background: '#1d4ed8', color: '#fff', padding: '8px 20px',
       display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-      width: '100%', fontSize: 13, flexShrink: 0, zIndex: 90,
+      width: '100%', fontSize: 'var(--text-base)', flexShrink: 0, zIndex: 90,
     }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <span>🔄</span>
@@ -86,7 +86,7 @@ export default function UpdateNotifier() {
         aria-label="Dismiss"
         style={{
           background: 'transparent', color: '#fff', border: 'none',
-          cursor: 'pointer', fontSize: 18, lineHeight: 1, padding: 0, marginLeft: 16,
+          cursor: 'pointer', fontSize: 'var(--text-lg)', lineHeight: 1, padding: 0, marginLeft: 16,
         }}
       >
         ×

@@ -136,7 +136,7 @@ function IdleWarningModal({
     <div className="sv-modal-backdrop" style={{ zIndex: 1000 }}>
       <div className="sv-modal" style={{ maxWidth: 420, textAlign: 'center' }}>
         <h2>Session expiring</h2>
-        <p style={{ fontSize: 15, margin: '8px 0 20px' }}>
+        <p style={{ fontSize: 'var(--text-md)', margin: '8px 0 20px' }}>
           You will be logged out in {secondsLeft} second{secondsLeft === 1 ? '' : 's'}.
         </p>
         <div className="sv-modal-actions" style={{ justifyContent: 'center' }}>

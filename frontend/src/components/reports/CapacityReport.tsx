@@ -22,7 +22,7 @@ function fmtMbps(value: number | null): string {
 
 function trendCell(trend: CapacityRow['trend_in']) {
   if (trend === 'increasing') {
-    return <span style={{ color: '#C8102E', fontWeight: 600 }}>↑ increasing</span>;
+    return <span style={{ color: 'var(--primary)', fontWeight: 600 }}>↑ increasing</span>;
   }
   if (trend === 'decreasing') {
     return <span className="sv-muted">↓ decreasing</span>;
@@ -39,7 +39,7 @@ function isAtRisk(row: CapacityRow): boolean {
 // ── Shared REPORT OUTPUT style constants (module scope) ─────────
 const PANEL: React.CSSProperties = { padding: 16 };
 const TH: React.CSSProperties = {
-  fontSize: 11,
+  fontSize: 'var(--text-xs)',
   textTransform: 'uppercase',
   fontWeight: 600,
   letterSpacing: '0.06em',
@@ -48,7 +48,7 @@ const TH: React.CSSProperties = {
   textAlign: 'left',
 };
 const TD: React.CSSProperties = {
-  fontSize: 12.5,
+  fontSize: 'var(--text-sm)',
   color: 'var(--text-primary)',
   padding: '8px 12px',
   height: 36,
@@ -88,7 +88,7 @@ export default function CapacityReport({ data }: { data: CapacityRow[] }) {
                 <td style={TD}>
                   {row.device_name || '—'}
                   {row.site_name ? (
-                    <div className="sv-muted" style={{ fontSize: 11 }}>{row.site_name}</div>
+                    <div className="sv-muted" style={{ fontSize: 'var(--text-xs)' }}>{row.site_name}</div>
                   ) : null}
                 </td>
                 <td style={TD}>{row.interface || '—'}</td>

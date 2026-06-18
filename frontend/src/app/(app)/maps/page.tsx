@@ -153,11 +153,11 @@ function TopologyCard() {
         </svg>
       </div>
       <div style={{ flex: 1, minWidth: 220 }}>
-        <div style={{ fontWeight: 700, fontSize: 15 }}>Network Topology Discovery</div>
-        <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+        <div style={{ fontWeight: 700, fontSize: 'var(--text-md)' }}>Network Topology Discovery</div>
+        <div style={{ fontSize: 'var(--text-base)', color: 'var(--text-muted)' }}>
           Auto-discover device connections via LLDP and CDP.
         </div>
-        <div style={{ fontSize: 12.5, color: 'var(--text-muted)', marginTop: 4 }}>
+        <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', marginTop: 4 }}>
           {busy
             ? 'Discovery running…'
             : s && s.last_run_at

@@ -277,13 +277,13 @@ function ServiceCheckModal({
           <div className="sv-field" style={{ marginTop: 12 }}>Check types
             <div style={{ display: 'flex', gap: 16, marginTop: 6, flexWrap: 'wrap' }}>
               {TYPE_OPTIONS.map((o) => (
-                <label key={o.value} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer', fontWeight: 400 }}>
+                <label key={o.value} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 'var(--text-base)', cursor: 'pointer', fontWeight: 400 }}>
                   <input type="checkbox" checked={types.has(o.value)} onChange={() => toggleType(o.value)} />
                   {o.label}
                 </label>
               ))}
             </div>
-            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', marginTop: 4 }}>
               Select one or more — each type becomes a check sharing this target.
             </div>
           </div>
@@ -303,7 +303,7 @@ function ServiceCheckModal({
             }
           />
           {multiType && types.has('http') && (types.has('tcp') || types.has('ssl') || types.has('dns')) && (
-            <span style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+            <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', marginTop: 4 }}>
               Use a full URL for HTTP; the host part is reused for TCP/SSL/DNS.
             </span>
           )}
@@ -328,7 +328,7 @@ function ServiceCheckModal({
               onChange={(e) => setPort(e.target.value)}
               placeholder={!multiType ? (type === 'ssl' ? '443' : 'e.g. 22') : '443'} />
             {multiType && (
-              <span style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+              <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', marginTop: 4 }}>
                 blank = 443 for SSL; TCP/HTTP default to 443/https when SSL is ticked or the target is https, else port 80
               </span>
             )}
@@ -393,35 +393,35 @@ function ServiceRow({ check, canEdit, onEdit, onDelete }: {
       <td style={{ whiteSpace: 'nowrap', fontWeight: 600, color: 'var(--text-primary)' }}>
         {check.name}
         {!check.active && (
-          <span className="sv-type-badge" style={{ fontSize: 10, marginLeft: 8 }}>Paused</span>
+          <span className="sv-type-badge" style={{ fontSize: 'var(--text-xs)', marginLeft: 8 }}>Paused</span>
         )}
       </td>
       <td style={{ width: 1, whiteSpace: 'nowrap' }}>
         <span className="sv-type-badge">{typeLabel(check.type)}</span>
       </td>
-      <td style={{ fontSize: 12, color: 'var(--text-primary)', maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+      <td style={{ fontSize: 'var(--text-sm)', color: 'var(--text-primary)', maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
         title={check.target}>
         {check.target}
       </td>
-      <td style={{ fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+      <td style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
         {check.agent_name || 'Central'}
       </td>
-      <td style={{ fontSize: 12, color: 'var(--text-primary)', whiteSpace: 'nowrap', textAlign: 'right' }}>
+      <td style={{ fontSize: 'var(--text-sm)', color: 'var(--text-primary)', whiteSpace: 'nowrap', textAlign: 'right' }}>
         {check.last_response_ms != null ? `${check.last_response_ms} ms` : '—'}
       </td>
-      <td style={{ fontSize: 12, color: 'var(--text-muted)', maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+      <td style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
         title={check.last_detail || ''}>
         {check.last_detail || '—'}
       </td>
-      <td style={{ fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap', textAlign: 'right' }}>
+      <td style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', whiteSpace: 'nowrap', textAlign: 'right' }}>
         {fmtRel(check.last_checked_at)}
       </td>
       {canEdit && (
         <td style={{ width: 1, textAlign: 'right', whiteSpace: 'nowrap' }}>
           <span style={{ display: 'inline-flex', gap: 6 }}>
-            <button className="sv-btn ghost sm" style={{ height: 24, padding: '0 10px', fontSize: 11 }}
+            <button className="sv-btn ghost sm" style={{ height: 24, padding: '0 10px', fontSize: 'var(--text-xs)' }}
               onClick={() => onEdit(check)}>Edit</button>
-            <button className="sv-btn ghost sm" style={{ height: 24, padding: '0 10px', fontSize: 11 }}
+            <button className="sv-btn ghost sm" style={{ height: 24, padding: '0 10px', fontSize: 'var(--text-xs)' }}
               onClick={() => onDelete(check)}>Delete</button>
           </span>
         </td>
@@ -455,7 +455,7 @@ function GroupedServiceRows({ groupId, checks, canEdit, onEditGroup, onDeleteGro
         <td style={{ width: 28, paddingLeft: 12 }}>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
             <span style={{
-              display: 'inline-block', fontSize: 9, color: 'var(--text-muted)', width: 9,
+              display: 'inline-block', fontSize: 'var(--text-xs)', color: 'var(--text-muted)', width: 9,
               transform: open ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.12s ease',
             }}>▶</span>
             <StatusDot status={worst} size={10} title={worst} />
@@ -468,23 +468,23 @@ function GroupedServiceRows({ groupId, checks, canEdit, onEditGroup, onDeleteGro
               <span key={c.id} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
                 title={`${typeLabel(c.type)}: ${c.current_status}`}>
                 <StatusDot status={dotStatus(c.current_status)} size={8} title={c.current_status} />
-                <span className="sv-type-badge" style={{ fontSize: 10 }}>{typeLabel(c.type)}</span>
+                <span className="sv-type-badge" style={{ fontSize: 'var(--text-xs)' }}>{typeLabel(c.type)}</span>
               </span>
             ))}
           </span>
         </td>
         <td style={{ width: 1, whiteSpace: 'nowrap' }}>
-          <span className="sv-type-badge" style={{ fontSize: 10 }}>{checks.length} types</span>
+          <span className="sv-type-badge" style={{ fontSize: 'var(--text-xs)' }}>{checks.length} types</span>
         </td>
-        <td style={{ fontSize: 12, color: 'var(--text-primary)', maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+        <td style={{ fontSize: 'var(--text-sm)', color: 'var(--text-primary)', maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
           title={target}>
           {target}
         </td>
-        <td style={{ fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+        <td style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
           {checks[0]?.agent_name || 'Central'}
         </td>
         <td />
-        <td style={{ fontSize: 12, color: 'var(--text-muted)', maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+        <td style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
           title={worstCheck?.last_detail || ''}>
           {worstCheck?.last_detail || '—'}
         </td>
@@ -492,9 +492,9 @@ function GroupedServiceRows({ groupId, checks, canEdit, onEditGroup, onDeleteGro
         {canEdit && (
           <td style={{ width: 1, textAlign: 'right', whiteSpace: 'nowrap' }}>
             <span style={{ display: 'inline-flex', gap: 6 }}>
-              <button className="sv-btn ghost sm" style={{ height: 24, padding: '0 10px', fontSize: 11 }}
+              <button className="sv-btn ghost sm" style={{ height: 24, padding: '0 10px', fontSize: 'var(--text-xs)' }}
                 onClick={(e) => { e.stopPropagation(); onEditGroup({ groupId, checks }); }}>Edit</button>
-              <button className="sv-btn ghost sm" style={{ height: 24, padding: '0 10px', fontSize: 11 }}
+              <button className="sv-btn ghost sm" style={{ height: 24, padding: '0 10px', fontSize: 'var(--text-xs)' }}
                 onClick={(e) => { e.stopPropagation(); onDeleteGroup(groupId, name); }}>Delete group</button>
             </span>
           </td>
@@ -505,28 +505,28 @@ function GroupedServiceRows({ groupId, checks, canEdit, onEditGroup, onDeleteGro
           <td style={{ width: 28, paddingLeft: 28 }}>
             <StatusDot status={dotStatus(c.current_status)} size={9} title={c.current_status} />
           </td>
-          <td style={{ whiteSpace: 'nowrap', paddingLeft: 28, color: 'var(--text-muted)', fontSize: 12 }}>
+          <td style={{ whiteSpace: 'nowrap', paddingLeft: 28, color: 'var(--text-muted)', fontSize: 'var(--text-sm)' }}>
             <span className="sv-type-badge">{typeLabel(c.type)}</span>
             {!c.active && (
-              <span className="sv-type-badge" style={{ fontSize: 10, marginLeft: 8 }}>Paused</span>
+              <span className="sv-type-badge" style={{ fontSize: 'var(--text-xs)', marginLeft: 8 }}>Paused</span>
             )}
           </td>
           <td style={{ width: 1 }} />
-          <td style={{ fontSize: 12, color: 'var(--text-muted)', maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+          <td style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
             title={c.target}>
             {c.target}
           </td>
-          <td style={{ fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+          <td style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
             {c.agent_name || 'Central'}
           </td>
-          <td style={{ fontSize: 12, color: 'var(--text-primary)', whiteSpace: 'nowrap', textAlign: 'right' }}>
+          <td style={{ fontSize: 'var(--text-sm)', color: 'var(--text-primary)', whiteSpace: 'nowrap', textAlign: 'right' }}>
             {c.last_response_ms != null ? `${c.last_response_ms} ms` : '—'}
           </td>
-          <td style={{ fontSize: 12, color: 'var(--text-muted)', maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+          <td style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
             title={c.last_detail || ''}>
             {c.last_detail || '—'}
           </td>
-          <td style={{ fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap', textAlign: 'right' }}>
+          <td style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', whiteSpace: 'nowrap', textAlign: 'right' }}>
             {fmtRel(c.last_checked_at)}
           </td>
           {canEdit && <td style={{ width: 1 }} />}
@@ -631,7 +631,7 @@ export default function ServicesPage() {
       {checks.error && <ErrorBox message={checks.error} />}
 
       {!!list.length && (
-        <div style={{ fontSize: 12, color: 'var(--text-muted)', margin: '2px 0 14px' }}>
+        <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', margin: '2px 0 14px' }}>
           {list.length} {list.length === 1 ? 'check' : 'checks'} · {up} up · {down} down · {warning} warning
           {isFiltered && ` · showing ${filtered.length}`}
         </div>
@@ -658,7 +658,7 @@ export default function ServicesPage() {
                 className={`sv-chip${statusFilter === o.v ? ' active' : ''}`}
                 onClick={() => setStatusFilter(o.v)}
                 style={{
-                  height: 28, padding: '0 12px', fontSize: 12, cursor: 'pointer',
+                  height: 28, padding: '0 12px', fontSize: 'var(--text-sm)', cursor: 'pointer',
                   borderRadius: 14, border: '1px solid var(--border)',
                   background: statusFilter === o.v ? 'var(--accent, #C8102E)' : 'transparent',
                   color: statusFilter === o.v ? '#fff' : 'var(--text-primary)',
@@ -676,7 +676,7 @@ export default function ServicesPage() {
         {checks.loading && !checks.data ? (
           <TableSkeleton rows={5} cols={colCount} />
         ) : list.length && !blocks.length ? (
-          <div style={{ padding: '28px 24px', fontSize: 13, color: 'var(--text-muted)', textAlign: 'center' }}>
+          <div style={{ padding: '28px 24px', fontSize: 'var(--text-base)', color: 'var(--text-muted)', textAlign: 'center' }}>
             No checks match the current filter.
           </div>
         ) : list.length ? (

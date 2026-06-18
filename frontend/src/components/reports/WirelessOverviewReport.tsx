@@ -36,7 +36,7 @@ type WirelessOverview = {
 
 // ── Shared REPORT OUTPUT style constants (module scope) ─────────
 const SECTION_TITLE: React.CSSProperties = {
-  fontSize: 12,
+  fontSize: 'var(--text-sm)',
   textTransform: 'uppercase',
   fontWeight: 600,
   color: 'var(--text-muted)',
@@ -62,16 +62,16 @@ const STAT_CARD: React.CSSProperties = {
   flexDirection: 'column',
   justifyContent: 'center',
 };
-const STAT_VALUE: React.CSSProperties = { fontSize: 22, fontWeight: 800, lineHeight: 1.1 };
+const STAT_VALUE: React.CSSProperties = { fontSize: 'var(--text-xl)', fontWeight: 800, lineHeight: 1.1 };
 const STAT_LABEL: React.CSSProperties = {
-  fontSize: 11,
+  fontSize: 'var(--text-xs)',
   textTransform: 'uppercase',
   color: 'var(--text-muted)',
   letterSpacing: '0.04em',
   marginTop: 4,
 };
 const TH: React.CSSProperties = {
-  fontSize: 11,
+  fontSize: 'var(--text-xs)',
   textTransform: 'uppercase',
   fontWeight: 600,
   letterSpacing: '0.06em',
@@ -80,7 +80,7 @@ const TH: React.CSSProperties = {
   textAlign: 'left',
 };
 const TD: React.CSSProperties = {
-  fontSize: 12.5,
+  fontSize: 'var(--text-sm)',
   color: 'var(--text-primary)',
   padding: '8px 12px',
   height: 36,
@@ -203,15 +203,15 @@ export default function WirelessOverviewReport({ data }: { data: WirelessOvervie
                   borderBottom: '1px solid var(--border-light)',
                 }}
               >
-                <div style={{ flex: 1, minWidth: 0, fontSize: 12.5 }}>
+                <div style={{ flex: 1, minWidth: 0, fontSize: 'var(--text-sm)' }}>
                   <span style={{ fontWeight: 600 }}>{ap.name}</span>{' '}
                   <span className="sv-muted">· {ap.site_name}</span>
                 </div>
-                <div style={{ flex: '0 0 80px', textAlign: 'right', fontSize: 12.5 }}>
+                <div style={{ flex: '0 0 80px', textAlign: 'right', fontSize: 'var(--text-sm)' }}>
                   {fmtCount(ap.clients)} clients
                 </div>
                 <div
-                  style={{ flex: '0 0 60px', textAlign: 'right', fontSize: 12.5 }}
+                  style={{ flex: '0 0 60px', textAlign: 'right', fontSize: 'var(--text-sm)' }}
                   className="sv-muted"
                 >
                   {fmtNum(ap.util)}%
@@ -237,10 +237,10 @@ export default function WirelessOverviewReport({ data }: { data: WirelessOvervie
                   borderBottom: '1px solid var(--border-light)',
                 }}
               >
-                <div style={{ flex: 1, minWidth: 0, fontSize: 12.5, fontWeight: 600 }}>
+                <div style={{ flex: 1, minWidth: 0, fontSize: 'var(--text-sm)', fontWeight: 600 }}>
                   {s.ssid_name}
                 </div>
-                <div style={{ flex: '0 0 90px', textAlign: 'right', fontSize: 12.5 }}>
+                <div style={{ flex: '0 0 90px', textAlign: 'right', fontSize: 'var(--text-sm)' }}>
                   {fmtCount(s.client_count)} clients
                 </div>
               </div>
@@ -264,12 +264,12 @@ export default function WirelessOverviewReport({ data }: { data: WirelessOvervie
                 borderBottom: '1px solid var(--border-light)',
               }}
             >
-              <div style={{ flex: 1, minWidth: 0, fontSize: 12.5 }}>
+              <div style={{ flex: 1, minWidth: 0, fontSize: 'var(--text-sm)' }}>
                 <span style={{ fontWeight: 600 }}>{ap.name}</span>{' '}
                 <span className="sv-muted">· {ap.site_name}</span>
               </div>
               <div
-                style={{ flex: '0 0 200px', textAlign: 'right', fontSize: 12.5 }}
+                style={{ flex: '0 0 200px', textAlign: 'right', fontSize: 'var(--text-sm)' }}
                 className="sv-muted"
               >
                 {fmtLastSeen(ap.last_seen)}

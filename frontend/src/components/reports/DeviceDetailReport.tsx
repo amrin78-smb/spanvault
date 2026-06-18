@@ -91,7 +91,7 @@ function sevClass(severity: string): string {
 
 // ── Shared REPORT OUTPUT style constants (module scope) ─────────
 const SECTION_TITLE: React.CSSProperties = {
-  fontSize: 12,
+  fontSize: 'var(--text-sm)',
   textTransform: 'uppercase',
   fontWeight: 600,
   color: 'var(--text-muted)',
@@ -117,23 +117,23 @@ const STAT_CARD: React.CSSProperties = {
   flexDirection: 'column',
   justifyContent: 'center',
 };
-const STAT_VALUE: React.CSSProperties = { fontSize: 24, fontWeight: 800, lineHeight: 1.1 };
+const STAT_VALUE: React.CSSProperties = { fontSize: 'var(--text-2xl)', fontWeight: 800, lineHeight: 1.1 };
 const ANALYSIS_BODY: React.CSSProperties = {
-  fontSize: 13,
+  fontSize: 'var(--text-base)',
   lineHeight: 1.6,
   color: 'var(--text-primary)',
   maxWidth: '70ch',
   margin: 0,
 };
 const STAT_LABEL: React.CSSProperties = {
-  fontSize: 11,
+  fontSize: 'var(--text-xs)',
   textTransform: 'uppercase',
   color: 'var(--text-muted)',
   letterSpacing: '0.04em',
   marginTop: 4,
 };
 const TH: React.CSSProperties = {
-  fontSize: 11,
+  fontSize: 'var(--text-xs)',
   textTransform: 'uppercase',
   fontWeight: 600,
   letterSpacing: '0.06em',
@@ -142,7 +142,7 @@ const TH: React.CSSProperties = {
   textAlign: 'left',
 };
 const TD: React.CSSProperties = {
-  fontSize: 12.5,
+  fontSize: 'var(--text-sm)',
   color: 'var(--text-primary)',
   padding: '8px 12px',
   height: 36,
@@ -195,16 +195,16 @@ export default function DeviceDetailReport({ data }: { data?: DeviceDetail | nul
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
           <StatusDot status="up" size={14} />
           <div style={{ minWidth: 0 }}>
-            <h2 style={{ margin: 0, fontSize: 18 }}>{device.name}</h2>
-            <div className="sv-muted" style={{ fontSize: 12, marginTop: 2 }}>{subline || '—'}</div>
+            <h2 style={{ margin: 0, fontSize: 'var(--text-lg)' }}>{device.name}</h2>
+            <div className="sv-muted" style={{ fontSize: 'var(--text-sm)', marginTop: 2 }}>{subline || '—'}</div>
           </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, textAlign: 'right' }}>
           <div>
-            <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5 }} className="sv-muted">
+            <div style={{ fontSize: 'var(--text-xs)', textTransform: 'uppercase', letterSpacing: 0.5 }} className="sv-muted">
               Health score
             </div>
-            <div style={{ fontSize: 22, fontWeight: 700 }}>
+            <div style={{ fontSize: 'var(--text-xl)', fontWeight: 700 }}>
               {health.score === null ? '—' : Math.round(health.score)}
             </div>
           </div>

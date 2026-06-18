@@ -310,7 +310,7 @@ export default function SensorManager({
         <div className="sv-sensor-head">
           <h2 style={{ margin: 0 }}>SNMP Sensors — {deviceName}</h2>
           <div style={{ flex: 1 }} />
-          {vendor && <span className="sv-muted" style={{ fontSize: 13 }}>Vendor: {vendor}</span>}
+          {vendor && <span className="sv-muted" style={{ fontSize: 'var(--text-base)' }}>Vendor: {vendor}</span>}
           <button className="sv-btn" onClick={runDiscovery} disabled={discovering}>
             {discovering ? <><span className="sv-spinner-sm" /> Discovering…</> : 'Run Discovery'}
           </button>

@@ -89,7 +89,7 @@ export default function AgentsPage() {
 
       {/* Slim summary row — no cards */}
       {!!list.length && (
-        <div style={{ fontSize: 12, color: 'var(--text-muted)', margin: '2px 0 14px' }}>
+        <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', margin: '2px 0 14px' }}>
           {list.length} {list.length === 1 ? 'agent' : 'agents'} · {online} online · {devicesAssigned} {devicesAssigned === 1 ? 'device' : 'devices'} assigned
         </div>
       )}
@@ -99,7 +99,7 @@ export default function AgentsPage() {
           display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, padding: '8px 12px',
           background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
         }}>
-          <span style={{ fontSize: 13, fontWeight: 600 }}>{selected.size} selected</span>
+          <span style={{ fontSize: 'var(--text-base)', fontWeight: 600 }}>{selected.size} selected</span>
           <span style={{ flex: 1 }} />
           <button className="sv-btn ghost sm" onClick={() => bulkDisable(true)}>Disable</button>
           <button className="sv-btn ghost sm" onClick={() => bulkDisable(false)}>Enable</button>
@@ -147,7 +147,7 @@ export default function AgentsPage() {
         <div className="sv-modal-backdrop" onClick={() => setCreated(null)}>
           <div className="sv-modal" style={{ maxWidth: 640 }} onClick={(e) => e.stopPropagation()}>
             <h2 style={{ marginTop: 0 }}>Agent “{created.name}” created</h2>
-            <p className="sv-muted" style={{ fontSize: 13 }}>
+            <p className="sv-muted" style={{ fontSize: 'var(--text-base)' }}>
               Run this on the remote server (PowerShell, as Administrator):
             </p>
             <AgentInstall command={created.install_command} />
@@ -195,14 +195,14 @@ function AgentCard({ agent, onDelete, selected, onToggleSelect }: {
         />
         <Link
           href={`/agents/${agent.id}`}
-          style={{ fontWeight: 600, fontSize: 14, color: 'var(--text-primary)', textDecoration: 'none', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+          style={{ fontWeight: 600, fontSize: 'var(--text-md)', color: 'var(--text-primary)', textDecoration: 'none', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
         >
           {agent.name}
         </Link>
         {agent.disabled && (
           <span
             style={{
-              fontSize: 11, color: 'var(--red)', border: '1px solid var(--red)',
+              fontSize: 'var(--text-xs)', color: 'var(--red)', border: '1px solid var(--red)',
               borderRadius: 'var(--radius-sm)', padding: '1px 7px', flex: 'none', whiteSpace: 'nowrap',
             }}
           >
@@ -211,7 +211,7 @@ function AgentCard({ agent, onDelete, selected, onToggleSelect }: {
         )}
         <span
           style={{
-            fontSize: 11, color: 'var(--text-muted)', border: '1px solid var(--border)',
+            fontSize: 'var(--text-xs)', color: 'var(--text-muted)', border: '1px solid var(--border)',
             borderRadius: 'var(--radius-sm)', padding: '1px 7px', flex: 'none', whiteSpace: 'nowrap',
           }}
         >
@@ -220,17 +220,17 @@ function AgentCard({ agent, onDelete, selected, onToggleSelect }: {
       </div>
 
       {/* line 2 — IP · hostname */}
-      <div style={{ fontSize: 12, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+      <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
         {agent.ip_address || '—'} · {agent.hostname || 'no hostname'}
       </div>
 
       {/* line 3 — devices · version */}
-      <div style={{ fontSize: 12, color: 'var(--text-primary)' }}>
+      <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-primary)' }}>
         {agent.device_count} {agent.device_count === 1 ? 'device' : 'devices'} · {agent.version ? `v${agent.version}` : 'v—'}
       </div>
 
       {/* line 4 — last seen */}
-      <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+      <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>
         Last seen: {fmtRel(agent.last_seen_at)}
       </div>
 

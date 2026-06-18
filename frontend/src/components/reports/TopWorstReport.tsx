@@ -66,7 +66,7 @@ function barWidthPct(value: number | null, metric: TopWorst['metric'], maxValue:
 // ── Shared REPORT OUTPUT style constants (module scope) ─────────
 const PANEL: React.CSSProperties = { padding: 16 };
 const SECTION_TITLE: React.CSSProperties = {
-  fontSize: 12,
+  fontSize: 'var(--text-sm)',
   textTransform: 'uppercase',
   fontWeight: 600,
   color: 'var(--text-muted)',
@@ -74,7 +74,7 @@ const SECTION_TITLE: React.CSSProperties = {
   margin: '0 0 8px',
 };
 const TH: React.CSSProperties = {
-  fontSize: 11,
+  fontSize: 'var(--text-xs)',
   textTransform: 'uppercase',
   fontWeight: 600,
   letterSpacing: '0.06em',
@@ -83,7 +83,7 @@ const TH: React.CSSProperties = {
   textAlign: 'left',
 };
 const TD: React.CSSProperties = {
-  fontSize: 12.5,
+  fontSize: 'var(--text-sm)',
   color: 'var(--text-primary)',
   padding: '8px 12px',
   height: 36,
@@ -104,7 +104,7 @@ export default function TopWorstReport({ data }: { data: TopWorst }) {
         Top {devices.length} Worst by {label}
       </h2>
       {generated_at ? (
-        <div className="sv-muted" style={{ marginBottom: 12, fontSize: 11 }}>
+        <div className="sv-muted" style={{ marginBottom: 12, fontSize: 'var(--text-xs)' }}>
           Generated {generated_at}
         </div>
       ) : null}
@@ -142,7 +142,7 @@ export default function TopWorstReport({ data }: { data: TopWorst }) {
                         borderRadius: 999,
                         background: rankBg,
                         color: '#ffffff',
-                        fontSize: 11,
+                        fontSize: 'var(--text-xs)',
                         fontWeight: 700,
                         lineHeight: 1,
                       }}

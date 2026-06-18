@@ -1212,7 +1212,7 @@ function MultiSelectPanel({
   return (
     <div className="sv-editor-props">
       <h3>{count} selected</h3>
-      <div style={{ fontSize: 12, color: '#64748b', marginBottom: 4 }}>Align</div>
+      <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', marginBottom: 4 }}>Align</div>
       <div style={{ display: 'flex', gap: 6 }}>
         <button className="sv-btn ghost sm" style={{ flex: 1 }} onClick={() => onAlign('left')}>Left</button>
         <button className="sv-btn ghost sm" style={{ flex: 1 }} onClick={() => onAlign('center')}>Center</button>
@@ -1223,12 +1223,12 @@ function MultiSelectPanel({
         <button className="sv-btn ghost sm" style={{ flex: 1 }} onClick={() => onAlign('middle')}>Middle</button>
         <button className="sv-btn ghost sm" style={{ flex: 1 }} onClick={() => onAlign('bottom')}>Bottom</button>
       </div>
-      <div style={{ fontSize: 12, color: '#64748b', margin: '8px 0 4px' }}>Distribute</div>
+      <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', margin: '8px 0 4px' }}>Distribute</div>
       <div style={{ display: 'flex', gap: 6 }}>
         <button className="sv-btn ghost sm" style={{ flex: 1 }} onClick={() => onDistribute('h')}>Horizontally</button>
         <button className="sv-btn ghost sm" style={{ flex: 1 }} onClick={() => onDistribute('v')}>Vertically</button>
       </div>
-      <div style={{ fontSize: 12, color: '#64748b', margin: '8px 0 4px' }}>Group</div>
+      <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', margin: '8px 0 4px' }}>Group</div>
       <div style={{ display: 'flex', gap: 6 }}>
         <button className="sv-btn ghost sm" style={{ flex: 1 }} onClick={onGroup} title="Ctrl+G">Group</button>
         <button className="sv-btn ghost sm" style={{ flex: 1 }} onClick={onUngroup} title="Ctrl+Shift+G">Ungroup</button>
@@ -1373,7 +1373,7 @@ function DevicePalette({
         {loading ? (
           <Loading />
         ) : groups.length === 0 ? (
-          <p className="sv-muted" style={{ fontSize: 13, padding: '8px 4px' }}>No devices.</p>
+          <p className="sv-muted" style={{ fontSize: 'var(--text-base)', padding: '8px 4px' }}>No devices.</p>
         ) : (
           groups.map((g) => {
             const open = searching || !collapsed.has(g.site);
@@ -1686,7 +1686,7 @@ function InterfaceSelect({ title, deviceId, value, onChange }: {
   if (!deviceId) {
     return (
       <label className="sv-field">{title}
-        <span className="sv-muted" style={{ fontSize: 12 }}>Unlinked node — no interfaces</span>
+        <span className="sv-muted" style={{ fontSize: 'var(--text-sm)' }}>Unlinked node — no interfaces</span>
       </label>
     );
   }
@@ -1708,14 +1708,14 @@ function InterfaceSelect({ title, deviceId, value, onChange }: {
 function ConnLiveReadout({ connection }: { connection: MapConnection }) {
   const live = connLive(connection);
   if (!live.bound) {
-    return <p className="sv-muted" style={{ fontSize: 12, margin: '2px 0 0' }}>Bind an interface to colour this link by live traffic.</p>;
+    return <p className="sv-muted" style={{ fontSize: 'var(--text-sm)', margin: '2px 0 0' }}>Bind an interface to colour this link by live traffic.</p>;
   }
   if (live.down) {
-    return <p style={{ fontSize: 12, margin: '2px 0 0', color: '#ef4444', fontWeight: 600 }}>● Link down</p>;
+    return <p style={{ fontSize: 'var(--text-sm)', margin: '2px 0 0', color: '#ef4444', fontWeight: 600 }}>● Link down</p>;
   }
   const color = live.pct != null ? utilColor(live.pct) : '#22c55e';
   return (
-    <p style={{ fontSize: 12, margin: '2px 0 0', display: 'flex', alignItems: 'center', gap: 6 }}>
+    <p style={{ fontSize: 'var(--text-sm)', margin: '2px 0 0', display: 'flex', alignItems: 'center', gap: 6 }}>
       <span style={{ width: 9, height: 9, borderRadius: '50%', background: color, display: 'inline-block' }} />
       <span>Live: {live.pct != null ? `${live.pct.toFixed(0)}% · ` : ''}{fmtBps(live.bps)}</span>
     </p>
@@ -1960,7 +1960,7 @@ function SelectionPanel({
   }
   return (
     <div className="sv-editor-props muted">
-      <p className="sv-muted" style={{ fontSize: 13 }}>
+      <p className="sv-muted" style={{ fontSize: 'var(--text-base)' }}>
         Select a connection or label to edit its properties. Drag devices from the palette onto the canvas.
       </p>
     </div>

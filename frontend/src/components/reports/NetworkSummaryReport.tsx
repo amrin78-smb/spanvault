@@ -79,7 +79,7 @@ function uptimeColor(pct: number | null | undefined): string {
 
 // ── Shared REPORT OUTPUT style constants (module scope) ─────────
 const SECTION_TITLE: React.CSSProperties = {
-  fontSize: 12,
+  fontSize: 'var(--text-sm)',
   textTransform: 'uppercase',
   fontWeight: 600,
   color: 'var(--text-muted)',
@@ -105,16 +105,16 @@ const STAT_CARD: React.CSSProperties = {
   flexDirection: 'column',
   justifyContent: 'center',
 };
-const STAT_VALUE: React.CSSProperties = { fontSize: 24, fontWeight: 800, lineHeight: 1.1 };
+const STAT_VALUE: React.CSSProperties = { fontSize: 'var(--text-2xl)', fontWeight: 800, lineHeight: 1.1 };
 const STAT_LABEL: React.CSSProperties = {
-  fontSize: 11,
+  fontSize: 'var(--text-xs)',
   textTransform: 'uppercase',
   color: 'var(--text-muted)',
   letterSpacing: '0.04em',
   marginTop: 4,
 };
 const TH: React.CSSProperties = {
-  fontSize: 11,
+  fontSize: 'var(--text-xs)',
   textTransform: 'uppercase',
   fontWeight: 600,
   letterSpacing: '0.06em',
@@ -122,7 +122,7 @@ const TH: React.CSSProperties = {
   padding: '8px 12px',
 };
 const TD: React.CSSProperties = {
-  fontSize: 12.5,
+  fontSize: 'var(--text-sm)',
   color: 'var(--text-primary)',
   padding: '8px 12px',
   height: 36,
@@ -257,7 +257,7 @@ export default function NetworkSummaryReport({ data }: { data: NetworkSummary })
               }}
             >
               <span style={{ color: 'var(--primary)', fontWeight: 700, lineHeight: 1.4 }}>›</span>
-              <span style={{ fontSize: 12.5, color: 'var(--text-primary)', lineHeight: 1.4 }}>
+              <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-primary)', lineHeight: 1.4 }}>
                 {finding}
               </span>
             </div>
@@ -285,7 +285,7 @@ export default function NetworkSummaryReport({ data }: { data: NetworkSummary })
                   borderBottom: '1px solid var(--border-light)',
                 }}
               >
-                <div style={{ flex: '0 0 220px', minWidth: 0, fontSize: 12.5 }}>
+                <div style={{ flex: '0 0 220px', minWidth: 0, fontSize: 'var(--text-sm)' }}>
                   <span style={{ fontWeight: 600 }}>{issue.device_name}</span>{' '}
                   <span className="sv-muted">· {issue.site_name}</span>
                 </div>
@@ -306,10 +306,10 @@ export default function NetworkSummaryReport({ data }: { data: NetworkSummary })
                     }}
                   />
                 </div>
-                <div style={{ flex: '0 0 90px', textAlign: 'right', fontSize: 12.5 }}>
+                <div style={{ flex: '0 0 90px', textAlign: 'right', fontSize: 'var(--text-sm)' }}>
                   {fmtNum(pct)}%
                 </div>
-                <div style={{ flex: '0 0 110px', textAlign: 'right', fontSize: 12.5 }} className="sv-muted">
+                <div style={{ flex: '0 0 110px', textAlign: 'right', fontSize: 'var(--text-sm)' }} className="sv-muted">
                   {fmtCount(issue.downtime_minutes)} min down
                 </div>
               </div>

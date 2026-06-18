@@ -173,7 +173,7 @@ function GeneralSettings({ settings, form, set, save, saving, saved, saveErr }: 
 
       <div className="sv-panel">
         <h2>Data Retention</h2>
-        <p className="sv-muted" style={{ fontSize: 13, marginTop: -4 }}>
+        <p className="sv-muted" style={{ fontSize: 'var(--text-base)', marginTop: -4 }}>
           Raw samples are rolled up to daily summaries, then purged. 0 = keep forever.
         </p>
         <div className="sv-form-grid">
@@ -232,7 +232,7 @@ function EmailAlertSettings({ settings, form, set, save, saving, saved, saveErr 
             <input className="sv-input" type="number" min={0} style={{ maxWidth: 120 }}
               value={form.notify_cooldown_minutes ?? '15'}
               onChange={(e) => set('notify_cooldown_minutes', e.target.value)} />
-            <span className="sv-muted" style={{ fontSize: 11 }}>0 = no throttle. Suppresses repeat emails for a flapping alert.</span>
+            <span className="sv-muted" style={{ fontSize: 'var(--text-xs)' }}>0 = no throttle. Suppresses repeat emails for a flapping alert.</span>
           </label>
           <label className="sv-field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8, margin: 0 }}>
             <input type="checkbox"
@@ -296,10 +296,10 @@ function EscalationOnCall({ form, set }: { form: Record<string, any>; set: (k: s
             <option value="warning">Warning &amp; Critical</option>
           </select>
         </label>
-        <span className="sv-muted" style={{ fontSize: 12 }}>Unacknowledged alerts email each step in turn. Save to apply enable/severity.</span>
+        <span className="sv-muted" style={{ fontSize: 'var(--text-sm)' }}>Unacknowledged alerts email each step in turn. Save to apply enable/severity.</span>
       </div>
 
-      <h3 style={{ fontSize: 13, margin: '8px 0' }}>Steps</h3>
+      <h3 style={{ fontSize: 'var(--text-base)', margin: '8px 0' }}>Steps</h3>
       {(steps.data || []).length > 0 && (
         <table className="sv-table" style={{ marginBottom: 10 }}>
           <thead><tr><th>Order</th><th>After (min)</th><th>Recipients</th><th></th></tr></thead>
@@ -329,7 +329,7 @@ function EscalationOnCall({ form, set }: { form: Record<string, any>; set: (k: s
         <button className="sv-btn" onClick={addStep}>Add step</button>
       </div>
 
-      <h3 style={{ fontSize: 13, margin: '8px 0' }}>On-Call Shifts</h3>
+      <h3 style={{ fontSize: 'var(--text-base)', margin: '8px 0' }}>On-Call Shifts</h3>
       {(shifts.data || []).length > 0 && (
         <table className="sv-table" style={{ marginBottom: 10 }}>
           <thead><tr><th>Contact</th><th>From</th><th>To</th><th></th></tr></thead>
@@ -410,7 +410,7 @@ function NotificationRoutes() {
   return (
     <div className="sv-panel" style={{ marginTop: 12 }}>
       <h2>Notification Routing</h2>
-      <p className="sv-muted" style={{ fontSize: 13, marginTop: -4 }}>
+      <p className="sv-muted" style={{ fontSize: 'var(--text-base)', marginTop: -4 }}>
         Send alerts that match a rule to specific recipients. If no route matches an alert, it goes to the
         Alert Recipients above.
       </p>
@@ -526,7 +526,7 @@ function AuditLog() {
   return (
     <div className="sv-panel">
       <h2>Audit Log</h2>
-      <p className="sv-muted" style={{ fontSize: 13, marginTop: -4 }}>
+      <p className="sv-muted" style={{ fontSize: 'var(--text-base)', marginTop: -4 }}>
         Recent configuration and operational changes (most recent first).
       </p>
       {!rows.length ? <Empty message="No audit entries yet." /> : (
@@ -538,7 +538,7 @@ function AuditLog() {
                 <td style={{ whiteSpace: 'nowrap' }}>{fmtTime(r.ts)}</td>
                 <td>{r.user_email || '—'}</td>
                 <td>{r.user_role || '—'}</td>
-                <td><code style={{ fontSize: 11 }}>{r.method} {r.path}</code></td>
+                <td><code style={{ fontSize: 'var(--text-xs)' }}>{r.method} {r.path}</code></td>
                 <td style={{ maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
                     title={r.detail ? JSON.stringify(r.detail) : ''}>
                   {r.detail ? JSON.stringify(r.detail) : '—'}
@@ -713,8 +713,8 @@ function InheritedRules({ title, rules }: { title: string; rules: Rule[] | null 
   return (
     <div className="sv-panel" style={{ padding: 0, opacity: 0.62 }}>
       <div style={{ padding: '12px 16px 0' }}>
-        <h2 style={{ fontSize: 14, margin: 0 }}>{title}</h2>
-        <p className="sv-muted" style={{ fontSize: 12, margin: '4px 0 0' }}>Inherited — edit on its own tab.</p>
+        <h2 style={{ fontSize: 'var(--text-md)', margin: 0 }}>{title}</h2>
+        <p className="sv-muted" style={{ fontSize: 'var(--text-sm)', margin: '4px 0 0' }}>Inherited — edit on its own tab.</p>
       </div>
       <table className="sv-table">
         <thead><tr><th>Scope</th><th>Metric</th><th>Condition</th><th>Severity</th><th>Description</th></tr></thead>
@@ -868,8 +868,8 @@ function DeviceRules() {
       {device && effective.data && (
         <div className="sv-panel" style={{ padding: 0 }}>
           <div style={{ padding: '12px 16px 0' }}>
-            <h2 style={{ fontSize: 14, margin: 0 }}>Effective Rules</h2>
-            <p className="sv-muted" style={{ fontSize: 12, margin: '4px 0 0' }}>
+            <h2 style={{ fontSize: 'var(--text-md)', margin: 0 }}>Effective Rules</h2>
+            <p className="sv-muted" style={{ fontSize: 'var(--text-sm)', margin: '4px 0 0' }}>
               Final merged ruleset actually evaluated for {device.name}.
             </p>
           </div>
@@ -1114,13 +1114,13 @@ function SystemUpdates() {
           </div>
         ) : updatesAvailable ? (
           <div style={{ marginTop: 8 }}>
-            <p style={{ fontWeight: 700, fontSize: 16 }}>
+            <p style={{ fontWeight: 700, fontSize: 'var(--text-lg)' }}>
               {status?.current_version === status?.latest_version
                 ? <>🔄 Patches available since v{status?.current_version}</>
                 : <>🔄 Update available: v{status?.current_version} → v{status?.latest_version}</>}
             </p>
             {(status?.current_commit || status?.latest_commit) && (
-              <p className="sv-muted" style={{ fontSize: 13 }}>
+              <p className="sv-muted" style={{ fontSize: 'var(--text-base)' }}>
                 Current: v{status?.current_version}
                 {status?.current_commit && <> (<code>{status.current_commit}</code>)</>}
                 {'  →  '}
@@ -1133,7 +1133,7 @@ function SystemUpdates() {
                 <strong>What&apos;s new in v{status?.latest_version}</strong>
                 <ul style={{
                   marginTop: 6, marginBottom: 0, paddingLeft: 20,
-                  fontSize: 13, lineHeight: 1.6,
+                  fontSize: 'var(--text-base)', lineHeight: 1.6,
                 }}>
                   {status.release_notes.map((note, i) => (
                     <li key={i}>{note}</li>
@@ -1142,7 +1142,7 @@ function SystemUpdates() {
               </div>
             )}
             {status?.release_date && (
-              <p className="sv-muted" style={{ fontSize: 13 }}>
+              <p className="sv-muted" style={{ fontSize: 'var(--text-base)' }}>
                 Released: {fmtReleaseDate(status.release_date)}
               </p>
             )}
@@ -1179,7 +1179,7 @@ function SystemUpdates() {
               </p>
             )}
             {licenseState.mode === 'trial' && (
-              <p className="sv-muted" style={{ marginTop: 10, fontSize: 13 }}>
+              <p className="sv-muted" style={{ marginTop: 10, fontSize: 'var(--text-base)' }}>
                 Trial license — updates enabled
               </p>
             )}
@@ -1408,7 +1408,7 @@ function UpdatingOverlay() {
           </div>
         )}
         {phase !== 'back_up' && (
-          <p className="sv-muted" style={{ fontSize: 12 }}>(This usually takes 1-3 minutes)</p>
+          <p className="sv-muted" style={{ fontSize: 'var(--text-sm)' }}>(This usually takes 1-3 minutes)</p>
         )}
         <button
           className="sv-btn"

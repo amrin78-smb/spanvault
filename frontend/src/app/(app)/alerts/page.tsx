@@ -25,7 +25,7 @@ type Alert = {
 // ── style tokens (kept inline since globals.css is not editable here) ──
 const CARD_BORDER = '1px solid var(--border)';
 const SECTION_HEADING: React.CSSProperties = {
-  fontSize: 12, textTransform: 'uppercase', fontWeight: 600,
+  fontSize: 'var(--text-sm)', textTransform: 'uppercase', fontWeight: 600,
   color: 'var(--text-muted)', marginBottom: 8, letterSpacing: '0.06em',
 };
 
@@ -129,8 +129,8 @@ function AlertStatCard({ num, label, color }: { num: number; label: string; colo
       borderRadius: 'var(--radius-sm)', padding: '12px 16px', minHeight: 75,
       display: 'flex', flexDirection: 'column', justifyContent: 'center',
     }}>
-      <div style={{ fontSize: 24, fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1.1 }}>{num}</div>
-      <div style={{ fontSize: 11, textTransform: 'uppercase', color: 'var(--text-muted)', letterSpacing: '0.04em', marginTop: 4 }}>{label}</div>
+      <div style={{ fontSize: 'var(--text-2xl)', fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1.1 }}>{num}</div>
+      <div style={{ fontSize: 'var(--text-xs)', textTransform: 'uppercase', color: 'var(--text-muted)', letterSpacing: '0.04em', marginTop: 4 }}>{label}</div>
     </div>
   );
 }
@@ -161,7 +161,7 @@ function AckNoteForm({
           if (e.key === 'Enter') onSave();
           if (e.key === 'Escape') onCancel();
         }}
-        style={{ flex: 1, width: '100%', height: 32, padding: '4px 10px', fontSize: 12.5 }}
+        style={{ flex: 1, width: '100%', height: 32, padding: '4px 10px', fontSize: 'var(--text-sm)' }}
       />
       <button className="sv-btn sm" onClick={onSave}>Save</button>
       <button className="sv-btn ghost sm" onClick={onCancel}>Cancel</button>
@@ -243,14 +243,14 @@ export default function AlertsPage() {
         {a.status === 'active' && (
           <button
             className="sv-btn ghost sm"
-            style={{ height: 24, padding: '0 10px', fontSize: 11 }}
+            style={{ height: 24, padding: '0 10px', fontSize: 'var(--text-xs)' }}
             onClick={() => { setAckingId(ackingId === a.id ? null : a.id); setNoteText(''); }}
           >Ack</button>
         )}
         {a.status !== 'resolved' && a.status !== 'suppressed' && (
           <button
             className="sv-btn ghost sm"
-            style={{ height: 24, padding: '0 10px', fontSize: 11 }}
+            style={{ height: 24, padding: '0 10px', fontSize: 'var(--text-xs)' }}
             onClick={() => resolve(a)}
           >Resolve</button>
         )}
@@ -281,21 +281,21 @@ export default function AlertsPage() {
                 <Link href="/services" style={{ color: 'var(--sv-crimson)', fontWeight: 600 }}>
                   {a.service_name}
                 </Link>
-                <span className="sv-type-badge" style={{ fontSize: 10 }}>Service</span>
+                <span className="sv-type-badge" style={{ fontSize: 'var(--text-xs)' }}>Service</span>
               </span>
             ) : a.device_id == null && a.agent_name ? (
               <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                 <Link href={`/agents/${a.agent_id}`} style={{ color: 'var(--sv-crimson)', fontWeight: 600 }}>
                   {a.agent_name}
                 </Link>
-                <span className="sv-type-badge" style={{ fontSize: 10 }}>Agent</span>
+                <span className="sv-type-badge" style={{ fontSize: 'var(--text-xs)' }}>Agent</span>
               </span>
             ) : a.device_id == null && a.wireless_name ? (
               <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                 <Link href="/wireless" style={{ color: 'var(--sv-crimson)', fontWeight: 600 }}>
                   {a.wireless_name}
                 </Link>
-                <span className="sv-type-badge" style={{ fontSize: 10 }}>
+                <span className="sv-type-badge" style={{ fontSize: 'var(--text-xs)' }}>
                   {a.wireless_controller_id ? 'Controller' : 'AP'}
                 </span>
               </span>
@@ -309,11 +309,11 @@ export default function AlertsPage() {
           <td>
             <div
               title={a.message}
-              style={{ maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 12, color: 'var(--text-primary)' }}
+              style={{ maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 'var(--text-sm)', color: 'var(--text-primary)' }}
             >{a.message}</div>
-            {a.note && <div className="sv-alert-note" style={{ fontSize: 11 }}>📝 {a.note}</div>}
+            {a.note && <div className="sv-alert-note" style={{ fontSize: 'var(--text-xs)' }}>📝 {a.note}</div>}
             {suppressed && (
-              <div style={{ fontSize: 11, fontStyle: 'italic', color: 'var(--text-muted)', marginTop: 2 }}>
+              <div style={{ fontSize: 'var(--text-xs)', fontStyle: 'italic', color: 'var(--text-muted)', marginTop: 2 }}>
                 Suppressed{a.suppressed_by_name ? ` — ${a.suppressed_by_name} down`
                   : (a.suppression_reason ? ` — ${a.suppression_reason}` : '')}
               </div>
@@ -322,7 +322,7 @@ export default function AlertsPage() {
           {/* status */}
           <td style={{ width: 1, whiteSpace: 'nowrap' }}><StatusBadge status={a.status} /></td>
           {/* time (right-aligned, muted) */}
-          <td style={{ fontSize: 11, color: 'var(--text-muted)', textAlign: 'right', whiteSpace: 'nowrap' }}>
+          <td style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', textAlign: 'right', whiteSpace: 'nowrap' }}>
             {fmtTime(a.triggered_at)}
           </td>
           {/* hover actions */}
@@ -394,13 +394,13 @@ export default function AlertsPage() {
               key={c.key}
               className={`sv-chip ${chips.has(c.key) ? 'active' : ''}`}
               onClick={() => toggleChip(c.key)}
-              style={{ height: 24, fontSize: 11 }}
+              style={{ height: 24, fontSize: 'var(--text-xs)' }}
             >
               {c.label}
             </button>
           ))}
           {chips.size > 0 && (
-            <button className="sv-chip clear" onClick={() => setChips(new Set())} style={{ height: 24, fontSize: 11 }}>
+            <button className="sv-chip clear" onClick={() => setChips(new Set())} style={{ height: 24, fontSize: 'var(--text-xs)' }}>
               Clear
             </button>
           )}
@@ -438,9 +438,9 @@ export default function AlertsPage() {
                         <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                           <StatusDot status={sev === 'critical' ? 'down' : 'warning'} size={10} />
                           <span style={{ fontWeight: 700, color: 'var(--text-primary)' }}>{g.title}</span>
-                          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{g.alerts.length} alerts</span>
-                          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>· {dur}</span>
-                          <span style={{ marginLeft: 'auto', fontSize: 11, fontWeight: 600, color: 'var(--primary)' }}>
+                          <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)' }}>{g.alerts.length} alerts</span>
+                          <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)' }}>· {dur}</span>
+                          <span style={{ marginLeft: 'auto', fontSize: 'var(--text-xs)', fontWeight: 600, color: 'var(--primary)' }}>
                             {open ? 'Collapse ▲' : 'Expand ▼'}
                           </span>
                         </span>
@@ -449,7 +449,7 @@ export default function AlertsPage() {
                         {canAcknowledgeAlerts && hasActive && (
                           <button
                             className="sv-btn ghost sm"
-                            style={{ height: 24, padding: '0 10px', fontSize: 11 }}
+                            style={{ height: 24, padding: '0 10px', fontSize: 'var(--text-xs)' }}
                             onClick={() => ackAll(g.alerts)}
                           >Ack All</button>
                         )}

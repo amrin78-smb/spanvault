@@ -48,7 +48,7 @@ const CARD_STYLE: React.CSSProperties = {
   padding: '16px 20px',
 };
 const SECTION_TITLE_STYLE: React.CSSProperties = {
-  fontSize: 12,
+  fontSize: 'var(--text-sm)',
   textTransform: 'uppercase',
   fontWeight: 600,
   color: 'var(--text-muted)',
@@ -125,7 +125,7 @@ export default function AgentDetailPage({ params }: { params: { id: string } }) 
       </PageHeader>
 
       {a.disabled && (
-        <div style={{ ...CARD_STYLE, borderLeft: '3px solid var(--red)', marginBottom: 12, fontSize: 13 }}>
+        <div style={{ ...CARD_STYLE, borderLeft: '3px solid var(--red)', marginBottom: 12, fontSize: 'var(--text-base)' }}>
           ⛔ This agent is <strong>disabled</strong> — its connection is refused and its devices are not being polled.
           Use <strong>Enable Agent</strong> to restore it.
         </div>
@@ -140,7 +140,7 @@ export default function AgentDetailPage({ params }: { params: { id: string } }) 
       </div>
 
       {offline && (
-        <div style={{ ...CARD_STYLE, borderLeft: '3px solid var(--yellow)', marginBottom: 12, fontSize: 13 }}>
+        <div style={{ ...CARD_STYLE, borderLeft: '3px solid var(--yellow)', marginBottom: 12, fontSize: 'var(--text-base)' }}>
           ⚠ Agent is offline — its devices may be stale. Check the <strong>SpanVault-Agent</strong> service
           on {a.hostname ? <strong>{a.hostname}</strong> : 'the remote server'} (last seen {fmtRel(a.last_seen_at)}).
         </div>
@@ -151,7 +151,7 @@ export default function AgentDetailPage({ params }: { params: { id: string } }) 
         {/* Left — Agent Info */}
         <div style={{ ...CARD_STYLE, display: 'flex', flexDirection: 'column' }}>
           <div style={SECTION_TITLE_STYLE}>Agent Info</div>
-          <dl style={{ margin: 0, display: 'grid', gridTemplateColumns: 'auto 1fr', rowGap: 6, columnGap: 12, fontSize: 12.5 }}>
+          <dl style={{ margin: 0, display: 'grid', gridTemplateColumns: 'auto 1fr', rowGap: 6, columnGap: 12, fontSize: 'var(--text-sm)' }}>
             <dt style={{ color: 'var(--text-muted)' }}>IP</dt>
             <dd style={{ margin: 0, color: 'var(--text-primary)' }}>{a.ip_address || '—'}</dd>
             <dt style={{ color: 'var(--text-muted)' }}>Hostname</dt>
@@ -177,7 +177,7 @@ export default function AgentDetailPage({ params }: { params: { id: string } }) 
             {!editSites && <button className="sv-btn ghost sm" onClick={() => setEditSites(true)}>Edit sites</button>}
           </div>
           {!editSites && (
-            <p className="sv-muted" style={{ fontSize: 12, margin: '0 0 8px' }}>
+            <p className="sv-muted" style={{ fontSize: 'var(--text-sm)', margin: '0 0 8px' }}>
               This agent polls <strong>every device in the sites assigned below</strong>. Assign a site here,
               then add devices to it (Devices → Import / + Add Device) or use <strong>Discover Devices</strong>.
             </p>
@@ -221,7 +221,7 @@ export default function AgentDetailPage({ params }: { params: { id: string } }) 
       </div>
 
       {a.version && a.latest_agent_version && a.version !== a.latest_agent_version && (
-        <div style={{ ...CARD_STYLE, borderLeft: '3px solid var(--primary)', marginBottom: 12, fontSize: 13 }}>
+        <div style={{ ...CARD_STYLE, borderLeft: '3px solid var(--primary)', marginBottom: 12, fontSize: 'var(--text-base)' }}>
           ⬆ This agent is running v{a.version}; latest is v{a.latest_agent_version}. It updates itself
           automatically on its next config sync — no action needed.
         </div>
@@ -237,7 +237,7 @@ export default function AgentDetailPage({ params }: { params: { id: string } }) 
       <div style={{ ...CARD_STYLE, marginBottom: 12 }}>
         <div style={SECTION_TITLE_STYLE}>Discover Devices on the Agent’s Network</div>
         {!a.sites.length && (
-          <p className="sv-muted" style={{ fontSize: 12, margin: '0 0 8px' }}>
+          <p className="sv-muted" style={{ fontSize: 'var(--text-sm)', margin: '0 0 8px' }}>
             Tip: assign a site above first — adopted devices are placed in one of this agent’s sites.
           </p>
         )}
@@ -258,9 +258,9 @@ export default function AgentDetailPage({ params }: { params: { id: string } }) 
         ) : (
           groups.map((g) => (
             <div key={g.name} style={{ marginBottom: 14 }}>
-              <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>
+              <div style={{ fontWeight: 600, fontSize: 'var(--text-base)', marginBottom: 4 }}>
                 {g.siteId != null ? <Link href={`/sites/${g.siteId}`}>{g.name}</Link> : g.name}
-                <span className="sv-muted" style={{ fontWeight: 400, fontSize: 12, marginLeft: 8 }}>
+                <span className="sv-muted" style={{ fontWeight: 400, fontSize: 'var(--text-sm)', marginLeft: 8 }}>
                   {g.devices.length} {g.devices.length === 1 ? 'device' : 'devices'}
                 </span>
               </div>
@@ -288,7 +288,7 @@ export default function AgentDetailPage({ params }: { params: { id: string } }) 
 }
 
 const TH_STYLE: React.CSSProperties = {
-  fontSize: 11,
+  fontSize: 'var(--text-xs)',
   textTransform: 'uppercase',
   color: 'var(--text-muted)',
   fontWeight: 600,
@@ -297,7 +297,7 @@ const TH_STYLE: React.CSSProperties = {
   borderBottom: '1px solid var(--border)',
 };
 const TD_STYLE: React.CSSProperties = {
-  fontSize: 12.5,
+  fontSize: 'var(--text-sm)',
   padding: '8px 12px',
   borderBottom: '1px solid var(--border)',
 };
@@ -318,10 +318,10 @@ function StatCard({ label, value, accent }: { label: string; value: string; acce
         justifyContent: 'center',
       }}
     >
-      <div style={{ fontSize: 24, fontWeight: 800, lineHeight: 1.1, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+      <div style={{ fontSize: 'var(--text-2xl)', fontWeight: 800, lineHeight: 1.1, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
         {value}
       </div>
-      <div style={{ fontSize: 11, textTransform: 'uppercase', color: 'var(--text-muted)', marginTop: 4, letterSpacing: '0.04em' }}>
+      <div style={{ fontSize: 'var(--text-xs)', textTransform: 'uppercase', color: 'var(--text-muted)', marginTop: 4, letterSpacing: '0.04em' }}>
         {label}
       </div>
     </div>

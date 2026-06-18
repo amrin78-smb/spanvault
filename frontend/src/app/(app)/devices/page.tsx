@@ -216,13 +216,13 @@ export default function DevicesPage() {
           placeholder="Search name or IP…"
           value={q}
           onChange={(e) => setQ(e.target.value)}
-          style={{ height: 32, padding: '0 10px', fontSize: 13, minWidth: 220 }}
+          style={{ height: 32, padding: '0 10px', fontSize: 'var(--text-base)', minWidth: 220 }}
         />
         <select
           className="sv-select"
           value={status}
           onChange={(e) => setStatus(e.target.value)}
-          style={{ height: 32, padding: '0 8px', fontSize: 13 }}
+          style={{ height: 32, padding: '0 8px', fontSize: 'var(--text-base)' }}
         >
           <option value="">All statuses</option>
           <option value="up">Up</option>
@@ -234,7 +234,7 @@ export default function DevicesPage() {
           className="sv-select"
           value={siteId}
           onChange={(e) => setSiteId(e.target.value)}
-          style={{ height: 32, padding: '0 8px', fontSize: 13 }}
+          style={{ height: 32, padding: '0 8px', fontSize: 'var(--text-base)' }}
         >
           <option value="">All sites</option>
           {sites.data?.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
@@ -245,7 +245,7 @@ export default function DevicesPage() {
               key={c.key}
               className={`sv-chip ${chip === c.key ? 'active' : ''}`}
               onClick={() => setChip(c.key)}
-              style={{ height: 32, padding: '0 12px', fontSize: 12.5, display: 'inline-flex', alignItems: 'center' }}
+              style={{ height: 32, padding: '0 12px', fontSize: 'var(--text-sm)', display: 'inline-flex', alignItems: 'center' }}
             >
               {c.label}
             </button>
@@ -327,25 +327,25 @@ function AgentGroup({
           <polyline points="9 18 15 12 9 6" />
         </svg>
         {isLocal ? (
-          <span className="ag-nm" style={{ fontSize: 13.5, fontWeight: 700 }}>● {group.agentName}</span>
+          <span className="ag-nm" style={{ fontSize: 'var(--text-base)', fontWeight: 700 }}>● {group.agentName}</span>
         ) : (
-          <Link href={`/agents/${group.agentId}`} className="ag-nm" style={{ color: 'inherit', fontSize: 13.5, fontWeight: 700 }}
+          <Link href={`/agents/${group.agentId}`} className="ag-nm" style={{ color: 'inherit', fontSize: 'var(--text-base)', fontWeight: 700 }}
             onClick={(e) => e.stopPropagation()} title="View agent detail">
             ● Agent: {group.agentName}
           </Link>
         )}
         {!isLocal && (
-          <span className="ag-status" style={{ fontSize: 12 }}>
+          <span className="ag-status" style={{ fontSize: 'var(--text-sm)' }}>
             {group.agentStatus === 'online' ? '● Online' : group.agentStatus === 'offline' ? '○ Offline' : '○ Unknown'}
           </span>
         )}
-        <span style={{ fontWeight: 400, fontSize: 12.5, opacity: 0.85 }}>
+        <span style={{ fontWeight: 400, fontSize: 'var(--text-sm)', opacity: 0.85 }}>
           {group.devices.length} {group.devices.length === 1 ? 'device' : 'devices'}
         </span>
         <span style={{ flex: 1 }} />
         {offline && <span className="sv-agent-offline-warn">⚠ Agent offline — devices may be stale</span>}
         {!offline && (
-          <span className="sv-acc-summary" style={{ fontSize: 12 }}>
+          <span className="sv-acc-summary" style={{ fontSize: 'var(--text-sm)' }}>
             {counts.up > 0 && <span className="sv-pill up">{counts.up} up</span>}
             {counts.down > 0 && <span className="sv-pill down">{counts.down} down</span>}
             {counts.warning > 0 && <span className="sv-pill warning">{counts.warning} warning</span>}
@@ -383,7 +383,7 @@ function SiteAccordion({
       <div
         className={`sv-acc-head ${headStatus}`}
         onClick={() => setOpen((o) => !o)}
-        style={{ minHeight: 32, padding: '0 12px', gap: 10, fontSize: 13.5 }}
+        style={{ minHeight: 32, padding: '0 12px', gap: 10, fontSize: 'var(--text-base)' }}
       >
         {group.siteId != null ? (
           <Link
@@ -397,10 +397,10 @@ function SiteAccordion({
         ) : (
           <span className="site-nm">{group.name}</span>
         )}
-        <span className="sv-muted" style={{ fontWeight: 400, fontSize: 12.5 }}>
+        <span className="sv-muted" style={{ fontWeight: 400, fontSize: 'var(--text-sm)' }}>
           {group.devices.length} {group.devices.length === 1 ? 'device' : 'devices'}
         </span>
-        <span className="sv-acc-summary" style={{ fontSize: 12 }}>
+        <span className="sv-acc-summary" style={{ fontSize: 'var(--text-sm)' }}>
           {gatewayDown && (
             <span className="sv-acc-gw-down" title={`Site gateway ${gateway?.name} is down`}>
               ⚠ Gateway down — {suppressedCount} suppressed
@@ -440,7 +440,7 @@ function DeviceRow({
         ? <span className="sv-badge suppressed" title="Alerts suppressed — site gateway is down">suppressed</span>
         : <StatusDot status={device.current_status} size={8} title={statusTooltip(device)} />}
       <div className="sv-dev-id" style={{ minWidth: 200 }}>
-        <div className="nm" style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 500 }}>
+        <div className="nm" style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--text-base)', fontWeight: 500 }}>
           <Link href={`/devices/${device.id}`} style={{ color: 'var(--sv-crimson)' }}>
             {device.name}
           </Link>
@@ -451,13 +451,13 @@ function DeviceRow({
             </span>
           )}
         </div>
-        <div className="ip" style={{ fontSize: 11, marginTop: 1 }}>
+        <div className="ip" style={{ fontSize: 'var(--text-xs)', marginTop: 1 }}>
           {device.ip_address}{device.device_type ? ` · ${device.device_type}` : ''}
         </div>
       </div>
-      <div className="sv-dev-lat" style={{ minWidth: 60, fontSize: 12.5 }}>
+      <div className="sv-dev-lat" style={{ minWidth: 60, fontSize: 'var(--text-sm)' }}>
         {fmtMs(device.last_response_ms)}
-        <div className="sv-muted" style={{ fontSize: 11 }}>{fmtRel(device.last_seen_at)}</div>
+        <div className="sv-muted" style={{ fontSize: 'var(--text-xs)' }}>{fmtRel(device.last_seen_at)}</div>
       </div>
       <UptimeSparkline spark={device.spark} />
       <MonitorBadges device={device} />
@@ -543,7 +543,7 @@ function MonitorBadges({ device }: { device: Device }) {
       <span
         className={`sv-mon ping ${pingBad ? 'bad' : ''}`}
         title="ICMP ping latency"
-        style={{ maxHeight: 22, padding: '2px 8px', fontSize: 11.5, gap: 4 }}
+        style={{ maxHeight: 22, padding: '2px 8px', fontSize: 'var(--text-xs)', gap: 4 }}
       >
         <span className="k">Ping</span>
         <span className="m">{fmtMs(device.last_response_ms)}</span>
@@ -552,7 +552,7 @@ function MonitorBadges({ device }: { device: Device }) {
         <span
           className="sv-mon snmp"
           title="SNMP CPU / memory utilization"
-          style={{ maxHeight: 22, padding: '2px 8px', fontSize: 11.5, gap: 4 }}
+          style={{ maxHeight: 22, padding: '2px 8px', fontSize: 'var(--text-xs)', gap: 4 }}
         >
           <span className="k">SNMP</span>
           <span className="m">CPU {fmtPct(device.latest_cpu_pct)}</span>
