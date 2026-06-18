@@ -32,6 +32,9 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.44.0': [
+    'Multi-type service checks are smarter about HTTPS-only hosts: if you tick SSL (or enter an https:// target) when creating/editing a group, the TCP check now defaults to port 443 and the HTTP check to https — instead of port 80 — so an HTTPS-only site no longer shows false "down" on its TCP/HTTP probes. Enter https:// or include SSL and it just works; plain hostnames without SSL still default to port 80 as before',
+  ],
   '1.43.3': [
     'Map connectors now attach to a decorative icon/shape (cloud, building, router glyph, etc.) at the icon itself, not at the far edge of its invisible bounding box — no more gap between the line and the object',
     'Decorative glyph icons now draw with a thin, consistent outline regardless of size (was scaling up to a heavy stroke on large icons), and the editor\'s "Line width" control now actually changes a glyph\'s outline thickness',
@@ -6015,10 +6018,14 @@ const SERVICE_TYPES = ['http', 'tcp', 'ssl', 'dns'];
 
 // Derive a per-type { target, params } from one shared base target + flat shared
 // params, so a single bulk action can fan out into http/tcp/ssl/dns checks.
-function deriveServiceCheck(baseTarget, type, shared) {
+// `secure` (true when SSL is among the selected types, or an https:// target was
+// given) makes a bare hostname default to HTTPS/443 for the tcp + http checks
+// instead of plain port 80 — so an HTTPS-only host doesn't get false "down"s.
+function deriveServiceCheck(baseTarget, type, shared, secure) {
   shared = shared || {};
   const hasScheme    = /^[a-z][a-z0-9+.-]*:\/\//i.test(baseTarget);
   const scheme       = hasScheme ? baseTarget.split('://')[0].toLowerCase() : 'http';
+  const isSecure     = scheme === 'https' || !!secure;
   const afterScheme  = hasScheme ? baseTarget.slice(baseTarget.indexOf('://') + 3) : baseTarget;
   const hostport     = afterScheme.split('/')[0];   // strip path
   const host         = hostport.split(':')[0];      // strip :port
@@ -6034,12 +6041,12 @@ function deriveServiceCheck(baseTarget, type, shared) {
     if (shared.expect_status != null && shared.expect_status !== '') params.expect_status = shared.expect_status;
     if (shared.keyword != null && shared.keyword !== '') params.keyword = shared.keyword;
     if (timeout != null) params.timeout_ms = timeout;
-    return { target: hasScheme ? baseTarget : ('http://' + baseTarget), params };
+    return { target: hasScheme ? baseTarget : ((isSecure ? 'https://' : 'http://') + baseTarget), params };
   }
   if (type === 'tcp') {
     const port = embeddedPort != null ? embeddedPort
                : (sharedPort != null && !isNaN(sharedPort)) ? sharedPort
-               : (scheme === 'https' ? 443 : 80);
+               : (isSecure ? 443 : 80);
     const params = { port };
     if (timeout != null) params.timeout_ms = timeout;
     return { target: host, params };
@@ -6100,13 +6107,14 @@ app.post('/api/service-checks', wrap(async (req, res) => {
     const interval = safeInt(b.interval_seconds, 60);
     const shared   = b.params && typeof b.params === 'object' ? b.params : {};
     const groupId  = types.length > 1 ? require('crypto').randomUUID() : null;
+    const secure   = types.includes('ssl'); // SSL selected → tcp/http default to 443/https
 
     const client = await sv.connect();
     const created = [];
     try {
       await client.query('BEGIN');
       for (const type of types) {
-        const d = deriveServiceCheck(target, type, shared);
+        const d = deriveServiceCheck(target, type, shared, secure);
         const r = await client.query(
           `INSERT INTO service_checks
              (name, type, target, site_id, site_name, agent_id, interval_seconds, params, group_id, current_status, active)
@@ -6234,6 +6242,7 @@ app.put('/api/service-checks/group/:groupId', wrap(async (req, res) => {
   const interval = safeInt(b.interval_seconds, 60);
   const shared   = b.params && typeof b.params === 'object' ? b.params : {};
   const typeSet  = new Set(types);
+  const secure   = typeSet.has('ssl'); // SSL selected → tcp/http default to 443/https
 
   const client = await sv.connect();
   try {
@@ -6248,7 +6257,7 @@ app.put('/api/service-checks/group/:groupId', wrap(async (req, res) => {
     }
 
     for (const type of types) {
-      const d = deriveServiceCheck(target, type, shared);
+      const d = deriveServiceCheck(target, type, shared, secure);
       const matches = byType.get(type) || [];
       if (matches.length) {
         // Update the first existing row of this type (keep id, group_id, status, history).

@@ -329,7 +329,7 @@ function ServiceCheckModal({
               placeholder={!multiType ? (type === 'ssl' ? '443' : 'e.g. 22') : '443'} />
             {multiType && (
               <span style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
-                blank = 443 for SSL / derived from URL for TCP
+                blank = 443 for SSL; TCP/HTTP default to 443/https when SSL is ticked or the target is https, else port 80
               </span>
             )}
           </label>
