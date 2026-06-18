@@ -32,6 +32,10 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.46.0': [
+    'Monitored interfaces now show a single combined chart instead of two: the interface status is overlaid on the traffic graph (down periods shaded red, with a live Up/Down badge in the header) rather than getting its own separate chart. Status is still recorded for the Interface Status grid and alerting',
+    'Flexibility preserved: if you enable an interface\'s status sensor WITHOUT its traffic (in/out) sensors, it still renders as its own dedicated status chart',
+  ],
   '1.45.0': [
     'Added SNMP vendor support for Check Point, SonicWall and Forcepoint firewalls. Check Point (CPU from multiProcUsage, memory from memActiveReal64/memTotalReal64, connection count) and SonicWall (CPU%, RAM%, connections) now get proper vendor metrics; Forcepoint NGFW is now identified by vendor (its CPU/memory already come from the standard MIB)',
     'Vendor detection now falls back to the device\'s sysObjectID (enterprise number) when the sysDescr is too generic — so e.g. a Check Point on Gaia (which reports a plain Linux sysDescr) is correctly identified as Check Point instead of Generic. Applies to central- and agent-polled devices, discovery, and the SNMP test',

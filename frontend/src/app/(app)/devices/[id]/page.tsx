@@ -5,7 +5,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ReferenceLine, ResponsiveContainer,
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ReferenceLine, ReferenceArea, ResponsiveContainer,
 } from 'recharts';
 import { useApi, apiSend } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
@@ -337,13 +337,19 @@ function PingNow({ deviceId }: { deviceId: number }) {
 // ── Sensor graph layout: pair interface In/Out bps into one chart ──────
 type GraphItem =
   | { kind: 'single'; sensor: Sensor }
-  | { kind: 'pair'; ifIndex: number; ifLabel: string; inSensor: Sensor; outSensor: Sensor };
+  | { kind: 'pair'; ifIndex: number; ifLabel: string; inSensor: Sensor; outSensor: Sensor; operSensor?: Sensor };
 
 // Parse an interface-traffic metric_name like "if_3_in_bps" → { idx: 3, dir }.
 function parseIfBps(metric: string): { idx: number; dir: 'in' | 'out' } | null {
   const m = /^if_(\d+)_(in|out)_bps$/.exec(metric);
   if (!m) return null;
   return { idx: Number(m[1]), dir: m[2] as 'in' | 'out' };
+}
+
+// Parse an interface status metric_name like "if_3_oper" → 3.
+function parseIfOper(metric: string): number | null {
+  const m = /^if_(\d+)_oper$/.exec(metric);
+  return m ? Number(m[1]) : null;
 }
 
 // Interface display name from a sensor name like "Fa0/0 — In [alias] · 1 Gbps".
@@ -360,10 +366,13 @@ function ifLabelFor(idx: number, ...sensors: Sensor[]): string {
 function buildGraphItems(sensors: Sensor[]): GraphItem[] {
   const inByIdx = new Map<number, Sensor>();
   const outByIdx = new Map<number, Sensor>();
+  const operByIdx = new Map<number, Sensor>();
   for (const s of sensors) {
     const p = parseIfBps(s.metric_name);
     if (p?.dir === 'in') inByIdx.set(p.idx, s);
     else if (p?.dir === 'out') outByIdx.set(p.idx, s);
+    const op = parseIfOper(s.metric_name);
+    if (op != null) operByIdx.set(op, s);
   }
   const consumed = new Set<number>();
   const items: GraphItem[] = [];
@@ -374,11 +383,16 @@ function buildGraphItems(sensors: Sensor[]): GraphItem[] {
       const inS = inByIdx.get(p.idx);
       const outS = outByIdx.get(p.idx);
       if (inS && outS) {
+        // Fold the interface's status (_oper) sensor into the traffic chart as an
+        // overlay rather than a separate chart. If status is monitored WITHOUT
+        // traffic, it stays its own chart (not consumed here).
+        const operS = operByIdx.get(p.idx);
         items.push({
           kind: 'pair', ifIndex: p.idx, ifLabel: ifLabelFor(p.idx, inS, outS),
-          inSensor: inS, outSensor: outS,
+          inSensor: inS, outSensor: outS, operSensor: operS,
         });
         consumed.add(inS.id); consumed.add(outS.id);
+        if (operS) consumed.add(operS.id);
         continue;
       }
     }
@@ -403,7 +417,7 @@ function SensorGraphs({
           <InterfaceTrafficChart
             key={`pair-${it.ifIndex}`}
             deviceId={deviceId} ifLabel={it.ifLabel}
-            inSensor={it.inSensor} outSensor={it.outSensor} range={range} setRange={setRange}
+            inSensor={it.inSensor} outSensor={it.outSensor} operSensor={it.operSensor} range={range} setRange={setRange}
           />
         ) : (
           <SensorChart key={it.sensor.id} deviceId={deviceId} sensor={it.sensor} range={range} setRange={setRange} />
@@ -424,11 +438,14 @@ function metricUnit(metric: string): Unit {
   return 'count';
 }
 
-// Combined In/Out traffic chart for one interface (two lines: blue In, orange Out).
+// Combined In/Out traffic chart for one interface (two lines: blue In, orange
+// Out). When the interface's status sensor is enabled too, its down periods are
+// shaded red over the traffic graph and an Up/Down badge is shown in the header —
+// so one chart conveys both throughput and link state.
 function InterfaceTrafficChart({
-  deviceId, ifLabel, inSensor, outSensor, range, setRange,
+  deviceId, ifLabel, inSensor, outSensor, operSensor, range, setRange,
 }: {
-  deviceId: number; ifLabel: string; inSensor: Sensor; outSensor: Sensor; range: string; setRange: (r: string) => void;
+  deviceId: number; ifLabel: string; inSensor: Sensor; outSensor: Sensor; operSensor?: Sensor; range: string; setRange: (r: string) => void;
 }) {
   const inHist = useApi<SnmpPoint[]>(
     `/api/devices/${deviceId}/snmp-history?metric=${encodeURIComponent(inSensor.metric_name)}&range=${range}`, 0
@@ -436,24 +453,43 @@ function InterfaceTrafficChart({
   const outHist = useApi<SnmpPoint[]>(
     `/api/devices/${deviceId}/snmp-history?metric=${encodeURIComponent(outSensor.metric_name)}&range=${range}`, 0
   );
+  const operHist = useApi<SnmpPoint[]>(
+    operSensor ? `/api/devices/${deviceId}/snmp-history?metric=${encodeURIComponent(operSensor.metric_name)}&range=${range}` : null, 0
+  );
 
-  // Merge both series on the shared (date_bin-aligned) bucket timestamp.
-  const byBucket = new Map<string, { bucket: string; in: number | null; out: number | null }>();
-  for (const p of inHist.data || []) {
-    const e = byBucket.get(p.bucket) || { bucket: p.bucket, in: null, out: null };
-    e.in = p.avg_value != null ? Number(p.avg_value) : null;
-    byBucket.set(p.bucket, e);
-  }
-  for (const p of outHist.data || []) {
-    const e = byBucket.get(p.bucket) || { bucket: p.bucket, in: null, out: null };
-    e.out = p.avg_value != null ? Number(p.avg_value) : null;
-    byBucket.set(p.bucket, e);
-  }
+  // Merge series on the shared (date_bin-aligned) bucket timestamp.
+  const byBucket = new Map<string, { bucket: string; in: number | null; out: number | null; oper: number | null }>();
+  const ensure = (b: string) => { let e = byBucket.get(b); if (!e) { e = { bucket: b, in: null, out: null, oper: null }; byBucket.set(b, e); } return e; };
+  for (const p of inHist.data || []) ensure(p.bucket).in = p.avg_value != null ? Number(p.avg_value) : null;
+  for (const p of outHist.data || []) ensure(p.bucket).out = p.avg_value != null ? Number(p.avg_value) : null;
+  for (const p of operHist.data || []) ensure(p.bucket).oper = p.avg_value != null ? Number(p.avg_value) : null;
   const data = Array.from(byBucket.values()).sort((a, b) => (a.bucket < b.bucket ? -1 : a.bucket > b.bucket ? 1 : 0));
   const loading = (inHist.loading && !inHist.data) || (outHist.loading && !outHist.data);
 
+  // Contiguous runs where the link was down (bucket mostly down → oper < 0.5).
+  const downRuns: { x1: string; x2: string }[] = [];
+  if (operSensor) {
+    for (let i = 0; i < data.length; i++) {
+      if (data[i].oper != null && (data[i].oper as number) < 0.5) {
+        const start = i;
+        while (i + 1 < data.length && data[i + 1].oper != null && (data[i + 1].oper as number) < 0.5) i++;
+        // Extend a single-bucket outage to the next bucket so it's visible.
+        const endIdx = i > start ? i : Math.min(i + 1, data.length - 1);
+        downRuns.push({ x1: data[start].bucket, x2: data[endIdx].bucket });
+      }
+    }
+  }
+  // Current/last known link state for the header badge.
+  let lastOper: number | null = null;
+  for (let i = data.length - 1; i >= 0; i--) { if (data[i].oper != null) { lastOper = data[i].oper as number; break; } }
+  const badge = operSensor && lastOper != null ? (
+    <span className={`sv-badge ${lastOper >= 0.5 ? 'up' : 'down'}`} style={{ fontSize: 10 }}>
+      {lastOper >= 0.5 ? 'Up' : 'Down'}
+    </span>
+  ) : undefined;
+
   return (
-    <GraphCard title={ifLabel} titleAttr={ifLabel} range={range} setRange={setRange}>
+    <GraphCard title={ifLabel} titleAttr={ifLabel} range={range} setRange={setRange} badge={badge}>
       {loading ? (
         <Loading />
       ) : !data.length ? (
@@ -462,6 +498,9 @@ function InterfaceTrafficChart({
         <ResponsiveContainer width="100%" height={GRAPH_HEIGHT}>
           <LineChart data={data} margin={{ top: 5, right: 16, bottom: 5, left: 0 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#eef0f3" />
+            {downRuns.map((r, i) => (
+              <ReferenceArea key={i} x1={r.x1} x2={r.x2} fill="#ef4444" fillOpacity={0.12} ifOverflow="extendDomain" />
+            ))}
             <XAxis dataKey="bucket" tickFormatter={tickLabel} fontSize={11} minTickGap={40} />
             <YAxis fontSize={11} width={64} tickFormatter={(v) => fmtBps(Number(v))} />
             <Tooltip
@@ -654,15 +693,18 @@ function RangeTabs({ range, setRange }: { range: string; setRange: (r: string) =
 
 // ── Graph card shell: 220px card with header (title + optional tabs) ──
 function GraphCard({
-  title, range, setRange, children, titleAttr,
+  title, range, setRange, children, titleAttr, badge,
 }: {
   title: string; range?: string; setRange?: (r: string) => void;
-  children: ReactNode; titleAttr?: string;
+  children: ReactNode; titleAttr?: string; badge?: ReactNode;
 }) {
   return (
     <div style={GRAPH_CARD}>
       <div style={GRAPH_HEADER}>
-        <h3 style={GRAPH_TITLE} title={titleAttr || title}>{title}</h3>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+          <h3 style={GRAPH_TITLE} title={titleAttr || title}>{title}</h3>
+          {badge}
+        </span>
         {range != null && setRange && <RangeTabs range={range} setRange={setRange} />}
       </div>
       <div style={GRAPH_BODY}>{children}</div>
