@@ -32,6 +32,9 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.46.8': [
+    'Alert, license, and update banners now span only the main content area instead of the full screen over the sidebar — matching the rest of the NocVault suite',
+  ],
   '1.46.7': [
     'Sidebar navigation icons now sit in suite-standard colored chips — each route has its own accent tint and only the active item is colored, for a cleaner, more consistent look across the NocVault suite',
     'Bumped the header logo to 44px to match NetVault, LogVault, and DDIVault',

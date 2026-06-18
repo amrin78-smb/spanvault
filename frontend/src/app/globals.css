@@ -441,6 +441,9 @@ a { color: inherit; text-decoration: none; }
    internally. */
 .sv-shell { display: flex; flex-direction: column; height: 100vh; overflow: hidden; background: var(--bg-primary); }
 .sv-body { display: flex; flex: 1; min-height: 0; overflow: hidden; }
+/* Content column: holds the alert/license/update banners (content-width) above
+   the scrolling .sv-content, so banners never span the full screen over the sidebar. */
+.sv-content-col { display: flex; flex-direction: column; flex: 1; min-width: 0; overflow: hidden; }
 
 /* Sidebar — 240px navy, NAVIGATION label, rounded items, red indicator.
    Sits below the full-width header and fills the remaining height. */

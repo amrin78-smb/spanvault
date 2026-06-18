@@ -14,12 +14,16 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           sidebar); below it a flex row holds the sidebar + scrolling content. */}
       <div className="sv-shell">
         <TopBar />
-        <AlertBanner />
-        <LicenseBanner />
-        <UpdateNotifier />
         <div className="sv-body">
           <Sidebar />
-          <main className="sv-content">{children}</main>
+          {/* Content column — banners live here so they span only the content
+              width (not the full screen over the sidebar), matching the suite. */}
+          <div className="sv-content-col">
+            <AlertBanner />
+            <LicenseBanner />
+            <UpdateNotifier />
+            <main className="sv-content">{children}</main>
+          </div>
         </div>
       </div>
       <GlobalSearch />
