@@ -32,6 +32,9 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.46.1': [
+    'Device detail page: the Interface Status, Connected To, Intelligence and Site Gateway cards are now laid out 2-per-row (a compact 2×2 grid) instead of four full-width stacked panels, saving vertical space. Collapses to a single column on narrow screens',
+  ],
   '1.46.0': [
     'Monitored interfaces now show a single combined chart instead of two: the interface status is overlaid on the traffic graph (down periods shaded red, with a live Up/Down badge in the header) rather than getting its own separate chart. Status is still recorded for the Interface Status grid and alerting',
     'Flexibility preserved: if you enable an interface\'s status sensor WITHOUT its traffic (in/out) sensors, it still renders as its own dedicated status chart',

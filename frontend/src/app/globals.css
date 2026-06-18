@@ -1635,6 +1635,15 @@ body.sv-noc .sv-content:has(.sv-tabs.sticky) > :first-child { padding-top: 28px;
   background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px;
   display: flex; flex-direction: column; gap: 10px;
 }
+/* Device-detail summary cards (Interface Status / Connected / Intelligence /
+   Site Gateway) packed 2-per-row to save vertical space; 1 column when narrow. */
+.sv-device-summary-grid {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px; margin-bottom: 16px;
+}
+.sv-device-summary-grid > * { margin: 0 !important; min-width: 0; }
+@media (max-width: 900px) { .sv-device-summary-grid { grid-template-columns: 1fr; } }
+
 .sv-editor-props h3 { margin: 0; font-size: 12px; }
 .sv-editor-props.muted { background: var(--bg-primary); }
 

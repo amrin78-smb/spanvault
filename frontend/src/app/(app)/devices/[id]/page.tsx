@@ -222,12 +222,13 @@ export default function DeviceDetailPage() {
         </div>
       )}
 
-      {snmpOn && <InterfacePanel deviceId={d.id} />}
-      <ConnectedDevices deviceId={d.id} />
-
-      <DeviceIntelligence deviceId={d.id} />
-
-      <SiteGateway device={d} onChanged={() => device.reload()} />
+      {/* Compact 2×2 summary grid (collapses to 1 column on narrow screens). */}
+      <div className="sv-device-summary-grid">
+        {snmpOn && <InterfacePanel deviceId={d.id} />}
+        <ConnectedDevices deviceId={d.id} />
+        <DeviceIntelligence deviceId={d.id} />
+        <SiteGateway device={d} onChanged={() => device.reload()} />
+      </div>
 
       <div style={SECTION_CARD}>
         <div style={SECTION_HEADING}>Alert History</div>
