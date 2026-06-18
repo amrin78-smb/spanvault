@@ -134,7 +134,9 @@ export default function MapWallPage() {
       });
     }, 1000);
     return () => clearInterval(id);
-  }, [playing, canRotate, interval, maps.length, index]);
+    // `index` intentionally omitted: the tick advances via the functional setIndex
+    // updater, so including it would tear down/rebuild the timer on every rotation.
+  }, [playing, canRotate, interval, maps.length]);
 
   const currentId = maps.length ? maps[Math.min(index, maps.length - 1)].id : null;
   const map = useApi<FullMap>(currentId != null ? `/api/maps/${currentId}` : null, 0);

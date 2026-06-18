@@ -103,6 +103,7 @@ export default function MapEditorPage() {
   const nextTemp = () => { tempId.current -= 1; return tempId.current; };
 
   const clipboard = useRef<Clipboard | null>(null);
+  const nudgedRef = useRef(false); // true while an arrow-nudge burst is in progress
 
   // Snap a coordinate to the grid when snapping is enabled.
   function snap(n: number): number {
@@ -241,8 +242,16 @@ export default function MapEditorPage() {
         else if (e.key === 't' || e.key === 'T') { setTool('label'); }
       }
     }
+    // Commit one undo snapshot when an arrow-nudge burst ends (key released).
+    function onKeyUp(e: KeyboardEvent) {
+      if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key) && nudgedRef.current) {
+        nudgedRef.current = false;
+        pushSnapshot();
+      }
+    }
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    window.addEventListener('keyup', onKeyUp);
+    return () => { window.removeEventListener('keydown', onKey); window.removeEventListener('keyup', onKeyUp); };
   });
 
   // Convert a browser point to SVG user space (handles viewBox scaling).
@@ -266,13 +275,23 @@ export default function MapEditorPage() {
     setDevices((prev) => prev.map((d) => (has(`device:${d.id}`) && !d.locked ? { ...d, x: Number(d.x) + dx, y: Number(d.y) + dy } : d)));
     setShapes((prev) => prev.map((s) => (has(`shape:${s.id}`) && !s.locked ? { ...s, x: Number(s.x) + dx, y: Number(s.y) + dy } : s)));
     setLabels((prev) => prev.map((l) => (has(`label:${l.id}`) && !l.locked ? { ...l, x: Number(l.x) + dx, y: Number(l.y) + dy } : l)));
-    pushSnapshot();
+    // Coalesce a burst of arrow-nudges into ONE undo entry — the snapshot is taken
+    // on arrow keyup (see the keyboard effect), not on every keystroke.
+    nudgedRef.current = true;
   }
 
-  // Duplicate the selection (shapes + labels) in place with a small offset.
+  // Duplicate the selection (shapes + labels) with a small offset — independent of
+  // the copy/paste clipboard, so Ctrl+D doesn't clobber what the user copied.
   function duplicateSelection() {
-    copySelection();
-    pasteClipboard();
+    const cs: MapShape[] = [];
+    const cl: MapLabel[] = [];
+    selectedIds.forEach((k) => {
+      const [kind, idStr] = k.split(':');
+      const id = Number(idStr);
+      if (kind === 'shape') { const s = shapes.find((v) => v.id === id); if (s) cs.push({ ...s }); }
+      else if (kind === 'label') { const l = labels.find((v) => v.id === id); if (l) cl.push({ ...l }); }
+    });
+    insertClones(cs, cl);
   }
 
   // Right-click context-menu action dispatch.
@@ -288,8 +307,8 @@ export default function MapEditorPage() {
     } else if (action === 'back') {
       if (kind === 'device') deviceToBack(id); else if (kind === 'shape') shapeToBack(id);
     } else if (action === 'duplicate') {
-      if (kind === 'shape') { const s = shapes.find((v) => v.id === id); if (s) { clipboard.current = { shapes: [{ ...s }], labels: [] }; pasteClipboard(); } }
-      else if (kind === 'label') { const l = labels.find((v) => v.id === id); if (l) { clipboard.current = { shapes: [], labels: [{ ...l }] }; pasteClipboard(); } }
+      if (kind === 'shape') { const s = shapes.find((v) => v.id === id); if (s) insertClones([{ ...s }], []); }
+      else if (kind === 'label') { const l = labels.find((v) => v.id === id); if (l) insertClones([], [{ ...l }]); }
     } else if (action === 'lock') {
       if (kind === 'device') { const d = devices.find((v) => v.id === id); if (d) updateDevice(id, { locked: !d.locked }); }
       else if (kind === 'shape') { const s = shapes.find((v) => v.id === id); if (s) updateShape(id, { locked: !s.locked }); }
@@ -325,11 +344,19 @@ export default function MapEditorPage() {
   }
 
   // ── Align / distribute the multi-selection ───────────────────
+  function isElemLocked(kind: string, id: number): boolean {
+    if (kind === 'device') return !!devices.find((d) => d.id === id)?.locked;
+    if (kind === 'shape') return !!shapes.find((s) => s.id === id)?.locked;
+    if (kind === 'label') return !!labels.find((l) => l.id === id)?.locked;
+    return false;
+  }
   function selectedBoxes(): { key: string; kind: string; id: number; x: number; y: number; w: number; h: number }[] {
     const out: { key: string; kind: string; id: number; x: number; y: number; w: number; h: number }[] = [];
     selectedIds.forEach((k) => {
       const [kind, idStr] = k.split(':');
       const id = Number(idStr);
+      // Locked elements don't move, so they must not skew the align/distribute extents.
+      if (isElemLocked(kind, id)) return;
       const b = elemBox(kind as 'device' | 'shape' | 'label', id);
       if (b) out.push({ key: k, kind, id, x: b.x, y: b.y, w: b.w, h: b.h });
     });
@@ -393,17 +420,23 @@ export default function MapEditorPage() {
     if (cs.length === 0 && cl.length === 0) { clipboard.current = null; return; }
     clipboard.current = { shapes: cs, labels: cl };
   }
-  function pasteClipboard() {
-    const cb = clipboard.current;
-    if (!cb || (cb.shapes.length === 0 && cb.labels.length === 0)) return;
+  // Insert offset copies of the given shapes/labels as new elements + select them.
+  // Shared by paste (from clipboard) and duplicate (from current selection).
+  function insertClones(srcShapes: MapShape[], srcLabels: MapLabel[]) {
+    if (srcShapes.length === 0 && srcLabels.length === 0) return;
     const newKeys: string[] = [];
-    const newShapes = cb.shapes.map((s) => { const id = nextTemp(); newKeys.push(`shape:${id}`); return { ...s, id, x: Number(s.x) + 20, y: Number(s.y) + 20 }; });
-    const newLabels = cb.labels.map((l) => { const id = nextTemp(); newKeys.push(`label:${id}`); return { ...l, id, x: Number(l.x) + 20, y: Number(l.y) + 20 }; });
+    const newShapes = srcShapes.map((s) => { const id = nextTemp(); newKeys.push(`shape:${id}`); return { ...s, id, x: Number(s.x) + 20, y: Number(s.y) + 20 }; });
+    const newLabels = srcLabels.map((l) => { const id = nextTemp(); newKeys.push(`label:${id}`); return { ...l, id, x: Number(l.x) + 20, y: Number(l.y) + 20 }; });
     setShapes((prev) => [...prev, ...newShapes]);
     setLabels((prev) => [...prev, ...newLabels]);
     setSelectedIds(new Set(newKeys));
     setSelection(newKeys.length === 1 ? (() => { const [k, idStr] = newKeys[0].split(':'); return { kind: k as any, id: Number(idStr) }; })() : null);
     pushSnapshot();
+  }
+  function pasteClipboard() {
+    const cb = clipboard.current;
+    if (!cb) return;
+    insertClones(cb.shapes, cb.labels);
   }
 
   // ── Multi-select helpers ─────────────────────────────────────

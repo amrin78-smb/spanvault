@@ -31,7 +31,7 @@ export default function MapViewPage() {
         {full.is_public && <span className="sv-map-public" style={{ position: 'static' }}>Public</span>}
         <div style={{ flex: 1 }} />
         <button className="sv-btn ghost sm tint-teal" onClick={() => { const s = mapSvg(); if (s) downloadMapSvg(s, `${fileBase}.svg`); }}>Export SVG</button>
-        <button className="sv-btn ghost sm tint-teal" onClick={() => { const s = mapSvg(); if (s) downloadMapPng(s, `${fileBase}.png`).catch(() => {}); }}>Export PNG</button>
+        <button className="sv-btn ghost sm tint-teal" onClick={() => { const s = mapSvg(); if (s) downloadMapPng(s, `${fileBase}.png`).catch((e) => alert(`PNG export failed: ${e?.message || e}. Try Export SVG instead.`)); }}>Export PNG</button>
         <a href={`/maps/${id}/edit`} className="sv-btn">Edit</a>
       </div>
       {full.description && <p className="sv-page-sub" style={{ marginTop: -4 }}>{full.description}</p>}

@@ -32,6 +32,12 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.43.1': [
+    'Map editor: aligning/distributing a multi-selection no longer skews positions when a locked element is selected — locked elements are excluded from the alignment math (they were counted but never moved)',
+    'Map editor: Duplicate (Ctrl+D / right-click) no longer overwrites your copy/paste clipboard, and a burst of arrow-key nudges now collapses into a single undo step instead of one per keystroke',
+    'NOC wallboard: fixed the rotation timer rebuilding itself on every slide change (smoother, drift-free rotation)',
+    'Map PNG export now reports an error instead of failing silently, and saving a map no longer drops connectors attached to shapes when the editor preserves existing shapes',
+  ],
   '1.43.0': [
     'Map connectors can now attach to decorative shapes/icons (cloud, building, internet, router glyphs, etc.), not just monitored devices — draw a line and click any node OR shape on either end. Connections to a device still work exactly as before, including the live weathermap binding (which only applies when both ends are devices)',
     'Connection endpoints are now typed per-end (device or shape); deleting a shape removes any connectors attached to it, and the line/anchor/elbow rendering works for shape endpoints in the editor, map view, and public share',
@@ -2989,6 +2995,13 @@ app.put('/api/maps/:id/layout', wrap(async (req, res) => {
             Number.isFinite(Number(s.group_id)) ? Number(s.group_id) : null]);
         if (s.id !== undefined && s.id !== null) idMap.set(`shape:${s.id}`, r.rows[0].id);
       }
+    } else {
+      // Client didn't resend shapes (existing shapes are preserved) — seed the id
+      // map from the existing shape rows so connections attached to them still
+      // remap (a saved shape's client id equals its db id on load) instead of
+      // being silently dropped as dangling.
+      const ex = await client.query(`SELECT id FROM map_shapes WHERE map_id = $1`, [id]);
+      for (const r of ex.rows) idMap.set(`shape:${r.id}`, r.id);
     }
 
     for (const c of connections) {
