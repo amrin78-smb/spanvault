@@ -32,6 +32,11 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.46.7': [
+    'Sidebar navigation icons now sit in suite-standard colored chips — each route has its own accent tint and only the active item is colored, for a cleaner, more consistent look across the NocVault suite',
+    'Bumped the header logo to 44px to match NetVault, LogVault, and DDIVault',
+    'Minor header icon-button corner-radius alignment to the shared suite standard',
+  ],
   '1.46.6': [
     "Fixed the 'system' sensor chart line being nearly invisible in dark mode — the dark-navy stroke is now a clear mid-blue that reads well on both light and dark card backgrounds",
   ],

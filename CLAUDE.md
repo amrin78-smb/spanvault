@@ -192,6 +192,10 @@ Never change this to a next.config.js rewrite approach.
 - Sign out: calls signOut() then redirects to HUB_URL/launcher
 - Nav items: Dashboard, Devices, Alerts, Reports, Network Map, Settings
 - Stat cards: colored border-left (green=up, red=down, yellow=warning, grey=unknown)
+- Sidebar nav uses the suite-standard colored icon chips (`.sv-nav-chip`, 28×28 radius 8)
+  with a per-route tint via `--chip-color`/`--chip-bg` inline props; only the active
+  item is colored, inactive chips are neutral. Logo renders at 44px and header
+  icon-buttons use radius 8 — shared NocVault suite standard.
 
 ## Typography & design tokens (suite standard)
 Styling is a custom CSS design system in `frontend/src/app/globals.css` (CSS custom
