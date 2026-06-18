@@ -1668,6 +1668,34 @@ function ConnLiveReadout({ connection }: { connection: MapConnection }) {
 }
 
 // ── Drill-down target picker (top-level component) ─────────────
+// Numeric field that allows free typing (clear, partial values) and only clamps
+// to [min,max] on blur / Enter — so you can actually type a multi-digit value.
+function NumberField({ label, value, min, max, onCommit, style }: {
+  label: string; value: number; min: number; max: number;
+  onCommit: (n: number) => void; style?: React.CSSProperties;
+}) {
+  const [text, setText] = useState(String(Math.round(Number(value))));
+  const [editing, setEditing] = useState(false);
+  useEffect(() => { if (!editing) setText(String(Math.round(Number(value)))); }, [value, editing]);
+  function commit() {
+    setEditing(false);
+    const n = parseInt(text, 10);
+    if (isNaN(n)) { setText(String(Math.round(Number(value)))); return; }
+    const clamped = Math.max(min, Math.min(max, n));
+    setText(String(clamped));
+    onCommit(clamped);
+  }
+  return (
+    <label className="sv-field" style={style}>{label}
+      <input type="number" className="sv-input" value={text} min={min} max={max}
+        onFocus={() => setEditing(true)}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }} />
+    </label>
+  );
+}
+
 function DrillMapSelect({ currentMapId, value, onChange }: {
   currentMapId: number; value: number | null; onChange: (v: number | null) => void;
 }) {
@@ -1728,10 +1756,8 @@ function SelectionPanel({
           <input type="color" className="sv-input" value={normalizeColor(shape.stroke) || '#334155'}
             onChange={(e) => onShapeChange(shape.id, { stroke: e.target.value })} style={{ height: 36, padding: 3 }} />
         </label>
-        <label className="sv-field">Line width
-          <input type="number" className="sv-input" value={Number(shape.stroke_width) || 2} min={1} max={12}
-            onChange={(e) => onShapeChange(shape.id, { stroke_width: parseInt(e.target.value, 10) || 2 })} />
-        </label>
+        <NumberField label="Line width" value={Number(shape.stroke_width) || 2} min={1} max={12}
+          onCommit={(n) => onShapeChange(shape.id, { stroke_width: n })} />
         {hasFill && !hasText && (
           <button className="sv-btn ghost sm" onClick={() => onShapeChange(shape.id, { fill: null })}>Clear fill</button>
         )}
@@ -1741,10 +1767,8 @@ function SelectionPanel({
               <input className="sv-input" value={shape.text || ''}
                 onChange={(e) => onShapeChange(shape.id, { text: e.target.value })} />
             </label>
-            <label className="sv-field">Text size
-              <input type="number" className="sv-input" value={Number(shape.font_size) || 14} min={8} max={72}
-                onChange={(e) => onShapeChange(shape.id, { font_size: parseInt(e.target.value, 10) || 14 })} />
-            </label>
+            <NumberField label="Text size" value={Number(shape.font_size) || 14} min={8} max={72}
+              onCommit={(n) => onShapeChange(shape.id, { font_size: n })} />
             <label className="sv-field">Text color
               <input type="color" className="sv-input" value={normalizeColor(shape.text_color) || '#1a2744'}
                 onChange={(e) => onShapeChange(shape.id, { text_color: e.target.value })} style={{ height: 36, padding: 3 }} />
@@ -1782,14 +1806,10 @@ function SelectionPanel({
           </span>
         </label>
         <div style={{ display: 'flex', gap: 8 }}>
-          <label className="sv-field" style={{ flex: 1 }}>Width
-            <input type="number" className="sv-input" value={Math.round(Number(device.width))} min={MIN_W} max={600}
-              onChange={(e) => onDeviceChange(device.id, { width: Math.max(MIN_W, parseInt(e.target.value, 10) || MIN_W) })} />
-          </label>
-          <label className="sv-field" style={{ flex: 1 }}>Height
-            <input type="number" className="sv-input" value={Math.round(Number(device.height))} min={MIN_H} max={600}
-              onChange={(e) => onDeviceChange(device.id, { height: Math.max(MIN_H, parseInt(e.target.value, 10) || MIN_H) })} />
-          </label>
+          <NumberField label="Width" value={Number(device.width)} min={MIN_W} max={600} style={{ flex: 1 }}
+            onCommit={(n) => onDeviceChange(device.id, { width: n })} />
+          <NumberField label="Height" value={Number(device.height)} min={MIN_H} max={600} style={{ flex: 1 }}
+            onCommit={(n) => onDeviceChange(device.id, { height: n })} />
         </div>
         <DrillMapSelect currentMapId={currentMapId} value={device.drill_map_id ?? null}
           onChange={(v) => onDeviceChange(device.id, { drill_map_id: v })} />
@@ -1823,10 +1843,8 @@ function SelectionPanel({
             <option value="elbow">Elbow (orthogonal)</option>
           </select>
         </label>
-        <label className="sv-field">Width
-          <input type="number" className="sv-input" value={Number(connection.width) || 2} min={1} max={12}
-            onChange={(e) => onConnChange(connection.id, { width: Math.max(1, Math.min(12, parseInt(e.target.value, 10) || 2)) })} />
-        </label>
+        <NumberField label="Width" value={Number(connection.width) || 2} min={1} max={12}
+          onCommit={(n) => onConnChange(connection.id, { width: n })} />
         <label className="sv-field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
           <input type="checkbox" checked={!!connection.arrow}
             onChange={(e) => onConnChange(connection.id, { arrow: e.target.checked })} />
@@ -1871,10 +1889,8 @@ function SelectionPanel({
           <input className="sv-input" value={label.text}
             onChange={(e) => onLabelChange(label.id, { text: e.target.value })} />
         </label>
-        <label className="sv-field">Font size
-          <input type="number" className="sv-input" value={label.font_size} min={8} max={72}
-            onChange={(e) => onLabelChange(label.id, { font_size: parseInt(e.target.value, 10) || 14 })} />
-        </label>
+        <NumberField label="Font size" value={Number(label.font_size) || 14} min={8} max={72}
+          onCommit={(n) => onLabelChange(label.id, { font_size: n })} />
         <label className="sv-field">Color
           <input type="color" className="sv-input" value={label.color || '#1a2744'}
             onChange={(e) => onLabelChange(label.id, { color: e.target.value })} style={{ height: 36, padding: 3 }} />

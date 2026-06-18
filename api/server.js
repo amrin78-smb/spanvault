@@ -32,6 +32,10 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.42.2': [
+    'Fixed map save failing with a foreign-key error ("map_devices_drill_map_id_fkey") when a node had no drill-down target — "none" was being stored as drill_map_id 0 instead of NULL. Saving works again (this also blocked saving after switching a node to Icon style)',
+    'Fixed the node Width/Height (and shape/connection line-width, font-size) fields in the map editor: you can now clear them and type a multi-digit value — they no longer snap back to the minimum on every keystroke. Values clamp to range only when you leave the field',
+  ],
   '1.42.1': [
     'Connector lines now attach to the edge of a node instead of its centre — for icon-style devices the line stops at the icon\'s glyph box rather than running into the middle of the icon, so connections look clean (applies to straight and elbow routing, editor and live view)',
     'Clarified that connections only link monitored devices: clicking a decorative shape (cloud, building, etc.) while drawing a line now cancels the pending connection (shapes were never valid endpoints; this removes the ambiguity)',
@@ -2957,8 +2961,8 @@ app.put('/api/maps/:id/layout', wrap(async (req, res) => {
       `, [id, d.device_id || null, Number(d.x) || 0, Number(d.y) || 0,
           d.label || null, d.icon_type || 'circle', safeInt(d.width, 120), safeInt(d.height, 60),
           safeInt(d.z_index, 0), d.node_style === 'icon' ? 'icon' : 'box', !!d.locked,
-          Number.isFinite(Number(d.group_id)) ? Number(d.group_id) : null,
-          Number.isFinite(Number(d.drill_map_id)) ? Number(d.drill_map_id) : null]);
+          Number(d.group_id) > 0 ? Number(d.group_id) : null,
+          Number(d.drill_map_id) > 0 ? Number(d.drill_map_id) : null]);
       if (d.id !== undefined && d.id !== null) idMap.set(String(d.id), r.rows[0].id);
     }
 
