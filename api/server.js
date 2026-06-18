@@ -32,6 +32,9 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.46.6': [
+    "Fixed the 'system' sensor chart line being nearly invisible in dark mode — the dark-navy stroke is now a clear mid-blue that reads well on both light and dark card backgrounds",
+  ],
   '1.46.5': [
     'Dashboard now hides the Active Problems and Open Incidents cards when there is nothing to show (a healthy network), instead of displaying empty "all clear" panels — so the cards below move up and reclaim the space. They reappear the moment a problem or incident exists, and the row collapses to a single column if only one of the two has content',
   ],

@@ -58,7 +58,7 @@ const RANGES = [
 ];
 
 const CAT_COLOR: Record<string, string> = {
-  system: '#1a2744', interface: '#C8102E', vendor: '#2e9e5b',
+  system: '#2563eb', interface: '#C8102E', vendor: '#2e9e5b',
 };
 
 // ── Shared layout style constants (inline — globals.css is not editable here) ──
@@ -524,7 +524,7 @@ function SensorChart({ deviceId, sensor, range, setRange }: { deviceId: number; 
     0
   );
   const unit = metricUnit(sensor.metric_name);
-  const color = CAT_COLOR[sensor.category] || '#1a2744';
+  const color = CAT_COLOR[sensor.category] || '#2563eb';
   const data = (hist.data || []).map((p) => ({ bucket: p.bucket, value: p.avg_value != null ? Number(p.avg_value) : null }));
   const suffix = unit === 'count' || unit === 'state' ? '' : ` (${unit})`;
   const title = `${sensor.sensor_name}${suffix}`;
