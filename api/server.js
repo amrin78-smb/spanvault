@@ -32,6 +32,13 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.46.3': [
+    'Calibrated the UI to an enterprise network-operations console look while keeping the modern aesthetic: tightened card/panel/table/modal corners from 12px to 8px',
+    'Tightened control corners (buttons, inputs, selects, segmented controls) from 8px to 6px for a crisper, more precise feel',
+    'Aligned the user menu and search popovers to the new card radius so every surface reads consistently',
+    'Kept the subtle "border + faint shadow" elevation on cards — no heavy floating shadows, no flat panels',
+    'Visual calibration only — no layout, color, or feature changes',
+  ],
   '1.46.2': [
     'Fixed Aruba access-point uptime showing ~100× too high (e.g. a 2-day-old AP reading "201d"). The Aruba wlanAPUpTime OID returns TimeTicks (hundredths of a second) but was stored verbatim as seconds; it is now divided by 100, matching the other vendor parsers. Values self-correct on the next wireless poll',
   ],
