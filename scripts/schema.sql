@@ -496,6 +496,15 @@ ALTER TABLE map_connections ADD COLUMN IF NOT EXISTS capacity_bps  BIGINT;
 -- Connection routing style: 'straight' (default) or 'elbow' (orthogonal/Manhattan).
 ALTER TABLE map_connections ADD COLUMN IF NOT EXISTS routing TEXT NOT NULL DEFAULT 'straight';
 
+-- Connection endpoints can be a device OR a decorative shape. from_kind/to_kind
+-- says which table from_item_id/to_item_id refers to; the device-only FKs are
+-- dropped so a shape id can be stored. (Orphan cleanup is handled in the app on
+-- layout save, which rewrites all of a map's devices/shapes/connections.)
+ALTER TABLE map_connections DROP CONSTRAINT IF EXISTS map_connections_from_item_id_fkey;
+ALTER TABLE map_connections DROP CONSTRAINT IF EXISTS map_connections_to_item_id_fkey;
+ALTER TABLE map_connections ADD COLUMN IF NOT EXISTS from_kind TEXT NOT NULL DEFAULT 'device';
+ALTER TABLE map_connections ADD COLUMN IF NOT EXISTS to_kind   TEXT NOT NULL DEFAULT 'device';
+
 -- Locked elements can't be moved/resized in the editor (e.g. background zones).
 ALTER TABLE map_devices ADD COLUMN IF NOT EXISTS locked BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE map_shapes  ADD COLUMN IF NOT EXISTS locked BOOLEAN NOT NULL DEFAULT FALSE;

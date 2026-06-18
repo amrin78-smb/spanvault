@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { apiGet } from '@/lib/api';
 import {
-  type FullMap, type MapDevice, type MapConnection, type MapLabel, type MapShape,
+  type FullMap, type MapDevice, type MapConnection, type MapLabel, type MapShape, type MapNodeLike,
   statusFill, deviceCenter, connLive, utilColor, fmtBps, elbowPoints, nodeAnchorBox, edgePoint,
 } from '@/lib/mapTypes';
 import { MapGlyph, deviceGlyphFor, isGlyphKind } from '@/lib/mapIcons';
@@ -134,6 +134,8 @@ export default function SVGMapView({
   const devices: MapDevice[] = (map.devices || []).map((d) => ({ ...d, ...(live[d.id] || {}) }));
   const byId = new Map<number, MapDevice>();
   for (const d of devices) byId.set(d.id, d);
+  const shapeById = new Map<number, MapShape>();
+  for (const s of map.shapes || []) shapeById.set(s.id, s);
   // Merge fresh interface stats over the static connections (weathermap).
   const connections: MapConnection[] = (map.connections || []).map((c) => ({ ...c, ...(liveConns[c.id] || {}) }));
 
@@ -191,9 +193,11 @@ export default function SVGMapView({
         <ShapeEl key={`s-${s.id}`} shape={s} />
       ))}
 
-      {/* Connections (under the nodes) */}
+      {/* Connections (under the nodes) — endpoints may be devices or shapes */}
       {connections.map((c) => (
-        <ConnectionLine key={c.id} conn={c} from={byId.get(c.from_item_id)} to={byId.get(c.to_item_id)} />
+        <ConnectionLine key={c.id} conn={c}
+          from={c.from_kind === 'shape' ? shapeById.get(c.from_item_id) : byId.get(c.from_item_id)}
+          to={c.to_kind === 'shape' ? shapeById.get(c.to_item_id) : byId.get(c.to_item_id)} />
       ))}
 
       {/* Device nodes (z-sorted) */}
@@ -236,8 +240,8 @@ export function ConnectionLine({
   conn, from, to,
 }: {
   conn: MapConnection;
-  from?: MapDevice;
-  to?: MapDevice;
+  from?: MapNodeLike;
+  to?: MapNodeLike;
 }) {
   if (!from || !to) return null;
   // Anchor each end to the node's edge (glyph box for icon nodes) so the line
@@ -269,8 +273,9 @@ export function ConnectionLine({
     // Unbound: keep the legacy status-based colouring for default-coloured lines.
     const custom = (conn.color || '').toLowerCase() !== DEFAULT_LINE;
     if (!custom) {
-      const fs = from.current_status;
-      const ts = to.current_status;
+      // Status colouring only applies to device endpoints; shapes have no status.
+      const fs = (from as MapDevice).current_status;
+      const ts = (to as MapDevice).current_status;
       if (fs === 'down' || ts === 'down') stroke = '#ef4444';
       else if (fs === 'up' && ts === 'up') stroke = '#22c55e';
       else stroke = DEFAULT_LINE;

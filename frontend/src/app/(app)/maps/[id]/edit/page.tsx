@@ -6,7 +6,7 @@ import { useApi, apiGet, apiSend } from '@/lib/api';
 import { StatusDot } from '@/components/StatusDot';
 import { Loading, ErrorBox } from '@/components/ui';
 import {
-  type FullMap, type MapDevice, type MapConnection, type MapLabel, type MapShape, type MapSummary,
+  type FullMap, type MapDevice, type MapConnection, type MapLabel, type MapShape, type MapSummary, type MapNodeLike,
   statusFill, deviceCenter, normalizeMap, connLive, fmtBps, utilColor, elbowPoints, nodeAnchorBox, edgePoint,
 } from '@/lib/mapTypes';
 import {
@@ -22,6 +22,8 @@ const CANVAS_PRESETS = [
 ];
 
 type Tool = 'select' | 'line' | 'label';
+// A connection endpoint: a device node or a decorative shape.
+type EndRef = { kind: 'device' | 'shape'; id: number };
 type PaletteDevice = {
   id: number; name: string; ip_address: string;
   current_status: string; site_name: string | null;
@@ -80,7 +82,7 @@ export default function MapEditorPage() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [ctx, setCtx] = useState<Ctx>(null);
   const [drag, setDrag] = useState<Drag>(null);
-  const [lineStart, setLineStart] = useState<number | null>(null);
+  const [lineStart, setLineStart] = useState<EndRef | null>(null);
   const [mouse, setMouse] = useState<{ x: number; y: number } | null>(null);
   const [editingLabel, setEditingLabel] = useState<number | null>(null);
   const [snapEnabled, setSnapEnabled] = useState(false);
@@ -309,7 +311,11 @@ export default function MapEditorPage() {
       else if (kind === 'label') labelIds.add(id);
     });
     setDevices((prev) => prev.filter((d) => !devIds.has(d.id)));
-    setConnections((prev) => prev.filter((c) => !devIds.has(c.from_item_id) && !devIds.has(c.to_item_id)));
+    setConnections((prev) => prev.filter((c) =>
+      !(c.from_kind === 'device' && devIds.has(c.from_item_id)) &&
+      !(c.to_kind === 'device' && devIds.has(c.to_item_id)) &&
+      !(c.from_kind === 'shape' && shapeIds.has(c.from_item_id)) &&
+      !(c.to_kind === 'shape' && shapeIds.has(c.to_item_id))));
     setShapes((prev) => prev.filter((s) => !shapeIds.has(s.id)));
     setLabels((prev) => prev.filter((l) => !labelIds.has(l.id)));
     setSelection(null);
@@ -512,21 +518,26 @@ export default function MapEditorPage() {
       selectElement('device', d.id, false);
       setDrag({ kind: 'device', id: d.id, dx: p.x - Number(d.x), dy: p.y - Number(d.y), moved: false });
     } else if (tool === 'line') {
-      if (lineStart == null) {
-        setLineStart(d.id);
-      } else if (lineStart !== d.id) {
-        addConnection(lineStart, d.id);
-        setLineStart(null);
-      }
+      startOrFinishLine({ kind: 'device', id: d.id });
     }
   }
 
-  function addConnection(from: number, to: number) {
-    if (connections.some((c) =>
-      (c.from_item_id === from && c.to_item_id === to) ||
-      (c.from_item_id === to && c.to_item_id === from))) return;
+  // Line tool: first click sets the start endpoint, second click on a DIFFERENT
+  // element creates the connection. Works for devices and shapes alike.
+  function startOrFinishLine(end: EndRef) {
+    if (lineStart == null) { setLineStart(end); return; }
+    if (lineStart.kind === end.kind && lineStart.id === end.id) return; // same element
+    addConnection(lineStart, end);
+    setLineStart(null);
+  }
+
+  function addConnection(a: EndRef, b: EndRef) {
+    const dup = connections.some((c) =>
+      (c.from_kind === a.kind && c.from_item_id === a.id && c.to_kind === b.kind && c.to_item_id === b.id) ||
+      (c.from_kind === b.kind && c.from_item_id === b.id && c.to_kind === a.kind && c.to_item_id === a.id));
+    if (dup) return;
     const c: MapConnection = {
-      id: nextTemp(), from_item_id: from, to_item_id: to,
+      id: nextTemp(), from_item_id: a.id, to_item_id: b.id, from_kind: a.kind, to_kind: b.kind,
       color: DEFAULT_LINE, line_style: 'solid', label: null,
       arrow: false, width: 2, routing: 'straight',
       from_if_index: null, to_if_index: null, capacity_bps: null,
@@ -550,7 +561,9 @@ export default function MapEditorPage() {
 
   function removeDevice(deviceId: number) {
     setDevices((prev) => prev.filter((d) => d.id !== deviceId));
-    setConnections((prev) => prev.filter((c) => c.from_item_id !== deviceId && c.to_item_id !== deviceId));
+    setConnections((prev) => prev.filter((c) =>
+      !(c.from_kind === 'device' && c.from_item_id === deviceId) &&
+      !(c.to_kind === 'device' && c.to_item_id === deviceId)));
     setSelection(null);
     setSelectedIds((prev) => { const n = new Set(prev); n.delete(`device:${deviceId}`); return n; });
     pushSnapshot();
@@ -604,9 +617,8 @@ export default function MapEditorPage() {
   function onShapeMouseDown(e: React.MouseEvent, s: MapShape) {
     e.stopPropagation();
     setCtx(null);
-    // Decorative shapes are never connection endpoints — clicking one in line
-    // mode cancels the pending connection (only monitored devices can connect).
-    if (tool === 'line') { setLineStart(null); return; }
+    // Shapes (cloud/building/icons) can be connection endpoints too.
+    if (tool === 'line') { startOrFinishLine({ kind: 'shape', id: s.id }); return; }
     if (tool !== 'select') return;
     const key = `shape:${s.id}`;
     const p = toSvg(e.clientX, e.clientY);
@@ -627,6 +639,9 @@ export default function MapEditorPage() {
   }
   function deleteShape(shapeId: number) {
     setShapes((prev) => prev.filter((s) => s.id !== shapeId));
+    setConnections((prev) => prev.filter((c) =>
+      !(c.from_kind === 'shape' && c.from_item_id === shapeId) &&
+      !(c.to_kind === 'shape' && c.to_item_id === shapeId)));
     setSelection(null);
     setSelectedIds((prev) => { const n = new Set(prev); n.delete(`shape:${shapeId}`); return n; });
     pushSnapshot();
@@ -863,6 +878,7 @@ export default function MapEditorPage() {
         })),
         connections: connections.map((c) => ({
           from_item_id: c.from_item_id, to_item_id: c.to_item_id,
+          from_kind: c.from_kind, to_kind: c.to_kind,
           color: c.color, line_style: c.line_style, label: c.label,
           arrow: c.arrow, width: c.width, routing: c.routing,
           from_if_index: c.from_if_index, to_if_index: c.to_if_index, capacity_bps: c.capacity_bps,
@@ -917,7 +933,12 @@ export default function MapEditorPage() {
 
   const byId = new Map<number, MapDevice>();
   for (const d of devices) byId.set(d.id, d);
-  const startDev = lineStart != null ? byId.get(lineStart) : undefined;
+  const shapeById = new Map<number, MapShape>();
+  for (const s of shapes) shapeById.set(s.id, s);
+  // Resolve a connection endpoint (device or shape) to its node geometry.
+  const endpointNode = (kind: string, itemId: number): MapNodeLike | undefined =>
+    kind === 'shape' ? shapeById.get(itemId) : byId.get(itemId);
+  const startDev = lineStart ? endpointNode(lineStart.kind, lineStart.id) : undefined;
   const selConn = selection?.kind === 'connection' ? connections.find((c) => c.id === selection.id) || null : null;
 
   const filteredPalette = (palette.data || []).filter((d) => {
@@ -1005,7 +1026,8 @@ export default function MapEditorPage() {
 
             {connections.map((c) => (
               <EditorConnection
-                key={c.id} conn={c} from={byId.get(c.from_item_id)} to={byId.get(c.to_item_id)}
+                key={c.id} conn={c}
+                from={endpointNode(c.from_kind, c.from_item_id)} to={endpointNode(c.to_kind, c.to_item_id)}
                 selected={selection?.kind === 'connection' && selection.id === c.id}
                 onSelect={() => { if (tool === 'select') setSelection({ kind: 'connection', id: c.id }); }}
                 onContext={(x, y) => setCtx({ x, y, kind: 'connection', id: c.id })}
@@ -1024,7 +1046,7 @@ export default function MapEditorPage() {
               <EditorDeviceNode
                 key={d.id} device={d}
                 selected={selectedIds.has(`device:${d.id}`) || (selection?.kind === 'device' && selection.id === d.id)}
-                isLineStart={lineStart === d.id}
+                isLineStart={lineStart?.kind === 'device' && lineStart.id === d.id}
                 onMouseDown={(e) => onDeviceMouseDown(e, d)}
                 onContext={(x, y) => setCtx({ x, y, kind: 'device', id: d.id })}
               />
@@ -1107,8 +1129,8 @@ export default function MapEditorPage() {
           device={selection?.kind === 'device' ? devices.find((d) => d.id === selection.id) || null : null}
           shape={selection?.kind === 'shape' ? shapes.find((s) => s.id === selection.id) || null : null}
           connection={selection?.kind === 'connection' ? connections.find((c) => c.id === selection.id) || null : null}
-          connFromDevice={selConn ? devices.find((d) => d.id === selConn.from_item_id) || null : null}
-          connToDevice={selConn ? devices.find((d) => d.id === selConn.to_item_id) || null : null}
+          connFromDevice={selConn && selConn.from_kind !== 'shape' ? devices.find((d) => d.id === selConn.from_item_id) || null : null}
+          connToDevice={selConn && selConn.to_kind !== 'shape' ? devices.find((d) => d.id === selConn.to_item_id) || null : null}
           currentMapId={Number(id)}
           label={selection?.kind === 'label' ? labels.find((l) => l.id === selection.id) || null : null}
           onDeviceChange={updateDevice}
@@ -1371,7 +1393,7 @@ function DevicePalette({
 function EditorConnection({
   conn, from, to, selected, onSelect, onContext,
 }: {
-  conn: MapConnection; from?: MapDevice; to?: MapDevice;
+  conn: MapConnection; from?: MapNodeLike; to?: MapNodeLike;
   selected: boolean; onSelect: () => void; onContext: (x: number, y: number) => void;
 }) {
   if (!from || !to) return null;

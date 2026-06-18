@@ -34,6 +34,8 @@ export type MapConnection = {
   id: number;
   from_item_id: number;
   to_item_id: number;
+  from_kind: string;  // 'device' | 'shape' — which table from_item_id refers to
+  to_kind: string;    // 'device' | 'shape'
   color: string;
   line_style: string; // 'solid' | 'dashed'
   label: string | null;
@@ -159,6 +161,8 @@ export function normalizeMap(m: FullMap): FullMap {
     })),
     connections: (m.connections || []).map((c) => ({
       ...c,
+      from_kind: c.from_kind === 'shape' ? 'shape' : 'device',
+      to_kind: c.to_kind === 'shape' ? 'shape' : 'device',
       width: Number(c.width ?? 2),
       arrow: !!c.arrow,
       routing: c.routing === 'elbow' ? 'elbow' : 'straight',
@@ -196,14 +200,18 @@ export function normalizeMap(m: FullMap): FullMap {
 }
 
 // Centre point of a device node (connections attach here).
-export function deviceCenter(d: MapDevice): { cx: number; cy: number } {
+// A connectable node — either a device node or a decorative shape. Only the
+// geometry (and optional node_style for icon glyph-box anchoring) is needed.
+export type MapNodeLike = { x: number; y: number; width: number; height: number; node_style?: string };
+
+export function deviceCenter(d: MapNodeLike): { cx: number; cy: number } {
   return { cx: Number(d.x) + Number(d.width) / 2, cy: Number(d.y) + Number(d.height) / 2 };
 }
 
 // The box a connector should attach to. For box-style nodes that's the whole
 // node rect; for icon-style nodes it's the (square, centred) glyph box, so a
 // connector touches the icon's edge rather than passing into its middle.
-export function nodeAnchorBox(d: MapDevice): { x: number; y: number; w: number; h: number } {
+export function nodeAnchorBox(d: MapNodeLike): { x: number; y: number; w: number; h: number } {
   const x = Number(d.x), y = Number(d.y), w = Number(d.width), h = Number(d.height);
   if (d.node_style === 'icon') {
     const gs = Math.max(24, Math.min(w, h));

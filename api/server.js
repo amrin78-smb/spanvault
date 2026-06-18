@@ -32,6 +32,10 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.43.0': [
+    'Map connectors can now attach to decorative shapes/icons (cloud, building, internet, router glyphs, etc.), not just monitored devices — draw a line and click any node OR shape on either end. Connections to a device still work exactly as before, including the live weathermap binding (which only applies when both ends are devices)',
+    'Connection endpoints are now typed per-end (device or shape); deleting a shape removes any connectors attached to it, and the line/anchor/elbow rendering works for shape endpoints in the editor, map view, and public share',
+  ],
   '1.42.2': [
     'Fixed map save failing with a foreign-key error ("map_devices_drill_map_id_fkey") when a node had no drill-down target — "none" was being stored as drill_map_id 0 instead of NULL. Saving works again (this also blocked saving after switching a node to Icon style)',
     'Fixed the node Width/Height (and shape/connection line-width, font-size) fields in the map editor: you can now clear them and type a multi-digit value — they no longer snap back to the minimum on every keystroke. Values clamp to range only when you leave the field',
@@ -2953,7 +2957,7 @@ app.put('/api/maps/:id/layout', wrap(async (req, res) => {
     await client.query(`DELETE FROM map_labels WHERE map_id = $1`, [id]);
     await client.query(`DELETE FROM map_devices WHERE map_id = $1`, [id]);
 
-    const idMap = new Map(); // client device id → new db id
+    const idMap = new Map(); // `${kind}:${client id}` → new db id (devices + shapes)
     for (const d of devices) {
       const r = await client.query(`
         INSERT INTO map_devices (map_id, device_id, x, y, label, icon_type, width, height, z_index, node_style, locked, group_id, drill_map_id)
@@ -2963,20 +2967,43 @@ app.put('/api/maps/:id/layout', wrap(async (req, res) => {
           safeInt(d.z_index, 0), d.node_style === 'icon' ? 'icon' : 'box', !!d.locked,
           Number(d.group_id) > 0 ? Number(d.group_id) : null,
           Number(d.drill_map_id) > 0 ? Number(d.drill_map_id) : null]);
-      if (d.id !== undefined && d.id !== null) idMap.set(String(d.id), r.rows[0].id);
+      if (d.id !== undefined && d.id !== null) idMap.set(`device:${d.id}`, r.rows[0].id);
+    }
+
+    // Decorative shapes — replace-all, but only when the client sent them. Insert
+    // BEFORE connections so a connection can attach to a shape (its new db id is
+    // captured in idMap under `shape:<client id>`).
+    if (shapes) {
+      await client.query(`DELETE FROM map_shapes WHERE map_id = $1`, [id]);
+      for (const s of shapes) {
+        if (!s || !s.kind) continue;
+        const r = await client.query(`
+          INSERT INTO map_shapes
+            (map_id, kind, x, y, width, height, fill, stroke, stroke_width, text, font_size, text_color, rotation, z_index, locked, group_id)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING id
+        `, [id, String(s.kind), Number(s.x) || 0, Number(s.y) || 0,
+            safeInt(s.width, 120), safeInt(s.height, 80),
+            s.fill || null, s.stroke || null, safeInt(s.stroke_width, 2),
+            s.text != null ? String(s.text) : null, safeInt(s.font_size, 14),
+            s.text_color || '#1a2744', Number(s.rotation) || 0, safeInt(s.z_index, 0), !!s.locked,
+            Number.isFinite(Number(s.group_id)) ? Number(s.group_id) : null]);
+        if (s.id !== undefined && s.id !== null) idMap.set(`shape:${s.id}`, r.rows[0].id);
+      }
     }
 
     for (const c of connections) {
-      const from = idMap.get(String(c.from_item_id));
-      const to = idMap.get(String(c.to_item_id));
-      if (!from || !to) continue; // skip dangling connections
+      const fKind = c.from_kind === 'shape' ? 'shape' : 'device';
+      const tKind = c.to_kind === 'shape' ? 'shape' : 'device';
+      const from = idMap.get(`${fKind}:${c.from_item_id}`);
+      const to = idMap.get(`${tKind}:${c.to_item_id}`);
+      if (!from || !to) continue; // skip dangling connections (endpoint not saved)
       const fIf = Number.isFinite(Number(c.from_if_index)) ? Number(c.from_if_index) : null;
       const tIf = Number.isFinite(Number(c.to_if_index)) ? Number(c.to_if_index) : null;
       const cap = Number.isFinite(Number(c.capacity_bps)) && Number(c.capacity_bps) > 0 ? Number(c.capacity_bps) : null;
       await client.query(`
-        INSERT INTO map_connections (map_id, from_item_id, to_item_id, color, line_style, label, arrow, width, from_if_index, to_if_index, capacity_bps, routing)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
-      `, [id, from, to, c.color || '#94a3b8', c.line_style || 'solid', c.label || null,
+        INSERT INTO map_connections (map_id, from_item_id, to_item_id, from_kind, to_kind, color, line_style, label, arrow, width, from_if_index, to_if_index, capacity_bps, routing)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+      `, [id, from, to, fKind, tKind, c.color || '#94a3b8', c.line_style || 'solid', c.label || null,
           !!c.arrow, safeInt(c.width, 2), fIf, tIf, cap, c.routing === 'elbow' ? 'elbow' : 'straight']);
     }
 
@@ -2988,24 +3015,6 @@ app.put('/api/maps/:id/layout', wrap(async (req, res) => {
       `, [id, Number(l.x) || 0, Number(l.y) || 0, String(l.text),
           safeInt(l.font_size, 14), l.color || '#1a2744', !!l.bold, safeInt(l.z_index, 0), !!l.locked,
           Number.isFinite(Number(l.group_id)) ? Number(l.group_id) : null]);
-    }
-
-    // Decorative shapes — replace-all, but only when the client sent them.
-    if (shapes) {
-      await client.query(`DELETE FROM map_shapes WHERE map_id = $1`, [id]);
-      for (const s of shapes) {
-        if (!s || !s.kind) continue;
-        await client.query(`
-          INSERT INTO map_shapes
-            (map_id, kind, x, y, width, height, fill, stroke, stroke_width, text, font_size, text_color, rotation, z_index, locked, group_id)
-          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
-        `, [id, String(s.kind), Number(s.x) || 0, Number(s.y) || 0,
-            safeInt(s.width, 120), safeInt(s.height, 80),
-            s.fill || null, s.stroke || null, safeInt(s.stroke_width, 2),
-            s.text != null ? String(s.text) : null, safeInt(s.font_size, 14),
-            s.text_color || '#1a2744', Number(s.rotation) || 0, safeInt(s.z_index, 0), !!s.locked,
-            Number.isFinite(Number(s.group_id)) ? Number(s.group_id) : null]);
-      }
     }
 
     await client.query(`UPDATE sv_maps SET updated_at = NOW() WHERE id = $1`, [id]);
