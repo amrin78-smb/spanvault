@@ -32,6 +32,9 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.46.2': [
+    'Fixed Aruba access-point uptime showing ~100× too high (e.g. a 2-day-old AP reading "201d"). The Aruba wlanAPUpTime OID returns TimeTicks (hundredths of a second) but was stored verbatim as seconds; it is now divided by 100, matching the other vendor parsers. Values self-correct on the next wireless poll',
+  ],
   '1.46.1': [
     'Device detail page: the Interface Status, Connected To, Intelligence and Site Gateway cards are now laid out 2-per-row (a compact 2×2 grid) instead of four full-width stacked panels, saving vertical space. Collapses to a single column on narrow screens',
   ],

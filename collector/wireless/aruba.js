@@ -25,7 +25,7 @@ const {
 const AP_BASE = '1.3.6.1.4.1.14823.2.2.1.5.2.1.4.1';
 const wlanAPIpAddress = AP_BASE + '.2';  // wlanAPIpAddress
 const wlanAPName = AP_BASE + '.3';        // wlanAPName
-const wlanAPUpTime = AP_BASE + '.12';     // wlanAPUpTime (seconds)
+const wlanAPUpTime = AP_BASE + '.12';     // wlanAPUpTime (TimeTicks, 1/100 s)
 const wlanAPModelName = AP_BASE + '.13';  // wlanAPModelName (readable model string)
 const wlanAPStatus = AP_BASE + '.19';     // wlanAPStatus: up(1) / down(2)
 
@@ -164,8 +164,10 @@ function parseApTable(walked) {
       ap.ip_address = str(ips[idx]);
       ap.model = str(models[idx]);
       ap.status = mapStatus(statuses[idx]);
+      // wlanAPUpTime is TimeTicks (hundredths of a second) — convert to seconds,
+      // like the other vendor parsers. (Storing it raw inflated uptime ~100×.)
       const up = num(uptimes[idx]);
-      if (up !== null) ap.uptime_seconds = up;
+      if (up !== null) ap.uptime_seconds = Math.floor(up / 100);
       out.push(ap);
       byIndex.set(idx, ap);
     }
