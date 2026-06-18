@@ -337,11 +337,22 @@ export default function DashboardPage() {
       {/* ── Maintenance windows (planned — active now or within 7 days) ── */}
       <MaintenanceGroup api={maintenance} />
 
-      {/* ── Hero row: active problems + open incidents (kept wide) ── */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, alignItems: 'stretch', marginBottom: 10 }}>
-        <ActiveProblems api={problems} />
-        <OpenIncidents api={incidents} />
-      </div>
+      {/* ── Hero row: active problems + open incidents. Each card is hidden once
+           it has loaded with nothing to show (still shown while loading or on
+           error), so an all-healthy network reclaims the space and the cards
+           below move up. The row collapses to one column if only one remains. ── */}
+      {(() => {
+        const showProblems = problems.error != null || problems.data == null || problems.data.length > 0;
+        const showIncidents = incidents.error != null || incidents.data == null || incidents.data.length > 0;
+        const shown = (showProblems ? 1 : 0) + (showIncidents ? 1 : 0);
+        if (shown === 0) return null;
+        return (
+          <div style={{ display: 'grid', gridTemplateColumns: shown === 2 ? '1fr 1fr' : '1fr', gap: 10, alignItems: 'stretch', marginBottom: 10 }}>
+            {showProblems && <ActiveProblems api={problems} />}
+            {showIncidents && <OpenIncidents api={incidents} />}
+          </div>
+        );
+      })()}
 
       {/* ── Agent-offline group (devices unreachable via an offline agent) ── */}
       <AgentOfflineGroup api={agentOffline} />
