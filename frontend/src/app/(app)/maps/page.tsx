@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { useApi, apiSend } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
@@ -13,11 +13,41 @@ const CANVAS_PRESETS = [
   { key: 'square', label: 'Square — 1200 × 1200', w: 1200, h: 1200 },
 ];
 
+// Persistent, manually-copyable public-link bar. Stays until dismissed; the
+// clipboard API only works over HTTPS, so we fall back to selecting the text.
+function ShareLinkBar({ url, onClose }: { url: string; onClose: () => void }) {
+  const ref = useRef<HTMLInputElement | null>(null);
+  const [copied, setCopied] = useState(false);
+  async function copy() {
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(url);
+      } else if (ref.current) {
+        ref.current.select();
+        document.execCommand('copy');
+      }
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      ref.current?.select();
+    }
+  }
+  return (
+    <div className="sv-share-bar">
+      <span className="lbl">🔗 Public link</span>
+      <input ref={ref} className="sv-input" readOnly value={url} onFocus={(e) => e.currentTarget.select()} />
+      <button className="sv-btn sm" onClick={copy}>{copied ? '✓ Copied' : 'Copy'}</button>
+      <button className="sv-btn ghost sm" onClick={onClose}>Close</button>
+    </div>
+  );
+}
+
 export default function MapsPage() {
   const { canEdit } = useRbac();
   const maps = useApi<MapSummary[]>('/api/maps', 0);
   const [showCreate, setShowCreate] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [shareUrl, setShareUrl] = useState<string | null>(null);
 
   async function handleDelete(m: MapSummary) {
     if (!confirm(`Delete map "${m.name}"? This cannot be undone.`)) return;
@@ -35,14 +65,10 @@ export default function MapsPage() {
       uuid = r.uuid;
       maps.reload();
     }
+    // Show a persistent, copyable bar — auto-copy via the clipboard API only works
+    // in a secure (HTTPS) context, so over plain HTTP the user copies manually.
     const url = `${window.location.origin}/maps/public/${uuid}`;
-    try {
-      await navigator.clipboard.writeText(url);
-      setNotice(`Public link copied: ${url}`);
-    } catch {
-      setNotice(`Public link: ${url}`);
-    }
-    setTimeout(() => setNotice(null), 6000);
+    setShareUrl(url);
   }
 
   return (
@@ -58,6 +84,7 @@ export default function MapsPage() {
       <TopologyCard />
 
       {notice && <div className="sv-toast ok" onClick={() => setNotice(null)}>{notice}</div>}
+      {shareUrl && <ShareLinkBar url={shareUrl} onClose={() => setShareUrl(null)} />}
       {maps.error && <ErrorBox message={maps.error} />}
 
       {maps.loading && !maps.data ? (

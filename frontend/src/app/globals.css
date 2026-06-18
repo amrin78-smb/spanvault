@@ -1031,6 +1031,15 @@ body.sv-noc .sv-status-dot { transform: scale(1.5); }
 .sv-toast.ok { background: var(--sv-up); }
 .sv-toast.err { background: var(--sv-down); }
 
+/* Persistent, copyable public-share link bar (stays until dismissed). */
+.sv-share-bar {
+  display: flex; align-items: center; gap: 8px; margin: 0 0 14px;
+  padding: 8px 12px; border-radius: 8px;
+  background: rgba(16,185,129,0.10); border: 1px solid var(--sv-up);
+}
+.sv-share-bar .lbl { font-size: 13px; font-weight: 700; color: var(--sv-up); white-space: nowrap; }
+.sv-share-bar .sv-input { flex: 1; min-width: 0; font-family: monospace; font-size: 12.5px; }
+
 /* ── Section heading (sensor graph groups) ─────────────── */
 .sv-section-title {
   font-size: 13px; font-weight: 700; color: var(--text-muted);
@@ -1626,8 +1635,20 @@ body.sv-noc .sv-content:has(.sv-tabs.sticky) > :first-child { padding-top: 28px;
   background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px;
   display: flex; flex-direction: column; gap: 10px;
 }
-.sv-editor-props h3 { margin: 0; font-size: 14px; }
+.sv-editor-props h3 { margin: 0; font-size: 12px; }
 .sv-editor-props.muted { background: var(--bg-primary); }
+
+/* Compact the object properties panel so it fits without scrolling: tighter
+   spacing, smaller fonts, shorter controls. Scoped to the panel only. */
+.sv-editor-props { gap: 6px; padding: 10px; }
+.sv-editor-props label.sv-field { gap: 2px; font-size: 11px; }
+.sv-editor-props .sv-input,
+.sv-editor-props .sv-select { height: 28px; padding: 0 6px; font-size: 12px; }
+.sv-editor-props input[type="color"].sv-input { height: 26px !important; padding: 2px !important; }
+.sv-editor-props .sv-field-group { padding: 8px; gap: 5px; margin-top: 2px; }
+.sv-editor-props .sv-field-group-title { font-size: 10px; }
+.sv-editor-props .sv-btn { height: 26px; font-size: 11px; padding: 0 10px; }
+.sv-editor-props .sv-btn.sm { height: 23px; font-size: 11px; padding: 0 8px; }
 
 /* ══ Distributed polling agents ════════════════════════════════ */
 .sv-agent-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; margin-bottom: 24px; }

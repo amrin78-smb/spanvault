@@ -32,6 +32,10 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.43.2': [
+    'Sharing a public map now shows a persistent link bar with a selectable field and a Copy button, instead of a green toast that vanished before you could copy it (auto-copy needs HTTPS; over plain HTTP you can now copy it manually)',
+    'Map editor: the object properties panel on the right is more compact — tighter spacing, smaller fonts and shorter controls — so it fits without scrolling',
+  ],
   '1.43.1': [
     'Map editor: aligning/distributing a multi-selection no longer skews positions when a locked element is selected — locked elements are excluded from the alignment math (they were counted but never moved)',
     'Map editor: Duplicate (Ctrl+D / right-click) no longer overwrites your copy/paste clipboard, and a burst of arrow-key nudges now collapses into a single undo step instead of one per keystroke',
