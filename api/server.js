@@ -32,6 +32,10 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.43.3': [
+    'Map connectors now attach to a decorative icon/shape (cloud, building, router glyph, etc.) at the icon itself, not at the far edge of its invisible bounding box — no more gap between the line and the object',
+    'Decorative glyph icons now draw with a thin, consistent outline regardless of size (was scaling up to a heavy stroke on large icons), and the editor\'s "Line width" control now actually changes a glyph\'s outline thickness',
+  ],
   '1.43.2': [
     'Sharing a public map now shows a persistent link bar with a selectable field and a Copy button, instead of a green toast that vanished before you could copy it (auto-copy needs HTTPS; over plain HTTP you can now copy it manually)',
     'Map editor: the object properties panel on the right is more compact — tighter spacing, smaller fonts and shorter controls — so it fits without scrolling',

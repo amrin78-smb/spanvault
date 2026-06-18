@@ -439,7 +439,7 @@ export function ShapeEl({ shape }: { shape: MapShape }) {
 
   if (isGlyphKind(shape.kind)) {
     const gs = Math.min(w, h);
-    return <g transform={transform}><MapGlyph kind={shape.kind} x={x + (w - gs) / 2} y={y + (h - gs) / 2} size={gs} color={stroke} /></g>;
+    return <g transform={transform}><MapGlyph kind={shape.kind} x={x + (w - gs) / 2} y={y + (h - gs) / 2} size={gs} color={stroke} strokeWidth={sw} /></g>;
   }
   switch (shape.kind) {
     case 'ellipse':

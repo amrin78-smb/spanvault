@@ -69,9 +69,12 @@ export function deviceGlyphFor(typeOrName?: string | null): string {
 }
 
 // Vector art for a glyph in 24×24 space, stroked (and lightly filled) in `color`.
-export function glyphArt(kind: string, color: string): React.ReactNode {
+// strokeWidth is in FINAL (screen/canvas) units via non-scaling-stroke, so the
+// outline stays a consistent thin weight no matter how large the glyph is scaled
+// — and can be tuned per shape (the editor's "Line width") rather than ballooning.
+export function glyphArt(kind: string, color: string, strokeWidth = 1.6): React.ReactNode {
   const s = {
-    stroke: color, strokeWidth: 1.7, fill: 'none',
+    stroke: color, strokeWidth, fill: 'none', vectorEffect: 'non-scaling-stroke' as const,
     strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const,
   };
   const soft = { fill: color, fillOpacity: 0.12 };
@@ -146,11 +149,11 @@ export function glyphArt(kind: string, color: string): React.ReactNode {
 }
 
 // Embed a glyph inside the canvas <svg> at (x,y), scaled to `size`×`size`.
-export function MapGlyph({ kind, x, y, size, color }: {
-  kind: string; x: number; y: number; size: number; color: string;
+export function MapGlyph({ kind, x, y, size, color, strokeWidth }: {
+  kind: string; x: number; y: number; size: number; color: string; strokeWidth?: number;
 }) {
   return (
-    <g transform={`translate(${x},${y}) scale(${size / 24})`}>{glyphArt(kind, color)}</g>
+    <g transform={`translate(${x},${y}) scale(${size / 24})`}>{glyphArt(kind, color, strokeWidth)}</g>
   );
 }
 

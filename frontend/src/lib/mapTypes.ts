@@ -202,7 +202,11 @@ export function normalizeMap(m: FullMap): FullMap {
 // Centre point of a device node (connections attach here).
 // A connectable node — either a device node or a decorative shape. Only the
 // geometry (and optional node_style for icon glyph-box anchoring) is needed.
-export type MapNodeLike = { x: number; y: number; width: number; height: number; node_style?: string };
+export type MapNodeLike = { x: number; y: number; width: number; height: number; node_style?: string; kind?: string };
+
+// Basic (box-filling) shape kinds; anything else with a `kind` is a glyph icon
+// whose artwork is a centred square smaller than the shape's bounding box.
+const BASIC_SHAPE_KINDS = new Set(['rect', 'ellipse', 'line', 'arrow', 'text', 'zone']);
 
 export function deviceCenter(d: MapNodeLike): { cx: number; cy: number } {
   return { cx: Number(d.x) + Number(d.width) / 2, cy: Number(d.y) + Number(d.height) / 2 };
@@ -213,7 +217,11 @@ export function deviceCenter(d: MapNodeLike): { cx: number; cy: number } {
 // connector touches the icon's edge rather than passing into its middle.
 export function nodeAnchorBox(d: MapNodeLike): { x: number; y: number; w: number; h: number } {
   const x = Number(d.x), y = Number(d.y), w = Number(d.width), h = Number(d.height);
-  if (d.node_style === 'icon') {
+  // Icon-style device nodes AND decorative glyph shapes (cloud/building/router/…)
+  // draw their artwork in a centred square smaller than the bounding box, so the
+  // connector must attach to that square — not the far-out box edge.
+  const isGlyphShape = d.kind != null && !BASIC_SHAPE_KINDS.has(d.kind);
+  if (d.node_style === 'icon' || isGlyphShape) {
     const gs = Math.max(24, Math.min(w, h));
     return { x: x + (w - gs) / 2, y: y + Math.max(0, (h - gs) / 2), w: gs, h: gs };
   }
