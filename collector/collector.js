@@ -299,10 +299,12 @@ async function snmpPollDevice(device) {
   const sensors = await loadEnabledSensors(device.id);
 
   try {
-    // ── Vendor detection — fetch sysDescr, pick a parser ──────────
-    const sysDescrRows = await get(session, [OID.sysDescr]);
-    const sysDescr = sysDescrRows.length ? String(sysDescrRows[0].value) : '';
-    vendor = detectVendor(sysDescr);
+    // ── Vendor detection — fetch sysDescr + sysObjectID, pick a parser ──
+    const idRows = await get(session, [OID.sysDescr, OID.sysObjectID]);
+    const idByOid = new Map(idRows.map((r) => [String(r.oid).replace(/^\./, ''), r.value]));
+    const sysDescr = idByOid.has(OID.sysDescr) ? String(idByOid.get(OID.sysDescr)) : '';
+    const sysObjId = idByOid.has(OID.sysObjectID) ? String(idByOid.get(OID.sysObjectID)) : '';
+    vendor = detectVendor(sysDescr, sysObjId);
     await persistVendor(device, vendor);
 
     // When sensors are selected, skip OID categories that aren't needed.

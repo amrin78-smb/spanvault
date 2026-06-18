@@ -26,6 +26,9 @@ const parsers = {
   cisco:         require('./cisco'),
   aruba:         require('./aruba'),
   paloalto:      require('./paloalto'),
+  checkpoint:    require('./checkpoint'),
+  sonicwall:     require('./sonicwall'),
+  forcepoint:    require('./forcepoint'),
   sangfor:       require('./sangfor'),
   'hpe-procurve': require('./hpe-procurve'),
   'hpe-comware':  require('./hpe-comware'),
@@ -52,6 +55,9 @@ const PATTERNS = [
   { vendor: 'meraki',       re: /meraki/i },
   { vendor: 'fortinet',     re: /fortinet|fortigate|forti\s?os/i },
   { vendor: 'paloalto',     re: /palo\s*alto|pan-os/i },
+  { vendor: 'forcepoint',   re: /forcepoint|stonesoft|stonegate|sidewinder/i },
+  { vendor: 'sonicwall',    re: /sonicwall|sonic\s?os|sonicos/i },
+  { vendor: 'checkpoint',   re: /check\s?point|gaia|svn foundation|\bipso\b/i },
   { vendor: 'sangfor',      re: /sangfor/i },
   { vendor: 'aruba',        re: /aruba/i },
   { vendor: 'hpe-comware',  re: /comware|h3c|3com|hpe?\s+comware/i },
@@ -68,15 +74,30 @@ const PATTERNS = [
   { vendor: 'cisco',        re: /cisco|nx-os|ios[ -]?xe|catalyst|adaptive security/i },
 ];
 
+// Fallback vendor identification by sysObjectID enterprise number — used only
+// when sysDescr is too generic to match (e.g. Check Point Gaia reports a plain
+// Linux sysDescr). Keep this conservative: only enterprise numbers that map
+// unambiguously to one parser, so it never mis-detects a device sysDescr caught.
+const ENTERPRISE_VENDOR = {
+  2620: 'checkpoint',
+  8741: 'sonicwall',
+  1369: 'forcepoint',
+};
+
 /**
- * Match a sysDescr string to a canonical vendor key. Returns 'generic' when
- * nothing matches (or input is empty).
+ * Match a device to a canonical vendor key. Tries sysDescr patterns first, then
+ * falls back to the sysObjectID enterprise number. Returns 'generic' when neither
+ * identifies the device.
  */
-function detectVendor(sysDescr) {
+function detectVendor(sysDescr, sysObjectID) {
   const s = sysDescr === null || sysDescr === undefined ? '' : String(sysDescr);
-  if (!s) return 'generic';
   for (const p of PATTERNS) {
-    if (p.re.test(s)) return p.vendor;
+    if (s && p.re.test(s)) return p.vendor;
+  }
+  const m = String(sysObjectID || '').match(/^\.?1\.3\.6\.1\.4\.1\.(\d+)\b/);
+  if (m) {
+    const v = ENTERPRISE_VENDOR[parseInt(m[1], 10)];
+    if (v) return v;
   }
   return 'generic';
 }

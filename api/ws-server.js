@@ -283,7 +283,7 @@ async function handleSnmpBatch(agent, msg) {
 
   // Detect vendor from sysDescr; persist + re-push config when it changes so the
   // next batch already includes that vendor's OIDs.
-  const vendor = detectVendor(asStr(gets[OID.sysDescr]));
+  const vendor = detectVendor(asStr(gets[OID.sysDescr]), asStr(gets[OID.sysObjectID]));
   try {
     const vr = await sv.query(`SELECT device_vendor FROM monitored_devices WHERE id=$1`, [deviceId]);
     const prevVendor = vr.rows[0] ? vr.rows[0].device_vendor : null;

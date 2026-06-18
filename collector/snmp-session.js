@@ -13,6 +13,7 @@ const snmp = require('net-snmp');
 // Standard MIB OIDs (scalars carry the trailing instance .0).
 const OID = {
   sysDescr:        '1.3.6.1.2.1.1.1.0',
+  sysObjectID:     '1.3.6.1.2.1.1.2.0',   // vendor enterprise OID (reliable vendor signal)
   sysName:         '1.3.6.1.2.1.1.5.0',
   sysUpTime:       '1.3.6.1.2.1.1.3.0',
   hrProcessorLoad: '1.3.6.1.2.1.25.3.3.1.2',   // table: per-processor load %

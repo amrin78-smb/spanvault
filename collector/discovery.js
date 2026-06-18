@@ -371,7 +371,7 @@ function buildFetchPlan(vendor) {
     OID.ifName, OID.ifDescr, OID.ifAlias, OID.ifHighSpeed, OID.ifPhysAddress,
     OID.ifOperStatus, OID.ifHCInOctets, OID.ifHCOutOctets,
   ];
-  const gets = [OID.sysDescr, OID.sysName, OID.sysUpTime];
+  const gets = [OID.sysDescr, OID.sysObjectID, OID.sysName, OID.sysUpTime];
   const parser = getParser(vendor || 'generic');
   for (const m of parser.metrics || []) {
     if (m.kind === 'table') walks.push(m.oid); else gets.push(m.oid);
@@ -420,14 +420,14 @@ const TIMED_OUT = Symbol('timed_out');
 async function discoverDevice(device, overallMs) {
   const session = createSession(device, 4000);
   const run = (async () => {
-    const idRows = await get(session, [OID.sysDescr, OID.sysName]);
+    const idRows = await get(session, [OID.sysDescr, OID.sysObjectID, OID.sysName]);
     const byOid = new Map(idRows.map((r) => [r.oid, r.value]));
     const sysDescr = str(byOid.get(OID.sysDescr));
     const sysName = str(byOid.get(OID.sysName));
     if (!sysDescr && !sysName) {
       return { error: 'Timeout — device unreachable or wrong SNMP credentials' };
     }
-    const vendor = detectVendor(sysDescr);
+    const vendor = detectVendor(sysDescr, str(byOid.get(OID.sysObjectID)));
     const prev = new Map();
     // First pass primes the interface counters; second pass yields bps rates.
     await collectCandidates(session, vendor, prev, Date.now());
@@ -460,7 +460,7 @@ async function discoverDevice(device, overallMs) {
 async function snmpTest(device, overallMs) {
   const session = createSession(device, 3000);
   const run = (async () => {
-    const rows = await get(session, [OID.sysDescr, OID.sysName]);
+    const rows = await get(session, [OID.sysDescr, OID.sysObjectID, OID.sysName]);
     const byOid = new Map(rows.map((r) => [r.oid, r.value]));
     const sysDescr = str(byOid.get(OID.sysDescr));
     const sysName = str(byOid.get(OID.sysName));
@@ -468,7 +468,7 @@ async function snmpTest(device, overallMs) {
       return { success: false, message: 'Timeout — device unreachable or wrong community string' };
     }
     return {
-      success: true, vendor: detectVendor(sysDescr), sysDescr, sysName,
+      success: true, vendor: detectVendor(sysDescr, str(byOid.get(OID.sysObjectID))), sysDescr, sysName,
       message: 'SNMP connection successful',
     };
   })();

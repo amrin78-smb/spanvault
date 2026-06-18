@@ -32,6 +32,10 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.45.0': [
+    'Added SNMP vendor support for Check Point, SonicWall and Forcepoint firewalls. Check Point (CPU from multiProcUsage, memory from memActiveReal64/memTotalReal64, connection count) and SonicWall (CPU%, RAM%, connections) now get proper vendor metrics; Forcepoint NGFW is now identified by vendor (its CPU/memory already come from the standard MIB)',
+    'Vendor detection now falls back to the device\'s sysObjectID (enterprise number) when the sysDescr is too generic — so e.g. a Check Point on Gaia (which reports a plain Linux sysDescr) is correctly identified as Check Point instead of Generic. Applies to central- and agent-polled devices, discovery, and the SNMP test',
+  ],
   '1.44.0': [
     'Multi-type service checks are smarter about HTTPS-only hosts: if you tick SSL (or enter an https:// target) when creating/editing a group, the TCP check now defaults to port 443 and the HTTP check to https — instead of port 80 — so an HTTPS-only site no longer shows false "down" on its TCP/HTTP probes. Enter https:// or include SSL and it just works; plain hostnames without SSL still default to port 80 as before',
   ],

@@ -40,6 +40,7 @@ type TestResult = {
 // Map a detected vendor key (from the collector's SNMP parser) to a label.
 const VENDOR_LABELS: Record<string, string> = {
   fortinet: 'Fortinet', cisco: 'Cisco', aruba: 'Aruba', paloalto: 'Palo Alto',
+  checkpoint: 'Check Point', sonicwall: 'SonicWall', forcepoint: 'Forcepoint',
   sangfor: 'Sangfor', 'hpe-procurve': 'HPE ProCurve', 'hpe-comware': 'HPE Comware',
   juniper: 'Juniper', huawei: 'Huawei', mikrotik: 'MikroTik', ubiquiti: 'Ubiquiti',
   dell: 'Dell', extreme: 'Extreme', brocade: 'Brocade', meraki: 'Cisco Meraki',
