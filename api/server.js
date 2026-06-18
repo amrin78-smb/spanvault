@@ -32,6 +32,9 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.46.9': [
+    'Fixed the sidebar nav icons disappearing when the sidebar is collapsed (regression from the colored-chip update)',
+  ],
   '1.46.8': [
     'Alert, license, and update banners now span only the main content area instead of the full screen over the sidebar — matching the rest of the NocVault suite',
   ],
