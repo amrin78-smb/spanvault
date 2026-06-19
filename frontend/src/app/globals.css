@@ -15,6 +15,9 @@
 }
 
 :root {
+  /* Light theme for native form controls (select option popups, native
+     scrollbars, date pickers). The dark theme flips this below. */
+  color-scheme: light;
   --primary:        #C8102E;
   --primary-dark:   #a00d24;
   --primary-light:  #fef2f4;
@@ -66,6 +69,8 @@
 }
 
 [data-theme="dark"] {
+  /* Makes native <select> option popups + native scrollbars render dark. */
+  color-scheme: dark;
   --bg-primary:     #0d1220;
   --bg-card:        #1a2235;
   --border:         #2d3a52;
@@ -303,6 +308,18 @@ tbody tr:hover td { background: var(--bg-primary); }
 .input:focus {
   border-color: var(--primary);
   box-shadow: 0 0 0 3px rgba(200,16,46,0.1);
+}
+
+/* Native <select> + its option popup: theme-aware so the dropdown list is not
+   a light/white box with near-invisible text in dark mode. color-scheme (above)
+   handles most engines; these base rules cover the rest. */
+select {
+  background-color: var(--bg-card);
+  color: var(--text-primary);
+}
+option {
+  background-color: var(--bg-card);
+  color: var(--text-primary);
 }
 
 /* ── Sidebar active indicator ──────────────────────────────── */

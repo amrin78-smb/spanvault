@@ -250,6 +250,21 @@ uses `--surface-subtle`. Also note `--primary-light` has a dark override
 (`rgba(200,16,46,0.18)`) so crimson report banners adapt. These are the same
 tokens used in **logvault** and **ddivault** (suite-wide standard).
 
+### Dropdowns & native form controls (dark-mode readability)
+- **Native controls** (`<select>` option popups, native scrollbars, date pickers)
+  are themed via `color-scheme`: `light` in `:root`, `dark` in `[data-theme="dark"]`.
+  Base rules also set `select`/`option` to `var(--bg-card)` + `var(--text-primary)`.
+  Without `color-scheme`, a native `<select>` option list renders as a white box
+  with near-invisible text in dark mode.
+- **Custom dropdown / menu / picker panels** (`.sv-dropdown`, `.sv-tbsearch-menu`,
+  `.sv-ctxmenu`, `.sv-dep-pick`, `.sv-site-picker`, GlobalSearch, etc.) use
+  `var(--bg-card)` + `border: 1px solid var(--border)` for the panel surface,
+  `var(--surface-subtle)` (or a `--tint-*`) for hover/active rows, and
+  `var(--text-primary)`/`--text-secondary` for option text — never a hardcoded
+  light hex (`#fff`/`#f8fafc`/`#eff6ff`), which doesn't flip in dark mode.
+- This is the **suite-wide standard** — apply the same `color-scheme` + tokenised
+  panel pattern in netvault, logvault, and ddivault.
+
 ## Build status — all phases complete ✅
 Phase 1: scaffold, schema (scripts/schema.sql), config — done
 Phase 2: api/server.js — Express API (devices, alerts, rules, reports, settings, NetVault sync) — done

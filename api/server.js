@@ -32,6 +32,11 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.46.12': [
+    'Dark-mode fix: native <select> option popups (e.g. time-range/interval pickers) and native scrollbars now render dark instead of a white box with near-invisible text, via color-scheme (light in :root, dark in dark theme) plus base select/option color tokens',
+    'Audited every custom dropdown/menu/picker panel (.sv-dropdown, .sv-tbsearch-menu, .sv-ctxmenu, .sv-dep-pick, .sv-site-picker, global search) — all already use the adaptive surface tokens, so panels and hover rows read clearly in both themes',
+    'Documented the suite-wide standard: native controls use color-scheme; custom menu panels use --bg-card/--border with --surface-subtle/--tint-* hover rows, never a hardcoded light hex',
+  ],
   '1.46.11': [
     'Added the suite-standard --tint-purple / --tint-purple-fg adaptive surface tokens (identical across NetVault, LogVault, DDIVault and SpanVault) so purple surfaces behind text flip correctly between light and dark',
     'Tokenized the purple badge (.badge-purple) onto the new tokens, fixing its washed-out light box in dark mode (it previously lacked a dark override); purple status/chart/sensor-line signal colors are left as raw color',
