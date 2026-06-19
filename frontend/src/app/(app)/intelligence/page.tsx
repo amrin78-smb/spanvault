@@ -312,7 +312,7 @@ const TH_STYLE: React.CSSProperties = {
   fontSize: 'var(--text-xs)', textTransform: 'uppercase', color: 'var(--text-muted)', fontWeight: 600,
   letterSpacing: '0.06em', padding: '8px 12px', textAlign: 'left', whiteSpace: 'nowrap',
   borderBottom: '1px solid var(--border)', position: 'sticky', top: 0,
-  background: 'var(--bg-card)', zIndex: 1,
+  background: 'var(--bg-card)', zIndex: 5,
 };
 const TD_STYLE: React.CSSProperties = {
   fontSize: 'var(--text-sm)', color: 'var(--text-primary)', padding: '8px 12px',

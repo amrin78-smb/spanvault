@@ -32,6 +32,10 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.46.13': [
+    'Fixed sticky-header bleed-through: pinned table headers now use an opaque background (var(--bg-card)) with a raised z-index and bottom separator, so rows scrolling underneath no longer show through and garble the header text (most visible in dark mode)',
+    'Documented the suite-wide standard that sticky headers/toolbars must use an opaque token (--bg-card / --bg-primary), never a semi-transparent tint',
+  ],
   '1.46.12': [
     'Dark-mode fix: native <select> option popups (e.g. time-range/interval pickers) and native scrollbars now render dark instead of a white box with near-invisible text, via color-scheme (light in :root, dark in dark theme) plus base select/option color tokens',
     'Audited every custom dropdown/menu/picker panel (.sv-dropdown, .sv-tbsearch-menu, .sv-ctxmenu, .sv-dep-pick, .sv-site-picker, global search) — all already use the adaptive surface tokens, so panels and hover rows read clearly in both themes',

@@ -246,7 +246,17 @@ unreadable washed-out box). Defined in both `:root` and `[data-theme="dark"]`:
 
 Rule: a tinted callout/badge/banner uses the matching `--tint-*` for its
 background (and border) and `--tint-*-fg` for its text; a plain neutral surface
-uses `--surface-subtle`. Also note `--primary-light` has a dark override
+uses `--surface-subtle`.
+
+### Sticky headers / pinned toolbars MUST be opaque (suite-wide standard)
+Any element with `position: sticky` that content scrolls UNDERNEATH (sticky table
+`<thead>`/header rows, pinned toolbars/filter bars, sticky tab bars) MUST have an
+OPAQUE background token — `var(--bg-card)` for card-level tables, `var(--bg-primary)`
+for bars on the page surface. NEVER a semi-transparent tint (`var(--surface-subtle)`,
+any `rgba(...)` alpha < 1 such as the dark `th` `rgba(255,255,255,0.03)`, or no bg) —
+the scrolled rows bleed through and garble the header text (worst in dark mode). Also
+give it `z-index: 5+` and a bottom separator (`box-shadow: 0 1px 0 var(--border)` or
+`border-bottom: 1px solid var(--border)`). Same fix applied in netvault/logvault/ddivault. Also note `--primary-light` has a dark override
 (`rgba(200,16,46,0.18)`) so crimson report banners adapt. These are the same
 tokens used in **logvault** and **ddivault** (suite-wide standard).
 
