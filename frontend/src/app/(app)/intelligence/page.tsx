@@ -618,7 +618,7 @@ function ForecastChart({ title, data, peak }: { title: string; data: SeriesPoint
                 <stop offset="100%" stopColor="#3b82f6" stopOpacity={0.05} />
               </linearGradient>
             </defs>
-            <CartesianGrid strokeDasharray="3 3" stroke="#eef0f3" />
+            <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
             <XAxis dataKey="label" fontSize={11} minTickGap={28} />
             <YAxis fontSize={11} width={64} tickFormatter={(v) => fmtBps(Number(v))} />
             <Tooltip formatter={(v: any, name: any) => [v == null ? '—' : fmtBps(Number(v)), name === 'actual' ? 'Actual' : 'Projected']} />

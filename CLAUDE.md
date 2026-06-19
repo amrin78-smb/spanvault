@@ -227,6 +227,24 @@ This is the **NocVault SUITE-WIDE standard** — the same scale and rule apply t
 ddivault, logvault, and netvault. SpanVault is the reference implementation; copy
 this pattern exactly into the other apps.
 
+### Adaptive surface & tint tokens (dark-mode safe)
+Tinted or neutral surfaces that sit BEHIND text must use these tokens — never a
+hardcoded light hex (a light hex doesn't flip in dark mode and produces an
+unreadable washed-out box). Defined in both `:root` and `[data-theme="dark"]`:
+
+- `--surface-subtle` — neutral near-white panel/track fill (light `#f8fafc`,
+  dark `rgba(255,255,255,0.04)`).
+- `--tint-info` / `--tint-info-fg` — blue info wash + readable foreground.
+- `--tint-success` / `--tint-success-fg` — green.
+- `--tint-warn` / `--tint-warn-fg` — amber.
+- `--tint-danger` / `--tint-danger-fg` — red.
+
+Rule: a tinted callout/badge/banner uses the matching `--tint-*` for its
+background (and border) and `--tint-*-fg` for its text; a plain neutral surface
+uses `--surface-subtle`. Also note `--primary-light` has a dark override
+(`rgba(200,16,46,0.18)`) so crimson report banners adapt. These are the same
+tokens used in **logvault** and **ddivault** (suite-wide standard).
+
 ## Build status — all phases complete ✅
 Phase 1: scaffold, schema (scripts/schema.sql), config — done
 Phase 2: api/server.js — Express API (devices, alerts, rules, reports, settings, NetVault sync) — done

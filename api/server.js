@@ -32,6 +32,12 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.46.10': [
+    'Dark-mode polish: added suite-wide adaptive surface/tint tokens (--surface-subtle, --tint-info/success/warn/danger plus -fg foregrounds) so tinted callouts and neutral panels read clearly in both themes instead of showing washed-out light boxes',
+    'Fixed the two report banners (Alert Analysis, Executive Summary) that stayed light in dark mode by giving --primary-light a proper dark override',
+    'Chart grid lines on the device and intelligence pages now use the theme border color so they are visible on the dark chart background (were an invisible light grey)',
+    'Tokenized the recent-alert and site-gateway badges and the site-scope info banner so they flip correctly between light and dark',
+  ],
   '1.46.9': [
     'Fixed the sidebar nav icons disappearing when the sidebar is collapsed (regression from the colored-chip update)',
   ],

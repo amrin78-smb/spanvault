@@ -33,9 +33,9 @@ export default function SiteScopeBanner() {
         padding: '8px 14px',
         marginBottom: 14,
         borderRadius: 8,
-        background: '#eff6ff',
-        border: '1px solid #bfdbfe',
-        color: '#1e3a5f',
+        background: 'var(--tint-info)',
+        border: '1px solid var(--tint-info)',
+        color: 'var(--tint-info-fg)',
         fontSize: 'var(--text-base)',
       }}
     >

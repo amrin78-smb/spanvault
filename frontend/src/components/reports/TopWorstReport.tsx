@@ -160,7 +160,7 @@ export default function TopWorstReport({ data }: { data: TopWorst }) {
                           minWidth: 80,
                           height: 4,
                           borderRadius: 2,
-                          background: '#eceef2',
+                          background: 'var(--surface-subtle)',
                           overflow: 'hidden',
                         }}
                       >

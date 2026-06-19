@@ -498,7 +498,7 @@ function InterfaceTrafficChart({
       ) : (
         <ResponsiveContainer width="100%" height={GRAPH_HEIGHT}>
           <LineChart data={data} margin={{ top: 5, right: 16, bottom: 5, left: 0 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#eef0f3" />
+            <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
             {downRuns.map((r, i) => (
               <ReferenceArea key={i} x1={r.x1} x2={r.x2} fill="#ef4444" fillOpacity={0.12} ifOverflow="extendDomain" />
             ))}
@@ -547,7 +547,7 @@ function SensorChart({ deviceId, sensor, range, setRange }: { deviceId: number; 
       ) : (
         <ResponsiveContainer width="100%" height={GRAPH_HEIGHT}>
           <LineChart data={data} margin={{ top: 5, right: 16, bottom: 5, left: 0 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#eef0f3" />
+            <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
             <XAxis dataKey="bucket" tickFormatter={tickLabel} fontSize={11} minTickGap={40} />
             <YAxis
               fontSize={11}
@@ -586,7 +586,7 @@ function CustomSensorChart({ deviceId, sensor, range, setRange }: { deviceId: nu
       ) : (
         <ResponsiveContainer width="100%" height={GRAPH_HEIGHT}>
           <LineChart data={data} margin={{ top: 5, right: 16, bottom: 5, left: 0 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#eef0f3" />
+            <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
             <XAxis dataKey="bucket" tickFormatter={tickLabel} fontSize={11} minTickGap={40} />
             <YAxis
               fontSize={11}
@@ -640,7 +640,7 @@ function LatencyChart({ data, loading, alertTimes = [] }: { data: PingPoint[]; l
   return (
     <ResponsiveContainer width="100%" height={GRAPH_HEIGHT}>
       <LineChart data={chartData} margin={{ top: 5, right: 16, bottom: 5, left: 0 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke="#eef0f3" />
+        <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
         <XAxis dataKey="bucket" tickFormatter={tickLabel} fontSize={11} minTickGap={40} />
         <YAxis fontSize={11} width={44} />
         <Tooltip labelFormatter={tickLabel} formatter={(v: any) => [`${v} ms`, 'Latency']} />
@@ -664,7 +664,7 @@ function SingleChart({
   return (
     <ResponsiveContainer width="100%" height={GRAPH_HEIGHT}>
       <LineChart data={chartData} margin={{ top: 5, right: 16, bottom: 5, left: 0 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke="#eef0f3" />
+        <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
         <XAxis dataKey="bucket" tickFormatter={tickLabel} fontSize={11} minTickGap={40} />
         <YAxis fontSize={11} width={44} />
         <Tooltip labelFormatter={tickLabel} formatter={(v: any) => [`${v}${unit}`, '']} />
