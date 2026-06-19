@@ -356,3 +356,49 @@ Rules:
 - The app reads version from package.json via /api/health
 - NocVault suite itself has no version number — only the 4 apps
 - When bumping version, also update the releaseNotes object in the update status API with 3-5 bullets describing what changed. No CHANGELOG.md — release notes live in the update status API only.
+
+## Database Access (Read-Only Diagnostics)
+
+A read-only PostgreSQL user exists for Claude Code to query the live production
+database directly during development. No psql installation needed — use the
+Node.js `pg` module directly.
+
+Connection details:
+
+```
+Host:      192.168.6.111
+Port:      5432
+User:      claude_readonly
+Password:  [stored in Claude project memory — ask Amrin]
+Databases: logvault, netvault, ddivault, spanvault
+```
+
+Usage in Claude Code:
+
+```js
+const { Client } = require('pg');
+const client = new Client({
+  host: '192.168.6.111',
+  port: 5432,
+  user: 'claude_readonly',
+  password: process.env.DB_READONLY_PASS,
+  database: 'spanvault',  // change per app
+  ssl: false
+});
+await client.connect();
+const { rows } = await client.query('SELECT ...');
+await client.end();
+```
+
+Permissions: SELECT only — cannot INSERT, UPDATE, DELETE, or modify schema.
+
+Use it to:
+- Check actual DB schema before writing queries
+- Verify data exists before writing display code
+- Diagnose query performance issues
+- Confirm migrations worked correctly
+- Inspect app_settings, known_hosts, alert_rules, etc.
+
+The password is **never** stored in this repo — it lives in Claude Code's project
+memory and is provided at the start of each session. Never log it or commit it to
+any repo.
