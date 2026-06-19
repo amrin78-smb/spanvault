@@ -32,6 +32,9 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.46.14': [
+    'Cleaned up traffic-graph Y-axis labels (interface/tunnel In/Out and vendor bandwidth charts): the axis now picks a single unit from the peak value and shows it once in the chart title (e.g. "Tunnel.26 Traffic · Mbps") with short numeric ticks (0, 40, 80, 120, 160), instead of repeating "Mbps" on every tick — which was cluttered and got clipped into confusing duplicate "0.00 Mbps" labels. Tooltips still show the exact per-point value with its unit',
+  ],
   '1.46.13': [
     'Fixed sticky-header bleed-through: pinned table headers now use an opaque background (var(--bg-card)) with a raised z-index and bottom separator, so rows scrolling underneath no longer show through and garble the header text (most visible in dark mode)',
     'Documented the suite-wide standard that sticky headers/toolbars must use an opaque token (--bg-card / --bg-primary), never a semi-transparent tint',

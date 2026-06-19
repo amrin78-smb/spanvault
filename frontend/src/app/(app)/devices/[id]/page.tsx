@@ -489,8 +489,20 @@ function InterfaceTrafficChart({
     </span>
   ) : undefined;
 
+  // Pick ONE unit for the whole axis from the data's peak, so ticks are short
+  // numbers (0, 40, 80, 120, 160) with the unit shown once in the title — instead
+  // of repeating/clipping "Mbps" on every tick. The tooltip still shows the exact
+  // per-point value with its unit.
+  const maxV = data.reduce((m, d) => Math.max(m, d.in ?? 0, d.out ?? 0), 0);
+  let bpsDiv = 1; let bpsUnit = 'bps';
+  if (maxV >= 1e9) { bpsDiv = 1e9; bpsUnit = 'Gbps'; }
+  else if (maxV >= 1e6) { bpsDiv = 1e6; bpsUnit = 'Mbps'; }
+  else if (maxV >= 1e3) { bpsDiv = 1e3; bpsUnit = 'Kbps'; }
+  const axisTick = (v: any) => String(Math.round((Number(v) / bpsDiv) * 10) / 10);
+  const chartTitle = `${ifLabel} · ${bpsUnit}`;
+
   return (
-    <GraphCard title={ifLabel} titleAttr={ifLabel} range={range} setRange={setRange} badge={badge}>
+    <GraphCard title={chartTitle} titleAttr={chartTitle} range={range} setRange={setRange} badge={badge}>
       {loading ? (
         <Loading />
       ) : !data.length ? (
@@ -503,7 +515,7 @@ function InterfaceTrafficChart({
               <ReferenceArea key={i} x1={r.x1} x2={r.x2} fill="#ef4444" fillOpacity={0.12} ifOverflow="extendDomain" />
             ))}
             <XAxis dataKey="bucket" tickFormatter={tickLabel} fontSize={11} minTickGap={40} />
-            <YAxis fontSize={11} width={64} tickFormatter={(v) => fmtBps(Number(v))} />
+            <YAxis fontSize={11} width={40} tickFormatter={axisTick} />
             <Tooltip
               labelFormatter={tickLabel}
               formatter={(v: any, name: any) => [v == null ? '—' : fmtBps(Number(v)), name]}
@@ -526,7 +538,16 @@ function SensorChart({ deviceId, sensor, range, setRange }: { deviceId: number; 
   const unit = metricUnit(sensor.metric_name);
   const color = CAT_COLOR[sensor.category] || '#2563eb';
   const data = (hist.data || []).map((p) => ({ bucket: p.bucket, value: p.avg_value != null ? Number(p.avg_value) : null }));
-  const suffix = unit === 'count' || unit === 'state' ? '' : ` (${unit})`;
+  // For bps metrics, pick one axis unit from the peak → short numeric ticks + the
+  // unit shown once in the title (rather than repeated/clipped on every tick).
+  const maxV = unit === 'bps' ? data.reduce((m, d) => Math.max(m, d.value ?? 0), 0) : 0;
+  let bpsDiv = 1; let bpsUnit = 'bps';
+  if (unit === 'bps') {
+    if (maxV >= 1e9) { bpsDiv = 1e9; bpsUnit = 'Gbps'; }
+    else if (maxV >= 1e6) { bpsDiv = 1e6; bpsUnit = 'Mbps'; }
+    else if (maxV >= 1e3) { bpsDiv = 1e3; bpsUnit = 'Kbps'; }
+  }
+  const suffix = unit === 'count' || unit === 'state' ? '' : unit === 'bps' ? ` · ${bpsUnit}` : ` (${unit})`;
   const title = `${sensor.sensor_name}${suffix}`;
 
   const fmtVal = (v: number) => {
@@ -551,9 +572,9 @@ function SensorChart({ deviceId, sensor, range, setRange }: { deviceId: number; 
             <XAxis dataKey="bucket" tickFormatter={tickLabel} fontSize={11} minTickGap={40} />
             <YAxis
               fontSize={11}
-              width={unit === 'bps' ? 64 : 44}
+              width={unit === 'bps' ? 40 : 44}
               domain={unit === 'state' ? [0, 1] : undefined}
-              tickFormatter={unit === 'bps' ? (v) => fmtBps(Number(v)) : undefined}
+              tickFormatter={unit === 'bps' ? (v) => String(Math.round((Number(v) / bpsDiv) * 10) / 10) : undefined}
             />
             <Tooltip labelFormatter={tickLabel} formatter={(v: any) => [fmtVal(Number(v)), sensor.sensor_name]} />
             <Line type="monotone" dataKey="value" stroke={color} strokeWidth={2} dot={false} connectNulls />
