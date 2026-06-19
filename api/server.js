@@ -32,6 +32,10 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.46.11': [
+    'Added the suite-standard --tint-purple / --tint-purple-fg adaptive surface tokens (identical across NetVault, LogVault, DDIVault and SpanVault) so purple surfaces behind text flip correctly between light and dark',
+    'Tokenized the purple badge (.badge-purple) onto the new tokens, fixing its washed-out light box in dark mode (it previously lacked a dark override); purple status/chart/sensor-line signal colors are left as raw color',
+  ],
   '1.46.10': [
     'Dark-mode polish: added suite-wide adaptive surface/tint tokens (--surface-subtle, --tint-info/success/warn/danger plus -fg foregrounds) so tinted callouts and neutral panels read clearly in both themes instead of showing washed-out light boxes',
     'Fixed the two report banners (Alert Analysis, Executive Summary) that stayed light in dark mode by giving --primary-light a proper dark override',

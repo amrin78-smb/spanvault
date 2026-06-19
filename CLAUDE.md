@@ -238,6 +238,11 @@ unreadable washed-out box). Defined in both `:root` and `[data-theme="dark"]`:
 - `--tint-success` / `--tint-success-fg` — green.
 - `--tint-warn` / `--tint-warn-fg` — amber.
 - `--tint-danger` / `--tint-danger-fg` — red.
+- `--tint-purple` / `--tint-purple-fg` — purple/violet (light `#f5f3ff`/`#6d28d9`,
+  dark `rgba(139,92,246,0.15)`/`#c4b5fd`). Suite-standard token (identical in
+  netvault, logvault, ddivault). Note: this is for purple SURFACES behind text
+  (e.g. `.badge-purple`) — NOT the `--purple` (`#7c3aed`) status/chart/sensor-line
+  signal color, which stays raw.
 
 Rule: a tinted callout/badge/banner uses the matching `--tint-*` for its
 background (and border) and `--tint-*-fg` for its text; a plain neutral surface
