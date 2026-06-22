@@ -15,12 +15,23 @@ import {
 import {
   GradeBadge, TrendArrow, ConfidenceStars, fmtDuration, deviationLabel, deviationTooltip,
   scoreColor, n,
-  Overview, HealthRow, AnomalyRow, IncidentRow, ThresholdRow,
+  Overview, HealthRow, AnomalyRow, IncidentRow, ThresholdRow, PatternRow,
 } from '@/components/intel';
+
+// Day-of-week labels (0 = Sunday) for periodic-pattern descriptions.
+const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+// When → human phrase for a detected pattern (e.g. "Mondays at 09:00").
+function patternWhen(p: PatternRow): string {
+  const parts: string[] = [];
+  if (p.day_of_week != null && DOW[p.day_of_week]) parts.push(`${DOW[p.day_of_week]}s`);
+  if (p.hour_of_day != null) parts.push(`at ${String(p.hour_of_day).padStart(2, '0')}:00`);
+  return parts.length ? parts.join(' ') : 'Recurring';
+}
 
 const TABS = [
   { key: 'overview', label: 'Overview' },
   { key: 'anomalies', label: 'Anomalies' },
+  { key: 'patterns', label: 'Patterns' },
   { key: 'health', label: 'Health' },
   { key: 'capacity', label: 'Capacity' },
   { key: 'incidents', label: 'Incidents' },
@@ -126,6 +137,7 @@ export default function IntelligencePage() {
 
       {tab === 'overview' && <OverviewTab />}
       {tab === 'anomalies' && <AnomaliesTab />}
+      {tab === 'patterns' && <PatternsTab />}
       {tab === 'health' && <HealthTab />}
       {tab === 'capacity' && <CapacityTab />}
       {tab === 'incidents' && <IncidentsTab />}
@@ -339,36 +351,90 @@ function IntelTD({ children, right, style, title }: {
 // ════════════════════════════════════════════════════════════════
 // TAB 2: ANOMALIES
 // ════════════════════════════════════════════════════════════════
+// Human-review statuses an operator can set on an anomaly. 'active' is the
+// engine state; the rest are review states mirrored from the PATCH endpoint's
+// ANOMALY_REVIEW_STATUSES. The colour maps each to an existing status badge tone.
+const ANOMALY_STATUS_META: Record<string, { label: string; badge: string }> = {
+  active: { label: 'Active', badge: 'active' },
+  reviewed: { label: 'Reviewed', badge: 'resolved' },
+  suppressed: { label: 'Suppressed', badge: 'unknown' },
+  escalated: { label: 'Escalated', badge: 'down' },
+  resolved: { label: 'Resolved', badge: 'resolved' },
+};
+const ANOMALY_FILTERS = ['active', 'reviewed', 'escalated', 'suppressed', 'all'] as const;
+
+function AnomalyStatusBadge({ status }: { status: string }) {
+  const m = ANOMALY_STATUS_META[(status || '').toLowerCase()] || { label: status || '—', badge: 'resolved' };
+  return <span className={`sv-badge ${m.badge}`}>{m.label}</span>;
+}
+
 function AnomaliesTab() {
-  const [filter, setFilter] = useState<'all' | 'active' | 'resolved'>('active');
+  const { canEdit } = useRbac();
+  const [filter, setFilter] = useState<(typeof ANOMALY_FILTERS)[number]>('active');
   const [q, setQ] = useState('');
+  const [busy, setBusy] = useState<number | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
   const path = filter === 'all' ? '/api/intelligence/anomalies' : `/api/intelligence/anomalies?status=${filter}`;
   const api = useApi<AnomalyRow[]>(path, REFRESH_MS);
+
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 5000);
+    return () => clearTimeout(t);
+  }, [toast]);
 
   const rows = (api.data || []).filter((a) => !q || a.device_name.toLowerCase().includes(q.toLowerCase()));
   const activeCount = (api.data || []).filter((a) => a.status === 'active').length;
 
+  async function setStatus(a: AnomalyRow, status: string) {
+    setBusy(a.id);
+    try {
+      await apiSend(`/api/intelligence/anomalies/${a.id}`, 'PATCH', { status });
+      setToast(`Anomaly on ${a.device_name} marked ${status}`);
+      api.reload();
+    } catch (e: any) {
+      setToast(e?.message || 'Failed to update anomaly');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function createRule(a: AnomalyRow) {
+    setBusy(a.id);
+    try {
+      const r = await apiSend<{ rule: { id: number; threshold: number } }>(
+        `/api/intelligence/anomalies/${a.id}/create-rule`, 'POST', {});
+      setToast(`Alert rule created for ${a.device_name} (${a.metric} > ${Math.round(Number(r.rule.threshold))})`);
+    } catch (e: any) {
+      setToast(e?.message || 'Failed to create alert rule');
+    } finally {
+      setBusy(null);
+    }
+  }
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      {toast && <div className="sv-toast ok" onClick={() => setToast(null)}>{toast}</div>}
+
       {/* Compact filter bar — single row */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-        {(['all', 'active', 'resolved'] as const).map((f) => (
+        {ANOMALY_FILTERS.map((f) => (
           <button key={f} className={`sv-chip ${filter === f ? 'active' : ''}`} onClick={() => setFilter(f)}>
             {f.charAt(0).toUpperCase() + f.slice(1)}
           </button>
         ))}
-        {filter !== 'resolved' && <span className="sv-badge warning" style={{ marginLeft: 2 }}>{activeCount} active</span>}
+        <span className="sv-badge warning" style={{ marginLeft: 2 }}>{activeCount} active</span>
         <input className="sv-input" placeholder="Filter by device…" value={q} onChange={(e) => setQ(e.target.value)}
           style={{ marginLeft: 'auto', minWidth: 160, maxWidth: 280, height: 32, padding: '0 12px' }} />
       </div>
 
-      <SectionCard title="Anomaly Detection" flush={rows.length > 0}>
+      <SectionCard title="Anomaly Detection &amp; Review" flush={rows.length > 0}>
         {api.loading && !api.data ? (
           <div style={{ padding: 16 }}><TableSkeleton rows={6} cols={9} /></div>
         ) : api.error ? (
           <ErrorBox message={api.error} />
         ) : !rows.length ? (
-          <Empty message="No anomalies detected — all devices behaving normally ✓" />
+          <Empty message="No anomalies in this view — all devices behaving normally ✓" />
         ) : (
           <div style={{ overflowX: 'auto' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
@@ -378,6 +444,7 @@ function AnomaliesTab() {
                   <th style={{ ...TH_STYLE, textAlign: 'right' }}>Current</th>
                   <th style={{ ...TH_STYLE, textAlign: 'right' }}>Baseline</th>
                   {['Deviation', 'Severity', 'Detected', 'Status'].map((c) => <th key={c} style={TH_STYLE}>{c}</th>)}
+                  {canEdit && <th style={{ ...TH_STYLE, textAlign: 'right' }}>Review</th>}
                 </tr>
               </thead>
               <tbody>
@@ -394,9 +461,127 @@ function AnomaliesTab() {
                       <IntelTD><span className={`sv-badge ${a.severity === 'critical' ? 'down' : 'warning'}`} title={deviationTooltip(a)}>{deviationLabel(a)}</span></IntelTD>
                       <IntelTD><StatusBadge status={a.severity} /></IntelTD>
                       <IntelTD style={{ color: 'var(--text-muted)' }} title={fmtTime(a.detected_at)}>{fmtRel(a.detected_at)}</IntelTD>
-                      <IntelTD>{a.status === 'active'
-                        ? <span className="sv-badge active">Active</span>
-                        : <span className="sv-badge resolved">Resolved</span>}</IntelTD>
+                      <IntelTD><AnomalyStatusBadge status={a.status} /></IntelTD>
+                      {canEdit && (
+                        <IntelTD right>
+                          <AnomalyActions
+                            anomaly={a}
+                            busy={busy === a.id}
+                            onSetStatus={setStatus}
+                            onCreateRule={createRule}
+                          />
+                        </IntelTD>
+                      )}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </SectionCard>
+    </div>
+  );
+}
+
+// Per-row anomaly review actions: a compact <select> to set the review status
+// plus a one-click "create alert rule" button. Top-level component (never nested)
+// per project rules. Only rendered for editors (RBAC-gated by the caller).
+function AnomalyActions({ anomaly: a, busy, onSetStatus, onCreateRule }: {
+  anomaly: AnomalyRow;
+  busy: boolean;
+  onSetStatus: (a: AnomalyRow, status: string) => void;
+  onCreateRule: (a: AnomalyRow) => void;
+}) {
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, justifyContent: 'flex-end' }}>
+      <select
+        className="sv-input"
+        value=""
+        disabled={busy}
+        title="Set review status"
+        onChange={(e) => { if (e.target.value) onSetStatus(a, e.target.value); }}
+        style={{ height: 24, padding: '0 6px', fontSize: 'var(--text-sm)', width: 110 }}
+      >
+        <option value="">Set status…</option>
+        <option value="reviewed">Reviewed</option>
+        <option value="suppressed">Suppressed</option>
+        <option value="escalated">Escalated</option>
+        {a.status !== 'active' && <option value="active">Re-open (active)</option>}
+      </select>
+      <button
+        className="sv-btn sm"
+        style={{ height: 24, padding: '0 10px', fontSize: 'var(--text-sm)' }}
+        disabled={busy}
+        title="Create an alert rule pre-filled from this anomaly (device + metric + 3σ threshold)"
+        onClick={() => onCreateRule(a)}
+      >
+        {busy ? <span className="sv-spinner-sm" /> : '+ Rule'}
+      </button>
+    </span>
+  );
+}
+
+// ════════════════════════════════════════════════════════════════
+// TAB: PATTERNS — recurring behavioural patterns the engine has learned
+// (~periodic spikes, weekday cycles). Read-only list; flush sticky table.
+// ════════════════════════════════════════════════════════════════
+function PatternsTab() {
+  const [q, setQ] = useState('');
+  const api = useApi<PatternRow[]>('/api/intelligence/patterns', REFRESH_MS);
+  const rows = (api.data || []).filter((p) =>
+    !q || p.device_name.toLowerCase().includes(q.toLowerCase()) || (p.metric || '').toLowerCase().includes(q.toLowerCase()));
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div style={{
+        fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', padding: '9px 14px',
+        borderRadius: 'var(--radius-sm)', background: 'var(--bg-card)',
+        border: '1px solid var(--border)', borderLeft: '3px solid var(--primary)',
+        display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+      }}>
+        <span>Recurring behavioural patterns learned from 30+ days of history — periodic spikes and weekday/time-of-day cycles per device.</span>
+        <input className="sv-input" placeholder="Filter by device or metric…" value={q} onChange={(e) => setQ(e.target.value)}
+          style={{ marginLeft: 'auto', minWidth: 160, maxWidth: 280, height: 32, padding: '0 12px' }} />
+      </div>
+
+      <SectionCard title="Detected Patterns" flush={rows.length > 0}>
+        {api.loading && !api.data ? (
+          <div style={{ padding: 16 }}><TableSkeleton rows={6} cols={7} /></div>
+        ) : api.error ? (
+          <ErrorBox message={api.error} />
+        ) : !rows.length ? (
+          <Empty message="No recurring patterns detected yet — patterns surface after ~30 days of monitoring history." />
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr>
+                  {['Device', 'Site', 'Pattern', 'Metric', 'When'].map((c) => <th key={c} style={TH_STYLE}>{c}</th>)}
+                  <th style={{ ...TH_STYLE, textAlign: 'right' }}>Avg vs Baseline</th>
+                  <th style={{ ...TH_STYLE, textAlign: 'right' }}>Seen</th>
+                  {['Confidence'].map((c) => <th key={c} style={TH_STYLE}>{c}</th>)}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((p) => {
+                  const avg = n(p.avg_value);
+                  const base = n(p.baseline_value);
+                  return (
+                    <tr key={p.id} style={ROW_STYLE}>
+                      <IntelTD><Link href={`/devices/${p.device_id}`}>{p.device_name}</Link></IntelTD>
+                      <IntelTD style={{ color: 'var(--text-muted)' }}>{p.site_name || '—'}</IntelTD>
+                      <IntelTD title={p.description}>
+                        <span className="sv-badge" style={{ textTransform: 'capitalize' }}>{(p.pattern_type || '').replace(/_/g, ' ') || '—'}</span>
+                      </IntelTD>
+                      <IntelTD>{p.metric}</IntelTD>
+                      <IntelTD style={{ color: 'var(--text-secondary)' }}>{patternWhen(p)}</IntelTD>
+                      <IntelTD right>
+                        <span style={{ fontWeight: 600 }}>{avg != null ? avg.toFixed(1) : '—'}</span>
+                        <span style={{ color: 'var(--text-muted)' }}> / {base != null ? base.toFixed(1) : '—'}</span>
+                      </IntelTD>
+                      <IntelTD right style={{ color: 'var(--text-muted)' }}>{p.occurrence_count}×</IntelTD>
+                      <IntelTD><ConfidenceStars confidence={p.confidence} /></IntelTD>
                     </tr>
                   );
                 })}

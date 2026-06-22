@@ -10,6 +10,7 @@ import { Sparkline } from '@/components/Sparkline';
 import SiteScopeBanner from '@/components/SiteScopeBanner';
 import { IconDevices } from '@/components/icons';
 import { DeviceForm, ImportModal } from '@/components/DeviceModals';
+import { gradeColor, n as intelNum } from '@/components/intel';
 
 // 24h hourly mini-sparkline series for the device list (see GET
 // /api/devices/sparklines). cpu_pct / mem_pct are null when the device has no
@@ -33,6 +34,7 @@ type Device = {
   is_gateway: boolean; alert_suppressed: boolean; suppressed_by_device_id: number | null;
   agent_id: number | null; agent_name: string | null; agent_status: string | null;
   last_alert_at: string | null; spark: SparkDay[] | null;
+  health_score: number | string | null; health_grade: string | null; health_trend: string | null;
 };
 
 // Quick-filter chips above the search bar (client-side, single-select).
@@ -129,6 +131,29 @@ function fmtMs(ms: number | null): string {
 
 function fmtPct(p: number | null): string {
   return p != null ? `${Number(p).toFixed(0)}%` : '—';
+}
+
+// Compact per-device health badge for the devices list: grade letter + score,
+// colored by grade using the shared intel gradeColor tokens. Surfaces the health
+// score the intelligence engine already computes (previously only on the
+// Intelligence page). Renders nothing when no score has been computed yet.
+function HealthBadge({ score, grade }: { score: number | string | null; grade: string | null }) {
+  const s = intelNum(score);
+  if (s == null || !grade) return null;
+  const c = gradeColor(grade);
+  return (
+    <span
+      className="sv-badge"
+      title={`Device health score ${Math.round(s)}/100 (grade ${grade})`}
+      style={{
+        color: c, borderColor: c, background: 'transparent',
+        fontWeight: 700, fontSize: 'var(--text-xs)', padding: '1px 6px',
+        display: 'inline-flex', alignItems: 'center', gap: 4,
+      }}
+    >
+      {grade.toUpperCase()} · {Math.round(s)}
+    </span>
+  );
 }
 
 // Rich status-dot tooltip, e.g. "Up — last seen 2m ago, 15ms".
@@ -445,6 +470,7 @@ function DeviceRow({
             {device.name}
           </Link>
           {device.is_gateway && <span className="sv-gw-star" title="Site gateway">⭐</span>}
+          <HealthBadge score={device.health_score} grade={device.health_grade} />
           {device.last_alert_at && (
             <span className="sv-alert-recent" title={`Last alert ${fmtRel(device.last_alert_at)}`}>
               ⚠ {fmtRel(device.last_alert_at)}

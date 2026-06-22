@@ -32,6 +32,12 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.47.0': [
+    'Anomaly review workflow — the Intelligence → Anomalies tab now lets admins mark each detected anomaly as Reviewed, Suppressed, Escalated (or re-open it), and filter the list by review state. Once a human sets a state the detection engine leaves that anomaly alone',
+    'One-click "create alert rule from anomaly" — turns any anomaly into a device alert rule pre-filled with the device, metric, and a threshold derived from the learned baseline (mean + 3σ)',
+    'Per-device health-score badge added to the Devices list (grade + score, status-token coloured) so at-risk devices stand out without opening each one',
+    'New Intelligence → Patterns view surfaces the recurring behavioural patterns the engine has learned (weekday/time-of-day cycles, periodic spikes) with metric, timing, average-vs-baseline, occurrences, and confidence',
+  ],
   '1.46.14': [
     'Cleaned up traffic-graph Y-axis labels (interface/tunnel In/Out and vendor bandwidth charts): the axis now picks a single unit from the peak value and shows it once in the chart title (e.g. "Tunnel.26 Traffic · Mbps") with short numeric ticks (0, 40, 80, 120, 160), instead of repeating "Mbps" on every tick — which was cluttered and got clipped into confusing duplicate "0.00 Mbps" labels. Tooltips still show the exact per-point value with its unit',
   ],
@@ -1515,9 +1521,11 @@ app.get('/api/devices', wrap(async (req, res) => {
            d.is_gateway, d.alert_suppressed, d.suppressed_by_device_id,
            d.agent_id, ag.name AS agent_name, ag.status AS agent_status,
            cpu.value AS latest_cpu_pct, mem.value AS latest_mem_pct,
-           avail.uptime_24h_pct, la.last_alert_at, spark.days AS spark
+           avail.uptime_24h_pct, la.last_alert_at, spark.days AS spark,
+           hs.score AS health_score, hs.grade AS health_grade, hs.trend AS health_trend
     FROM monitored_devices d
     LEFT JOIN agents ag ON ag.id = d.agent_id
+    LEFT JOIN device_health_scores hs ON hs.device_id = d.id
     LEFT JOIN LATERAL (
       SELECT value FROM snmp_results
       WHERE device_id = d.id AND metric_name = 'cpu_pct'
@@ -6653,6 +6661,76 @@ app.get('/api/intelligence/anomalies', wrap(async (req, res) => {
     LIMIT 200
   `, params);
   res.json(r.rows);
+}));
+
+// Anomaly review workflow: set a human-review status on an anomaly. Allowed
+// statuses are the engine states ('active'/'resolved') plus the review states
+// (reviewed/suppressed/escalated). RBAC: /api/intelligence/ is admin-only-write
+// (see ADMIN_ONLY_WRITE), so this PATCH already requires an admin role. Note the
+// intelligence engine only ever rewrites rows with status='active', so once a
+// human sets a review state the engine leaves it alone.
+const ANOMALY_REVIEW_STATUSES = ['active', 'resolved', 'reviewed', 'suppressed', 'escalated'];
+app.patch('/api/intelligence/anomalies/:id', wrap(async (req, res) => {
+  const id = safeInt(req.params.id, 0);
+  if (!id) return res.status(400).json({ error: 'invalid anomaly id' });
+  const status = String((req.body && req.body.status) || '').toLowerCase();
+  if (!ANOMALY_REVIEW_STATUSES.includes(status)) {
+    return res.status(400).json({ error: `status must be one of: ${ANOMALY_REVIEW_STATUSES.join(', ')}` });
+  }
+  // Only stamp resolved_at when moving to a terminal/handled state from active.
+  const stampResolved = status !== 'active';
+  const r = await sv.query(`
+    UPDATE device_anomalies
+       SET status = $1,
+           resolved_at = CASE WHEN $2::boolean AND resolved_at IS NULL THEN NOW() ELSE resolved_at END
+     WHERE id = $3
+    RETURNING id, device_id, metric, status, resolved_at
+  `, [status, stampResolved, id]);
+  if (!r.rows[0]) return res.status(404).json({ error: 'anomaly not found' });
+  res.json(r.rows[0]);
+}));
+
+// Create an alert rule pre-filled from an anomaly (device + metric + a threshold
+// derived from the learned baseline). The metric maps 1:1 onto an alert_rules
+// metric (response_ms / cpu_pct / mem_pct), and the threshold defaults to
+// mean + 3*stddev (rounded) — i.e. roughly where the anomaly was flagged — so the
+// rule fires on a comparable deviation. The operator/severity can be overridden
+// in the request body; otherwise sensible defaults are used.
+app.post('/api/intelligence/anomalies/:id/create-rule', wrap(async (req, res) => {
+  const id = safeInt(req.params.id, 0);
+  if (!id) return res.status(400).json({ error: 'invalid anomaly id' });
+  const a = await sv.query(`
+    SELECT an.device_id, an.metric, an.value, an.baseline_mean, an.baseline_stddev,
+           an.severity, d.name AS device_name
+    FROM device_anomalies an
+    JOIN monitored_devices d ON d.id = an.device_id
+    WHERE an.id = $1
+  `, [id]);
+  const row = a.rows[0];
+  if (!row) return res.status(404).json({ error: 'anomaly not found' });
+
+  const b = req.body || {};
+  const mean = Number(row.baseline_mean);
+  const std = Number(row.baseline_stddev);
+  const value = Number(row.value);
+  // Default threshold: 3σ above the learned mean. Fall back to the observed
+  // value, then to a small positive floor, so we never write a null/0 threshold.
+  let threshold = b.threshold != null && b.threshold !== ''
+    ? Number(b.threshold)
+    : (isFinite(mean) && isFinite(std) ? Math.round(mean + 3 * std) : NaN);
+  if (!isFinite(threshold) || threshold <= 0) threshold = isFinite(value) && value > 0 ? Math.round(value) : 1;
+
+  const operator = b.operator || '>';
+  const severity = b.severity || row.severity || 'warning';
+  const description = b.description || `Auto-created from anomaly #${id} on ${row.device_name} (${row.metric})`;
+
+  const r = await sv.query(`
+    INSERT INTO alert_rules
+      (device_id, scope, metric, operator, threshold, severity, enabled, notify_recovery, description)
+    VALUES ($1, 'device', $2, $3, $4, $5, TRUE, FALSE, $6)
+    RETURNING *
+  `, [row.device_id, row.metric, operator, threshold, severity, description]);
+  res.status(201).json({ rule: r.rows[0], from_anomaly: id });
 }));
 
 // Capacity forecast for one device (computed on demand).
