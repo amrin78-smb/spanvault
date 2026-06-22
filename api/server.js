@@ -32,6 +32,10 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.47.1': [
+    'Dashboard "Wireless Health" chips (overloaded APs / co-channel pairs / problem clients) are now clickable and deep-link to where the underlying items actually live — overloaded APs and co-channel interference open the Wireless → Intelligence tab (which names the affected APs and the channel-planning fix); problem clients open the Wireless → Clients tab',
+    'Added tooltips explaining each metric so the numbers are not misleading — e.g. "overloaded" means an AP serving >25 clients (not high utilisation), and "co-channel pairs" is the count of AP pairs sharing a 2.4GHz channel',
+  ],
   '1.47.0': [
     'Anomaly review workflow — the Intelligence → Anomalies tab now lets admins mark each detected anomaly as Reviewed, Suppressed, Escalated (or re-open it), and filter the list by review state. Once a human sets a state the detection engine leaves that anomaly alone',
     'One-click "create alert rule from anomaly" — turns any anomaly into a device alert rule pre-filled with the device, metric, and a threshold derived from the learned baseline (mean + 3σ)',

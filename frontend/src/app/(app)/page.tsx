@@ -1571,9 +1571,15 @@ function WirelessHealthCard() {
       <IntelBar label="Interference" score={d.interference_score} />
       <IntelBar label="Capacity" score={d.capacity_score} />
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 'auto', paddingTop: 10, fontSize: 'var(--text-xs)' }}>
-        <WirelessChip n={d.overloaded_aps} label="overloaded AP" color="var(--yellow)" />
-        <WirelessChip n={d.co_channel_pairs} label="co-channel pair" color="var(--yellow)" />
-        <WirelessChip n={d.problem_clients} label="problem client" color="var(--red)" />
+        <WirelessChip n={d.overloaded_aps} label="overloaded AP" color="var(--yellow)"
+          href="/wireless?tab=intelligence"
+          title="Access points serving more than 25 clients. The Intelligence tab lists the specific APs by name in its capacity recommendations." />
+        <WirelessChip n={d.co_channel_pairs} label="co-channel pair" color="var(--yellow)"
+          href="/wireless?tab=intelligence"
+          title="Pairs of access points sharing a 2.4GHz channel (co-channel interference) — a combinatorial count. The Intelligence tab shows how many APs are affected and the channel-planning fix." />
+        <WirelessChip n={d.problem_clients} label="problem client" color="var(--red)"
+          href="/wireless?tab=clients"
+          title="Wireless clients flagged with connectivity / performance problems (weak signal, frequent roaming, etc.). See the Clients tab and toggle 'Problem only'." />
       </div>
     </div>
   );
@@ -1593,17 +1599,26 @@ function IntelBar({ label, score }: { label: string; score: number }) {
     </div>
   );
 }
-function WirelessChip({ n, label, color }: { n: number; label: string; color: string }) {
+function WirelessChip({ n, label, color, href, title }: { n: number; label: string; color: string; href?: string; title?: string }) {
   const active = n > 0;
+  const bg = active ? 'var(--bg-card)' : 'transparent';
+  const bd = active ? color : 'var(--border)';
+  const fg = active ? color : 'var(--text-muted)';
+  const body = `${n} ${label}${n === 1 ? '' : 's'}`;
+  if (href) {
+    return (
+      <Link href={href} title={title} style={{
+        display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 7px', borderRadius: 4,
+        background: bg, border: `1px solid ${bd}`, color: fg, fontWeight: 600, whiteSpace: 'nowrap',
+        textDecoration: 'none', cursor: 'pointer',
+      }}>{body}</Link>
+    );
+  }
   return (
-    <span style={{
+    <span title={title} style={{
       display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 7px', borderRadius: 4,
-      background: active ? 'var(--bg-card)' : 'transparent',
-      border: `1px solid ${active ? color : 'var(--border)'}`,
-      color: active ? color : 'var(--text-muted)', fontWeight: 600, whiteSpace: 'nowrap',
-    }}>
-      {n} {label}{n === 1 ? '' : 's'}
-    </span>
+      background: bg, border: `1px solid ${bd}`, color: fg, fontWeight: 600, whiteSpace: 'nowrap',
+    }}>{body}</span>
   );
 }
 

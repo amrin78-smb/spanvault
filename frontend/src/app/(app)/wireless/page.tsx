@@ -672,6 +672,12 @@ function haCellLabel(ha_mode: string | null, ha_sync_status: string | null): { t
 
 export default function WirelessPage() {
   const [tab, setTab] = useState<TabKey>('overview');
+  // Deep-link support: the dashboard's Wireless Health chips link here with ?tab=intelligence|clients
+  useEffect(() => {
+    const t = new URLSearchParams(window.location.search).get('tab');
+    const valid: TabKey[] = ['overview', 'aps', 'ssids', 'intelligence', 'clients', 'rogues', 'controllers'];
+    if (t && (valid as string[]).includes(t)) setTab(t as TabKey);
+  }, []);
   const [siteFilter, setSiteFilter] = useState<number | null>(null);
   const [controllerFilter, setControllerFilter] = useState<number | null>(null);
   const [apStatusFilter, setApStatusFilter] = useState<string>('');
