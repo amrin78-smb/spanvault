@@ -32,6 +32,10 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.47.2': [
+    'Fixed "create alert rule from anomaly" for latency anomalies — these are stored under the metric "response_ms", but the collector\'s alert engine only recognizes "response_time", so the generated rule never fired. The metric is now translated on insert (cpu_pct/mem_pct were already correct), so latency rules created from an anomaly actually trigger',
+    'Re-opening a reviewed anomaly back to "active" now returns a clear 409 ("A newer active anomaly already exists for this device/metric.") instead of a generic 500 when the detection engine has already raised a fresh active anomaly for the same device+metric',
+  ],
   '1.47.1': [
     'Dashboard "Wireless Health" chips (overloaded APs / co-channel pairs / problem clients) are now clickable and deep-link to where the underlying items actually live — overloaded APs and co-channel interference open the Wireless → Intelligence tab (which names the affected APs and the channel-planning fix); problem clients open the Wireless → Clients tab',
     'Added tooltips explaining each metric so the numbers are not misleading — e.g. "overloaded" means an AP serving >25 clients (not high utilisation), and "co-channel pairs" is the count of AP pairs sharing a 2.4GHz channel',
@@ -6683,13 +6687,23 @@ app.patch('/api/intelligence/anomalies/:id', wrap(async (req, res) => {
   }
   // Only stamp resolved_at when moving to a terminal/handled state from active.
   const stampResolved = status !== 'active';
-  const r = await sv.query(`
-    UPDATE device_anomalies
-       SET status = $1,
-           resolved_at = CASE WHEN $2::boolean AND resolved_at IS NULL THEN NOW() ELSE resolved_at END
-     WHERE id = $3
-    RETURNING id, device_id, metric, status, resolved_at
-  `, [status, stampResolved, id]);
+  let r;
+  try {
+    r = await sv.query(`
+      UPDATE device_anomalies
+         SET status = $1,
+             resolved_at = CASE WHEN $2::boolean AND resolved_at IS NULL THEN NOW() ELSE resolved_at END
+       WHERE id = $3
+      RETURNING id, device_id, metric, status, resolved_at
+    `, [status, stampResolved, id]);
+  } catch (err) {
+    // Re-opening an old anomaly to 'active' can collide with idx_anomaly_one_active
+    // (one active row per device/metric) if the engine already raised a fresh one.
+    if (err.code === '23505') {
+      return res.status(409).json({ error: 'A newer active anomaly already exists for this device/metric.' });
+    }
+    throw err;
+  }
   if (!r.rows[0]) return res.status(404).json({ error: 'anomaly not found' });
   res.json(r.rows[0]);
 }));
@@ -6728,12 +6742,18 @@ app.post('/api/intelligence/anomalies/:id/create-rule', wrap(async (req, res) =>
   const severity = b.severity || row.severity || 'warning';
   const description = b.description || `Auto-created from anomaly #${id} on ${row.device_name} (${row.metric})`;
 
+  // The anomaly engine stores latency under metric 'response_ms', but the
+  // collector's alert engine only recognizes 'response_time' (cpu_pct/mem_pct
+  // match 1:1). Translate so the created rule actually fires — both are ms
+  // compared directly, so the threshold semantics are identical.
+  const ruleMetric = row.metric === 'response_ms' ? 'response_time' : row.metric;
+
   const r = await sv.query(`
     INSERT INTO alert_rules
       (device_id, scope, metric, operator, threshold, severity, enabled, notify_recovery, description)
     VALUES ($1, 'device', $2, $3, $4, $5, TRUE, FALSE, $6)
     RETURNING *
-  `, [row.device_id, row.metric, operator, threshold, severity, description]);
+  `, [row.device_id, ruleMetric, operator, threshold, severity, description]);
   res.status(201).json({ rule: r.rows[0], from_anomaly: id });
 }));
 
