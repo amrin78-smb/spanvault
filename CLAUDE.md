@@ -5,6 +5,19 @@ SpanVault is a Network Monitoring System (NMS) in the NocVault suite. It runs al
 NetVault (port 3000), LogVault (port 3004), and DDIVault (port 3006) on the same Windows Server.
 SpanVault runs on port 3008 (frontend) and port 3009 (API).
 
+## Installer parity (IMPORTANT — read before any deploy-affecting change)
+
+This app is provisioned two ways that BOTH must stay in sync: the per-app updater
+`installer/Update-SpanVault.ps1` (upgrades) and the shared **suite installer**
+`../netvault/installer/Install-NocVault-Suite.ps1` (fresh install of the whole NocVault
+suite — it lives in the **netvault** repo, a sibling of this one). Any change — even a
+small one — that affects how the app is provisioned MUST be reflected in BOTH, in the
+same change, or fresh installs silently break. This includes: a new/renamed env var the
+app reads, a new scheduled task, a new or changed schema file (or required DB
+extension/grant), a new NSSM service or changed entrypoint/port, a new firewall port, a
+new cross-DB grant, or a new build step. Update and commit the suite installer in the
+netvault repo too; if you can't, flag it explicitly so it isn't missed.
+
 ## Repo layout
 api/server.js          ← Express API (port 3009, 127.0.0.1 only)
 collector/collector.js ← Background polling service (ICMP + SNMP)
