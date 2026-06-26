@@ -5,11 +5,12 @@ import UpdateNotifier from '@/components/UpdateNotifier';
 import GlobalSearch from '@/components/GlobalSearch';
 import IdleTimeout from '@/components/IdleTimeout';
 import KeyboardShortcuts from '@/components/KeyboardShortcuts';
-import { LicenseProvider, LicenseBanner } from '@/components/LicenseGuard';
+import { LicenseProvider, LicenseBanner, LicenseGate } from '@/components/LicenseGuard';
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   return (
     <LicenseProvider>
+      <LicenseGate>
       {/* Full-height column: header spans the full page width (over the
           sidebar); below it a flex row holds the sidebar + scrolling content. */}
       <div className="sv-shell">
@@ -29,6 +30,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       <GlobalSearch />
       <IdleTimeout />
       <KeyboardShortcuts />
+      </LicenseGate>
     </LicenseProvider>
   );
 }

@@ -32,6 +32,12 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.48.0': [
+    'Per-app license gating — SpanVault now honours the NocVault module entitlement on your license. If your active license explicitly lists the included modules and SpanVault is not among them, the app is locked',
+    'Fail-open by design: trial keys, the post-expiry grace period, an unreachable license server, and legacy keys with no module list are never blocked — only an active key that lists modules and omits "spanvault" triggers the lock',
+    'Locked installs show a clear "SpanVault Not Licensed" screen with a link to manage your license at the NocVault Hub, instead of erroring out',
+    'Access-control only — no database, schema, or data changes; your monitoring data is untouched while a license is being sorted out',
+  ],
   '1.47.2': [
     'Fixed "create alert rule from anomaly" for latency anomalies — these are stored under the metric "response_ms", but the collector\'s alert engine only recognizes "response_time", so the generated rule never fired. The metric is now translated on insert (cpu_pct/mem_pct were already correct), so latency rules created from an anomaly actually trigger',
     'Re-opening a reviewed anomaly back to "active" now returns a clear 409 ("A newer active anomaly already exists for this device/metric.") instead of a generic 500 when the detection engine has already raised a fresh active anomaly for the same device+metric',

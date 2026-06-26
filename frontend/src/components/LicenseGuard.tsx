@@ -3,7 +3,7 @@
 import { useState, useEffect, createContext, useContext, ReactNode } from 'react';
 
 interface LicenseState {
-  mode: 'active' | 'trial' | 'grace' | 'disabled' | 'unreachable' | 'unknown';
+  mode: 'active' | 'trial' | 'grace' | 'disabled' | 'unlicensed' | 'unreachable' | 'unknown';
   canWrite: boolean;
   canRead: boolean;
   disabled: boolean;
@@ -100,7 +100,18 @@ export function LicenseBanner() {
 }
 
 export function LicenseDisabledScreen() {
+  const { state } = useLicense();
   const hubUrl = process.env.NEXT_PUBLIC_NOCVAULT_HUB_URL || 'http://localhost:3000';
+
+  // 'unlicensed' = an active key that does not include the spanvault module
+  // (per-app entitlement lock); other disabled cases = expired + grace ended.
+  const unlicensed = state.mode === 'unlicensed';
+  const heading = unlicensed ? 'SpanVault Not Licensed' : 'License Expired';
+  const message = unlicensed
+    ? 'SpanVault is not included in your NocVault license. Please add the SpanVault module to your license to restore access.'
+    : 'Your NocVault license has expired and the 30-day grace period has ended. Please renew your license to restore access.';
+  const cta = unlicensed ? 'Manage License at NocVault Hub →' : 'Renew License at NocVault Hub →';
+
   return (
     <div style={{
       display: 'flex', flexDirection: 'column', alignItems: 'center',
@@ -108,15 +119,23 @@ export function LicenseDisabledScreen() {
       gap: 16, padding: 32, textAlign: 'center',
     }}>
       <div style={{ fontSize: 64 }}>🔒</div>
-      <h1 style={{ fontSize: 'var(--text-2xl)', fontWeight: 800, color: 'var(--text-primary)', margin: 0 }}>License Expired</h1>
+      <h1 style={{ fontSize: 'var(--text-2xl)', fontWeight: 800, color: 'var(--text-primary)', margin: 0 }}>{heading}</h1>
       <p style={{ fontSize: 'var(--text-md)', color: 'var(--text-muted)', maxWidth: 480, margin: 0 }}>
-        Your NocVault license has expired and the 30-day grace period has ended.
-        Please renew your license to restore access.
+        {message}
       </p>
       <a href={`${hubUrl}/settings/license`}
         style={{ background: 'var(--primary)', color: '#fff', padding: '12px 28px', borderRadius: 8, textDecoration: 'none', fontWeight: 600, fontSize: 'var(--text-md)', marginTop: 8 }}>
-        Renew License at NocVault Hub →
+        {cta}
       </a>
     </div>
   );
+}
+
+// Client gate: renders a full-screen lock when the license disables the app
+// (expired+grace-ended OR not entitled to the spanvault module), otherwise the
+// app. While the license is still loading, render children to avoid a flash.
+export function LicenseGate({ children }: { children: ReactNode }) {
+  const { state, loading } = useLicense();
+  if (!loading && state.disabled) return <LicenseDisabledScreen />;
+  return <>{children}</>;
 }

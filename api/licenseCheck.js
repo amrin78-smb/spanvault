@@ -34,6 +34,12 @@ async function getLicense(forceRefresh = false) {
 function getLicenseState(license) {
   if (!license) return { mode: 'unreachable', canWrite: true, canRead: true, disabled: false };
   const { status, daysRemaining } = license;
+  // Per-app entitlement: hard-lock ONLY when an ACTIVE key explicitly lists modules
+  // and omits ours. Trial / grace / hub-unreachable / empty-modules stay open
+  // (fail-open) so trials and legacy keys are never bricked.
+  if (status === 'active' && Array.isArray(license.modules) && license.modules.length > 0 && !license.modules.includes('spanvault')) {
+    return { mode: 'unlicensed', canWrite: false, canRead: false, disabled: true };
+  }
   if (status === 'active' || status === 'trial') {
     return { mode: status, canWrite: true, canRead: true, disabled: false };
   }
