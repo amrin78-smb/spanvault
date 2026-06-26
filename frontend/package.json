@@ -1,6 +1,6 @@
 {
   "name": "spanvault-frontend",
-  "version": "1.48.3",
+  "version": "1.48.4",
   "private": true,
   "scripts": {
     "dev": "next dev -p 3008",
@@ -8,13 +8,13 @@
     "start": "next start -p 3008"
   },
   "dependencies": {
-    "next": "14.2.5",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "next-auth": "^4.24.7",
     "bcryptjs": "^2.4.3",
     "jsonwebtoken": "^9.0.2",
+    "next": "14.2.35",
+    "next-auth": "^4.24.7",
     "pg": "^8.12.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
     "recharts": "^2.12.7"
   },
   "devDependencies": {

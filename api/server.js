@@ -32,6 +32,9 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.48.4': [
+    'Security: upgraded Next.js to 14.2.35, the patched release addressing the December 2025 Next.js security advisory. No functional or UI changes',
+  ],
   '1.48.3': [
     'Fresh-install fix: the map_shapes table is now created before the ALTERs that add its locked/group_id columns. Previously those ALTERs ran first on a clean database and failed, so map_shapes ended up missing both columns and saving any map with shapes 500-ed in the editor. Existing databases are unaffected (idempotent)',
     'Synced the frontend package version to match the root (lockstep) — no functional change',
