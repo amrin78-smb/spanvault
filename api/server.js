@@ -32,6 +32,9 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.48.2': [
+    'The UI now reflects a license change within ~5 minutes — the frontend license re-check interval was lowered from 6 hours to match the backend 5-minute license cache TTL, so an already-open session shows the lock screen promptly',
+  ],
   '1.48.1': [
     'License enforcement now reacts within ~5 minutes instead of up to 24 hours — the hub license cache was shortened from a 24-hour to a 5-minute TTL, so a reduced or removed SpanVault entitlement locks the app promptly',
     'Hardened the frontend hard-block: the full-screen license lock now covers EVERY directly-reachable page, including the SSO landing and the public/NOC-wallboard map pages that live outside the main app route group, not just the in-app routes',
