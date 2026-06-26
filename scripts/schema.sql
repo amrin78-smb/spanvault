@@ -505,25 +505,11 @@ ALTER TABLE map_connections DROP CONSTRAINT IF EXISTS map_connections_to_item_id
 ALTER TABLE map_connections ADD COLUMN IF NOT EXISTS from_kind TEXT NOT NULL DEFAULT 'device';
 ALTER TABLE map_connections ADD COLUMN IF NOT EXISTS to_kind   TEXT NOT NULL DEFAULT 'device';
 
--- Locked elements can't be moved/resized in the editor (e.g. background zones).
-ALTER TABLE map_devices ADD COLUMN IF NOT EXISTS locked BOOLEAN NOT NULL DEFAULT FALSE;
-ALTER TABLE map_shapes  ADD COLUMN IF NOT EXISTS locked BOOLEAN NOT NULL DEFAULT FALSE;
-ALTER TABLE map_labels  ADD COLUMN IF NOT EXISTS locked BOOLEAN NOT NULL DEFAULT FALSE;
-
--- Grouping: elements sharing a non-null group_id move/select together. group_id
--- is a client-assigned tag (not a FK); it persists as-is across layout saves.
-ALTER TABLE map_devices ADD COLUMN IF NOT EXISTS group_id INTEGER;
-ALTER TABLE map_shapes  ADD COLUMN IF NOT EXISTS group_id INTEGER;
-ALTER TABLE map_labels  ADD COLUMN IF NOT EXISTS group_id INTEGER;
-
--- Drill-down: a node can open a child map (campus → building → rack). References
--- another sv_maps row; cleared if that map is deleted.
-ALTER TABLE map_devices ADD COLUMN IF NOT EXISTS drill_map_id INTEGER REFERENCES sv_maps(id) ON DELETE SET NULL;
-
 -- Decorative, non-device elements: basic shapes (rect/ellipse/arrow/line/text)
 -- and built-in network glyphs (cloud/internet/router/switch/firewall/server/...).
 -- The glyph artwork lives in client code; here we only store the kind + geometry
--- + styling, so this table stays tiny.
+-- + styling, so this table stays tiny. Defined BEFORE the ALTERs below that add
+-- its locked/group_id columns, so a fresh install creates the table first.
 CREATE TABLE IF NOT EXISTS map_shapes (
   id           SERIAL PRIMARY KEY,
   map_id       INTEGER NOT NULL REFERENCES sv_maps(id) ON DELETE CASCADE,
@@ -542,6 +528,21 @@ CREATE TABLE IF NOT EXISTS map_shapes (
   z_index      INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_map_shapes_map ON map_shapes(map_id);
+
+-- Locked elements can't be moved/resized in the editor (e.g. background zones).
+ALTER TABLE map_devices ADD COLUMN IF NOT EXISTS locked BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE map_shapes  ADD COLUMN IF NOT EXISTS locked BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE map_labels  ADD COLUMN IF NOT EXISTS locked BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- Grouping: elements sharing a non-null group_id move/select together. group_id
+-- is a client-assigned tag (not a FK); it persists as-is across layout saves.
+ALTER TABLE map_devices ADD COLUMN IF NOT EXISTS group_id INTEGER;
+ALTER TABLE map_shapes  ADD COLUMN IF NOT EXISTS group_id INTEGER;
+ALTER TABLE map_labels  ADD COLUMN IF NOT EXISTS group_id INTEGER;
+
+-- Drill-down: a node can open a child map (campus → building → rack). References
+-- another sv_maps row; cleared if that map is deleted.
+ALTER TABLE map_devices ADD COLUMN IF NOT EXISTS drill_map_id INTEGER REFERENCES sv_maps(id) ON DELETE SET NULL;
 
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO spanvault_user;
 GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO spanvault_user;
