@@ -18,6 +18,26 @@ extension/grant), a new NSSM service or changed entrypoint/port, a new firewall 
 new cross-DB grant, or a new build step. Update and commit the suite installer in the
 netvault repo too; if you can't, flag it explicitly so it isn't missed.
 
+## Known Security Debt (scheduled, not yet done)
+
+Tracked npm-audit findings deliberately deferred (triaged 2026-06-26). NOT fixable with a
+safe `npm audit fix` — each needs a breaking change, so schedule as deliberate, tested
+work. **NEVER run `npm audit fix --force`.**
+
+- **nodemailer → v9 (root).** The current v6 line carries a high advisory
+  (GHSA-p6gq-j5cr-w38f: the message-level `raw` option bypasses
+  `disableFileAccess`/`disableUrlAccess` → file-read/SSRF) plus an addressparser ReDoS.
+  The only fix is the breaking major **9.0.1**. Not currently reachable — SMTP config is
+  admin-only and `api/reportScheduler.js` never uses the `raw` option — so low risk on the
+  internal LAN. Upgrade to nodemailer 9.x in a maintenance window and re-test the scheduled
+  report email path.
+- **Next.js 14 → 15 (frontend).** The frontend is on the latest 14.2.x patch (14.2.35),
+  but the remaining `next` advisories (RSC/image-optimizer DoS, rewrites request-smuggling,
+  CSP-nonce XSS, middleware cache-poisoning) are only patched in the 15.x/16.x line — there
+  is no 14.x backport. Exposure is reduced (firewalled, SSO-gated, authenticated internal
+  users only). Plan a tested **Next.js 14→15 migration for DDIVault and SpanVault together**
+  (App Router / runtime breaking changes) rather than a forced bump.
+
 ## Repo layout
 api/server.js          ← Express API (port 3009, 127.0.0.1 only)
 collector/collector.js ← Background polling service (ICMP + SNMP)
