@@ -2,7 +2,7 @@
 
 let cachedLicense = null;
 let lastChecked   = null;
-const CACHE_TTL   = 24 * 60 * 60 * 1000; // 24 hours
+const CACHE_TTL   = 5 * 60 * 1000; // 5 minutes
 
 async function fetchLicense() {
   const hubUrl = process.env.NOCVAULT_HUB_URL || process.env.NEXT_PUBLIC_NOCVAULT_HUB_URL || 'http://localhost:3000';

@@ -5,12 +5,15 @@ import UpdateNotifier from '@/components/UpdateNotifier';
 import GlobalSearch from '@/components/GlobalSearch';
 import IdleTimeout from '@/components/IdleTimeout';
 import KeyboardShortcuts from '@/components/KeyboardShortcuts';
-import { LicenseProvider, LicenseBanner, LicenseGate } from '@/components/LicenseGuard';
+import { LicenseBanner } from '@/components/LicenseGuard';
 
+// LicenseProvider + LicenseGate now live in the ROOT layout (src/app/layout.tsx)
+// so the full-screen license lock covers EVERY route, not just the (app) group.
+// This layout only renders the in-shell LicenseBanner; useLicense() still
+// resolves via the provider mounted at the root.
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   return (
-    <LicenseProvider>
-      <LicenseGate>
+    <>
       {/* Full-height column: header spans the full page width (over the
           sidebar); below it a flex row holds the sidebar + scrolling content. */}
       <div className="sv-shell">
@@ -30,7 +33,6 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       <GlobalSearch />
       <IdleTimeout />
       <KeyboardShortcuts />
-      </LicenseGate>
-    </LicenseProvider>
+    </>
   );
 }

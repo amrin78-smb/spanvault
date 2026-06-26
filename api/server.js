@@ -32,6 +32,11 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.48.1': [
+    'License enforcement now reacts within ~5 minutes instead of up to 24 hours — the hub license cache was shortened from a 24-hour to a 5-minute TTL, so a reduced or removed SpanVault entitlement locks the app promptly',
+    'Hardened the frontend hard-block: the full-screen license lock now covers EVERY directly-reachable page, including the SSO landing and the public/NOC-wallboard map pages that live outside the main app route group, not just the in-app routes',
+    'Access-control only — no database, schema, or monitoring-data changes',
+  ],
   '1.48.0': [
     'Per-app license gating — SpanVault now honours the NocVault module entitlement on your license. If your active license explicitly lists the included modules and SpanVault is not among them, the app is locked',
     'Fail-open by design: trial keys, the post-expiry grace period, an unreachable license server, and legacy keys with no module list are never blocked — only an active key that lists modules and omits "spanvault" triggers the lock',
