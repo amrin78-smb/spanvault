@@ -232,6 +232,67 @@ if ($LASTEXITCODE -eq 0) { Write-Ok 'Frontend dependencies installed' }
 else { Write-Warn "npm install (frontend) exited with code $LASTEXITCODE" }
 Pop-Location
 
+# ── 4b. Reassign public-object ownership to spanvault_user ─────
+# Self-heal for fresh installs: the DB is created OWNER spanvault_user but its
+# schema is first applied as the postgres superuser, so the tables/sequences/
+# views/functions end up owned by postgres. Both THIS updater's schema-apply
+# (step 5, as spanvault_user) AND the API's boot-time applySchema() (also as
+# spanvault_user) then fail on the first ALTER with "must be owner of table
+# monitored_devices", aborting the self-migration silently. Reassign every public
+# object to spanvault_user ONCE here, as the postgres superuser, using
+# POSTGRES_PASSWORD from the root .env.local (written by the suite installer).
+# Idempotent, non-fatal, and a soft-skip (warning only) when the password is
+# absent (pre-existing installs) - we never invent a password.
+Write-Step 'Reassigning table ownership (idempotent)'
+$ownEnvContent  = if (Test-Path $rootEnv) { Get-Content $rootEnv -Raw } else { '' }
+$pgPwReassign   = [regex]::Match($ownEnvContent, 'POSTGRES_PASSWORD=(.+)').Groups[1].Value.Trim()
+$svDbNameOwn    = [regex]::Match($ownEnvContent, 'SV_DB_NAME=(.+)').Groups[1].Value.Trim()
+if (-not $svDbNameOwn) { $svDbNameOwn = 'spanvault' }
+if ($psql -and $pgPwReassign) {
+    $reassign = @'
+DO $$
+DECLARE r RECORD;
+BEGIN
+  IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'spanvault_user') THEN
+    FOR r IN SELECT tablename FROM pg_tables WHERE schemaname='public' LOOP
+      EXECUTE format('ALTER TABLE public.%I OWNER TO spanvault_user', r.tablename);
+    END LOOP;
+    FOR r IN SELECT sequencename FROM pg_sequences WHERE schemaname='public' LOOP
+      EXECUTE format('ALTER SEQUENCE public.%I OWNER TO spanvault_user', r.sequencename);
+    END LOOP;
+    FOR r IN SELECT viewname FROM pg_views WHERE schemaname='public' LOOP
+      EXECUTE format('ALTER VIEW public.%I OWNER TO spanvault_user', r.viewname);
+    END LOOP;
+    FOR r IN SELECT p.proname AS nm, pg_get_function_identity_arguments(p.oid) AS args
+             FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+             WHERE n.nspname='public'
+               AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.objid=p.oid AND d.deptype='e') LOOP
+      EXECUTE format('ALTER FUNCTION public.%I(%s) OWNER TO spanvault_user', r.nm, r.args);
+    END LOOP;
+    GRANT CREATE ON SCHEMA public TO spanvault_user;
+  END IF;
+END
+$$;
+'@
+    # Connect as the postgres superuser (only it can reassign objects it owns) and
+    # feed the SQL on stdin (-f -). --quiet suppresses NOTICE chatter that would
+    # raise NativeCommandError over WinRM; consume both streams, gate on exit code.
+    $env:PGPASSWORD = $pgPwReassign
+    try { $null = $reassign | & $psql --quiet -U postgres -h localhost -p 5432 -d $svDbNameOwn -f - 2>&1 } catch {}
+    $reassignExit = $LASTEXITCODE
+    $env:PGPASSWORD = ''
+    # As with the schema apply, psql over WinRM may return -1 on success.
+    if ($reassignExit -eq 0 -or $reassignExit -eq -1) {
+        Write-Ok "Reassigned public objects to spanvault_user (in $svDbNameOwn)"
+    } else {
+        Write-Warn "ownership reassign exited with code $reassignExit - if the schema self-migration fails, run it manually as postgres."
+    }
+} elseif (-not $psql) {
+    Write-Warn 'psql not found - skipping ownership reassign.'
+} else {
+    Write-Warn 'POSTGRES_PASSWORD not in .env.local - skipping ownership reassign.'
+}
+
 # ── 5. Apply database schema (idempotent) ──────────────────────
 Write-Step 'Applying database schema'
 $schema = Join-Path $AppRoot 'scripts\schema.sql'

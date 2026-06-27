@@ -32,6 +32,11 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.48.5': [
+    'Updater self-heal: the updater now reassigns ownership of every public table, sequence, view and function to spanvault_user (as the postgres superuser) before applying the schema, so both the updater migrations and the API\'s boot-time schema self-migration actually run',
+    'Fixes silent "must be owner of table ..." failures on freshly-installed boxes, where the schema was first applied as postgres and left the objects owned by postgres — the per-boot applySchema() then aborted on its first ALTER',
+    'Idempotent and non-fatal: it soft-skips with a warning when POSTGRES_PASSWORD is absent from .env.local (pre-existing installs); no schema or data changes',
+  ],
   '1.48.4': [
     'Security: upgraded Next.js to 14.2.35, the patched release addressing the December 2025 Next.js security advisory. No functional or UI changes',
   ],
