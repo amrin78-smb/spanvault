@@ -18,6 +18,15 @@ extension/grant), a new NSSM service or changed entrypoint/port, a new firewall 
 new cross-DB grant, or a new build step. Update and commit the suite installer in the
 netvault repo too; if you can't, flag it explicitly so it isn't missed.
 
+**Post-install test script (keep in sync too):** the suite ships a fresh-install smoke
+tester at `../netvault/installer/Test-NocVault-Suite.ps1` (it lives in the netvault repo and
+verifies services, ports, health/versions, schema, the collectors end-to-end, the tamper
+model and cross-DB grants). If you build a feature that a fresh install should be verified
+for — a new NSSM service or port, a new DB table/column/seed/extension/grant, a new collector
+data path, a new scheduled task, or a new health/endpoint contract — update BOTH the suite
+installer AND this test script (both in the netvault repo) in the same change, so fresh
+installs stay verifiable.
+
 ## Known Security Debt (scheduled, not yet done)
 
 Tracked npm-audit findings deliberately deferred (triaged 2026-06-26). NOT fixable with a
