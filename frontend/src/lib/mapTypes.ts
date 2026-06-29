@@ -42,6 +42,9 @@ export type MapConnection = {
   arrow: boolean;     // draw a directional arrowhead at the 'to' end
   width: number;      // stroke thickness in user units (default 2)
   routing: string;    // 'straight' | 'elbow' (orthogonal)
+  // Optional user-defined bend points (canvas/user coords) for elbow routing. The
+  // orthogonal line passes through these in order; null/empty = auto-route.
+  waypoints?: { x: number; y: number }[] | null;
   // Weathermap binding (static): SNMP ifIndex on each endpoint device + the link
   // capacity used to compute utilization. null = unbound (plain styled line).
   from_if_index: number | null;
@@ -135,6 +138,22 @@ export function statusFill(status: string | null | undefined, suppressed?: boole
   return STATUS_FILL[status || 'unknown'] || STATUS_FILL.unknown;
 }
 
+// Coerce a connection's waypoints from a DB row — a parsed JSON array, a JSON
+// string (jsonb sometimes arrives unparsed), or null — into a clean array of
+// {x,y} numbers, or null for auto-route. Defensive against malformed entries.
+function normalizeWaypoints(raw: unknown): { x: number; y: number }[] | null {
+  let w: unknown = raw;
+  if (typeof w === 'string') {
+    try { w = JSON.parse(w); } catch { return null; }
+  }
+  if (!Array.isArray(w)) return null;
+  const pts = w
+    .filter((p): p is { x: unknown; y: unknown } => p != null && typeof p === 'object')
+    .map((p) => ({ x: Number(p.x), y: Number(p.y) }))
+    .filter((p) => isFinite(p.x) && isFinite(p.y));
+  return pts.length ? pts : null;
+}
+
 // pg returns NUMERIC columns (x, y) as strings — coerce a fetched map to numbers
 // so geometry math is reliable everywhere downstream.
 export function normalizeMap(m: FullMap): FullMap {
@@ -166,6 +185,7 @@ export function normalizeMap(m: FullMap): FullMap {
       width: Number(c.width ?? 2),
       arrow: !!c.arrow,
       routing: c.routing === 'elbow' ? 'elbow' : 'straight',
+      waypoints: normalizeWaypoints(c.waypoints),
       from_if_index: c.from_if_index == null ? null : Number(c.from_if_index),
       to_if_index: c.to_if_index == null ? null : Number(c.to_if_index),
       capacity_bps: c.capacity_bps == null ? null : Number(c.capacity_bps),
@@ -249,7 +269,41 @@ export function edgePoint(
 // the unit vector of the final segment (for orienting an arrowhead).
 export function elbowPoints(
   a: { cx: number; cy: number }, b: { cx: number; cy: number },
+  waypoints?: { x: number; y: number }[] | null,
 ): { d: string; mx: number; my: number; ux: number; uy: number } {
+  // With user-defined waypoints, route A → each waypoint (in order) → B as an
+  // orthogonal polyline, inserting a right-angle corner between any two
+  // consecutive points that aren't already aligned so every segment stays
+  // horizontal or vertical. The corner bends along the dominant axis first,
+  // mirroring the auto-route's single-bend behaviour.
+  if (Array.isArray(waypoints) && waypoints.length > 0) {
+    const stops = [
+      { x: a.cx, y: a.cy },
+      ...waypoints.map((w) => ({ x: Number(w.x), y: Number(w.y) })),
+      { x: b.cx, y: b.cy },
+    ];
+    const pts: { x: number; y: number }[] = [stops[0]];
+    for (let i = 1; i < stops.length; i++) {
+      const p = pts[pts.length - 1];
+      const q = stops[i];
+      if (p.x !== q.x && p.y !== q.y) {
+        if (Math.abs(q.x - p.x) >= Math.abs(q.y - p.y)) pts.push({ x: q.x, y: p.y });
+        else pts.push({ x: p.x, y: q.y });
+      }
+      pts.push(q);
+    }
+    const d = pts.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x} ${p.y}`).join(' ');
+    // Label anchor: midpoint of the middle segment of the polyline.
+    const si = Math.max(0, Math.floor((pts.length - 1) / 2));
+    const p0 = pts[si], p1 = pts[si + 1] || pts[si];
+    const mx = (p0.x + p1.x) / 2, my = (p0.y + p1.y) / 2;
+    // Final-segment unit vector (for orienting the arrowhead at the 'to' end).
+    const last = pts[pts.length - 1], prev = pts[pts.length - 2] || last;
+    const fdx = last.x - prev.x, fdy = last.y - prev.y;
+    const ux = Math.abs(fdx) >= Math.abs(fdy) ? (Math.sign(fdx) || 1) : 0;
+    const uy = Math.abs(fdx) >= Math.abs(fdy) ? 0 : (Math.sign(fdy) || 1);
+    return { d, mx, my, ux, uy };
+  }
   const dx = Math.abs(b.cx - a.cx);
   const dy = Math.abs(b.cy - a.cy);
   if (dx >= dy) {

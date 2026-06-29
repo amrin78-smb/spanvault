@@ -250,7 +250,7 @@ export function ConnectionLine({
   const cb = deviceCenter(to);
   const a = edgePoint(nodeAnchorBox(from), cb.cx, cb.cy);
   const b = edgePoint(nodeAnchorBox(to), ca.cx, ca.cy);
-  const geo = conn.routing === 'elbow' ? elbowPoints(a, b) : null;
+  const geo = conn.routing === 'elbow' ? elbowPoints(a, b, conn.waypoints) : null;
 
   // A connection bound to interface(s) becomes a live weathermap link: colour by
   // utilization (green→red), dashed red when the link is down, with an animated

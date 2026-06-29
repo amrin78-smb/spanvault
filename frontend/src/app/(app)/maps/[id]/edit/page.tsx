@@ -39,6 +39,7 @@ type Drag =
   | { kind: 'device' | 'label' | 'shape'; id: number; dx: number; dy: number; moved?: boolean }
   | { kind: 'resize'; id: number; target: 'device' | 'shape'; handle: string; ox: number; oy: number; ow: number; oh: number; sx: number; sy: number; moved?: boolean }
   | { kind: 'multi'; id: number; sx: number; sy: number; origins: Record<string, { x: number; y: number }>; moved?: boolean }
+  | { kind: 'waypoint'; connId: number; index: number; moved?: boolean }
   | null;
 type Marquee = { sx: number; sy: number; cx: number; cy: number } | null;
 type Guide = { x: number | null; y: number | null };
@@ -736,6 +737,21 @@ export default function MapEditorPage() {
     setSelection(null);
     pushSnapshot();
   }
+  // Begin dragging an elbow connection's bend handle (waypoint).
+  function onWaypointMouseDown(e: React.MouseEvent, connId: number, index: number) {
+    e.stopPropagation();
+    setCtx(null);
+    setDrag({ kind: 'waypoint', connId, index, moved: false });
+  }
+  // Remove a single bend point (double-click); drop the array entirely when empty.
+  function removeWaypoint(connId: number, index: number) {
+    setConnections((prev) => prev.map((c) => {
+      if (c.id !== connId || !c.waypoints) return c;
+      const wps = c.waypoints.filter((_, i) => i !== index);
+      return { ...c, waypoints: wps.length ? wps : null };
+    }));
+    pushSnapshot();
+  }
 
   // ── Canvas-level mouse handlers ──────────────────────────────
   function onCanvasMouseDown(e: React.MouseEvent) {
@@ -781,6 +797,20 @@ export default function MapEditorPage() {
     if (lineStart != null) setMouse(p);
     if (marquee) { setMarquee({ ...marquee, cx: p.x, cy: p.y }); return; }
     if (!drag) return;
+
+    if (drag.kind === 'waypoint') {
+      const nx = snap(p.x);
+      const ny = snap(p.y);
+      setConnections((prev) => prev.map((c) => {
+        if (c.id !== drag.connId) return c;
+        // Seed the array from the auto-bend when this is the first bend point.
+        const wps = c.waypoints && c.waypoints.length > 0 ? [...c.waypoints] : [];
+        wps[drag.index] = { x: nx, y: ny };
+        return { ...c, waypoints: wps };
+      }));
+      if (!drag.moved) setDrag({ ...drag, moved: true });
+      return;
+    }
 
     if (drag.kind === 'multi') {
       let ddx = p.x - drag.sx;
@@ -914,6 +944,7 @@ export default function MapEditorPage() {
           from_kind: c.from_kind, to_kind: c.to_kind,
           color: c.color, line_style: c.line_style, label: c.label,
           arrow: c.arrow, width: c.width, routing: c.routing,
+          waypoints: c.waypoints ?? null,
           from_if_index: c.from_if_index, to_if_index: c.to_if_index, capacity_bps: c.capacity_bps,
         })),
         labels: labels.map((l) => ({
@@ -921,7 +952,7 @@ export default function MapEditorPage() {
           z_index: l.z_index, locked: l.locked, group_id: l.group_id,
         })),
         shapes: shapes.map((s) => ({
-          kind: s.kind, x: s.x, y: s.y, width: s.width, height: s.height,
+          id: s.id, kind: s.kind, x: s.x, y: s.y, width: s.width, height: s.height,
           fill: s.fill, stroke: s.stroke, stroke_width: s.stroke_width,
           text: s.text, font_size: s.font_size, text_color: s.text_color,
           rotation: s.rotation, z_index: s.z_index, locked: s.locked, group_id: s.group_id,
@@ -1112,6 +1143,17 @@ export default function MapEditorPage() {
               if (!s || s.locked) return null;
               return <ResizeHandles item={s} target="shape" onResizeStart={onResizeStart} />;
             })()}
+
+            {/* Draggable bend handles for the selected elbow connection */}
+            {tool === 'select' && selConn && selConn.routing === 'elbow' && (
+              <WaypointHandles
+                conn={selConn}
+                from={endpointNode(selConn.from_kind, selConn.from_item_id)}
+                to={endpointNode(selConn.to_kind, selConn.to_item_id)}
+                onHandleDown={(e, i) => onWaypointMouseDown(e, selConn.id, i)}
+                onHandleDblClick={(i) => removeWaypoint(selConn.id, i)}
+              />
+            )}
 
             {/* Alignment guides (single-element drag) */}
             {guide.x !== null && (
@@ -1436,7 +1478,7 @@ function EditorConnection({
   const a = edgePoint(nodeAnchorBox(from), cb.cx, cb.cy);
   const b = edgePoint(nodeAnchorBox(to), ca.cx, ca.cy);
   const elbow = conn.routing === 'elbow';
-  const geo = elbow ? elbowPoints(a, b) : null;
+  const geo = elbow ? elbowPoints(a, b, conn.waypoints) : null;
   const mx = geo ? geo.mx : (a.cx + b.cx) / 2;
   const my = geo ? geo.my : (a.cy + b.cy) / 2;
   const stroke = selected ? '#3b82f6' : conn.color || DEFAULT_LINE;
@@ -1478,6 +1520,39 @@ function EditorConnection({
         <text x={mx} y={my - 4} textAnchor="middle" fontSize={12} fill="#475569"
           style={{ paintOrder: 'stroke', stroke: '#fff', strokeWidth: 3 }}>{conn.label}</text>
       )}
+    </g>
+  );
+}
+
+// ── Draggable bend handles for an elbow connection (top-level component) ──
+// Shows one dot per waypoint; when there are none, shows a single grabbable dot
+// at the auto-bend corner so the user can introduce the first bend by dragging.
+function WaypointHandles({
+  conn, from, to, onHandleDown, onHandleDblClick,
+}: {
+  conn: MapConnection; from?: MapNodeLike; to?: MapNodeLike;
+  onHandleDown: (e: React.MouseEvent, index: number) => void;
+  onHandleDblClick: (index: number) => void;
+}) {
+  if (!from || !to) return null;
+  const ca = deviceCenter(from);
+  const cb = deviceCenter(to);
+  const a = edgePoint(nodeAnchorBox(from), cb.cx, cb.cy);
+  const b = edgePoint(nodeAnchorBox(to), ca.cx, ca.cy);
+  const pts = conn.waypoints && conn.waypoints.length > 0
+    ? conn.waypoints
+    : (() => { const g = elbowPoints(a, b); return [{ x: g.mx, y: g.my }]; })();
+  return (
+    <g>
+      {pts.map((p, i) => (
+        <circle
+          key={i} cx={Number(p.x)} cy={Number(p.y)} r={6}
+          fill="var(--primary)" stroke="#fff" strokeWidth={1.5}
+          style={{ cursor: 'move' }}
+          onMouseDown={(e) => onHandleDown(e, i)}
+          onDoubleClick={(e) => { e.stopPropagation(); onHandleDblClick(i); }}
+        />
+      ))}
     </g>
   );
 }
@@ -1898,6 +1973,11 @@ function SelectionPanel({
             <option value="elbow">Elbow (orthogonal)</option>
           </select>
         </label>
+        {connection.routing === 'elbow' && (
+          <button className="sv-btn ghost sm" onClick={() => onConnChange(connection.id, { waypoints: null })}>
+            Reset bends
+          </button>
+        )}
         <NumberField label="Width" value={Number(connection.width) || 2} min={1} max={12}
           onCommit={(n) => onConnChange(connection.id, { width: n })} />
         <label className="sv-field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>

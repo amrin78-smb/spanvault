@@ -496,6 +496,11 @@ ALTER TABLE map_connections ADD COLUMN IF NOT EXISTS capacity_bps  BIGINT;
 -- Connection routing style: 'straight' (default) or 'elbow' (orthogonal/Manhattan).
 ALTER TABLE map_connections ADD COLUMN IF NOT EXISTS routing TEXT NOT NULL DEFAULT 'straight';
 
+-- Adjustable orthogonal waypoints (bend points) for elbow connections: an array
+-- of {x,y} points the user has dragged. NULL/empty = auto-route as before.
+-- Additive + idempotent; old rows stay auto-routed.
+ALTER TABLE map_connections ADD COLUMN IF NOT EXISTS waypoints JSONB;
+
 -- Connection endpoints can be a device OR a decorative shape. from_kind/to_kind
 -- says which table from_item_id/to_item_id refers to; the device-only FKs are
 -- dropped so a shape id can be stored. (Orphan cleanup is handled in the app on

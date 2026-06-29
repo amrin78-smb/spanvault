@@ -32,6 +32,11 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.49.0': [
+    'Map editor fix: a connection drawn between a device and a non-device object (cloud/MPLS, internet, firewall, or any shape/icon) no longer disappears after saving — the shape endpoint id is now included in the save so the line persists and reloads correctly',
+    'Map editor: elbow/orthogonal connections are now adjustable — select an elbow line and drag its bend handle to re-route it around overlapping lines. Drag to add/move bends, double-click a handle to remove one, or use "Reset bends" in the connection panel to clear them',
+    'Custom bend points persist per connection (new map_connections.waypoints column) and render the same way on the live map, public map and NOC wallboard views',
+  ],
   '1.48.5': [
     'Updater self-heal: the updater now reassigns ownership of every public table, sequence, view and function to spanvault_user (as the postgres superuser) before applying the schema, so both the updater migrations and the API\'s boot-time schema self-migration actually run',
     'Fixes silent "must be owner of table ..." failures on freshly-installed boxes, where the schema was first applied as postgres and left the objects owned by postgres — the per-boot applySchema() then aborted on its first ALTER',
@@ -3133,11 +3138,12 @@ app.put('/api/maps/:id/layout', wrap(async (req, res) => {
       const fIf = Number.isFinite(Number(c.from_if_index)) ? Number(c.from_if_index) : null;
       const tIf = Number.isFinite(Number(c.to_if_index)) ? Number(c.to_if_index) : null;
       const cap = Number.isFinite(Number(c.capacity_bps)) && Number(c.capacity_bps) > 0 ? Number(c.capacity_bps) : null;
+      const waypoints = (Array.isArray(c.waypoints) && c.waypoints.length) ? JSON.stringify(c.waypoints) : null;
       await client.query(`
-        INSERT INTO map_connections (map_id, from_item_id, to_item_id, from_kind, to_kind, color, line_style, label, arrow, width, from_if_index, to_if_index, capacity_bps, routing)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+        INSERT INTO map_connections (map_id, from_item_id, to_item_id, from_kind, to_kind, color, line_style, label, arrow, width, from_if_index, to_if_index, capacity_bps, routing, waypoints)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
       `, [id, from, to, fKind, tKind, c.color || '#94a3b8', c.line_style || 'solid', c.label || null,
-          !!c.arrow, safeInt(c.width, 2), fIf, tIf, cap, c.routing === 'elbow' ? 'elbow' : 'straight']);
+          !!c.arrow, safeInt(c.width, 2), fIf, tIf, cap, c.routing === 'elbow' ? 'elbow' : 'straight', waypoints]);
     }
 
     for (const l of labels) {
