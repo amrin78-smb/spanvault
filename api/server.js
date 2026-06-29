@@ -32,6 +32,10 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.49.1': [
+    'Fix: the in-app "Update" (Settings) now actually runs on fresh installs. The updater script aborted before doing anything because nssm was not on the SYSTEM PATH; it now resolves nssm by full path and prepends Git/Node to the PATH so the pull/build/restart completes',
+    'The update screen now shows the server error instead of spinning indefinitely when an update cannot start',
+  ],
   '1.49.0': [
     'Map editor fix: a connection drawn between a device and a non-device object (cloud/MPLS, internet, firewall, or any shape/icon) no longer disappears after saving — the shape endpoint id is now included in the save so the line persists and reloads correctly',
     'Map editor: elbow/orthogonal connections are now adjustable — select an elbow line and drag its bend handle to re-route it around overlapping lines. Drag to add/move bends, double-click a handle to remove one, or use "Reset bends" in the connection panel to clear them',

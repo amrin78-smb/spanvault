@@ -1077,8 +1077,18 @@ function SystemUpdates() {
         setUpdateErr(j?.error || 'License expired — updates are disabled.');
         return;
       }
-      // Any other response (including one cut off by a fast service restart)
-      // falls through to the updating overlay so health polling detects recovery.
+      // Any other non-OK response (400/500/etc.) means the update did NOT start —
+      // the script never launched, so health polling will never see a restart and
+      // the overlay would spin for the full timeout. Stop the overlay and surface
+      // the server's error message instead of hanging.
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({} as any));
+        setUpdating(false);
+        setUpdateErr(j?.error || `Update failed to start (HTTP ${res.status}).`);
+        return;
+      }
+      // OK response (including one cut off by a fast service restart) falls
+      // through to the updating overlay so health polling detects recovery.
     } catch (e: any) {
       // Response cut off by a fast restart — keep the overlay; health polling recovers.
     }

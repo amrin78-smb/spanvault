@@ -43,6 +43,18 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# The in-app updater launches this script as a SYSTEM scheduled task, and SYSTEM
+# has a minimal PATH that does NOT include git/node/npm. Without this, the
+# pre-flight tool checks below (Get-Command git/npm) fail under SYSTEM and the
+# whole update aborts before anything runs. Prepend the standard install
+# locations so the toolchain resolves under SYSTEM (mirrors Update-NetVault.ps1).
+$env:PATH = @(
+    "C:\Program Files\Git\cmd",
+    "C:\Program Files\Git\bin",
+    "C:\Program Files\nodejs",
+    $env:PATH
+) -join ";"
+
 # Give the API a moment to return its { started: true } response to the frontend
 # before we start stopping services.
 Write-Host "=== Update starting in 5 seconds ==="
@@ -93,9 +105,37 @@ function Resolve-Psql {
     return $null
 }
 
+# nssm is NOT on the SYSTEM PATH (it lives at a full path under the install dir),
+# so resolving it via Get-Command/PATH aborts the SYSTEM-scheduled update on the
+# first pre-flight line. Resolve it by FULL PATH instead, in priority order:
+#   1. SV_NSSM_PATH from the root .env.local (written by the suite installer)
+#   2. this app's bundled nssm  ($InstallDir\nssm\nssm-2.24\win64\nssm.exe)
+#   3. NetVault's bundled nssm  (C:\Apps\NetVault\nssm\nssm-2.24\win64\nssm.exe)
+# Returns the first that exists on disk; throws only if none are found.
+function Resolve-Nssm($installDir, $appRoot) {
+    $candidates = @()
+    $envFile = Join-Path $appRoot '.env.local'
+    if (Test-Path $envFile) {
+        $svNssm = (Get-Content $envFile | Where-Object { $_ -match '^\s*SV_NSSM_PATH\s*=' } | Select-Object -First 1)
+        if ($svNssm) {
+            $val = ($svNssm -replace '^\s*SV_NSSM_PATH\s*=', '').Trim().Trim('"')
+            if ($val) { $candidates += $val }
+        }
+    }
+    $candidates += (Join-Path $installDir 'nssm\nssm-2.24\win64\nssm.exe')
+    $candidates += 'C:\Apps\NetVault\nssm\nssm-2.24\win64\nssm.exe'
+    foreach ($c in $candidates) {
+        if ($c -and (Test-Path $c)) { return $c }
+    }
+    throw "nssm.exe not found. Tried SV_NSSM_PATH in .env.local, '$installDir\nssm\nssm-2.24\win64\nssm.exe', and 'C:\Apps\NetVault\nssm\nssm-2.24\win64\nssm.exe'. Install NSSM or set SV_NSSM_PATH."
+}
+
 # ── Pre-flight ─────────────────────────────────────────────────
 Write-Step 'Pre-flight checks'
-$nssm = Resolve-Tool 'nssm' 'Install NSSM and add it to PATH.'
+# nssm is resolved by FULL PATH (not via PATH) — see Resolve-Nssm above.
+$nssm = Resolve-Nssm $InstallDir $AppRoot
+# git/npm resolve via PATH, which we prepended with Git/Node locations at the top
+# of the script, so they are found even under the SYSTEM scheduled task.
 $git  = Resolve-Tool 'git'  'Install Git for Windows.'
 $npm  = Resolve-Tool 'npm'  'Install Node.js (which provides npm).'
 $psql = Resolve-Psql
