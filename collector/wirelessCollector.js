@@ -379,55 +379,10 @@ async function upsertAp(pool, controller, ap) {
   const noise5g = intOrNull(ap.noise_floor_5g);
   const authFailures = intOrNull(ap.auth_failures);
 
-  const r = await pool.query(`
-    INSERT INTO wireless_aps
-      (controller_id, monitored_device_id, name, mac_address, model, ip_address,
-       site_id, site_name, status, radio_2g_channel, radio_5g_channel, radio_6g_channel,
-       radio_2g_util_pct, radio_5g_util_pct, clients_2g, clients_5g, clients_6g, clients_total,
-       tx_power_2g, tx_power_5g, uptime_seconds, firmware_version,
-       noise_floor_2g, noise_floor_5g, retry_rate_2g, retry_rate_5g,
-       rx_errors_2g, tx_errors_2g, rx_errors_5g, tx_errors_5g,
-       throughput_in_bps, throughput_out_bps, serial_number, auth_failures,
-       last_seen_at, updated_at)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,
-            $23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,NOW(),NOW())
-    ON CONFLICT (controller_id, name) DO UPDATE SET
-      monitored_device_id = EXCLUDED.monitored_device_id,
-      mac_address      = EXCLUDED.mac_address,
-      model            = EXCLUDED.model,
-      ip_address       = EXCLUDED.ip_address,
-      site_id          = EXCLUDED.site_id,
-      site_name        = EXCLUDED.site_name,
-      status           = EXCLUDED.status,
-      radio_2g_channel = EXCLUDED.radio_2g_channel,
-      radio_5g_channel = EXCLUDED.radio_5g_channel,
-      radio_6g_channel = EXCLUDED.radio_6g_channel,
-      radio_2g_util_pct = EXCLUDED.radio_2g_util_pct,
-      radio_5g_util_pct = EXCLUDED.radio_5g_util_pct,
-      clients_2g       = EXCLUDED.clients_2g,
-      clients_5g       = EXCLUDED.clients_5g,
-      clients_6g       = EXCLUDED.clients_6g,
-      clients_total    = EXCLUDED.clients_total,
-      tx_power_2g      = EXCLUDED.tx_power_2g,
-      tx_power_5g      = EXCLUDED.tx_power_5g,
-      uptime_seconds   = EXCLUDED.uptime_seconds,
-      firmware_version = EXCLUDED.firmware_version,
-      noise_floor_2g   = EXCLUDED.noise_floor_2g,
-      noise_floor_5g   = EXCLUDED.noise_floor_5g,
-      retry_rate_2g    = EXCLUDED.retry_rate_2g,
-      retry_rate_5g    = EXCLUDED.retry_rate_5g,
-      rx_errors_2g     = EXCLUDED.rx_errors_2g,
-      tx_errors_2g     = EXCLUDED.tx_errors_2g,
-      rx_errors_5g     = EXCLUDED.rx_errors_5g,
-      tx_errors_5g     = EXCLUDED.tx_errors_5g,
-      throughput_in_bps  = EXCLUDED.throughput_in_bps,
-      throughput_out_bps = EXCLUDED.throughput_out_bps,
-      serial_number    = EXCLUDED.serial_number,
-      auth_failures    = EXCLUDED.auth_failures,
-      last_seen_at     = NOW(),
-      updated_at       = NOW()
-    RETURNING id
-  `, [
+  // $1..$34 — the full ordered column value set, written identically by the
+  // INSERT and by the (site_id, name) in-place UPDATE below. Keep this array and
+  // both column lists in lock-step so no field is ever dropped from a write.
+  const vals = [
     controller.id, monitoredId, name, ap.mac_address || null, ap.model || null, ap.ip_address || null,
     controller.site_id || null, controller.site_name || null, ap.status || 'unknown',
     intOrNull(ap.radio_2g_channel), intOrNull(ap.radio_5g_channel), intOrNull(ap.radio_6g_channel),
@@ -439,9 +394,122 @@ async function upsertAp(pool, controller, ap) {
     intOrNull(ap.rx_errors_2g), intOrNull(ap.tx_errors_2g),
     intOrNull(ap.rx_errors_5g), intOrNull(ap.tx_errors_5g),
     inBps, outBps, ap.serial_number || null, authFailures,
-  ]);
+  ];
 
-  const apId = r.rows[0].id;
+  let apId = null;
+
+  // Stable physical identity is the AP `name` within its `site_id` — mac_address
+  // and serial_number are NULL on this feed, so they can't anchor identity. When
+  // site_id is known, match on (site_id, name): if a row already exists, UPDATE it
+  // in place (keeping its id, so wireless_history stays continuous) and point
+  // controller_id at whoever reports the AP NOW. This collapses the duplicate that
+  // an HA failover/sync otherwise creates under the peer controller's id. The
+  // existing per-(controller_id, name) ON CONFLICT below is the INSERT fallback.
+  if (controller.site_id != null) {
+    const existing = await pool.query(
+      `SELECT id FROM wireless_aps WHERE site_id = $1 AND name = $2 LIMIT 1`,
+      [controller.site_id, name]);
+    if (existing.rows[0]) {
+      const u = await pool.query(`
+        UPDATE wireless_aps SET
+          controller_id       = $1,
+          monitored_device_id = $2,
+          name                = $3,
+          mac_address         = $4,
+          model               = $5,
+          ip_address          = $6,
+          site_id             = $7,
+          site_name           = $8,
+          status              = $9,
+          radio_2g_channel    = $10,
+          radio_5g_channel    = $11,
+          radio_6g_channel    = $12,
+          radio_2g_util_pct   = $13,
+          radio_5g_util_pct   = $14,
+          clients_2g          = $15,
+          clients_5g          = $16,
+          clients_6g          = $17,
+          clients_total       = $18,
+          tx_power_2g         = $19,
+          tx_power_5g         = $20,
+          uptime_seconds      = $21,
+          firmware_version    = $22,
+          noise_floor_2g      = $23,
+          noise_floor_5g      = $24,
+          retry_rate_2g       = $25,
+          retry_rate_5g       = $26,
+          rx_errors_2g        = $27,
+          tx_errors_2g        = $28,
+          rx_errors_5g        = $29,
+          tx_errors_5g        = $30,
+          throughput_in_bps   = $31,
+          throughput_out_bps  = $32,
+          serial_number       = $33,
+          auth_failures       = $34,
+          last_seen_at        = NOW(),
+          updated_at          = NOW()
+        WHERE id = $35
+        RETURNING id
+      `, [...vals, existing.rows[0].id]);
+      apId = u.rows[0].id;
+    }
+  }
+
+  // INSERT when there is no (site_id, name) match, OR when site_id IS NULL — in
+  // the null-site case we keep the original per-(controller_id, name) upsert so we
+  // never wrongly merge two distinct site-less APs from different controllers.
+  if (apId == null) {
+    const r = await pool.query(`
+      INSERT INTO wireless_aps
+        (controller_id, monitored_device_id, name, mac_address, model, ip_address,
+         site_id, site_name, status, radio_2g_channel, radio_5g_channel, radio_6g_channel,
+         radio_2g_util_pct, radio_5g_util_pct, clients_2g, clients_5g, clients_6g, clients_total,
+         tx_power_2g, tx_power_5g, uptime_seconds, firmware_version,
+         noise_floor_2g, noise_floor_5g, retry_rate_2g, retry_rate_5g,
+         rx_errors_2g, tx_errors_2g, rx_errors_5g, tx_errors_5g,
+         throughput_in_bps, throughput_out_bps, serial_number, auth_failures,
+         last_seen_at, updated_at)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,
+              $23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,NOW(),NOW())
+      ON CONFLICT (controller_id, name) DO UPDATE SET
+        monitored_device_id = EXCLUDED.monitored_device_id,
+        mac_address      = EXCLUDED.mac_address,
+        model            = EXCLUDED.model,
+        ip_address       = EXCLUDED.ip_address,
+        site_id          = EXCLUDED.site_id,
+        site_name        = EXCLUDED.site_name,
+        status           = EXCLUDED.status,
+        radio_2g_channel = EXCLUDED.radio_2g_channel,
+        radio_5g_channel = EXCLUDED.radio_5g_channel,
+        radio_6g_channel = EXCLUDED.radio_6g_channel,
+        radio_2g_util_pct = EXCLUDED.radio_2g_util_pct,
+        radio_5g_util_pct = EXCLUDED.radio_5g_util_pct,
+        clients_2g       = EXCLUDED.clients_2g,
+        clients_5g       = EXCLUDED.clients_5g,
+        clients_6g       = EXCLUDED.clients_6g,
+        clients_total    = EXCLUDED.clients_total,
+        tx_power_2g      = EXCLUDED.tx_power_2g,
+        tx_power_5g      = EXCLUDED.tx_power_5g,
+        uptime_seconds   = EXCLUDED.uptime_seconds,
+        firmware_version = EXCLUDED.firmware_version,
+        noise_floor_2g   = EXCLUDED.noise_floor_2g,
+        noise_floor_5g   = EXCLUDED.noise_floor_5g,
+        retry_rate_2g    = EXCLUDED.retry_rate_2g,
+        retry_rate_5g    = EXCLUDED.retry_rate_5g,
+        rx_errors_2g     = EXCLUDED.rx_errors_2g,
+        tx_errors_2g     = EXCLUDED.tx_errors_2g,
+        rx_errors_5g     = EXCLUDED.rx_errors_5g,
+        tx_errors_5g     = EXCLUDED.tx_errors_5g,
+        throughput_in_bps  = EXCLUDED.throughput_in_bps,
+        throughput_out_bps = EXCLUDED.throughput_out_bps,
+        serial_number    = EXCLUDED.serial_number,
+        auth_failures    = EXCLUDED.auth_failures,
+        last_seen_at     = NOW(),
+        updated_at       = NOW()
+      RETURNING id
+    `, vals);
+    apId = r.rows[0].id;
+  }
   await pool.query(`
     INSERT INTO wireless_history
       (ap_id, clients_total, clients_2g, clients_5g, radio_2g_util, radio_5g_util,
@@ -686,6 +754,31 @@ async function pollController(pool, controller) {
 }
 
 // ── Poll cycle ────────────────────────────────────────────────
+// Wireless AP poll cadence (mirrors the setInterval in startWirelessCollector).
+const WIRELESS_POLL_INTERVAL = 5 * 60 * 1000;
+// Mark an AP offline once it hasn't been reported for 3 poll cycles (15 min):
+// long enough to ride out a single missed/slow poll, short enough that an AP that
+// failed over away or whose controller went down flips to offline instead of
+// lingering as a false "online" forever. APs updated this cycle have
+// last_seen_at = NOW(), so they're naturally excluded.
+const STALE_AP_MINUTES = Math.round((3 * WIRELESS_POLL_INTERVAL) / 60000);
+
+// One guarded UPDATE per cycle: flip stale APs to offline. Never throws.
+async function ageOutStaleAps(pool) {
+  try {
+    const r = await pool.query(
+      `UPDATE wireless_aps SET status = 'offline', updated_at = NOW()
+        WHERE last_seen_at < NOW() - make_interval(mins => $1)
+          AND status <> 'offline'`,
+      [STALE_AP_MINUTES]);
+    if (r.rowCount) {
+      log(`aged out ${r.rowCount} stale AP(s) to offline (no poll in ${STALE_AP_MINUTES} min)`);
+    }
+  } catch (err) {
+    console.error('[wireless] stale AP aging failed:', err.message);
+  }
+}
+
 let busy = false;
 async function pollAll(pool) {
   if (busy) return;
@@ -696,6 +789,9 @@ async function pollAll(pool) {
     for (const c of r.rows) {
       await pollController(pool, c);
     }
+    // Flip no-longer-reported APs to offline so a failed-over-away / down-controller
+    // AP doesn't stay a false "online".
+    await ageOutStaleAps(pool);
     await runWirelessIntelligence(pool);
   } catch (err) {
     console.error('[wireless] poll cycle failed:', err.message);
@@ -1087,7 +1183,7 @@ function startWirelessCollector(pool) {
   // One-shot startup cleanup of stale decimal-MAC AP records (old bad SNMP parsing).
   cleanupDecimalMacAps(pool).catch((e) => console.error('[wireless] decimal-MAC cleanup:', e.message));
   setTimeout(() => pollAll(pool), 20 * 1000);
-  setInterval(() => pollAll(pool), 5 * 60 * 1000);
+  setInterval(() => pollAll(pool), WIRELESS_POLL_INTERVAL);
   // Client polling on its own (slower) schedule, separate from the AP poll.
   setTimeout(() => pollAllClients(pool), 30 * 1000);
   setInterval(() => pollAllClients(pool), CLIENT_POLL_INTERVAL);

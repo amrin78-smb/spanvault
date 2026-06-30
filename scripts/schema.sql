@@ -979,6 +979,90 @@ CREATE INDEX IF NOT EXISTS idx_wclient_event_ts
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO spanvault_user;
 GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO spanvault_user;
 
+-- ══ Self-healing HA-failover AP de-duplication (one-time, idempotent) ═════════
+-- An HA controller pair (e.g. site TUFS controllers 7 & 8) can report the SAME
+-- physical AP twice — once per controller — because mac_address/serial_number
+-- are NULL, so the upsert key (controller_id, name) cannot collapse the two
+-- copies. One row is the live continuous record (recent last_seen_at, full
+-- wireless_history); the other is a stale shell left behind by a failover (~1
+-- history row, an older last_seen_at, but still status='online'). This block
+-- collapses each physical AP back to ONE row, identifying a physical AP by
+-- (site_id, name) since the hardware identifiers are NULL.
+--
+-- For each (site_id, name) group with COUNT(*) > 1 and site_id IS NOT NULL:
+-- KEEP the row with the most-recent last_seen_at (tie-break: highest id); the
+-- remaining ids are dropped. Every child row that references a dropped id is
+-- handled FIRST so the delete cannot fail or silently lose data:
+--   * wireless_history.ap_id / wireless_ap_intelligence.ap_id  -> DELETE the
+--     dropped shell's rows. Shells carry ~1 history row (negligible), and
+--     wireless_ap_intelligence has a UNIQUE(ap_id) so it cannot be repointed.
+--   * wireless_client_events.from_ap_id / to_ap_id  -> repoint to the keeper
+--     (preserve roam/auth history; both columns are nullable / ON DELETE SET NULL).
+--   * wireless_clients.ap_id  -> repoint to the keeper (ephemeral 15-min snapshot,
+--     nullable; keeps the live client mapped to the surviving AP).
+--   * alerts.wireless_ap_id  -> repoint to the keeper, but first delete any
+--     ACTIVE shell alert that would collide with an existing active keeper alert
+--     of the same alert_type (partial unique index idx_alerts_active_wap_unique),
+--     so the repoint cannot violate it. (alerts.wireless_ap_id is ON DELETE
+--     CASCADE, so repointing also avoids losing alert history to the cascade.)
+-- Then the shell rows themselves are deleted.
+--
+-- Fully idempotent: after the first run there are no >1 groups left, so a second
+-- run iterates nothing and changes nothing. No UNIQUE constraint/index is added
+-- on (site_id, name) by design — the app-level upsert handles prevention, and a
+-- DB unique index could make legitimate inserts fail; that is out of scope here.
+DO $$
+DECLARE
+  grp        RECORD;
+  keeper_id  INTEGER;
+  drop_ids   INTEGER[];
+BEGIN
+  FOR grp IN
+    SELECT site_id, name
+    FROM   wireless_aps
+    WHERE  site_id IS NOT NULL
+    GROUP  BY site_id, name
+    HAVING COUNT(*) > 1
+  LOOP
+    -- Keeper = most-recent last_seen_at, tie-break highest id (NULL last_seen last).
+    SELECT id INTO keeper_id
+    FROM   wireless_aps
+    WHERE  site_id = grp.site_id AND name = grp.name
+    ORDER  BY last_seen_at DESC NULLS LAST, id DESC
+    LIMIT  1;
+
+    -- Every other row in the group is a duplicate shell to drop.
+    SELECT array_agg(id) INTO drop_ids
+    FROM   wireless_aps
+    WHERE  site_id = grp.site_id AND name = grp.name
+      AND  id <> keeper_id;
+
+    -- Negligible per-shell time-series / intelligence: delete it outright.
+    DELETE FROM wireless_history         WHERE ap_id = ANY(drop_ids);
+    DELETE FROM wireless_ap_intelligence WHERE ap_id = ANY(drop_ids);
+
+    -- Preserve event + live-client linkage by repointing it to the keeper.
+    UPDATE wireless_client_events SET from_ap_id = keeper_id WHERE from_ap_id = ANY(drop_ids);
+    UPDATE wireless_client_events SET to_ap_id   = keeper_id WHERE to_ap_id   = ANY(drop_ids);
+    UPDATE wireless_clients       SET ap_id      = keeper_id WHERE ap_id      = ANY(drop_ids);
+
+    -- Repoint alerts to the keeper, first clearing any active shell alert that
+    -- would collide with an active keeper alert of the same type.
+    DELETE FROM alerts a
+    WHERE  a.wireless_ap_id = ANY(drop_ids)
+      AND  a.status = 'active'
+      AND  EXISTS (SELECT 1 FROM alerts k
+                   WHERE k.wireless_ap_id = keeper_id
+                     AND k.alert_type     = a.alert_type
+                     AND k.status         = 'active');
+    UPDATE alerts SET wireless_ap_id = keeper_id WHERE wireless_ap_id = ANY(drop_ids);
+
+    -- Finally remove the duplicate shell AP rows.
+    DELETE FROM wireless_aps WHERE id = ANY(drop_ids);
+  END LOOP;
+END
+$$;
+
 -- ══ Reporting suite ═══════════════════════════════════════════════════════════
 -- Saved report configurations (per-user, keyed by created_by). A saved report
 -- captures a template + scope + date range so it can be re-run from a chip.

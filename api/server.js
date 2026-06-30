@@ -32,6 +32,11 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.51.1': [
+    'Fixed duplicate Access Points caused by HA controller failover — when an AP fails over to its secondary wireless controller, its record is now updated in place instead of creating a second copy (APs are now identified by site + name, since the hardware serial/MAC are not reported)',
+    'One-time automatic cleanup collapses the existing duplicate AP records into a single row each, preserving the fullest history and re-linking client, roaming, and alert history to the surviving record',
+    'Access Points that stop reporting for more than 15 minutes are now automatically marked offline, instead of being left showing a stale "online" status',
+  ],
   '1.51.0': [
     'Global search (Ctrl/Cmd+K) now finds Access Points and Wireless Controllers, not just devices — results are grouped into Devices, Access Points, and Controllers, each showing name, IP, and site',
     'Picking an AP opens the Wireless → Access Points tab; picking a controller opens the Wireless → Controllers tab; devices open the device page as before',
