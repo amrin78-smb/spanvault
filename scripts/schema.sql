@@ -1026,3 +1026,24 @@ CREATE INDEX IF NOT EXISTS idx_report_hist_report
 
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO spanvault_user;
 GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO spanvault_user;
+
+-- ── Hub cross-DB read role ───────────────────────────────────────
+-- The Hub reads across all suite DBs via the shared `nocvault_readonly`
+-- role. The suite installer grants it SELECT once, but tables added by a
+-- future release (or created at runtime as spanvault_user) are never
+-- covered by that one-time grant -- and the updater re-applies THIS file
+-- (as spanvault_user, the table owner) but not the installer's grant. So a
+-- new table becomes invisible to the Hub's cross-DB reads. Re-granting here
+-- makes both installer and updater converge, and ALTER DEFAULT PRIVILEGES
+-- FOR ROLE spanvault_user auto-covers every future spanvault_user-created
+-- table. SELECT-only; no-op on a standalone SpanVault (no role). Mirrors
+-- netvault/schema.sql.
+DO $$
+BEGIN
+    IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'nocvault_readonly') THEN
+        GRANT USAGE ON SCHEMA public TO nocvault_readonly;
+        GRANT SELECT ON ALL TABLES IN SCHEMA public TO nocvault_readonly;
+        ALTER DEFAULT PRIVILEGES FOR ROLE spanvault_user IN SCHEMA public GRANT SELECT ON TABLES TO nocvault_readonly;
+    END IF;
+END
+$$;

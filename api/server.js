@@ -32,6 +32,11 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.49.2': [
+    'Hub read-access self-heal: the schema now re-grants the shared nocvault_readonly role SELECT on every public table each time the updater re-applies it, so tables added by a future release (or created at runtime) stay visible to the NocVault Hub\'s cross-DB reads',
+    'Adds ALTER DEFAULT PRIVILEGES FOR ROLE spanvault_user so future spanvault_user-created tables are auto-granted to nocvault_readonly without another manual grant',
+    'Role-guarded and SELECT-only: it no-ops on a standalone SpanVault with no Hub role, and never grants write access. Mirrors the same convergence fix already shipped in NetVault',
+  ],
   '1.49.1': [
     'Fix: the in-app "Update" (Settings) now actually runs on fresh installs. The updater script aborted before doing anything because nssm was not on the SYSTEM PATH; it now resolves nssm by full path and prepends Git/Node to the PATH so the pull/build/restart completes',
     'The update screen now shows the server error instead of spinning indefinitely when an update cannot start',
