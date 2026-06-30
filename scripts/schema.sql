@@ -1125,7 +1125,11 @@ GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO spanvault_user;
 DO $$
 BEGIN
     IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'nocvault_readonly') THEN
-        GRANT USAGE ON SCHEMA public TO nocvault_readonly;
+        BEGIN
+            GRANT USAGE ON SCHEMA public TO nocvault_readonly;
+        EXCEPTION WHEN insufficient_privilege THEN
+            RAISE NOTICE 'nocvault_readonly: USAGE on schema public skipped (grantor not owner)';
+        END;
         GRANT SELECT ON ALL TABLES IN SCHEMA public TO nocvault_readonly;
         ALTER DEFAULT PRIVILEGES FOR ROLE spanvault_user IN SCHEMA public GRANT SELECT ON TABLES TO nocvault_readonly;
     END IF;

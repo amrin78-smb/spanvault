@@ -32,6 +32,11 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.51.2': [
+    'Reports: interface utilization-% charts now also recognise bare metric names (if_in_util_pct / if_out_util_pct), matching the throughput fix, so utilization renders for devices that store metrics without the per-interface prefix',
+    'Hardening: the nocvault_readonly Hub read-grant self-heal can no longer be aborted by a non-owner USAGE grant on the updater path — the critical SELECT grant always applies',
+    'Synced the frontend package version to the root (lockstep) — no functional change',
+  ],
   '1.51.1': [
     'Fixed duplicate Access Points caused by HA controller failover — when an AP fails over to its secondary wireless controller, its record is now updated in place instead of creating a second copy (APs are now identified by site + name, since the hardware serial/MAC are not reported)',
     'One-time automatic cleanup collapses the existing duplicate AP records into a single row each, preserving the fullest history and re-linking client, roaming, and alert history to the surviving record',
@@ -5496,12 +5501,13 @@ app.get('/api/reports/device-detail', wrap(async (req, res) => {
              date_bin($2::interval, ts, TIMESTAMPTZ '2000-01-01') AS ts,
              ROUND(AVG(value) FILTER (WHERE metric_name = 'if_in_bps' OR metric_name LIKE 'if\\_%\\_in\\_bps')::numeric, 0)        AS in_bps,
              ROUND(AVG(value) FILTER (WHERE metric_name = 'if_out_bps' OR metric_name LIKE 'if\\_%\\_out\\_bps')::numeric, 0)       AS out_bps,
-             ROUND(AVG(value) FILTER (WHERE metric_name LIKE 'if\\_%\\_in\\_util\\_pct')::numeric, 1)  AS in_util_pct,
-             ROUND(AVG(value) FILTER (WHERE metric_name LIKE 'if\\_%\\_out\\_util\\_pct')::numeric, 1) AS out_util_pct
+             ROUND(AVG(value) FILTER (WHERE metric_name = 'if_in_util_pct' OR metric_name LIKE 'if\\_%\\_in\\_util\\_pct')::numeric, 1)  AS in_util_pct,
+             ROUND(AVG(value) FILTER (WHERE metric_name = 'if_out_util_pct' OR metric_name LIKE 'if\\_%\\_out\\_util\\_pct')::numeric, 1) AS out_util_pct
       FROM snmp_results
       WHERE device_id = $1 AND ts BETWEEN $3 AND $4
         AND if_index IS NOT NULL
         AND (metric_name = 'if_in_bps' OR metric_name = 'if_out_bps'
+             OR metric_name = 'if_in_util_pct' OR metric_name = 'if_out_util_pct'
              OR metric_name LIKE 'if\\_%\\_in\\_bps' OR metric_name LIKE 'if\\_%\\_out\\_bps'
              OR metric_name LIKE 'if\\_%\\_in\\_util\\_pct' OR metric_name LIKE 'if\\_%\\_out\\_util\\_pct')
       GROUP BY if_index, date_bin($2::interval, ts, TIMESTAMPTZ '2000-01-01')
