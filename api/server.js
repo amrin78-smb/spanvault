@@ -32,6 +32,11 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.51.0': [
+    'Global search (Ctrl/Cmd+K) now finds Access Points and Wireless Controllers, not just devices — results are grouped into Devices, Access Points, and Controllers, each showing name, IP, and site',
+    'Picking an AP opens the Wireless → Access Points tab; picking a controller opens the Wireless → Controllers tab; devices open the device page as before',
+    'Search is site-scoped: a site admin only sees devices/APs/controllers in their assigned sites',
+  ],
   '1.50.1': [
     'Reports: fixed per-interface throughput charts that were rendering blank in the Device Detail report — the query missed how throughput is stored, so in/out bps now plot correctly',
     'Reports: the Device Detail report is now site-scoped — a site admin can only run it for devices in their assigned sites (it previously was not access-checked)',
@@ -1624,6 +1629,65 @@ app.get('/api/devices', wrap(async (req, res) => {
     ORDER BY d.site_name NULLS LAST, d.name
   `, params);
   res.json(rows.rows);
+}));
+
+// Global (Ctrl+K) search — typed, grouped results across monitored devices,
+// wireless APs, and wireless controllers. Distinct from /api/devices so the
+// command palette can show each result type separately. Site-scoped via the
+// same getSiteFilter(req) RBAC used everywhere else, applied to ALL groups
+// (monitored_devices.site_id, wireless_aps.site_id, wireless_controllers.site_id).
+app.get('/api/global-search', wrap(async (req, res) => {
+  const q = String(req.query.q || '').trim();
+  if (q.length < 1) {
+    return res.json({ devices: [], aps: [], controllers: [] });
+  }
+  const like = `%${q}%`;
+  const siteFilter = getSiteFilter(req);
+
+  // Devices
+  const devParams = [like];
+  const devWhere = ['d.active = TRUE', '(d.name ILIKE $1 OR d.ip_address ILIKE $1)'];
+  const devSc = siteFilterClause(siteFilter, devParams, 'd.site_id');
+  if (devSc) devWhere.push(devSc);
+  const devices = await sv.query(`
+    SELECT d.id, d.name, d.ip_address, d.site_name
+    FROM monitored_devices d
+    WHERE ${devWhere.join(' AND ')}
+    ORDER BY d.name
+    LIMIT 8
+  `, devParams);
+
+  // Access points
+  const apParams = [like];
+  const apWhere = ['(a.name ILIKE $1 OR a.ip_address ILIKE $1)'];
+  const apSc = siteFilterClause(siteFilter, apParams, 'a.site_id');
+  if (apSc) apWhere.push(apSc);
+  const aps = await sv.query(`
+    SELECT a.id, a.name, a.ip_address, a.site_name
+    FROM wireless_aps a
+    WHERE ${apWhere.join(' AND ')}
+    ORDER BY a.name
+    LIMIT 8
+  `, apParams);
+
+  // Wireless controllers (no ip_address column; match name/model/site_name)
+  const ctlParams = [like];
+  const ctlWhere = ['(c.name ILIKE $1 OR c.model ILIKE $1 OR c.site_name ILIKE $1)'];
+  const ctlSc = siteFilterClause(siteFilter, ctlParams, 'c.site_id');
+  if (ctlSc) ctlWhere.push(ctlSc);
+  const controllers = await sv.query(`
+    SELECT c.id, c.name, c.site_name
+    FROM wireless_controllers c
+    WHERE ${ctlWhere.join(' AND ')}
+    ORDER BY c.name
+    LIMIT 8
+  `, ctlParams);
+
+  res.json({
+    devices: devices.rows,
+    aps: aps.rows,
+    controllers: controllers.rows,
+  });
 }));
 
 // Mini sensor sparklines for the device list — last 24h aggregated into 24
