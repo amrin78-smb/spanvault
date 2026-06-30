@@ -32,6 +32,13 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.50.0': [
+    'Reports: new granular, charted detail reports. A new "AP Detail" report shows a per-access-point breakdown — clients over time (total/2.4GHz/5GHz), per-radio channel utilization, noise floor and throughput where the vendor reports them, RF health/load + channel recommendations, the current client list, and recent roam/join/leave events',
+    'Reports: the Device Detail report now plots time-series charts — latency + packet loss, CPU, memory, per-interface throughput (top interfaces), and firewall session/tunnel counts — on top of the existing availability/health sections',
+    'Reports: flexible time range — pick a preset (24h/7d/30d/90d) or a custom from/to window, plus a resolution selector (Auto/5m/15m/1h/1d) and a metric picker to choose which charts to show',
+    'Reports: select one OR several APs/devices and get a full detail section for each; export via the browser Print button (page-break-aware, charts kept whole)',
+    'Note: detail charts are bounded by data retention (~14 days for device metrics); longer-horizon history is a later enhancement',
+  ],
   '1.49.2': [
     'Hub read-access self-heal: the schema now re-grants the shared nocvault_readonly role SELECT on every public table each time the updater re-applies it, so tables added by a future release (or created at runtime) stay visible to the NocVault Hub\'s cross-DB reads',
     'Adds ALTER DEFAULT PRIVILEGES FOR ROLE spanvault_user so future spanvault_user-created tables are auto-granted to nocvault_readonly without another manual grant',
@@ -4892,6 +4899,73 @@ function gradeFromUptime(u) {
 function round1(v) { return v == null ? null : Math.round(Number(v) * 10) / 10; }
 function pct2(failed, total) { return total > 0 ? Math.round((1 - failed / total) * 10000) / 100 : null; }
 
+// ── Granular time-series bucketing (Phase 0+1) ────────────────────────────────
+// Whitelisted bucket → Postgres interval string. The interval is ALWAYS chosen
+// from this fixed map — never interpolated from raw user input — so it is safe to
+// embed directly in `date_bin('<interval>', ts, ...)` SQL. The minutes value is
+// used to clamp absurd combos (e.g. 5m over 90d → far too many points).
+const BUCKET_INTERVALS = {
+  '5m':  { sql: '5 minutes',  minutes: 5 },
+  '15m': { sql: '15 minutes', minutes: 15 },
+  '1h':  { sql: '1 hour',     minutes: 60 },
+  '6h':  { sql: '6 hours',    minutes: 360 },
+  '1d':  { sql: '1 day',      minutes: 1440 },
+};
+const BUCKET_ORDER = ['5m', '15m', '1h', '6h', '1d'];
+
+// Derive an auto bucket from a window length (ms) so the series stays a sane size
+// (target ~200-500 points). Mirrors rangeToBucket's intent but works off explicit
+// from/to so custom ranges bucket sensibly too.
+function autoBucketKey(windowMs) {
+  const hours = windowMs / 3600000;
+  if (hours <= 6)   return '5m';
+  if (hours <= 48)  return '15m';   // up to 2 days
+  if (hours <= 24 * 14) return '1h'; // up to 2 weeks
+  if (hours <= 24 * 60) return '6h'; // up to ~2 months
+  return '1d';
+}
+
+// Resolve a requested bucket to a safe { key, sql } pair. Accepts the explicit
+// keys in BUCKET_INTERVALS plus 'auto'. Anything unknown falls back to 'auto'.
+// To keep series sizes bounded, the chosen bucket is clamped UP whenever the
+// window would otherwise yield more than ~1500 buckets (e.g. 5m over 90d → 1d).
+function bucketIntervalSql(bucket, from, to) {
+  const fromMs = Date.parse(from);
+  const toMs = Date.parse(to);
+  const windowMs = (isFinite(fromMs) && isFinite(toMs) && toMs > fromMs) ? (toMs - fromMs) : 7 * 24 * 3600000;
+  let key = (bucket && bucket !== 'auto' && BUCKET_INTERVALS[bucket]) ? bucket : autoBucketKey(windowMs);
+  // Clamp up: never allow a bucket so small the window blows past ~1500 points.
+  const MAX_BUCKETS = 1500;
+  let idx = BUCKET_ORDER.indexOf(key);
+  while (idx < BUCKET_ORDER.length - 1) {
+    const mins = BUCKET_INTERVALS[BUCKET_ORDER[idx]].minutes;
+    if ((windowMs / 60000) / mins <= MAX_BUCKETS) break;
+    idx += 1;
+  }
+  key = BUCKET_ORDER[idx];
+  return { key, sql: BUCKET_INTERVALS[key].sql };
+}
+
+// Range resolver for time-series report endpoints. Reads explicit from/to (ISO)
+// when present, else a `range` preset (default '7d'); then resolves the bucket
+// (whitelisted or 'auto'). Returns { from, to, bucket } where `from`/`to` are ISO
+// strings (bound as query params) and `bucket` is the resolved bucket key. The
+// SQL interval is obtained separately via bucketIntervalSql(...).sql.
+function resolveSeriesRange(query) {
+  const PRESET_DAYS = { '24h': 1, '7d': 7, '30d': 30, '90d': 90 };
+  let from, to;
+  if (query.from && query.to && isFinite(Date.parse(query.from)) && isFinite(Date.parse(query.to))) {
+    from = new Date(query.from).toISOString();
+    to = new Date(query.to).toISOString();
+  } else {
+    const days = PRESET_DAYS[query.range] || 7;
+    to = new Date().toISOString();
+    from = new Date(Date.now() - days * 24 * 3600000).toISOString();
+  }
+  const b = bucketIntervalSql(query.bucket, from, to);
+  return { from, to, bucket: b.key, intervalSql: b.sql };
+}
+
 // Intelligence/topology tables are created by later migrations. Probe once and
 // cache so report queries can skip joins to tables that don't exist yet rather
 // than 500ing the whole report.
@@ -5291,6 +5365,91 @@ app.get('/api/reports/device-detail', wrap(async (req, res) => {
   const a0 = avail.rows[0] || { total_checks: 0, failed_checks: 0 };
   const poll = d.poll_interval_seconds || 300;
 
+  // ── Granular time-series (Phase 0+1) ──────────────────────────
+  // Independent of the window summary above: the series uses its own from/to/
+  // bucket (explicit from/to or a `range` preset, default 7d). The bucket SQL
+  // comes from the whitelist (never interpolated from raw input); device id and
+  // timestamps are bound as parameters.
+  const sRange = resolveSeriesRange(req.query);
+  const bin = sRange.intervalSql; // safe: whitelisted interval string
+  const [scalarRows, ifRows] = await Promise.all([
+    // Scalar series: ping latency/loss + scalar SNMP metrics, each bucketed, then
+    // merged by ts in JS (full-outer-join on the time bucket). Only metrics that
+    // exist for this device contribute rows; missing metrics stay null.
+    safeQ(`
+      WITH ping AS (
+        SELECT date_bin($2::interval, ts, TIMESTAMPTZ '2000-01-01') AS b,
+               ROUND(AVG(response_ms) FILTER (WHERE status = 'up')::numeric, 1) AS latency_ms,
+               ROUND(AVG(COALESCE(packet_loss_pct, CASE WHEN status = 'up' THEN 0 ELSE 100 END))::numeric, 1) AS packet_loss_pct
+        FROM ping_results WHERE device_id = $1 AND ts BETWEEN $3 AND $4 GROUP BY 1
+      ),
+      snmp AS (
+        SELECT date_bin($2::interval, ts, TIMESTAMPTZ '2000-01-01') AS b,
+               ROUND(AVG(value) FILTER (WHERE metric_name = 'cpu_pct')::numeric, 1)           AS cpu_pct,
+               ROUND(AVG(value) FILTER (WHERE metric_name = 'mem_pct')::numeric, 1)           AS mem_pct,
+               ROUND(AVG(value) FILTER (WHERE metric_name = 'session_count')::numeric, 0)     AS session_count,
+               ROUND(AVG(value) FILTER (WHERE metric_name = 'session_util_pct')::numeric, 1)  AS session_util_pct,
+               ROUND(AVG(value) FILTER (WHERE metric_name = 'gp_tunnels')::numeric, 0)        AS gp_tunnels
+        FROM snmp_results
+        WHERE device_id = $1 AND ts BETWEEN $3 AND $4
+          AND metric_name IN ('cpu_pct','mem_pct','session_count','session_util_pct','gp_tunnels')
+        GROUP BY 1
+      )
+      SELECT COALESCE(ping.b, snmp.b) AS ts,
+             ping.latency_ms, ping.packet_loss_pct,
+             snmp.cpu_pct, snmp.mem_pct, snmp.session_count, snmp.session_util_pct, snmp.gp_tunnels
+      FROM ping FULL OUTER JOIN snmp ON ping.b = snmp.b
+      ORDER BY ts
+    `, [id, bin, sRange.from, sRange.to]),
+    // Per-interface throughput/util series: snmp_results rows carry if_index/
+    // if_name; pivot the metric_name suffix into in_bps/out_bps/in_util_pct/
+    // out_util_pct per (if_index, bucket).
+    safeQ(`
+      SELECT if_index,
+             MAX(if_name) AS if_name,
+             date_bin($2::interval, ts, TIMESTAMPTZ '2000-01-01') AS ts,
+             ROUND(AVG(value) FILTER (WHERE metric_name LIKE 'if\\_%\\_in\\_bps')::numeric, 0)        AS in_bps,
+             ROUND(AVG(value) FILTER (WHERE metric_name LIKE 'if\\_%\\_out\\_bps')::numeric, 0)       AS out_bps,
+             ROUND(AVG(value) FILTER (WHERE metric_name LIKE 'if\\_%\\_in\\_util\\_pct')::numeric, 1)  AS in_util_pct,
+             ROUND(AVG(value) FILTER (WHERE metric_name LIKE 'if\\_%\\_out\\_util\\_pct')::numeric, 1) AS out_util_pct
+      FROM snmp_results
+      WHERE device_id = $1 AND ts BETWEEN $3 AND $4
+        AND if_index IS NOT NULL
+        AND (metric_name LIKE 'if\\_%\\_in\\_bps' OR metric_name LIKE 'if\\_%\\_out\\_bps'
+             OR metric_name LIKE 'if\\_%\\_in\\_util\\_pct' OR metric_name LIKE 'if\\_%\\_out\\_util\\_pct')
+      GROUP BY if_index, date_bin($2::interval, ts, TIMESTAMPTZ '2000-01-01')
+      ORDER BY if_index, ts
+    `, [id, bin, sRange.from, sRange.to]),
+  ]);
+
+  // Group interface rows into [{ if_index, if_name, points:[...] }].
+  const ifMap = new Map();
+  for (const row of ifRows.rows) {
+    if (!ifMap.has(row.if_index)) ifMap.set(row.if_index, { if_index: row.if_index, if_name: row.if_name, points: [] });
+    const e = ifMap.get(row.if_index);
+    if (!e.if_name && row.if_name) e.if_name = row.if_name;
+    e.points.push({
+      ts: row.ts,
+      in_bps: row.in_bps == null ? null : Number(row.in_bps),
+      out_bps: row.out_bps == null ? null : Number(row.out_bps),
+      in_util_pct: row.in_util_pct == null ? null : Number(row.in_util_pct),
+      out_util_pct: row.out_util_pct == null ? null : Number(row.out_util_pct),
+    });
+  }
+  const series = {
+    scalar: scalarRows.rows.map((r) => ({
+      ts: r.ts,
+      latency_ms: r.latency_ms == null ? null : Number(r.latency_ms),
+      packet_loss_pct: r.packet_loss_pct == null ? null : Number(r.packet_loss_pct),
+      cpu_pct: r.cpu_pct == null ? null : Number(r.cpu_pct),
+      mem_pct: r.mem_pct == null ? null : Number(r.mem_pct),
+      session_count: r.session_count == null ? null : Number(r.session_count),
+      session_util_pct: r.session_util_pct == null ? null : Number(r.session_util_pct),
+      gp_tunnels: r.gp_tunnels == null ? null : Number(r.gp_tunnels),
+    })),
+    interfaces: Array.from(ifMap.values()),
+  };
+
   // ── Auto-generated "Device Analysis" paragraph ──
   const periodLabel = ({ '24h': 'the last 24 hours', '7d': 'the last 7 days', '30d': 'the last 30 days', '90d': 'the last 90 days' })[req.query.range] || 'this period';
   const trend = health.rows[0] && health.rows[0].trend ? health.rows[0].trend : 'stable';
@@ -5337,6 +5496,8 @@ app.get('/api/reports/device-detail', wrap(async (req, res) => {
     uptime_by_day: byDay.rows,
     snmp_summary: snmpSummary.rows,
     topology: topo.rows,
+    range: { from: sRange.from, to: sRange.to, bucket: sRange.bucket },
+    series,
   });
 }));
 
@@ -6049,6 +6210,137 @@ app.get('/api/reports/wireless-capacity', wrap(async (req, res) => {
     high_util_aps: highUtil.rows,
     growth_rate,
     projected_capacity: { days_to_80pct, days_to_full },
+  });
+}));
+
+// ── AP detail (granular, Phase 0+1) ───────────────────────────
+// Per-AP report: dimension row, availability (derived from history presence),
+// a bucketed time-series from wireless_history, the latest AP-intelligence row,
+// the current client snapshot, and recent roaming/auth events. RBAC: a
+// site_admin may only read an AP in one of their assigned sites.
+app.get('/api/reports/ap-detail/:id', wrap(async (req, res) => {
+  const apId = parseInt(req.params.id, 10);
+  if (isNaN(apId)) return res.status(400).json({ error: 'invalid ap id' });
+
+  const apQ = await sv.query(`
+    SELECT a.id, a.name, a.model, a.mac_address, a.ip_address,
+           a.controller_id, c.name AS controller_name,
+           a.site_id, a.site_name, a.firmware_version, a.uptime_seconds, a.status,
+           a.radio_2g_channel, a.radio_5g_channel
+    FROM wireless_aps a
+    LEFT JOIN wireless_controllers c ON c.id = a.controller_id
+    WHERE a.id = $1`, [apId]);
+  if (!apQ.rows[0]) return res.status(404).json({ error: 'AP not found' });
+  const ap = apQ.rows[0];
+
+  // RBAC site scoping — enforced server-side so a site_admin cannot bypass it by
+  // calling the API directly. An unscoped (admin/viewer) caller passes through.
+  const siteFilter = getSiteFilter(req);
+  if (siteFilter && siteFilter.length && !siteFilter.includes(ap.site_id)) {
+    return res.status(403).json({ error: 'forbidden: AP outside your assigned sites' });
+  }
+
+  const sRange = resolveSeriesRange(req.query);
+  const bin = sRange.intervalSql; // whitelisted interval string
+  const fail = (label) => (e) => { console.error(`[reports/ap-detail] ${label} failed:`, e.message); return { rows: [] }; };
+
+  const [seriesQ, intelQ, clientsQ, eventsQ, availQ, discoQ] = await Promise.all([
+    // Bucketed time-series. AVG for gauges/clients/util/noise AND throughput.
+    // Nulls (noise/throughput on vendors that don't report them) pass through.
+    sv.query(`
+      SELECT date_bin($2::interval, ts, TIMESTAMPTZ '2000-01-01') AS ts,
+             ROUND(AVG(clients_total)::numeric, 1)  AS clients_total,
+             ROUND(AVG(clients_2g)::numeric, 1)     AS clients_2g,
+             ROUND(AVG(clients_5g)::numeric, 1)     AS clients_5g,
+             ROUND(AVG(radio_2g_util)::numeric, 1)  AS radio_2g_util,
+             ROUND(AVG(radio_5g_util)::numeric, 1)  AS radio_5g_util,
+             ROUND(AVG(noise_floor_2g)::numeric, 1) AS noise_floor_2g,
+             ROUND(AVG(noise_floor_5g)::numeric, 1) AS noise_floor_5g,
+             ROUND(AVG(throughput_in_bps)::numeric, 0)  AS throughput_in_bps,
+             ROUND(AVG(throughput_out_bps)::numeric, 0) AS throughput_out_bps
+      FROM wireless_history
+      WHERE ap_id = $1 AND ts BETWEEN $3 AND $4
+      GROUP BY 1 ORDER BY 1`, [apId, bin, sRange.from, sRange.to]).catch(fail('series')),
+    sv.query(`SELECT * FROM wireless_ap_intelligence WHERE ap_id = $1`, [apId]).catch(fail('intel')),
+    sv.query(`
+      SELECT mac_address, hostname, ip_address, ssid_name, band, channel,
+             rssi_dbm, tx_rate_mbps, roaming_count, is_problem, is_sticky
+      FROM wireless_clients WHERE ap_id = $1
+      ORDER BY last_seen_at DESC`, [apId]).catch(fail('clients')),
+    sv.query(`
+      SELECT ts, event_type, from_ap_name, to_ap_name, rssi_dbm, ssid_name
+      FROM wireless_client_events
+      WHERE (from_ap_id = $1 OR to_ap_id = $1) AND ts BETWEEN $2 AND $3
+      ORDER BY ts DESC LIMIT 200`, [apId, sRange.from, sRange.to]).catch(fail('events')),
+    // Availability derived from wireless_history presence over the window: each
+    // bucket the AP wrote a history row counts as "online". uptime_pct =
+    // online_buckets / expected_buckets * 100 (honest label: history-presence
+    // based, not a real per-AP up/down rollup, which does not exist).
+    sv.query(`
+      SELECT COUNT(*)::int AS online_count,
+             MAX(clients_total) AS any_clients
+      FROM (
+        SELECT date_bin($2::interval, ts, TIMESTAMPTZ '2000-01-01') AS b,
+               MAX(clients_total) AS clients_total
+        FROM wireless_history WHERE ap_id = $1 AND ts BETWEEN $3 AND $4 GROUP BY 1
+      ) buckets`, [apId, bin, sRange.from, sRange.to]).catch(fail('avail')),
+    // Disconnect signal: leave events for this AP in the window; fall back to the
+    // controller's ap_disconnects_24h when no per-AP leave events are recorded.
+    sv.query(`
+      SELECT
+        (SELECT COUNT(*)::int FROM wireless_client_events
+           WHERE from_ap_id = $1 AND event_type = 'leave' AND ts BETWEEN $2 AND $3) AS leave_events,
+        (SELECT ap_disconnects_24h FROM wireless_controllers WHERE id = $4) AS ctrl_disconnects`,
+      [apId, sRange.from, sRange.to, ap.controller_id]).catch(fail('disco')),
+  ]);
+
+  // Expected buckets across the window for the chosen interval.
+  const intervalMin = (BUCKET_INTERVALS[sRange.bucket] || { minutes: 60 }).minutes;
+  const windowMin = Math.max(1, (Date.parse(sRange.to) - Date.parse(sRange.from)) / 60000);
+  const expectedBuckets = Math.max(1, Math.round(windowMin / intervalMin));
+  const onlineCount = availQ.rows[0] ? Number(availQ.rows[0].online_count) : 0;
+  const sampleCount = seriesQ.rows.length;
+  const leaveEvents = discoQ.rows[0] && discoQ.rows[0].leave_events != null ? Number(discoQ.rows[0].leave_events) : 0;
+  const ctrlDisc = discoQ.rows[0] && discoQ.rows[0].ctrl_disconnects != null ? Number(discoQ.rows[0].ctrl_disconnects) : null;
+  const disconnects = leaveEvents > 0 ? leaveEvents : (ctrlDisc != null ? ctrlDisc : 0);
+
+  // down_events: count of "gaps" — expected buckets the AP did not report.
+  const downEvents = Math.max(0, expectedBuckets - onlineCount);
+
+  res.json({
+    ap: {
+      id: ap.id, name: ap.name, model: ap.model, mac_address: ap.mac_address,
+      ip_address: ap.ip_address, controller_id: ap.controller_id,
+      controller_name: ap.controller_name, site_name: ap.site_name,
+      firmware_version: ap.firmware_version,
+      uptime_seconds: ap.uptime_seconds == null ? null : Number(ap.uptime_seconds),
+      status: ap.status,
+      radio_2g_channel: ap.radio_2g_channel, radio_5g_channel: ap.radio_5g_channel,
+    },
+    availability: {
+      // History-presence based availability over the window (not a real up/down rollup).
+      uptime_pct: expectedBuckets > 0 ? Math.round((onlineCount / expectedBuckets) * 1000) / 10 : null,
+      sample_count: sampleCount,
+      online_count: onlineCount,
+      down_events: downEvents,
+      disconnects,
+    },
+    range: { from: sRange.from, to: sRange.to, bucket: sRange.bucket },
+    series: seriesQ.rows.map((r) => ({
+      ts: r.ts,
+      clients_total: r.clients_total == null ? null : Number(r.clients_total),
+      clients_2g: r.clients_2g == null ? null : Number(r.clients_2g),
+      clients_5g: r.clients_5g == null ? null : Number(r.clients_5g),
+      radio_2g_util: r.radio_2g_util == null ? null : Number(r.radio_2g_util),
+      radio_5g_util: r.radio_5g_util == null ? null : Number(r.radio_5g_util),
+      noise_floor_2g: r.noise_floor_2g == null ? null : Number(r.noise_floor_2g),
+      noise_floor_5g: r.noise_floor_5g == null ? null : Number(r.noise_floor_5g),
+      throughput_in_bps: r.throughput_in_bps == null ? null : Number(r.throughput_in_bps),
+      throughput_out_bps: r.throughput_out_bps == null ? null : Number(r.throughput_out_bps),
+    })),
+    intelligence: intelQ.rows[0] || null,
+    current_clients: clientsQ.rows,
+    events: eventsQ.rows,
   });
 }));
 

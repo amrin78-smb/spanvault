@@ -7,6 +7,7 @@ import { ErrorBox, Loading } from '@/components/ui';
 import NetworkSummaryReport from '@/components/reports/NetworkSummaryReport';
 import SiteReport from '@/components/reports/SiteReport';
 import DeviceDetailReport from '@/components/reports/DeviceDetailReport';
+import ApDetailReport from '@/components/reports/ApDetailReport';
 import SlaComplianceReport from '@/components/reports/SlaComplianceReport';
 import TopWorstReport from '@/components/reports/TopWorstReport';
 import AlertAnalysisReport from '@/components/reports/AlertAnalysisReport';
@@ -21,30 +22,40 @@ import WirelessCapacityReport from '@/components/reports/WirelessCapacityReport'
 // ── Types ──────────────────────────────────────────────────────
 type Site = { id: number; name: string };
 type DeviceLite = { id: number; name: string; ip_address: string };
+type ApLite = { id: number; name: string; ip_address: string | null; site_name: string | null };
 type Controller = { id: number; name: string };
+// One selected entity (AP or device) rendered as its own report section.
+type EntityRef = { id: string; label: string };
 type SavedReport = {
   id: number; name: string; template: string; scope_type: string;
   scope_id: number | null; scope_name: string | null; date_range: string;
   sla_target: number | null;
 };
 // Scope modes a template supports.
-type ScopeKind = 'all' | 'site' | 'device' | 'flexible' | 'flexibleNoDevice';
+// 'apMulti'/'deviceMulti' = Phase-1 granular detail reports: pick one or many
+// entities, each rendered as its own charted section.
+type ScopeKind = 'all' | 'site' | 'device' | 'flexible' | 'flexibleNoDevice' | 'apMulti' | 'deviceMulti';
 type Template = {
   key: string; icon: string; label: string; desc: string;
   scope: ScopeKind; sla?: boolean; metric?: boolean; wireless?: boolean;
+  // granular = uses the flexible time range / bucket / metric-checkbox controls.
+  granular?: boolean;
 };
 type Applied = {
-  template: string; range: string; from: string; to: string;
+  template: string; range: string; from: string; to: string; bucket: string;
   scopeMode: 'all' | 'site' | 'device';
   siteId: string; siteLabel: string; deviceId: string; deviceLabel: string;
   controllerId: string; controllerLabel: string;
   slaTarget: string; metric: string;
+  // Multi-entity detail reports: the selected APs/devices + chosen metric keys.
+  entities: EntityRef[]; selectedMetrics: string[];
 };
 
 const TEMPLATES: Template[] = [
   { key: 'network-summary', icon: '📊', label: 'Network Summary', desc: 'Overall health across all sites and devices', scope: 'all' },
   { key: 'site-summary', icon: '🏢', label: 'Site Report', desc: 'All devices in a site with comparison table', scope: 'site' },
-  { key: 'device-detail', icon: '🖥', label: 'Device Detail', desc: 'Full history, graphs and metrics for one device', scope: 'device' },
+  { key: 'device-detail', icon: '🖥', label: 'Device Detail', desc: 'Time-series charts, history and metrics for one or more devices', scope: 'deviceMulti', granular: true },
+  { key: 'ap-detail', icon: '📡', label: 'AP Detail', desc: 'Time-series charts, clients, RF and throughput for one or more access points', scope: 'apMulti', granular: true },
   { key: 'sla-compliance', icon: '✅', label: 'SLA Compliance', desc: 'Pass/fail per device vs SLA target', scope: 'flexible', sla: true },
   { key: 'top-worst', icon: '⚠', label: 'Top 10 Worst', desc: 'Lowest availability, highest latency or most alerts', scope: 'flexibleNoDevice', metric: true },
   { key: 'alert-analysis', icon: '🔔', label: 'Alert Analysis', desc: 'Most alerted devices, MTTR, and patterns', scope: 'flexibleNoDevice' },
@@ -59,7 +70,8 @@ const TEMPLATES: Template[] = [
 const TEMPLATE_BY_KEY: Record<string, Template> = Object.fromEntries(TEMPLATES.map((t) => [t.key, t]));
 
 const RANGES = [
-  { key: '7d', label: 'Last 7d' },
+  { key: '24h', label: 'Last 24h' },
+  { key: '7d', label: '7d' },
   { key: '30d', label: '30d' },
   { key: '90d', label: '90d' },
 ];
@@ -69,7 +81,84 @@ const METRICS = [
   { key: 'alerts', label: 'Alerts' },
 ];
 
+// Resolution (bucket) selector for granular detail reports → ?bucket=
+const BUCKETS = [
+  { key: 'auto', label: 'Auto' },
+  { key: '5m', label: '5m' },
+  { key: '15m', label: '15m' },
+  { key: '1h', label: '1h' },
+  { key: '1d', label: '1d' },
+];
+
+// Metric checkbox catalog per granular template. `def` = default-checked.
+type MetricOpt = { key: string; label: string; def?: boolean };
+const DETAIL_METRICS: Record<string, MetricOpt[]> = {
+  'ap-detail': [
+    { key: 'clients', label: 'Clients', def: true },
+    { key: 'radio_util', label: 'Radio Util', def: true },
+    { key: 'noise', label: 'Noise' },
+    { key: 'throughput', label: 'Throughput' },
+  ],
+  'device-detail': [
+    { key: 'latency', label: 'Latency', def: true },
+    { key: 'cpu', label: 'CPU', def: true },
+    { key: 'mem', label: 'Memory' },
+    { key: 'interfaces', label: 'Interfaces', def: true },
+    { key: 'sessions', label: 'Sessions' },
+  ],
+};
+function defaultMetrics(template: string): string[] {
+  return (DETAIL_METRICS[template] || []).filter((m) => m.def).map((m) => m.key);
+}
+
+// How long each preset spans, used to compute explicit ISO from/to for granular
+// reports (the contract: both endpoints accept ISO from/to OR a range preset —
+// we prefer sending explicit from/to). Returns [fromISO, toISO].
+function presetToIso(range: string): { from: string; to: string } {
+  const to = new Date();
+  const from = new Date(to);
+  switch (range) {
+    case '24h': from.setHours(from.getHours() - 24); break;
+    case '7d':  from.setDate(from.getDate() - 7); break;
+    case '30d': from.setDate(from.getDate() - 30); break;
+    case '90d': from.setDate(from.getDate() - 90); break;
+    default:    from.setDate(from.getDate() - 30); break;
+  }
+  return { from: from.toISOString(), to: to.toISOString() };
+}
+
 // ── Helpers (top-level) ────────────────────────────────────────
+// Shared range/bucket params for the granular detail endpoints.
+// Custom range → explicit from/to (ISO); preset → compute explicit from/to too
+// (the contract accepts both; we prefer sending from/to). bucket always sent.
+function granularRangeParams(a: Applied): URLSearchParams {
+  const p = new URLSearchParams();
+  if (a.range === 'custom') {
+    if (a.from) p.set('from', new Date(a.from).toISOString());
+    if (a.to) p.set('to', new Date(a.to).toISOString());
+  } else {
+    const { from, to } = presetToIso(a.range);
+    p.set('from', from);
+    p.set('to', to);
+    // Also pass the preset name so the API can fall back to `range` if it prefers.
+    p.set('range', a.range);
+  }
+  p.set('bucket', a.bucket || 'auto');
+  return p;
+}
+// Per-entity endpoint for a multi-entity detail report.
+//   ap-detail     → GET /api/reports/ap-detail/:id?from=&to=&bucket=
+//   device-detail → GET /api/reports/device-detail?device_id=&from=&to=&bucket=
+function buildEntityEndpoint(template: string, entityId: string, a: Applied): string {
+  const p = granularRangeParams(a);
+  if (template === 'ap-detail') {
+    return `/api/reports/ap-detail/${encodeURIComponent(entityId)}?${p}`;
+  }
+  // device-detail
+  p.set('device_id', entityId);
+  return `/api/reports/device-detail?${p}`;
+}
+
 function buildEndpoint(a: Applied): string {
   const p = new URLSearchParams();
   if (a.range === 'custom') { p.set('range', 'custom'); if (a.from) p.set('from', a.from); if (a.to) p.set('to', a.to); }
@@ -126,12 +215,19 @@ function isEmptyReport(template: string, data: any): boolean {
 }
 function rangeLabel(a: Applied): string {
   if (a.range === 'custom') return `${a.from || '…'} → ${a.to || '…'}`;
+  if (a.range === '24h') return 'Last 24 Hours';
   if (a.range === '7d') return 'Last 7 Days';
   if (a.range === '30d') return 'Last 30 Days';
   if (a.range === '90d') return 'Last 90 Days';
   return RANGES.find((r) => r.key === a.range)?.label || a.range;
 }
 function scopeLabel(a: Applied): string {
+  if (a.template === 'ap-detail' || a.template === 'device-detail') {
+    const noun = a.template === 'ap-detail' ? 'AP' : 'Device';
+    if (a.entities.length === 0) return `No ${noun.toLowerCase()}s`;
+    if (a.entities.length === 1) return `${noun}: ${a.entities[0].label}`;
+    return `${a.entities.length} ${noun}s`;
+  }
   if (a.template.startsWith('wireless-')) {
     return a.controllerId ? `Controller: ${a.controllerLabel || a.controllerId}` : 'All Controllers';
   }
@@ -195,6 +291,7 @@ export default function ReportsPage() {
   const email = session?.user?.email || '';
   const sites = useApi<Site[]>('/api/netvault/sites');
   const devices = useApi<DeviceLite[]>('/api/devices');
+  const aps = useApi<ApLite[]>('/api/wireless/aps');
   const controllers = useApi<Controller[]>('/api/wireless/controllers');
   const saved = useApi<SavedReport[]>(email ? `/api/reports/saved?created_by=${encodeURIComponent(email)}` : '/api/reports/saved');
 
@@ -202,6 +299,7 @@ export default function ReportsPage() {
   const [range, setRange] = useState('30d');
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
+  const [bucket, setBucket] = useState('auto');
   const [scopeMode, setScopeMode] = useState<'all' | 'site' | 'device'>('all');
   const [siteId, setSiteId] = useState('');
   const [deviceId, setDeviceId] = useState('');
@@ -209,6 +307,10 @@ export default function ReportsPage() {
   const [deviceSearch, setDeviceSearch] = useState('');
   const [slaTarget, setSlaTarget] = useState('99.5');
   const [metric, setMetric] = useState('uptime');
+  // Granular detail reports: multi-entity selection + metric checkboxes.
+  const [entityIds, setEntityIds] = useState<string[]>([]);
+  const [entitySearch, setEntitySearch] = useState('');
+  const [selectedMetrics, setSelectedMetrics] = useState<string[]>(defaultMetrics('network-summary'));
   const [applied, setApplied] = useState<Applied | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveName, setSaveName] = useState('');
@@ -224,10 +326,19 @@ export default function ReportsPage() {
     // flexible / flexibleNoDevice keep whatever the user picked (but device
     // isn't allowed on flexibleNoDevice — normalise that).
     else if (tpl.scope === 'flexibleNoDevice' && scopeMode === 'device') setScopeMode('all');
+    // Granular detail templates: reset the multi-entity selection, search, and
+    // default-checked metrics for the newly-selected template.
+    if (tpl.granular) {
+      setEntityIds([]);
+      setEntitySearch('');
+      setSelectedMetrics(defaultMetrics(template));
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [template]);
 
   function canRun(): boolean {
+    // Granular detail reports need at least one selected entity.
+    if (tpl.scope === 'apMulti' || tpl.scope === 'deviceMulti') return entityIds.length > 0;
     if (tpl.scope === 'site' && !siteId) return false;
     if (tpl.scope === 'device' && !deviceId) return false;
     if (scopeMode === 'site' && !siteId) return false;
@@ -240,18 +351,61 @@ export default function ReportsPage() {
     const siteLabel = sites.data?.find((s) => String(s.id) === siteId)?.name || '';
     const deviceLabel = devices.data?.find((d) => String(d.id) === deviceId)?.name || '';
     const controllerLabel = controllers.data?.find((c) => String(c.id) === controllerId)?.name || '';
-    setApplied({ template, range, from, to, scopeMode, siteId, siteLabel, deviceId, deviceLabel, controllerId, controllerLabel, slaTarget, metric });
+    // Resolve selected entity ids → labelled refs for the multi-entity reports.
+    let entities: EntityRef[] = [];
+    if (tpl.scope === 'apMulti') {
+      entities = entityIds.map((id) => {
+        const ap = aps.data?.find((x) => String(x.id) === id);
+        return { id, label: ap ? `${ap.name}${ap.ip_address ? ` (${ap.ip_address})` : ''}` : id };
+      });
+    } else if (tpl.scope === 'deviceMulti') {
+      entities = entityIds.map((id) => {
+        const d = devices.data?.find((x) => String(x.id) === id);
+        return { id, label: d ? `${d.name}${d.ip_address ? ` (${d.ip_address})` : ''}` : id };
+      });
+    }
+    setApplied({
+      template, range, from, to, bucket, scopeMode, siteId, siteLabel, deviceId, deviceLabel,
+      controllerId, controllerLabel, slaTarget, metric,
+      entities, selectedMetrics: [...selectedMetrics],
+    });
     setSaveName('');
     setShowSave(false);
   }
 
-  const endpoint = applied ? buildEndpoint(applied) : null;
+  // Active entity list (APs or devices) for the multi-select, filtered by search.
+  const entityList: EntityRef[] = (() => {
+    const q = entitySearch.toLowerCase();
+    if (tpl.scope === 'apMulti') {
+      return (aps.data || [])
+        .filter((a) => !q || a.name.toLowerCase().includes(q) || (a.ip_address || '').includes(entitySearch))
+        .map((a) => ({ id: String(a.id), label: `${a.name}${a.ip_address ? ` (${a.ip_address})` : ''}${a.site_name ? ` · ${a.site_name}` : ''}` }));
+    }
+    if (tpl.scope === 'deviceMulti') {
+      return (devices.data || [])
+        .filter((d) => !q || d.name.toLowerCase().includes(q) || (d.ip_address || '').includes(entitySearch))
+        .map((d) => ({ id: String(d.id), label: `${d.name}${d.ip_address ? ` (${d.ip_address})` : ''}` }));
+    }
+    return [];
+  })();
+
+  function toggleEntity(id: string) {
+    setEntityIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  }
+  function toggleMetric(key: string) {
+    setSelectedMetrics((prev) => (prev.includes(key) ? prev.filter((x) => x !== key) : [...prev, key]));
+  }
+
+  // Multi-entity detail reports fetch per entity (in EntityReportSection), so the
+  // page-level single fetch is skipped for them.
+  const isMulti = applied?.template === 'ap-detail' || applied?.template === 'device-detail';
+  const endpoint = applied && !isMulti ? buildEndpoint(applied) : null;
   const report = useApi<any>(endpoint, 0);
 
   // loading = any in-flight fetch (incl. refetch on template switch) so we never
   // render a body with stale/mismatched data from the previous template.
-  const loading = !!applied && report.loading;
-  const empty = !!applied && !report.loading && !report.error && !!report.data
+  const loading = !!applied && !isMulti && report.loading;
+  const empty = !!applied && !isMulti && !report.loading && !report.error && !!report.data
     && isEmptyReport(applied.template, report.data);
 
   const filteredDevices = (devices.data || []).filter((d) =>
@@ -295,14 +449,18 @@ export default function ReportsPage() {
     if (s.sla_target != null) setSlaTarget(String(s.sla_target));
     const siteLabel = s.scope_type === 'site' ? (s.scope_name || '') : '';
     const deviceLabel = s.scope_type === 'device' ? (s.scope_name || '') : '';
+    setBucket('auto');
+    setEntityIds([]);
+    setSelectedMetrics(defaultMetrics(s.template));
     setApplied({
       template: s.template, range: s.date_range && s.date_range !== 'custom' ? s.date_range : '30d',
-      from: '', to: '', scopeMode: mode === 'site' || mode === 'device' ? mode : 'all',
+      from: '', to: '', bucket: 'auto', scopeMode: mode === 'site' || mode === 'device' ? mode : 'all',
       siteId: mode === 'site' && s.scope_id ? String(s.scope_id) : '',
       siteLabel, deviceId: mode === 'device' && s.scope_id ? String(s.scope_id) : '',
       deviceLabel, controllerId: '', controllerLabel: '',
       slaTarget: s.sla_target != null ? String(s.sla_target) : '99.5',
       metric: 'uptime',
+      entities: [], selectedMetrics: defaultMetrics(s.template),
     });
     setShowSave(false);
   }
@@ -372,6 +530,45 @@ export default function ReportsPage() {
               </>
             )}
 
+            {/* Granular detail: one-or-many entity multi-select (AP or device) */}
+            {(tpl.scope === 'apMulti' || tpl.scope === 'deviceMulti') && (
+              <EntityMultiSelect
+                noun={tpl.scope === 'apMulti' ? 'AP' : 'Device'}
+                search={entitySearch}
+                onSearch={setEntitySearch}
+                list={entityList}
+                selected={entityIds}
+                onToggle={toggleEntity}
+                onClear={() => setEntityIds([])}
+                loading={tpl.scope === 'apMulti' ? aps.loading : devices.loading}
+              />
+            )}
+
+            {/* Granular detail: metric checkboxes (per active template) */}
+            {tpl.granular && (DETAIL_METRICS[template] || []).length > 0 && (
+              <label style={fieldLabel}>Metrics
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                  {DETAIL_METRICS[template].map((m) => {
+                    const on = selectedMetrics.includes(m.key);
+                    return (
+                      <button key={m.key} type="button" style={presetBtn(on)} onClick={() => toggleMetric(m.key)}>
+                        {on ? '✓ ' : ''}{m.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </label>
+            )}
+
+            {/* Granular detail: resolution / bucket selector */}
+            {tpl.granular && (
+              <label style={fieldLabel}>Resolution
+                <select style={ctrlBase} value={bucket} onChange={(e) => setBucket(e.target.value)}>
+                  {BUCKETS.map((b) => <option key={b.key} value={b.key}>{b.label}</option>)}
+                </select>
+              </label>
+            )}
+
             {/* Metric (top-worst only) */}
             {tpl.metric && (
               <label style={fieldLabel}>Metric
@@ -403,10 +600,12 @@ export default function ReportsPage() {
             {range === 'custom' && (
               <>
                 <label style={fieldLabel}>From
-                  <input style={ctrlBase} type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
+                  <input style={ctrlBase} type={tpl.granular ? 'datetime-local' : 'date'}
+                    value={from} onChange={(e) => setFrom(e.target.value)} />
                 </label>
                 <label style={fieldLabel}>To
-                  <input style={ctrlBase} type="date" value={to} onChange={(e) => setTo(e.target.value)} />
+                  <input style={ctrlBase} type={tpl.granular ? 'datetime-local' : 'date'}
+                    value={to} onChange={(e) => setTo(e.target.value)} />
                 </label>
               </>
             )}
@@ -483,7 +682,7 @@ export default function ReportsPage() {
             <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>
               {tpl.label} · {rangeLabel(applied)} · {scopeLabel(applied)}
             </div>
-            {!empty && !loading && !report.error && (
+            {(isMulti || (!empty && !loading && !report.error)) && (
               <button onClick={() => window.print()}
                 style={{ ...presetBtn(false), padding: '0 14px', flex: 'none' }}>
                 Export PDF
@@ -491,7 +690,21 @@ export default function ReportsPage() {
             )}
           </div>
 
-          {report.error ? (
+          {isMulti ? (
+            /* Multi-entity detail report: one charted section per AP/device, each
+               fetching its own endpoint with a per-entity loading/error state. */
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
+              {applied.entities.map((ent) => (
+                <EntityReportSection
+                  key={`${applied.template}-${ent.id}`}
+                  template={applied.template}
+                  entity={ent}
+                  endpoint={buildEntityEndpoint(applied.template, ent.id, applied)}
+                  selectedMetrics={applied.selectedMetrics}
+                />
+              ))}
+            </div>
+          ) : report.error ? (
             <ErrorBox message={report.error} />
           ) : loading ? (
             <div className="sv-panel" style={{ textAlign: 'center', padding: '40px 20px' }}>
@@ -530,4 +743,106 @@ function ReportBody({ template, data }: { template: string; data: any }) {
     case 'wireless-capacity':  return <WirelessCapacityReport data={data} />;
     default: return null;
   }
+}
+
+// ── Entity multi-select (top-level component) ──────────────────
+// Search box + scrollable checkbox list for picking one OR many APs/devices.
+// Reuses the existing device-picker search pattern (name/IP).
+function EntityMultiSelect({
+  noun, search, onSearch, list, selected, onToggle, onClear, loading,
+}: {
+  noun: string;
+  search: string;
+  onSearch: (v: string) => void;
+  list: EntityRef[];
+  selected: string[];
+  onToggle: (id: string) => void;
+  onClear: () => void;
+  loading: boolean;
+}) {
+  return (
+    <label style={{ ...fieldLabel, alignItems: 'flex-start', flexDirection: 'column', gap: 4 }}>
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+        {noun}s
+        <span style={{ fontSize: 'var(--text-xs)', fontWeight: 600, color: selected.length ? 'var(--primary)' : 'var(--text-muted)' }}>
+          {selected.length ? `${selected.length} selected` : 'pick one or many'}
+        </span>
+        {selected.length > 0 && (
+          <button type="button" onClick={onClear}
+            style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--text-muted)', fontSize: 'var(--text-xs)', textDecoration: 'underline', padding: 0 }}>
+            clear
+          </button>
+        )}
+      </span>
+      <input style={{ ...ctrlBase, width: 220 }} placeholder={`Search ${noun} name or IP…`}
+        value={search} onChange={(e) => onSearch(e.target.value)} />
+      <div style={{
+        width: 220, maxHeight: 150, overflowY: 'auto',
+        border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
+        background: 'var(--bg-card)', padding: 4,
+      }}>
+        {loading ? (
+          <div style={{ padding: '6px 8px', fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>Loading…</div>
+        ) : list.length === 0 ? (
+          <div style={{ padding: '6px 8px', fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>No matches</div>
+        ) : (
+          list.slice(0, 200).map((e) => {
+            const on = selected.includes(e.id);
+            return (
+              <div key={e.id} onClick={() => onToggle(e.id)}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 8, padding: '5px 8px',
+                  cursor: 'pointer', borderRadius: 'var(--radius-sm)',
+                  background: on ? 'var(--surface-subtle)' : 'transparent',
+                  fontSize: 'var(--text-sm)', fontWeight: 500, textTransform: 'none', letterSpacing: 0,
+                  color: 'var(--text-primary)',
+                }}>
+                <input type="checkbox" checked={on} readOnly tabIndex={-1} style={{ pointerEvents: 'none' }} />
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.label}</span>
+              </div>
+            );
+          })
+        )}
+      </div>
+    </label>
+  );
+}
+
+// ── Per-entity report section (top-level component) ────────────
+// Fetches its own detail endpoint and renders the matching report component once
+// per AP/device, with an independent loading / error / empty state.
+function EntityReportSection({
+  template, entity, endpoint, selectedMetrics,
+}: {
+  template: string;
+  entity: EntityRef;
+  endpoint: string;
+  selectedMetrics: string[];
+}) {
+  const r = useApi<any>(endpoint, 0);
+  return (
+    <section className="sv-report-entity">
+      <div style={{
+        fontSize: 'var(--text-sm)', fontWeight: 700, color: 'var(--text-secondary)',
+        textTransform: 'uppercase', letterSpacing: '0.04em', margin: '0 0 8px',
+      }}>
+        {template === 'ap-detail' ? 'AP' : 'Device'}: {entity.label}
+      </div>
+      {r.error ? (
+        <ErrorBox message={r.error} />
+      ) : r.loading ? (
+        <div className="sv-panel" style={{ textAlign: 'center', padding: '28px 20px' }}>
+          <Loading label={`Loading ${entity.label}…`} />
+        </div>
+      ) : !r.data ? (
+        <div className="sv-panel" style={{ textAlign: 'center', padding: '28px 20px' }}>
+          <p className="sv-muted" style={{ margin: 0 }}>No data for {entity.label}.</p>
+        </div>
+      ) : template === 'ap-detail' ? (
+        <ApDetailReport data={r.data} selectedMetrics={selectedMetrics} />
+      ) : (
+        <DeviceDetailReport data={r.data} selectedMetrics={selectedMetrics} />
+      )}
+    </section>
+  );
 }

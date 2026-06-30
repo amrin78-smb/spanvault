@@ -1,9 +1,14 @@
 'use client';
 
+import type { CSSProperties } from 'react';
 import Link from 'next/link';
+import {
+  LineChart, Line, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
+  ReferenceLine, ResponsiveContainer,
+} from 'recharts';
 import { StatusDot } from '@/components/StatusDot';
 import { GradeBadge } from '@/components/intel';
-import { fmtTime, Skeleton, CardSkeleton } from '@/components/ui';
+import { fmtTime, fmtBps, Skeleton, CardSkeleton } from '@/components/ui';
 
 /**
  * Pure presentational device-detail report.
@@ -65,6 +70,31 @@ export type DeviceDetail = {
     neighbor_name: string | null;
     neighbor_ip: string | null;
   }[];
+  // ── Phase 0+1 granular time-series (optional; older payloads omit it) ──
+  range?: { from: string; to: string; bucket: string } | null;
+  series?: {
+    scalar?: ScalarPoint[];
+    interfaces?: IfSeries[];
+  } | null;
+};
+
+// One bucket of the device's scalar metrics. Any field may be null where the
+// vendor/device doesn't supply it (e.g. cpu/mem on a non-SNMP host, GP tunnels
+// only on Palo Alto firewalls).
+export type ScalarPoint = {
+  ts: string;
+  latency_ms: number | null;
+  packet_loss_pct: number | null;
+  cpu_pct: number | null;
+  mem_pct: number | null;
+  session_count: number | null;
+  session_util_pct: number | null;
+  gp_tunnels: number | null;
+};
+export type IfSeries = {
+  if_index: number;
+  if_name: string;
+  points: { ts: string; in_bps: number | null; out_bps: number | null; in_util_pct: number | null; out_util_pct: number | null }[];
 };
 
 // ── Helpers (module scope) ─────────────────────────────────────
@@ -148,6 +178,228 @@ const TD: React.CSSProperties = {
   height: 36,
 };
 
+// ── Chart constants & helpers (module scope) ───────────────────
+const CHART_HEIGHT = 230;
+const MAX_IF_CHARTS = 6; // cap interface charts at the N busiest to avoid 300 charts.
+const CHART_CARD: CSSProperties = { padding: 16, breakInside: 'avoid' };
+const CHART_TITLE: CSSProperties = { ...SECTION_TITLE, margin: '0 0 4px' };
+const CHART_NOTE: CSSProperties = { fontSize: 'var(--text-sm)', color: 'var(--text-muted)', fontStyle: 'italic' };
+
+const COLOR_LATENCY = '#C8102E'; // crimson
+const COLOR_LOSS = '#d97706';    // amber
+const COLOR_CPU = '#2563eb';     // blue
+const COLOR_MEM = '#7c3aed';     // purple
+const COLOR_SESS = '#16a34a';    // green
+const COLOR_SESS_UTIL = '#2563eb';
+const COLOR_GP = '#7c3aed';
+const COLOR_IN = '#2563eb';
+const COLOR_OUT = '#f97316';
+
+function tickLabel(ts: string): string {
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return '';
+  return d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+function seriesHasAny<T extends Record<string, any>>(arr: T[], keys: (keyof T)[]): boolean {
+  return arr.some((p) => keys.some((k) => p[k] !== null && p[k] !== undefined));
+}
+function wantsMetric(selected: string[] | undefined, key: string): boolean {
+  return !selected || selected.includes(key);
+}
+
+// ── Scalar metric charts (module-scope components) ─────────────
+function LatencyLossChart({ data }: { data: ScalarPoint[] }) {
+  const has = seriesHasAny(data, ['latency_ms', 'packet_loss_pct']);
+  if (!has) return null;
+  return (
+    <div className="sv-panel sv-report-chart" style={CHART_CARD}>
+      <h3 style={CHART_TITLE}>Latency &amp; packet loss</h3>
+      <ResponsiveContainer width="100%" height={CHART_HEIGHT}>
+        <LineChart data={data} margin={{ top: 6, right: 16, bottom: 4, left: 0 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+          <XAxis dataKey="ts" tickFormatter={tickLabel} fontSize={11} minTickGap={40} stroke="var(--text-muted)" />
+          <YAxis yAxisId="ms" fontSize={11} width={44} stroke="var(--text-muted)" />
+          <YAxis yAxisId="pct" orientation="right" fontSize={11} width={40} domain={[0, 100]} tickFormatter={(v) => `${v}%`} stroke="var(--text-muted)" />
+          <Tooltip
+            labelFormatter={tickLabel}
+            formatter={(v: any, n: any) => [v == null ? '—' : (n === 'Packet loss' ? `${v}%` : `${v} ms`), n]}
+          />
+          <Legend wrapperStyle={{ fontSize: 'var(--text-xs)' }} />
+          <Line yAxisId="ms" type="monotone" name="Latency" dataKey="latency_ms" stroke={COLOR_LATENCY} strokeWidth={2} dot={false} connectNulls={false} />
+          <Line yAxisId="pct" type="monotone" name="Packet loss" dataKey="packet_loss_pct" stroke={COLOR_LOSS} strokeWidth={1.5} dot={false} connectNulls={false} />
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+// CPU chart with optional p50/p95 baseline reference lines.
+function CpuChart({ data, baseP50, baseP95 }: { data: ScalarPoint[]; baseP50: number | null; baseP95: number | null }) {
+  if (!seriesHasAny(data, ['cpu_pct'])) return null;
+  return (
+    <div className="sv-panel sv-report-chart" style={CHART_CARD}>
+      <h3 style={CHART_TITLE}>CPU utilization (%)</h3>
+      <ResponsiveContainer width="100%" height={CHART_HEIGHT}>
+        <LineChart data={data} margin={{ top: 6, right: 16, bottom: 4, left: 0 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+          <XAxis dataKey="ts" tickFormatter={tickLabel} fontSize={11} minTickGap={40} stroke="var(--text-muted)" />
+          <YAxis fontSize={11} width={40} domain={[0, 100]} tickFormatter={(v) => `${v}%`} stroke="var(--text-muted)" />
+          <Tooltip labelFormatter={tickLabel} formatter={(v: any) => [v == null ? '—' : `${v}%`, 'CPU']} />
+          {baseP50 != null && (
+            <ReferenceLine y={baseP50} stroke="var(--text-muted)" strokeDasharray="4 3"
+              label={{ value: `p50 ${Math.round(baseP50)}%`, position: 'insideTopLeft', fontSize: 11, fill: 'var(--text-muted)' }} />
+          )}
+          {baseP95 != null && (
+            <ReferenceLine y={baseP95} stroke={COLOR_LOSS} strokeDasharray="4 3"
+              label={{ value: `p95 ${Math.round(baseP95)}%`, position: 'insideTopLeft', fontSize: 11, fill: COLOR_LOSS }} />
+          )}
+          <Line type="monotone" dataKey="cpu_pct" stroke={COLOR_CPU} strokeWidth={2} dot={false} connectNulls={false} />
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+function MemChart({ data }: { data: ScalarPoint[] }) {
+  if (!seriesHasAny(data, ['mem_pct'])) return null;
+  return (
+    <div className="sv-panel sv-report-chart" style={CHART_CARD}>
+      <h3 style={CHART_TITLE}>Memory utilization (%)</h3>
+      <ResponsiveContainer width="100%" height={CHART_HEIGHT}>
+        <LineChart data={data} margin={{ top: 6, right: 16, bottom: 4, left: 0 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+          <XAxis dataKey="ts" tickFormatter={tickLabel} fontSize={11} minTickGap={40} stroke="var(--text-muted)" />
+          <YAxis fontSize={11} width={40} domain={[0, 100]} tickFormatter={(v) => `${v}%`} stroke="var(--text-muted)" />
+          <Tooltip labelFormatter={tickLabel} formatter={(v: any) => [v == null ? '—' : `${v}%`, 'Memory']} />
+          <Line type="monotone" dataKey="mem_pct" stroke={COLOR_MEM} strokeWidth={2} dot={false} connectNulls={false} />
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+// Firewall session / GlobalProtect chart — only renders when present.
+function SessionsChart({ data }: { data: ScalarPoint[] }) {
+  const hasCount = seriesHasAny(data, ['session_count']);
+  const hasUtil = seriesHasAny(data, ['session_util_pct']);
+  const hasGp = seriesHasAny(data, ['gp_tunnels']);
+  if (!hasCount && !hasUtil && !hasGp) return null;
+  return (
+    <div className="sv-panel sv-report-chart" style={CHART_CARD}>
+      <h3 style={CHART_TITLE}>Sessions &amp; tunnels</h3>
+      <ResponsiveContainer width="100%" height={CHART_HEIGHT}>
+        <LineChart data={data} margin={{ top: 6, right: 16, bottom: 4, left: 0 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+          <XAxis dataKey="ts" tickFormatter={tickLabel} fontSize={11} minTickGap={40} stroke="var(--text-muted)" />
+          <YAxis yAxisId="count" fontSize={11} width={48} allowDecimals={false} stroke="var(--text-muted)" />
+          {hasUtil && (
+            <YAxis yAxisId="pct" orientation="right" fontSize={11} width={40} domain={[0, 100]} tickFormatter={(v) => `${v}%`} stroke="var(--text-muted)" />
+          )}
+          <Tooltip
+            labelFormatter={tickLabel}
+            formatter={(v: any, n: any) => [v == null ? '—' : (n === 'Session util' ? `${v}%` : v), n]}
+          />
+          <Legend wrapperStyle={{ fontSize: 'var(--text-xs)' }} />
+          {hasCount && <Line yAxisId="count" type="monotone" name="Sessions" dataKey="session_count" stroke={COLOR_SESS} strokeWidth={2} dot={false} connectNulls={false} />}
+          {hasGp && <Line yAxisId="count" type="monotone" name="GP tunnels" dataKey="gp_tunnels" stroke={COLOR_GP} strokeWidth={1.5} dot={false} connectNulls={false} />}
+          {hasUtil && <Line yAxisId="pct" type="monotone" name="Session util" dataKey="session_util_pct" stroke={COLOR_SESS_UTIL} strokeWidth={1.5} dot={false} connectNulls={false} />}
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+// One interface's in/out throughput. Axis unit chosen from the peak.
+function InterfaceChart({ iface }: { iface: IfSeries }) {
+  const pts = iface.points || [];
+  const maxV = pts.reduce((m, p) => Math.max(m, p.in_bps ?? 0, p.out_bps ?? 0), 0);
+  let div = 1; let unit = 'bps';
+  if (maxV >= 1e9) { div = 1e9; unit = 'Gbps'; }
+  else if (maxV >= 1e6) { div = 1e6; unit = 'Mbps'; }
+  else if (maxV >= 1e3) { div = 1e3; unit = 'Kbps'; }
+  const axisTick = (v: any) => String(Math.round((Number(v) / div) * 10) / 10);
+  return (
+    <div className="sv-panel sv-report-chart" style={CHART_CARD}>
+      <h3 style={CHART_TITLE}>{`${iface.if_name} · ${unit}`}</h3>
+      {pts.length === 0 ? (
+        <p style={CHART_NOTE}>No traffic samples for this interface.</p>
+      ) : (
+        <ResponsiveContainer width="100%" height={CHART_HEIGHT}>
+          <AreaChart data={pts} margin={{ top: 6, right: 16, bottom: 4, left: 0 }}>
+            <defs>
+              <linearGradient id={`sv-if-in-${iface.if_index}`} x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor={COLOR_IN} stopOpacity={0.35} />
+                <stop offset="100%" stopColor={COLOR_IN} stopOpacity={0.02} />
+              </linearGradient>
+              <linearGradient id={`sv-if-out-${iface.if_index}`} x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor={COLOR_OUT} stopOpacity={0.35} />
+                <stop offset="100%" stopColor={COLOR_OUT} stopOpacity={0.02} />
+              </linearGradient>
+            </defs>
+            <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+            <XAxis dataKey="ts" tickFormatter={tickLabel} fontSize={11} minTickGap={40} stroke="var(--text-muted)" />
+            <YAxis fontSize={11} width={40} tickFormatter={axisTick} stroke="var(--text-muted)" />
+            <Tooltip labelFormatter={tickLabel} formatter={(v: any, n: any) => [v == null ? '—' : fmtBps(Number(v)), n]} />
+            <Legend wrapperStyle={{ fontSize: 'var(--text-xs)' }} />
+            <Area type="monotone" name="In" dataKey="in_bps" stroke={COLOR_IN} strokeWidth={2} fill={`url(#sv-if-in-${iface.if_index})`} connectNulls={false} />
+            <Area type="monotone" name="Out" dataKey="out_bps" stroke={COLOR_OUT} strokeWidth={2} fill={`url(#sv-if-out-${iface.if_index})`} connectNulls={false} />
+          </AreaChart>
+        </ResponsiveContainer>
+      )}
+    </div>
+  );
+}
+
+// Peak in/out bps of an interface — used to rank the busiest for the cap.
+function ifPeak(iface: IfSeries): number {
+  return (iface.points || []).reduce((m, p) => Math.max(m, p.in_bps ?? 0, p.out_bps ?? 0), 0);
+}
+
+// ── Metric charts section (module-scope component) ─────────────
+function DeviceMetricCharts({ data, selectedMetrics }: { data: DeviceDetail; selectedMetrics?: string[] }) {
+  const series = data.series || null;
+  const scalar = (series && Array.isArray(series.scalar)) ? series.scalar : [];
+  const interfaces = (series && Array.isArray(series.interfaces)) ? series.interfaces : [];
+
+  // Use the existing response baseline (ms) as CPU baseline reference only if the
+  // payload carries CPU-percentage baselines — the existing baseline is latency
+  // (ms), not CPU, so we don't misapply it. Reference lines are drawn only when a
+  // dedicated cpu baseline exists on the point stream isn't available, so we pass
+  // null here (kept as a hook for when the API adds cpu baselines).
+  const cpuP50: number | null = null;
+  const cpuP95: number | null = null;
+
+  // Rank interfaces by peak throughput and cap to the busiest N.
+  const topIfaces = [...interfaces]
+    .sort((a, b) => ifPeak(b) - ifPeak(a))
+    .slice(0, MAX_IF_CHARTS);
+  const hiddenIfaces = interfaces.length - topIfaces.length;
+
+  const showLatency = wantsMetric(selectedMetrics, 'latency') && seriesHasAny(scalar, ['latency_ms', 'packet_loss_pct']);
+  const showCpu = wantsMetric(selectedMetrics, 'cpu') && seriesHasAny(scalar, ['cpu_pct']);
+  const showMem = wantsMetric(selectedMetrics, 'mem') && seriesHasAny(scalar, ['mem_pct']);
+  const showSessions = wantsMetric(selectedMetrics, 'sessions') && seriesHasAny(scalar, ['session_count', 'session_util_pct', 'gp_tunnels']);
+  const showInterfaces = wantsMetric(selectedMetrics, 'interfaces') && topIfaces.length > 0;
+
+  const anything = showLatency || showCpu || showMem || showSessions || showInterfaces;
+  if (!anything) return null;
+
+  return (
+    <>
+      {showLatency && <LatencyLossChart data={scalar} />}
+      {showCpu && <CpuChart data={scalar} baseP50={cpuP50} baseP95={cpuP95} />}
+      {showMem && <MemChart data={scalar} />}
+      {showSessions && <SessionsChart data={scalar} />}
+      {showInterfaces && topIfaces.map((iface) => <InterfaceChart key={iface.if_index} iface={iface} />)}
+      {showInterfaces && hiddenIfaces > 0 && (
+        <p style={{ ...CHART_NOTE, margin: 0 }}>
+          Showing the {topIfaces.length} busiest interfaces · {hiddenIfaces} lower-traffic interface{hiddenIfaces === 1 ? '' : 's'} hidden.
+        </p>
+      )}
+    </>
+  );
+}
+
 // ── Loading skeleton (module scope) ────────────────────────────
 function DeviceReportSkeleton() {
   return (
@@ -167,7 +419,7 @@ const EMPTY_HEALTH = { score: null, grade: null, trend: null };
 const EMPTY_BASELINE = { mean_ms: null, p95_ms: null };
 
 // ── Main report ────────────────────────────────────────────────
-export default function DeviceDetailReport({ data }: { data?: DeviceDetail | null }) {
+export default function DeviceDetailReport({ data, selectedMetrics }: { data?: DeviceDetail | null; selectedMetrics?: string[] }) {
   // The parent fetch may still be in flight (or a template switch may briefly
   // hand us the previous report's payload). Guard until a real device payload
   // is present rather than crashing on undefined sub-objects.
@@ -281,6 +533,10 @@ export default function DeviceDetailReport({ data }: { data?: DeviceDetail | nul
           </tbody>
         </table>
       </div>
+
+      {/* 4b. Granular time-series charts (Phase 0+1) — only renders metrics that
+          have data and are requested via selectedMetrics. */}
+      <DeviceMetricCharts data={data} selectedMetrics={selectedMetrics} />
 
       {/* 5. Alert history */}
       <div className="sv-panel" style={PANEL}>

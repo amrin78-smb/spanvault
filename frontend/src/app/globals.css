@@ -1079,6 +1079,19 @@ body.sv-noc .sv-status-dot { transform: scale(1.5); }
   .sv-panel { break-inside: avoid; box-shadow: none; border: 1px solid #ccc; }
   .sv-table th, .sv-table td { border-bottom: 1px solid #ccc; }
   @page { margin: 14mm; }
+
+  /* ── Granular detail reports (charts) print rules ─────────── */
+  /* Give the print container an explicit width so Recharts'
+     ResponsiveContainer (which measures its parent) does not collapse to
+     0px wide when the page is taken out of normal layout for printing. */
+  #report-print { width: 180mm; }
+  .sv-report-entity, .sv-report-chart { width: 100%; }
+  /* Keep each chart block whole — never split a graph across a page. */
+  .sv-report-chart { break-inside: avoid; page-break-inside: avoid; }
+  /* Start each AP/device section on a fresh, sensible break (but not before
+     the very first one, so the report doesn't open with a blank page). */
+  .sv-report-entity { break-inside: avoid-page; page-break-inside: avoid; }
+  .sv-report-entity + .sv-report-entity { break-before: page; page-break-before: always; }
 }
 
 /* ── SNMP test (inline, in device form) ────────────────── */
