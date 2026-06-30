@@ -105,6 +105,14 @@ const COLOR_OUT = '#f97316';
 
 const CHART_HEIGHT = 230;
 
+// Shared recharts tooltip styling — recharts' built-in tooltip background is a
+// hardcoded white box that doesn't flip in dark mode, so theme it with tokens.
+const TOOLTIP_STYLE = {
+  contentStyle: { background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 8, color: 'var(--text-primary)' },
+  labelStyle: { color: 'var(--text-muted)' },
+  itemStyle: { color: 'var(--text-primary)' },
+};
+
 // ── Helpers (module scope) ─────────────────────────────────────
 function dash(v: number | string | null | undefined, suffix = ''): string {
   if (v === null || v === undefined || v === '') return '—';
@@ -218,21 +226,26 @@ const CHART_NOTE: CSSProperties = { fontSize: 'var(--text-sm)', color: 'var(--te
 
 // ── Chart blocks (module-scope components) ─────────────────────
 function ClientsChart({ series }: { series: ApSeriesPoint[] }) {
+  const has = hasAny(series, ['clients_total', 'clients_2g', 'clients_5g']);
   return (
     <div className="sv-panel sv-report-chart" style={CHART_CARD}>
       <h3 style={CHART_TITLE}>Connected clients</h3>
-      <ResponsiveContainer width="100%" height={CHART_HEIGHT}>
-        <LineChart data={series} margin={{ top: 6, right: 16, bottom: 4, left: 0 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-          <XAxis dataKey="ts" tickFormatter={tickLabel} fontSize={11} minTickGap={40} stroke="var(--text-muted)" />
-          <YAxis fontSize={11} width={36} allowDecimals={false} stroke="var(--text-muted)" />
-          <Tooltip labelFormatter={tickLabel} formatter={(v: any, n: any) => [v == null ? '—' : v, n]} />
-          <Legend wrapperStyle={{ fontSize: 'var(--text-xs)' }} />
-          <Line type="monotone" name="Total" dataKey="clients_total" stroke={COLOR_TOTAL} strokeWidth={2} dot={false} connectNulls={false} />
-          <Line type="monotone" name="2.4 GHz" dataKey="clients_2g" stroke={COLOR_2G} strokeWidth={1.5} dot={false} connectNulls={false} />
-          <Line type="monotone" name="5 GHz" dataKey="clients_5g" stroke={COLOR_5G} strokeWidth={1.5} dot={false} connectNulls={false} />
-        </LineChart>
-      </ResponsiveContainer>
+      {!has ? (
+        <p style={CHART_NOTE}>Client counts not reported by this AP/vendor.</p>
+      ) : (
+        <ResponsiveContainer width="100%" height={CHART_HEIGHT}>
+          <LineChart data={series} margin={{ top: 6, right: 16, bottom: 4, left: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+            <XAxis dataKey="ts" tickFormatter={tickLabel} fontSize={11} minTickGap={40} stroke="var(--text-muted)" />
+            <YAxis fontSize={11} width={36} allowDecimals={false} stroke="var(--text-muted)" />
+            <Tooltip {...TOOLTIP_STYLE} labelFormatter={tickLabel} formatter={(v: any, n: any) => [v == null ? '—' : v, n]} />
+            <Legend wrapperStyle={{ fontSize: 'var(--text-xs)' }} />
+            <Line type="monotone" name="Total" dataKey="clients_total" stroke={COLOR_TOTAL} strokeWidth={2} dot={false} connectNulls={false} />
+            <Line type="monotone" name="2.4 GHz" dataKey="clients_2g" stroke={COLOR_2G} strokeWidth={1.5} dot={false} connectNulls={false} />
+            <Line type="monotone" name="5 GHz" dataKey="clients_5g" stroke={COLOR_5G} strokeWidth={1.5} dot={false} connectNulls={false} />
+          </LineChart>
+        </ResponsiveContainer>
+      )}
     </div>
   );
 }
@@ -250,7 +263,7 @@ function RadioUtilChart({ series }: { series: ApSeriesPoint[] }) {
             <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
             <XAxis dataKey="ts" tickFormatter={tickLabel} fontSize={11} minTickGap={40} stroke="var(--text-muted)" />
             <YAxis fontSize={11} width={40} domain={[0, 100]} tickFormatter={(v) => `${v}%`} stroke="var(--text-muted)" />
-            <Tooltip labelFormatter={tickLabel} formatter={(v: any, n: any) => [v == null ? '—' : `${v}%`, n]} />
+            <Tooltip {...TOOLTIP_STYLE} labelFormatter={tickLabel} formatter={(v: any, n: any) => [v == null ? '—' : `${v}%`, n]} />
             <Legend wrapperStyle={{ fontSize: 'var(--text-xs)' }} />
             <Line type="monotone" name="2.4 GHz" dataKey="radio_2g_util" stroke={COLOR_2G} strokeWidth={2} dot={false} connectNulls={false} />
             <Line type="monotone" name="5 GHz" dataKey="radio_5g_util" stroke={COLOR_5G} strokeWidth={2} dot={false} connectNulls={false} />
@@ -274,7 +287,7 @@ function NoiseChart({ series }: { series: ApSeriesPoint[] }) {
             <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
             <XAxis dataKey="ts" tickFormatter={tickLabel} fontSize={11} minTickGap={40} stroke="var(--text-muted)" />
             <YAxis fontSize={11} width={44} tickFormatter={(v) => `${v}`} stroke="var(--text-muted)" />
-            <Tooltip labelFormatter={tickLabel} formatter={(v: any, n: any) => [v == null ? '—' : `${v} dBm`, n]} />
+            <Tooltip {...TOOLTIP_STYLE} labelFormatter={tickLabel} formatter={(v: any, n: any) => [v == null ? '—' : `${v} dBm`, n]} />
             <Legend wrapperStyle={{ fontSize: 'var(--text-xs)' }} />
             <Line type="monotone" name="2.4 GHz" dataKey="noise_floor_2g" stroke={COLOR_2G} strokeWidth={2} dot={false} connectNulls={false} />
             <Line type="monotone" name="5 GHz" dataKey="noise_floor_5g" stroke={COLOR_5G} strokeWidth={2} dot={false} connectNulls={false} />
@@ -315,7 +328,7 @@ function ThroughputChart({ series }: { series: ApSeriesPoint[] }) {
             <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
             <XAxis dataKey="ts" tickFormatter={tickLabel} fontSize={11} minTickGap={40} stroke="var(--text-muted)" />
             <YAxis fontSize={11} width={40} tickFormatter={axisTick} stroke="var(--text-muted)" />
-            <Tooltip labelFormatter={tickLabel} formatter={(v: any, n: any) => [v == null ? '—' : fmtBps(Number(v)), n]} />
+            <Tooltip {...TOOLTIP_STYLE} labelFormatter={tickLabel} formatter={(v: any, n: any) => [v == null ? '—' : fmtBps(Number(v)), n]} />
             <Legend wrapperStyle={{ fontSize: 'var(--text-xs)' }} />
             <Area type="monotone" name="In" dataKey="throughput_in_bps" stroke={COLOR_IN} strokeWidth={2} fill="url(#sv-ap-in)" connectNulls={false} />
             <Area type="monotone" name="Out" dataKey="throughput_out_bps" stroke={COLOR_OUT} strokeWidth={2} fill="url(#sv-ap-out)" connectNulls={false} />
@@ -345,7 +358,7 @@ function RfIntelligence({ intel }: { intel: ApDetail['intelligence'] }) {
       <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap', marginBottom: 12 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <span style={{ fontSize: 'var(--text-2xl)', fontWeight: 800, lineHeight: 1 }}>
-            {intel.health_score === null ? '—' : Math.round(intel.health_score)}
+            {intel.health_score == null ? '—' : Math.round(intel.health_score)}
           </span>
           <GradeBadge grade={intel.health_grade} />
         </div>
@@ -445,7 +458,7 @@ export default function ApDetailReport({
       {/* 2. Availability stat cards */}
       <div style={STAT_GRID}>
         <div style={{ ...STAT_CARD, borderLeftColor: 'var(--green)' }}>
-          <div style={STAT_VALUE}>{av.uptime_pct === null ? '—' : `${av.uptime_pct}%`}</div>
+          <div style={STAT_VALUE}>{av.uptime_pct == null ? '—' : `${av.uptime_pct}%`}</div>
           <div style={STAT_LABEL}>Uptime</div>
         </div>
         <div style={STAT_CARD}>

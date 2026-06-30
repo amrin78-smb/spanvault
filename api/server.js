@@ -32,6 +32,13 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.50.1': [
+    'Reports: fixed per-interface throughput charts that were rendering blank in the Device Detail report — the query missed how throughput is stored, so in/out bps now plot correctly',
+    'Reports: the Device Detail report is now site-scoped — a site admin can only run it for devices in their assigned sites (it previously was not access-checked)',
+    'Reports: Device Detail with a custom date range now shows matching numbers — the summary cards and the charts use the same window (the cards previously fell back to 30 days)',
+    'Reports: fixed AP availability that could read just over 100% on some windows; dark-mode chart tooltips now use the theme (no more white tooltip box); the AP clients chart and empty interfaces no longer draw blank chart frames',
+    'Reports: the AP/device picker checkboxes are now clickable and the list is wider (full name + IP visible); a custom range needs valid start/end before Run enables, and at least one metric stays selected',
+  ],
   '1.50.0': [
     'Reports: new granular, charted detail reports. A new "AP Detail" report shows a per-access-point breakdown — clients over time (total/2.4GHz/5GHz), per-radio channel utilization, noise floor and throughput where the vendor reports them, RF health/load + channel recommendations, the current client list, and recent roam/join/leave events',
     'Reports: the Device Detail report now plots time-series charts — latency + packet loss, CPU, memory, per-interface throughput (top interfaces), and firewall session/tunnel counts — on top of the existing availability/health sections',
@@ -5299,12 +5306,23 @@ app.get('/api/reports/site-summary', wrap(async (req, res) => {
 app.get('/api/reports/device-detail', wrap(async (req, res) => {
   const id = parseInt(req.query.device_id, 10);
   if (isNaN(id)) return res.status(400).json({ error: 'device_id is required' });
-  const win = getDateRange(req.query);
+  // Summary window: drive it from the SAME resolved series range the granular
+  // series uses (honors explicit from/to, else a `range` preset, default 7d) so
+  // the stat cards and charts always agree on one window. (getDateRange only
+  // honors from/to under range==='custom', which the frontend doesn't send.)
+  const sRange = resolveSeriesRange(req.query);
   const dev = await sv.query(
-    `SELECT id, name, ip_address, site_name, device_type, device_vendor, snmp_enabled, poll_interval_seconds
+    `SELECT id, name, ip_address, site_name, site_id, device_type, device_vendor, snmp_enabled, poll_interval_seconds
        FROM monitored_devices WHERE id = $1`, [id]);
   if (!dev.rows[0]) return res.status(404).json({ error: 'Device not found' });
   const d = dev.rows[0];
+
+  // RBAC site scoping — enforced server-side so a site_admin cannot bypass it by
+  // calling the API directly. An unscoped (admin/viewer) caller passes through.
+  const siteFilter = getSiteFilter(req);
+  if (siteFilter && siteFilter.length && !siteFilter.includes(d.site_id)) {
+    return res.status(403).json({ error: 'forbidden: device outside your assigned sites' });
+  }
 
   // Each sub-query is isolated: a failure (e.g. an optional intelligence/topology
   // table missing on an un-migrated DB) degrades that section to empty rather
@@ -5316,11 +5334,11 @@ app.get('/api/reports/device-detail', wrap(async (req, res) => {
   const [avail, resp, health, baseline, alerts, byDay, snmpSummary, topo, longest] = await Promise.all([
     safeQ(`SELECT COUNT(*)::int AS total_checks,
                      SUM(CASE WHEN status <> 'up' THEN 1 ELSE 0 END)::int AS failed_checks
-              FROM ping_results WHERE device_id = $1 AND ts BETWEEN $2 AND $3`, [id, win.start, win.end]),
+              FROM ping_results WHERE device_id = $1 AND ts BETWEEN $2 AND $3`, [id, sRange.from, sRange.to]),
     safeQ(`SELECT ROUND(AVG(response_ms)::numeric,1) AS avg_ms, ROUND(MIN(response_ms)::numeric,1) AS min_ms,
                      ROUND(MAX(response_ms)::numeric,1) AS max_ms,
                      ROUND(percentile_cont(0.95) WITHIN GROUP (ORDER BY response_ms)::numeric,1) AS p95_ms
-              FROM ping_results WHERE device_id = $1 AND status = 'up' AND ts BETWEEN $2 AND $3`, [id, win.start, win.end]),
+              FROM ping_results WHERE device_id = $1 AND status = 'up' AND ts BETWEEN $2 AND $3`, [id, sRange.from, sRange.to]),
     safeQ(`SELECT score, grade, trend FROM device_health_scores WHERE device_id = $1`, [id]),
     safeQ(`SELECT mean, p95 FROM device_baselines WHERE device_id = $1 AND metric = 'response_ms'
                 ORDER BY period_days ASC LIMIT 1`, [id]),
@@ -5359,7 +5377,7 @@ app.get('/api/reports/device-detail', wrap(async (req, res) => {
                 SELECT status, SUM(CASE WHEN status = 'up' THEN 1 ELSE 0 END) OVER (ORDER BY ts) AS grp
                 FROM ping_results WHERE device_id = $1 AND ts BETWEEN $2 AND $3
               )
-              SELECT COUNT(*)::int AS run FROM s WHERE status <> 'up' GROUP BY grp ORDER BY run DESC LIMIT 1`, [id, win.start, win.end]),
+              SELECT COUNT(*)::int AS run FROM s WHERE status <> 'up' GROUP BY grp ORDER BY run DESC LIMIT 1`, [id, sRange.from, sRange.to]),
   ]);
 
   const a0 = avail.rows[0] || { total_checks: 0, failed_checks: 0 };
@@ -5370,8 +5388,7 @@ app.get('/api/reports/device-detail', wrap(async (req, res) => {
   // bucket (explicit from/to or a `range` preset, default 7d). The bucket SQL
   // comes from the whitelist (never interpolated from raw input); device id and
   // timestamps are bound as parameters.
-  const sRange = resolveSeriesRange(req.query);
-  const bin = sRange.intervalSql; // safe: whitelisted interval string
+  const bin = sRange.intervalSql; // safe: whitelisted interval string (sRange resolved above)
   const [scalarRows, ifRows] = await Promise.all([
     // Scalar series: ping latency/loss + scalar SNMP metrics, each bucketed, then
     // merged by ts in JS (full-outer-join on the time bucket). Only metrics that
@@ -5408,14 +5425,15 @@ app.get('/api/reports/device-detail', wrap(async (req, res) => {
       SELECT if_index,
              MAX(if_name) AS if_name,
              date_bin($2::interval, ts, TIMESTAMPTZ '2000-01-01') AS ts,
-             ROUND(AVG(value) FILTER (WHERE metric_name LIKE 'if\\_%\\_in\\_bps')::numeric, 0)        AS in_bps,
-             ROUND(AVG(value) FILTER (WHERE metric_name LIKE 'if\\_%\\_out\\_bps')::numeric, 0)       AS out_bps,
+             ROUND(AVG(value) FILTER (WHERE metric_name = 'if_in_bps' OR metric_name LIKE 'if\\_%\\_in\\_bps')::numeric, 0)        AS in_bps,
+             ROUND(AVG(value) FILTER (WHERE metric_name = 'if_out_bps' OR metric_name LIKE 'if\\_%\\_out\\_bps')::numeric, 0)       AS out_bps,
              ROUND(AVG(value) FILTER (WHERE metric_name LIKE 'if\\_%\\_in\\_util\\_pct')::numeric, 1)  AS in_util_pct,
              ROUND(AVG(value) FILTER (WHERE metric_name LIKE 'if\\_%\\_out\\_util\\_pct')::numeric, 1) AS out_util_pct
       FROM snmp_results
       WHERE device_id = $1 AND ts BETWEEN $3 AND $4
         AND if_index IS NOT NULL
-        AND (metric_name LIKE 'if\\_%\\_in\\_bps' OR metric_name LIKE 'if\\_%\\_out\\_bps'
+        AND (metric_name = 'if_in_bps' OR metric_name = 'if_out_bps'
+             OR metric_name LIKE 'if\\_%\\_in\\_bps' OR metric_name LIKE 'if\\_%\\_out\\_bps'
              OR metric_name LIKE 'if\\_%\\_in\\_util\\_pct' OR metric_name LIKE 'if\\_%\\_out\\_util\\_pct')
       GROUP BY if_index, date_bin($2::interval, ts, TIMESTAMPTZ '2000-01-01')
       ORDER BY if_index, ts
@@ -6298,7 +6316,11 @@ app.get('/api/reports/ap-detail/:id', wrap(async (req, res) => {
   const intervalMin = (BUCKET_INTERVALS[sRange.bucket] || { minutes: 60 }).minutes;
   const windowMin = Math.max(1, (Date.parse(sRange.to) - Date.parse(sRange.from)) / 60000);
   const expectedBuckets = Math.max(1, Math.round(windowMin / intervalMin));
-  const onlineCount = availQ.rows[0] ? Number(availQ.rows[0].online_count) : 0;
+  // Clamp: distinct date_bin buckets present can exceed expectedBuckets by 1 when
+  // the window straddles partial boundary buckets (e.g. 169 vs 168), which would
+  // otherwise yield uptime > 100% and a negative down_events. Cap at the expected.
+  let onlineCount = availQ.rows[0] ? Number(availQ.rows[0].online_count) : 0;
+  onlineCount = Math.min(onlineCount, expectedBuckets);
   const sampleCount = seriesQ.rows.length;
   const leaveEvents = discoQ.rows[0] && discoQ.rows[0].leave_events != null ? Number(discoQ.rows[0].leave_events) : 0;
   const ctrlDisc = discoQ.rows[0] && discoQ.rows[0].ctrl_disconnects != null ? Number(discoQ.rows[0].ctrl_disconnects) : null;

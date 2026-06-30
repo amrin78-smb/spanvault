@@ -185,6 +185,14 @@ const CHART_CARD: CSSProperties = { padding: 16, breakInside: 'avoid' };
 const CHART_TITLE: CSSProperties = { ...SECTION_TITLE, margin: '0 0 4px' };
 const CHART_NOTE: CSSProperties = { fontSize: 'var(--text-sm)', color: 'var(--text-muted)', fontStyle: 'italic' };
 
+// Shared recharts tooltip styling — recharts' built-in tooltip background is a
+// hardcoded white box that doesn't flip in dark mode, so theme it with tokens.
+const TOOLTIP_STYLE = {
+  contentStyle: { background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 8, color: 'var(--text-primary)' },
+  labelStyle: { color: 'var(--text-muted)' },
+  itemStyle: { color: 'var(--text-primary)' },
+};
+
 const COLOR_LATENCY = '#C8102E'; // crimson
 const COLOR_LOSS = '#d97706';    // amber
 const COLOR_CPU = '#2563eb';     // blue
@@ -221,6 +229,7 @@ function LatencyLossChart({ data }: { data: ScalarPoint[] }) {
           <YAxis yAxisId="ms" fontSize={11} width={44} stroke="var(--text-muted)" />
           <YAxis yAxisId="pct" orientation="right" fontSize={11} width={40} domain={[0, 100]} tickFormatter={(v) => `${v}%`} stroke="var(--text-muted)" />
           <Tooltip
+            {...TOOLTIP_STYLE}
             labelFormatter={tickLabel}
             formatter={(v: any, n: any) => [v == null ? '—' : (n === 'Packet loss' ? `${v}%` : `${v} ms`), n]}
           />
@@ -244,7 +253,7 @@ function CpuChart({ data, baseP50, baseP95 }: { data: ScalarPoint[]; baseP50: nu
           <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
           <XAxis dataKey="ts" tickFormatter={tickLabel} fontSize={11} minTickGap={40} stroke="var(--text-muted)" />
           <YAxis fontSize={11} width={40} domain={[0, 100]} tickFormatter={(v) => `${v}%`} stroke="var(--text-muted)" />
-          <Tooltip labelFormatter={tickLabel} formatter={(v: any) => [v == null ? '—' : `${v}%`, 'CPU']} />
+          <Tooltip {...TOOLTIP_STYLE} labelFormatter={tickLabel} formatter={(v: any) => [v == null ? '—' : `${v}%`, 'CPU']} />
           {baseP50 != null && (
             <ReferenceLine y={baseP50} stroke="var(--text-muted)" strokeDasharray="4 3"
               label={{ value: `p50 ${Math.round(baseP50)}%`, position: 'insideTopLeft', fontSize: 11, fill: 'var(--text-muted)' }} />
@@ -270,7 +279,7 @@ function MemChart({ data }: { data: ScalarPoint[] }) {
           <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
           <XAxis dataKey="ts" tickFormatter={tickLabel} fontSize={11} minTickGap={40} stroke="var(--text-muted)" />
           <YAxis fontSize={11} width={40} domain={[0, 100]} tickFormatter={(v) => `${v}%`} stroke="var(--text-muted)" />
-          <Tooltip labelFormatter={tickLabel} formatter={(v: any) => [v == null ? '—' : `${v}%`, 'Memory']} />
+          <Tooltip {...TOOLTIP_STYLE} labelFormatter={tickLabel} formatter={(v: any) => [v == null ? '—' : `${v}%`, 'Memory']} />
           <Line type="monotone" dataKey="mem_pct" stroke={COLOR_MEM} strokeWidth={2} dot={false} connectNulls={false} />
         </LineChart>
       </ResponsiveContainer>
@@ -296,6 +305,7 @@ function SessionsChart({ data }: { data: ScalarPoint[] }) {
             <YAxis yAxisId="pct" orientation="right" fontSize={11} width={40} domain={[0, 100]} tickFormatter={(v) => `${v}%`} stroke="var(--text-muted)" />
           )}
           <Tooltip
+            {...TOOLTIP_STYLE}
             labelFormatter={tickLabel}
             formatter={(v: any, n: any) => [v == null ? '—' : (n === 'Session util' ? `${v}%` : v), n]}
           />
@@ -339,7 +349,7 @@ function InterfaceChart({ iface }: { iface: IfSeries }) {
             <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
             <XAxis dataKey="ts" tickFormatter={tickLabel} fontSize={11} minTickGap={40} stroke="var(--text-muted)" />
             <YAxis fontSize={11} width={40} tickFormatter={axisTick} stroke="var(--text-muted)" />
-            <Tooltip labelFormatter={tickLabel} formatter={(v: any, n: any) => [v == null ? '—' : fmtBps(Number(v)), n]} />
+            <Tooltip {...TOOLTIP_STYLE} labelFormatter={tickLabel} formatter={(v: any, n: any) => [v == null ? '—' : fmtBps(Number(v)), n]} />
             <Legend wrapperStyle={{ fontSize: 'var(--text-xs)' }} />
             <Area type="monotone" name="In" dataKey="in_bps" stroke={COLOR_IN} strokeWidth={2} fill={`url(#sv-if-in-${iface.if_index})`} connectNulls={false} />
             <Area type="monotone" name="Out" dataKey="out_bps" stroke={COLOR_OUT} strokeWidth={2} fill={`url(#sv-if-out-${iface.if_index})`} connectNulls={false} />
@@ -353,6 +363,15 @@ function InterfaceChart({ iface }: { iface: IfSeries }) {
 // Peak in/out bps of an interface — used to rank the busiest for the cap.
 function ifPeak(iface: IfSeries): number {
   return (iface.points || []).reduce((m, p) => Math.max(m, p.in_bps ?? 0, p.out_bps ?? 0), 0);
+}
+
+// Does this interface carry any usable data? Filters out interfaces with no
+// samples at all, or whose bps/util fields are entirely null (an empty chart
+// frame / "No traffic samples" card), before they're ranked and capped.
+function ifHasData(iface: IfSeries): boolean {
+  const pts = iface.points || [];
+  return pts.some((p) =>
+    p.in_bps != null || p.out_bps != null || p.in_util_pct != null || p.out_util_pct != null);
 }
 
 // ── Metric charts section (module-scope component) ─────────────
@@ -369,11 +388,14 @@ function DeviceMetricCharts({ data, selectedMetrics }: { data: DeviceDetail; sel
   const cpuP50: number | null = null;
   const cpuP95: number | null = null;
 
-  // Rank interfaces by peak throughput and cap to the busiest N.
-  const topIfaces = [...interfaces]
+  // Drop genuinely-empty interfaces (no samples / all-null bps+util) BEFORE
+  // ranking + the cap, so empty-interface cards don't show and don't crowd out
+  // real interfaces. Then rank by peak throughput and cap to the busiest N.
+  const usableIfaces = interfaces.filter(ifHasData);
+  const topIfaces = [...usableIfaces]
     .sort((a, b) => ifPeak(b) - ifPeak(a))
     .slice(0, MAX_IF_CHARTS);
-  const hiddenIfaces = interfaces.length - topIfaces.length;
+  const hiddenIfaces = usableIfaces.length - topIfaces.length;
 
   const showLatency = wantsMetric(selectedMetrics, 'latency') && seriesHasAny(scalar, ['latency_ms', 'packet_loss_pct']);
   const showCpu = wantsMetric(selectedMetrics, 'cpu') && seriesHasAny(scalar, ['cpu_pct']);
@@ -440,12 +462,17 @@ export default function DeviceDetailReport({ data, selectedMetrics }: { data?: D
     .filter((x) => x !== null && x !== undefined && x !== '')
     .join(' · ');
 
+  // Derive the header status dot from availability instead of hardcoding 'up',
+  // so a down/degraded device's report header reflects reality.
+  const up = availability.uptime_pct;
+  const headerStatus = up == null ? 'unknown' : up >= 99 ? 'up' : up >= 1 ? 'warning' : 'down';
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       {/* 1. Device header */}
       <div className="sv-panel" style={{ ...PANEL, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap', marginBottom: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
-          <StatusDot status="up" size={14} />
+          <StatusDot status={headerStatus} size={14} />
           <div style={{ minWidth: 0 }}>
             <h2 style={{ margin: 0, fontSize: 'var(--text-lg)' }}>{device.name}</h2>
             <div className="sv-muted" style={{ fontSize: 'var(--text-sm)', marginTop: 2 }}>{subline || '—'}</div>
@@ -457,7 +484,7 @@ export default function DeviceDetailReport({ data, selectedMetrics }: { data?: D
               Health score
             </div>
             <div style={{ fontSize: 'var(--text-xl)', fontWeight: 700 }}>
-              {health.score === null ? '—' : Math.round(health.score)}
+              {health.score == null ? '—' : Math.round(health.score)}
             </div>
           </div>
           <GradeBadge grade={health.grade} />
@@ -467,7 +494,7 @@ export default function DeviceDetailReport({ data, selectedMetrics }: { data?: D
       {/* 2. Stat cards */}
       <div style={STAT_GRID}>
         <div style={{ ...STAT_CARD, borderLeftColor: 'var(--green)' }}>
-          <div style={STAT_VALUE}>{availability.uptime_pct === null ? '—' : `${availability.uptime_pct}%`}</div>
+          <div style={STAT_VALUE}>{availability.uptime_pct == null ? '—' : `${availability.uptime_pct}%`}</div>
           <div style={STAT_LABEL}>Uptime</div>
         </div>
         <div style={STAT_CARD}>

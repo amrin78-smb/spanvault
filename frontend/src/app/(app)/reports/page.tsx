@@ -332,11 +332,22 @@ export default function ReportsPage() {
       setEntityIds([]);
       setEntitySearch('');
       setSelectedMetrics(defaultMetrics(template));
+      // Granular reports are multi-entity, not site/device-scoped. Clear any stale
+      // scope left over from a previously-selected scoped template so saveReport
+      // doesn't persist a bogus scope_type/scope_id for this report.
+      setScopeMode('all');
+      setSiteId('');
+      setDeviceId('');
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [template]);
 
+  // A custom range is only valid when both endpoints are set and from < to.
+  const customRangeValid = range !== 'custom' || (!!from && !!to && new Date(from) < new Date(to));
+
   function canRun(): boolean {
+    // Custom range must have both endpoints present and chronologically ordered.
+    if (!customRangeValid) return false;
     // Granular detail reports need at least one selected entity.
     if (tpl.scope === 'apMulti' || tpl.scope === 'deviceMulti') return entityIds.length > 0;
     if (tpl.scope === 'site' && !siteId) return false;
@@ -393,7 +404,12 @@ export default function ReportsPage() {
     setEntityIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   }
   function toggleMetric(key: string) {
-    setSelectedMetrics((prev) => (prev.includes(key) ? prev.filter((x) => x !== key) : [...prev, key]));
+    setSelectedMetrics((prev) => {
+      if (!prev.includes(key)) return [...prev, key];
+      // Keep at least one metric checked — block removing the last remaining one.
+      if (prev.length === 1) return prev;
+      return prev.filter((x) => x !== key);
+    });
   }
 
   // Multi-entity detail reports fetch per entity (in EntityReportSection), so the
@@ -607,6 +623,11 @@ export default function ReportsPage() {
                   <input style={ctrlBase} type={tpl.granular ? 'datetime-local' : 'date'}
                     value={to} onChange={(e) => setTo(e.target.value)} />
                 </label>
+                {!customRangeValid && (
+                  <span style={{ fontSize: 'var(--text-xs)', color: 'var(--tint-danger-fg)', textTransform: 'none', letterSpacing: 0, fontWeight: 600 }}>
+                    Pick a valid start and end
+                  </span>
+                )}
               </>
             )}
 
@@ -761,7 +782,9 @@ function EntityMultiSelect({
   loading: boolean;
 }) {
   return (
-    <label style={{ ...fieldLabel, alignItems: 'flex-start', flexDirection: 'column', gap: 4 }}>
+    // NOTE: must NOT be a <label> — a label forwards every click inside it to its
+    // first control (the search input), so clicking a row never toggled the checkbox.
+    <div style={{ ...fieldLabel, alignItems: 'flex-start', flexDirection: 'column', gap: 4 }}>
       <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
         {noun}s
         <span style={{ fontSize: 'var(--text-xs)', fontWeight: 600, color: selected.length ? 'var(--primary)' : 'var(--text-muted)' }}>
@@ -774,10 +797,10 @@ function EntityMultiSelect({
           </button>
         )}
       </span>
-      <input style={{ ...ctrlBase, width: 220 }} placeholder={`Search ${noun} name or IP…`}
+      <input style={{ ...ctrlBase, width: 340 }} placeholder={`Search ${noun} name or IP…`}
         value={search} onChange={(e) => onSearch(e.target.value)} />
       <div style={{
-        width: 220, maxHeight: 150, overflowY: 'auto',
+        width: 340, maxHeight: 200, overflowY: 'auto',
         border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
         background: 'var(--bg-card)', padding: 4,
       }}>
@@ -797,14 +820,14 @@ function EntityMultiSelect({
                   fontSize: 'var(--text-sm)', fontWeight: 500, textTransform: 'none', letterSpacing: 0,
                   color: 'var(--text-primary)',
                 }}>
-                <input type="checkbox" checked={on} readOnly tabIndex={-1} style={{ pointerEvents: 'none' }} />
-                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.label}</span>
+                <input type="checkbox" checked={on} readOnly tabIndex={-1} style={{ pointerEvents: 'none', flexShrink: 0 }} />
+                <span title={e.label} style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.label}</span>
               </div>
             );
           })
         )}
       </div>
-    </label>
+    </div>
   );
 }
 
