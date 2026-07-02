@@ -4,12 +4,13 @@ import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useApi, apiSend } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
-import { Loading, ErrorBox, Empty, fmtTime, PageHeader, TableSkeleton, Pager, useClientPagination, useConfirm } from '@/components/ui';
+import { Loading, ErrorBox, Empty, fmtTime, PageHeader, TableSkeleton, Pager, useClientPagination, useConfirm, useToast } from '@/components/ui';
 import { useLicense } from '@/components/LicenseGuard';
 
 const TABS = [
   { key: 'general', label: 'General' },
-  { key: 'email', label: 'Email Alerts' },
+  { key: 'notifications', label: 'Notifications' },
+  { key: 'escalation', label: 'Escalation & On-Call' },
   { key: 'rules', label: 'Alert Rules' },
   { key: 'maintenance', label: 'Maintenance' },
   { key: 'audit', label: 'Audit Log' },
@@ -33,22 +34,33 @@ export default function SettingsPage() {
   // avoids two competing loads of /api/settings.)
   const settings = useApi<Record<string, string>>('/api/settings');
   const [form, setForm] = useState<Record<string, string>>({});
+  // Snapshot of the last-loaded / last-saved values, used to detect unsaved edits.
+  const [baseline, setBaseline] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
   const [saveErr, setSaveErr] = useState<string | null>(null);
+  const { toast, ToastUI } = useToast();
 
   useEffect(() => {
-    if (settings.data) setForm(settings.data);
+    if (settings.data) { setForm(settings.data); setBaseline(settings.data); }
   }, [settings.data]);
 
-  function set(k: string, v: string) { setForm((f) => ({ ...f, [k]: v })); setSaved(false); }
+  function set(k: string, v: string) { setForm((f) => ({ ...f, [k]: v })); }
+
+  // Inline numeric validation errors (blank / non-numeric / below floor). Save is
+  // disabled while any exist so an invalid value can never be persisted.
+  const numErrors = numFieldErrors(form);
+  const hasNumErrors = Object.keys(numErrors).length > 0;
+  // "Dirty" = the form differs from the last loaded/saved snapshot.
+  const dirty = JSON.stringify(form) !== JSON.stringify(baseline);
 
   async function save() {
+    if (hasNumErrors) return; // guarded by disabled Save, belt-and-braces
     setSaving(true);
     setSaveErr(null);
     try {
       await apiSend('/api/settings', 'PUT', form);
-      setSaved(true);
+      setBaseline(form); // saved values are the new clean baseline
+      toast('Settings saved');
     } catch (e: any) {
       setSaveErr(e?.message || 'Save failed');
     } finally {
@@ -76,11 +88,12 @@ export default function SettingsPage() {
   }
 
   const formProps = {
-    settings, form, set, save, saving, saved, saveErr,
+    settings, form, set, save, saving, saveErr, dirty, numErrors, hasNumErrors,
   };
 
   return (
     <div className="sv-settings">
+      {ToastUI}
       <PageHeader title="Settings" subtitle="Polling, thresholds, notifications, and alert rules." />
       <div className="sv-tabs sticky">
         {TABS.filter((t) => t.key !== 'audit' || canManageSettings).map((t) => (
@@ -99,7 +112,8 @@ export default function SettingsPage() {
         ))}
       </div>
       {tab === 'general' && <GeneralSettings {...formProps} />}
-      {tab === 'email' && <EmailAlertSettings {...formProps} />}
+      {tab === 'notifications' && <NotificationSettings {...formProps} />}
+      {tab === 'escalation' && <EscalationSettings {...formProps} />}
       {tab === 'rules' && <AlertRules />}
       {tab === 'maintenance' && <Maintenance />}
       {tab === 'audit' && canManageSettings && <AuditLog />}
@@ -116,33 +130,69 @@ type SettingsFormProps = {
   set: (k: string, v: string) => void;
   save: () => Promise<void>;
   saving: boolean;
-  saved: boolean;
   saveErr: string | null;
+  dirty: boolean;
+  numErrors: Record<string, string>;
+  hasNumErrors: boolean;
 };
 
-// Shared Save toolbar — a save from either General or Email Alerts persists ALL
-// settings fields (single shared form state in the parent).
-function SaveBar({ save, saving, saved }: Pick<SettingsFormProps, 'save' | 'saving' | 'saved'>) {
+// Shared Save toolbar — a save from any settings tab persists ALL settings fields
+// (single shared form state in the parent). Success is surfaced via an
+// auto-dismissing toast in the parent; here we show a dirty hint and only enable
+// Save when there are unsaved edits and no invalid numeric fields.
+function SaveBar({ save, saving, dirty, disabled }: {
+  save: () => Promise<void>; saving: boolean; dirty: boolean; disabled?: boolean;
+}) {
   return (
     <div className="sv-toolbar">
-      <button className="sv-btn" onClick={save} disabled={saving}>
+      <button className="sv-btn" onClick={save} disabled={saving || !dirty || disabled}>
         {saving ? 'Saving…' : 'Save Settings'}
       </button>
-      {saved && <span style={{ color: 'var(--sv-up)', fontWeight: 600 }}>Saved ✓</span>}
+      {disabled && !saving && (
+        <span className="sv-err-inline" style={{ margin: 0 }}>Fix the highlighted fields to save</span>
+      )}
+      {!disabled && dirty && !saving && (
+        <span className="sv-muted" style={{ fontWeight: 600 }}>Unsaved changes</span>
+      )}
     </div>
   );
 }
 
 // ── General settings ───────────────────────────────────────────
-const NUM_FIELDS = [
-  { key: 'icmp_poll_interval_seconds', label: 'ICMP Poll Interval (s)' },
-  { key: 'snmp_poll_interval_seconds', label: 'SNMP Poll Interval (s)' },
-  { key: 'ping_threshold_ms', label: 'Ping Threshold (ms)' },
-  { key: 'ping_failures_before_down', label: 'Failures Before Down' },
-  { key: 'cpu_threshold_pct', label: 'CPU Alert Threshold (%)' },
-  { key: 'mem_threshold_pct', label: 'Memory Alert Threshold (%)' },
-  { key: 'netvault_sync_minutes', label: 'NetVault Sync (min)' },
+// min/max/step drive both the native input constraints AND the inline validation
+// below. Poll intervals have a sensible 5s floor so the collector isn't hammered.
+type NumField = { key: string; label: string; min: number; max?: number; step?: number };
+const NUM_FIELDS: NumField[] = [
+  { key: 'icmp_poll_interval_seconds', label: 'ICMP Poll Interval (s)', min: 5, step: 1 },
+  { key: 'snmp_poll_interval_seconds', label: 'SNMP Poll Interval (s)', min: 5, step: 1 },
+  { key: 'ping_threshold_ms', label: 'Ping Threshold (ms)', min: 1, step: 1 },
+  { key: 'ping_failures_before_down', label: 'Failures Before Down', min: 1, step: 1 },
+  { key: 'cpu_threshold_pct', label: 'CPU Alert Threshold (%)', min: 1, max: 100, step: 1 },
+  { key: 'mem_threshold_pct', label: 'Memory Alert Threshold (%)', min: 1, max: 100, step: 1 },
+  { key: 'netvault_sync_minutes', label: 'NetVault Sync (min)', min: 1, step: 1 },
 ];
+
+// Validate a single numeric field's raw string value. Returns an error message or
+// null. Blank, non-numeric, or out-of-range (below min / above max) is invalid.
+function numFieldError(f: NumField, raw: string | undefined): string | null {
+  const v = (raw ?? '').trim();
+  if (v === '') return 'Required';
+  const n = Number(v);
+  if (!Number.isFinite(n)) return 'Must be a number';
+  if (n < f.min) return `Must be at least ${f.min}`;
+  if (f.max != null && n > f.max) return `Must be ${f.min}–${f.max}`;
+  return null;
+}
+
+// Map of key → error message for every invalid NUM_FIELD in the current form.
+function numFieldErrors(form: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const f of NUM_FIELDS) {
+    const e = numFieldError(f, form[f.key]);
+    if (e) out[f.key] = e;
+  }
+  return out;
+}
 const SMTP_FIELDS = [
   { key: 'smtp_host', label: 'SMTP Host' },
   { key: 'smtp_port', label: 'SMTP Port' },
@@ -152,7 +202,7 @@ const SMTP_FIELDS = [
   { key: 'alert_email_to', label: 'Alert Recipients' },
 ];
 
-function GeneralSettings({ settings, form, set, save, saving, saved, saveErr }: SettingsFormProps) {
+function GeneralSettings({ settings, form, set, save, saving, saveErr, dirty, numErrors, hasNumErrors }: SettingsFormProps) {
   if (settings.loading && !settings.data) return <Loading />;
   if (settings.error) return <ErrorBox message={settings.error} />;
 
@@ -162,12 +212,17 @@ function GeneralSettings({ settings, form, set, save, saving, saved, saveErr }: 
       <div className="sv-panel">
         <h2>Polling &amp; Thresholds</h2>
         <div className="sv-form-grid">
-          {NUM_FIELDS.map((f) => (
-            <label className="sv-field" key={f.key}>{f.label}
-              <input className="sv-input" type="number" value={form[f.key] ?? ''}
-                onChange={(e) => set(f.key, e.target.value)} />
-            </label>
-          ))}
+          {NUM_FIELDS.map((f) => {
+            const err = numErrors[f.key];
+            return (
+              <label className="sv-field" key={f.key}>{f.label}
+                <input className="sv-input" type="number" min={f.min} max={f.max} step={f.step ?? 1}
+                  aria-invalid={!!err} value={form[f.key] ?? ''}
+                  onChange={(e) => set(f.key, e.target.value)} />
+                {err && <span className="sv-err-inline" style={{ margin: 0 }}>{err}</span>}
+              </label>
+            );
+          })}
         </div>
       </div>
 
@@ -192,13 +247,13 @@ function GeneralSettings({ settings, form, set, save, saving, saved, saveErr }: 
         </div>
       </div>
 
-      <SaveBar save={save} saving={saving} saved={saved} />
+      <SaveBar save={save} saving={saving} dirty={dirty} disabled={hasNumErrors} />
     </div>
   );
 }
 
-// ── Email Alerts settings ──────────────────────────────────────
-function EmailAlertSettings({ settings, form, set, save, saving, saved, saveErr }: SettingsFormProps) {
+// ── Notifications settings (email + notification routing) ──────
+function NotificationSettings({ settings, form, set, save, saving, saveErr, dirty, hasNumErrors }: SettingsFormProps) {
   if (settings.loading && !settings.data) return <Loading />;
   if (settings.error) return <ErrorBox message={settings.error} />;
 
@@ -244,9 +299,22 @@ function EmailAlertSettings({ settings, form, set, save, saving, saved, saveErr 
       </div>
 
       <NotificationRoutes />
-      <EscalationOnCall form={form} set={set} />
 
-      <SaveBar save={save} saving={saving} saved={saved} />
+      <SaveBar save={save} saving={saving} dirty={dirty} disabled={hasNumErrors} />
+    </div>
+  );
+}
+
+// ── Escalation & On-Call settings tab ──────────────────────────
+function EscalationSettings({ settings, form, set, save, saving, saveErr, dirty, hasNumErrors }: SettingsFormProps) {
+  if (settings.loading && !settings.data) return <Loading />;
+  if (settings.error) return <ErrorBox message={settings.error} />;
+
+  return (
+    <div>
+      {saveErr && <ErrorBox message={saveErr} />}
+      <EscalationOnCall form={form} set={set} />
+      <SaveBar save={save} saving={saving} dirty={dirty} disabled={hasNumErrors} />
     </div>
   );
 }

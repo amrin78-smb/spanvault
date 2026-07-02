@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useApi, apiSend } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
 import { Loading, ErrorBox, Empty, fmtRel, useConfirm } from '@/components/ui';
+import { IconLink } from '@/components/icons';
 import type { MapSummary } from '@/lib/mapTypes';
 
 const CANVAS_PRESETS = [
@@ -34,9 +35,9 @@ function ShareLinkBar({ url, onClose }: { url: string; onClose: () => void }) {
   }
   return (
     <div className="sv-share-bar">
-      <span className="lbl">🔗 Public link</span>
+      <span className="lbl"><IconLink width={13} height={13} style={{ verticalAlign: -2 }} /> Public link</span>
       <input ref={ref} className="sv-input" readOnly value={url} onFocus={(e) => e.currentTarget.select()} />
-      <button className="sv-btn sm" onClick={copy}>{copied ? '✓ Copied' : 'Copy'}</button>
+      <button className="sv-btn sm" onClick={copy}>{copied ? 'Copied' : 'Copy'}</button>
       <button className="sv-btn ghost sm" onClick={onClose}>Close</button>
     </div>
   );

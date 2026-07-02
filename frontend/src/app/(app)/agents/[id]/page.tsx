@@ -6,7 +6,9 @@ import { useRouter } from 'next/navigation';
 import { useApi, apiSend } from '@/lib/api';
 import {
   ErrorBox, Loading, Empty, fmtRel, fmtTime, PageHeader, useRefreshKey, useConfirm,
+  usePrompt, useToast,
 } from '@/components/ui';
+import { IconWarning } from '@/components/icons';
 import { StatusDot } from '@/components/StatusDot';
 import { AgentStatusPill, AgentInstall, AgentDiscovery, AgentHealth, AgentHealthData, AgentLogs, SiteMultiSelect } from '@/components/AgentBits';
 
@@ -59,6 +61,8 @@ const SECTION_TITLE_STYLE: React.CSSProperties = {
 export default function AgentDetailPage({ params }: { params: { id: string } }) {
   const router = useRouter();
   const { confirm, ConfirmUI } = useConfirm();
+  const { prompt, PromptUI } = usePrompt();
+  const { toast, ToastUI } = useToast();
   const agent = useApi<AgentDetail>(`/api/agents/${params.id}`, 15000);
   const sites = useApi<Site[]>('/api/netvault/sites');
   const [editSites, setEditSites] = useState(false);
@@ -103,7 +107,12 @@ export default function AgentDetailPage({ params }: { params: { id: string } }) 
 
   async function handleRename() {
     if (!agent.data) return;
-    const name = window.prompt('Rename agent:', agent.data.name);
+    const name = await prompt({
+      title: 'Rename agent',
+      label: 'Agent name',
+      defaultValue: agent.data.name,
+      confirmLabel: 'Rename',
+    });
     if (!name || !name.trim() || name.trim() === agent.data.name) return;
     await apiSend(`/api/agents/${params.id}`, 'PUT', { name: name.trim() });
     agent.reload();
@@ -119,7 +128,7 @@ export default function AgentDetailPage({ params }: { params: { id: string } }) 
     try {
       await apiSend(`/api/agents/${params.id}/restart`, 'POST', {});
     } catch (e: any) {
-      alert(e?.message || 'Restart failed');
+      toast(e?.message || 'Restart failed', 'err');
     }
   }
 
@@ -135,6 +144,8 @@ export default function AgentDetailPage({ params }: { params: { id: string } }) 
   return (
     <div>
       {ConfirmUI}
+      {PromptUI}
+      {ToastUI}
       <PageHeader title={a.name} subtitle="Remote polling agent detail.">
         <AgentStatusPill status={a.status} />
         <Link href="/agents" className="sv-btn ghost">← Back to Agents</Link>
@@ -147,9 +158,12 @@ export default function AgentDetailPage({ params }: { params: { id: string } }) 
       </PageHeader>
 
       {a.disabled && (
-        <div style={{ ...CARD_STYLE, borderLeft: '3px solid var(--red)', marginBottom: 12, fontSize: 'var(--text-base)' }}>
-          ⛔ This agent is <strong>disabled</strong> — its connection is refused and its devices are not being polled.
-          Use <strong>Enable Agent</strong> to restore it.
+        <div style={{ ...CARD_STYLE, borderLeft: '3px solid var(--red)', marginBottom: 12, fontSize: 'var(--text-base)', display: 'flex', alignItems: 'flex-start', gap: 8, color: 'var(--red)' }}>
+          <IconWarning width={16} height={16} style={{ flexShrink: 0, marginTop: 2 }} />
+          <span>
+            This agent is <strong>disabled</strong> — its connection is refused and its devices are not being polled.
+            Use <strong>Enable Agent</strong> to restore it.
+          </span>
         </div>
       )}
 

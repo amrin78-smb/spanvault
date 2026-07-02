@@ -27,6 +27,13 @@ const GAP_Y = 26;
 const BOX_PAD = 24;
 const HEADER_H = 34;
 const CLUSTER_GAP = 60;
+
+// Unit 5-pointed star (outer radius 1, inner radius 0.4, centered at 0,0,
+// pointing up). Scaled/positioned via transform where it is drawn so it stays
+// crisp at the map's normal scale. Used for the gateway indicator.
+const STAR_POINTS =
+  '0,-1 0.2351,-0.3236 0.9511,-0.309 0.3804,0.1236 0.5878,0.809 0,0.4 ' +
+  '-0.5878,0.809 -0.3804,0.1236 -0.9511,-0.309 -0.2351,-0.3236';
 const OUTER_MARGIN = 40;
 
 const UNASSIGNED = 'Unassigned';
@@ -195,9 +202,15 @@ function DeviceNode({
         strokeWidth={1}
       />
       {node.is_gateway ? (
-        <text x={x + 6} y={y + 16} fontSize={12} fill="#ffffff">
-          ⭐
-        </text>
+        <polygon
+          points={STAR_POINTS}
+          transform={`translate(${x + 12}, ${y + 11}) scale(7)`}
+          fill="#f59e0b"
+          stroke="#ffffff"
+          strokeWidth={0.75}
+          strokeLinejoin="round"
+          vectorEffect="non-scaling-stroke"
+        />
       ) : null}
       <text
         x={x + NODE_W / 2}

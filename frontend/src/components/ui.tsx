@@ -469,3 +469,116 @@ export function useConfirm() {
   ) : null;
   return { confirm, ConfirmUI };
 }
+
+// ── Themed text-input prompt (replaces native window.prompt) ──
+export type PromptOpts = {
+  title?: string;
+  message?: React.ReactNode;
+  label?: string;
+  defaultValue?: string;
+  placeholder?: string;
+  confirmLabel?: string;
+  cancelLabel?: string;
+};
+export function PromptModal({
+  title = 'Enter a value',
+  message,
+  label,
+  defaultValue = '',
+  placeholder,
+  confirmLabel = 'Save',
+  cancelLabel = 'Cancel',
+  onSubmit,
+  onCancel,
+}: PromptOpts & { onSubmit: (v: string) => void; onCancel: () => void }) {
+  const [value, setValue] = useState(defaultValue);
+  useEscape(onCancel);
+  return (
+    <div
+      className="sv-modal-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
+      onMouseDown={(e) => { if (e.target === e.currentTarget) onCancel(); }}
+    >
+      <div className="sv-modal" style={{ maxWidth: 440 }} onMouseDown={(e) => e.stopPropagation()}>
+        <h2>{title}</h2>
+        {message && (
+          <div style={{ fontSize: 'var(--text-md)', color: 'var(--text-secondary)', lineHeight: 1.5, marginBottom: 12 }}>
+            {message}
+          </div>
+        )}
+        {label && (
+          <label style={{ display: 'block', fontSize: 'var(--text-sm)', color: 'var(--text-muted)', marginBottom: 6 }}>
+            {label}
+          </label>
+        )}
+        <input
+          className="sv-input"
+          autoFocus
+          value={value}
+          placeholder={placeholder}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && value.trim()) onSubmit(value.trim());
+          }}
+          style={{ width: '100%', height: 34, padding: '4px 10px' }}
+        />
+        <div className="sv-modal-actions">
+          <button type="button" className="sv-btn ghost" onClick={onCancel}>{cancelLabel}</button>
+          <button
+            type="button"
+            className="sv-btn"
+            disabled={!value.trim()}
+            onClick={() => value.trim() && onSubmit(value.trim())}
+          >
+            {confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+// Hook: promise-based themed prompt. Resolves to the entered string, or null if cancelled.
+//   const { prompt, PromptUI } = usePrompt();
+//   const name = await prompt({ title: 'Rename agent', defaultValue: a.name });
+//   if (name) rename(name);
+export function usePrompt() {
+  const [state, setState] = useState<{ opts: PromptOpts; resolve: (v: string | null) => void } | null>(null);
+  const prompt = useCallback(
+    (opts: PromptOpts) => new Promise<string | null>((resolve) => setState({ opts, resolve })),
+    [],
+  );
+  const settle = useCallback((v: string | null) => {
+    setState((s) => { s?.resolve(v); return null; });
+  }, []);
+  const PromptUI = state ? (
+    <PromptModal {...state.opts} onSubmit={(v) => settle(v)} onCancel={() => settle(null)} />
+  ) : null;
+  return { prompt, PromptUI };
+}
+
+// ── Themed toast (replaces native alert() for transient messages) ──
+// Reuses the .sv-toast class. Usage:
+//   const { toast, ToastUI } = useToast();
+//   ...render {ToastUI} once...
+//   toast('Saved', 'ok') / toast('Restart failed', 'err')
+export function useToast(autoDismissMs = 5000) {
+  const [msg, setMsg] = useState<{ text: string; kind: 'ok' | 'err' } | null>(null);
+  const seq = useRef(0);
+  const toast = useCallback((text: string, kind: 'ok' | 'err' = 'ok') => {
+    seq.current += 1;
+    setMsg({ text, kind });
+  }, []);
+  useEffect(() => {
+    if (!msg) return;
+    const id = setTimeout(() => setMsg(null), autoDismissMs);
+    return () => clearTimeout(id);
+  }, [msg, autoDismissMs]);
+  const ToastUI = msg ? (
+    <div className={`sv-toast ${msg.kind}`} role="status" aria-live="polite" onClick={() => setMsg(null)}>
+      {msg.text}
+    </div>
+  ) : null;
+  return { toast, ToastUI };
+}

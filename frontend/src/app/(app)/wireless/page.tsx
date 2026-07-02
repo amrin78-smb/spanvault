@@ -9,7 +9,7 @@ import { useApi, apiSend, apiGet } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
 import { Loading, ErrorBox, Empty, fmtRel, fmtTime, UtilBar, pctColor, PageHeader, Pager, useClientPagination, CHART_TOOLTIP, useConfirm } from '@/components/ui';
 import { StatusDot } from '@/components/StatusDot';
-import { IconCheck, IconWarning, IconRepeat, IconClose, IconTool } from '@/components/icons';
+import { IconCheck, IconWarning, IconRepeat, IconClose, IconTool, IconPin } from '@/components/icons';
 
 // ════════════════════════════════════════════════════════════
 // Types (mirror the /api/wireless contracts)
@@ -2584,9 +2584,9 @@ function ClientStatusBadge({ client }: { client: WirelessClient }) {
   const rssi = client.rssi_dbm;
   if (client.is_sticky) {
     return (
-      <span className="sv-badge" style={{ color: 'var(--red)', borderColor: 'var(--red)' }}
+      <span className="sv-badge" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: 'var(--red)', borderColor: 'var(--red)' }}
         title="Poor signal but not roaming — clinging to a distant AP">
-        📌 Sticky
+        <IconPin width={12} height={12} /> Sticky
       </span>
     );
   }
@@ -2863,9 +2863,9 @@ function ClientsTab({
         ><IconWarning width={12} height={12} /> Problem clients only</button>
         <button
           className="sv-btn ghost sm"
-          style={stickyOnly ? { color: 'var(--red)', borderColor: 'var(--red)' } : undefined}
+          style={{ display: 'inline-flex', alignItems: 'center', gap: 4, ...(stickyOnly ? { color: 'var(--red)', borderColor: 'var(--red)' } : {}) }}
           onClick={() => setStickyOnly(!stickyOnly)}
-        >📌 Sticky only</button>
+        ><IconPin width={12} height={12} /> Sticky only</button>
         {apFilter != null && (
           <span
             className="sv-badge"
@@ -2944,7 +2944,7 @@ function SignalQualityBar({ rssi }: { rssi: number | null }) {
 }
 
 // ── Client event row icon/label (top-level helper) ────────────
-function clientEventMeta(ev: ClientEvent): { color: string; text: string } {
+function clientEventMeta(ev: ClientEvent): { color: string; text: string | JSX.Element } {
   switch (ev.event_type) {
     case 'join':
       return { color: 'var(--green)', text: `→ joined ${ev.to_ap_name || '—'}` };
@@ -2953,7 +2953,7 @@ function clientEventMeta(ev: ClientEvent): { color: string; text: string } {
     case 'leave':
       return { color: 'var(--text-muted)', text: `← left ${ev.from_ap_name || '—'}` };
     case 'low_signal':
-      return { color: 'var(--yellow)', text: '⚠ low signal' };
+      return { color: 'var(--yellow)', text: <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><IconWarning width={12} height={12} /> low signal</span> };
     default:
       return { color: 'var(--text-secondary)', text: ev.event_type || '—' };
   }
@@ -3115,10 +3115,10 @@ function fmtPct(n: number | null | undefined): string {
   return `${Math.round(v)}%`;
 }
 
-const EVENT_META: Record<string, { icon: string; color: string }> = {
+const EVENT_META: Record<string, { icon: string | JSX.Element; color: string }> = {
   join: { icon: '↑', color: 'var(--green)' },
   leave: { icon: '↓', color: 'var(--text-muted)' },
-  low_signal: { icon: '⚠', color: 'var(--orange)' },
+  low_signal: { icon: <IconWarning width={12} height={12} />, color: 'var(--orange)' },
   alert: { icon: '●', color: 'var(--red)' },
 };
 

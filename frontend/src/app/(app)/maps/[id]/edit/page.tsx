@@ -1558,6 +1558,28 @@ function WaypointHandles({
   );
 }
 
+// ── Canvas marker glyphs (top-level; drawn inside SVG, so plain shapes not icon components) ──
+// Gold 5-point star = gateway. Colors are literal (canvas/PNG export can't use CSS tokens).
+function GatewayStar({ cx, cy, r = 7 }: { cx: number; cy: number; r?: number }) {
+  const pts: string[] = [];
+  for (let i = 0; i < 10; i++) {
+    const rad = i % 2 === 0 ? r : r * 0.42;
+    const ang = -Math.PI / 2 + (i * Math.PI) / 5;
+    pts.push(`${(cx + rad * Math.cos(ang)).toFixed(2)},${(cy + rad * Math.sin(ang)).toFixed(2)}`);
+  }
+  return <polygon points={pts.join(' ')} fill="#f59e0b" stroke="#fff" strokeWidth={0.75} pointerEvents="none" />;
+}
+
+// Small padlock = locked element.
+function LockGlyph({ cx, cy }: { cx: number; cy: number }) {
+  return (
+    <g pointerEvents="none">
+      <path d={`M ${cx - 2.5} ${cy - 0.5} v -2 a 2.5 2.5 0 0 1 5 0 v 2`} fill="none" stroke="#475569" strokeWidth={1.2} />
+      <rect x={cx - 4} y={cy - 0.5} width={8} height={6.5} rx={1.5} fill="#475569" stroke="#fff" strokeWidth={0.75} />
+    </g>
+  );
+}
+
 // ── Editor device node (top-level component) ───────────────────
 function EditorDeviceNode({
   device, selected, isLineStart, onMouseDown, onContext,
@@ -1594,10 +1616,10 @@ function EditorDeviceNode({
         {sel && <rect x={x - 3} y={y - 3} width={w + 6} height={h + 6} rx={6} fill="none"
           stroke="#3b82f6" strokeWidth={1.5} strokeDasharray="5 4" />}
         <MapGlyph kind={glyphKind} x={gx} y={gy} size={gs} color={color} />
-        {device.is_gateway && <text x={x + 2} y={y + 14} fontSize={14}>⭐</text>}
+        {device.is_gateway && <GatewayStar cx={x + 8} cy={y + 8} />}
         <text x={cx} y={y + h + 14} textAnchor="middle" fontSize={13} fontWeight={700} fill="#1a2744" style={halo}>{name}</text>
         {ip && <text x={cx} y={y + h + 28} textAnchor="middle" fontSize={10} fill="#475569" style={halo}>{ip}</text>}
-        {device.locked && <text x={x + w - 13} y={y + 13} fontSize={12}>🔒</text>}
+        {device.locked && <LockGlyph cx={x + w - 8} cy={y + 6} />}
       </g>
     );
   }
@@ -1626,8 +1648,8 @@ function EditorDeviceNode({
           {ip && <div style={{ color: 'rgba(255,255,255,0.85)', fontSize: 10, wordBreak: 'break-word' }}>{ip}</div>}
         </div>
       </foreignObject>
-      {device.is_gateway && <text x={x + 5} y={y + 16} fontSize={14}>⭐</text>}
-      {device.locked && <text x={x + w - 13} y={y + 13} fontSize={12}>🔒</text>}
+      {device.is_gateway && <GatewayStar cx={x + 11} cy={y + 11} />}
+      {device.locked && <LockGlyph cx={x + w - 8} cy={y + 6} />}
     </g>
   );
 }
@@ -1681,7 +1703,7 @@ function EditorShape({
         <rect x={x - 3} y={y - 3} width={w + 6} height={h + 6} fill="none"
           stroke="#3b82f6" strokeWidth={1.5} strokeDasharray="5 4" pointerEvents="none" />
       )}
-      {shape.locked && <text x={x + w - 13} y={y + 13} fontSize={12} pointerEvents="none">🔒</text>}
+      {shape.locked && <LockGlyph cx={x + w - 8} cy={y + 6} />}
     </g>
   );
 }

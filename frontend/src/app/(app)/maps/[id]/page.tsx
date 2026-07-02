@@ -4,7 +4,7 @@ import { useRef } from 'react';
 import { useParams } from 'next/navigation';
 import { useApi } from '@/lib/api';
 import SVGMapView from '@/components/SVGMapView';
-import { Loading, ErrorBox, Empty } from '@/components/ui';
+import { Loading, ErrorBox, Empty, useToast } from '@/components/ui';
 import { normalizeMap, type FullMap } from '@/lib/mapTypes';
 import { downloadMapSvg, downloadMapPng } from '@/lib/mapExport';
 
@@ -12,6 +12,7 @@ export default function MapViewPage() {
   const { id } = useParams<{ id: string }>();
   const map = useApi<FullMap>(`/api/maps/${id}`, 0); // loaded once; SVGMapView polls status
   const frameRef = useRef<HTMLDivElement | null>(null);
+  const { toast, ToastUI } = useToast();
 
   if (map.loading && !map.data) return <Loading />;
   if (map.error) return <ErrorBox message={map.error} />;
@@ -25,13 +26,14 @@ export default function MapViewPage() {
 
   return (
     <div>
+      {ToastUI}
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10, flexWrap: 'wrap' }}>
         <a href="/maps" className="sv-btn ghost sm">← Maps</a>
         <h1 className="sv-page-title" style={{ margin: 0 }}>{full.name}</h1>
         {full.is_public && <span className="sv-map-public" style={{ position: 'static' }}>Public</span>}
         <div style={{ flex: 1 }} />
         <button className="sv-btn ghost sm tint-teal" onClick={() => { const s = mapSvg(); if (s) downloadMapSvg(s, `${fileBase}.svg`); }}>Export SVG</button>
-        <button className="sv-btn ghost sm tint-teal" onClick={() => { const s = mapSvg(); if (s) downloadMapPng(s, `${fileBase}.png`).catch((e) => alert(`PNG export failed: ${e?.message || e}. Try Export SVG instead.`)); }}>Export PNG</button>
+        <button className="sv-btn ghost sm tint-teal" onClick={() => { const s = mapSvg(); if (s) downloadMapPng(s, `${fileBase}.png`).catch((e) => toast(`PNG export failed: ${e?.message || e}. Try Export SVG instead.`, 'err')); }}>Export PNG</button>
         <a href={`/maps/${id}/edit`} className="sv-btn">Edit</a>
       </div>
       {full.description && <p className="sv-page-sub" style={{ marginTop: -4 }}>{full.description}</p>}

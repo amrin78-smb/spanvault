@@ -1124,7 +1124,23 @@ body.sv-noc .sv-status-dot { transform: scale(1.5); }
      the very first one, so the report doesn't open with a blank page). */
   .sv-report-entity { break-inside: avoid-page; page-break-inside: avoid; }
   .sv-report-entity + .sv-report-entity { break-before: page; page-break-before: always; }
+
+  /* Repeating footer on every printed page. Browsers repeat position:fixed
+     elements per page; a literal "Page N of M" is not reliably available via
+     CSS in Chrome's print engine, so this carries brand + confidentiality +
+     generated date, and the browser's print dialog supplies the page number. */
+  .sv-print-footer {
+    display: block;
+    position: fixed;
+    bottom: 4mm; left: 0; right: 0;
+    font-size: 9px; color: #555;
+    border-top: 1px solid #ccc;
+    padding-top: 3px;
+    display: flex; justify-content: space-between;
+  }
 }
+/* Footer is print-only. */
+.sv-print-footer { display: none; }
 
 /* ── SNMP test (inline, in device form) ────────────────── */
 .sv-snmp-test { display: flex; align-items: center; gap: 12px; margin-top: 14px; flex-wrap: wrap; }

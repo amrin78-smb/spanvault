@@ -32,6 +32,12 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.57.0': [
+    'Settings reorganised: the old "Email Alerts" tab is split into a "Notifications" tab and an "Escalation & On-Call" tab; numeric fields now validate inline (min/max) and Save is enabled only when there are unsaved, valid changes, with a "Saved" confirmation toast',
+    'Agent rename now uses a themed dialog and restart failures show a toast (no more browser pop-ups); the disabled-agent banner uses a proper icon',
+    'Reports now print a repeating page footer (brand · confidential · generated date) on every page',
+    'Finished replacing leftover emoji with crisp SVG icons/markers — the map "public link", wireless sticky/event indicators, map-editor gateway/lock markers, and the topology gateway star',
+  ],
   '1.56.0': [
     'Destructive actions (delete agent/service/device/map/rule/controller, rotate key, disable agent, etc.) now use a themed in-app confirmation dialog instead of the browser default — consistent, dark-mode aware, with red confirm buttons',
     'Dashboard is easier to scan: the panel groups now have visible section labels (Needs Attention, Performance, Availability, Predictive, Recent Activity)',

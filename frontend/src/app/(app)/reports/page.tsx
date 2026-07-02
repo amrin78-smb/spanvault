@@ -691,6 +691,12 @@ export default function ReportsPage() {
       {/* Report output */}
       {applied && (
         <div className="sv-report-output" id="report-print">
+          {/* Print-only repeating page footer (brand · confidential · generated). */}
+          <div className="sv-print-footer">
+            <span>SpanVault · NocVault Suite</span>
+            <span>Confidential</span>
+            <span>Generated {new Date().toLocaleDateString()} by {userName}</span>
+          </div>
           {/* Print-only report cover / letterhead */}
           <div
             className="sv-print-only sv-print-head"
