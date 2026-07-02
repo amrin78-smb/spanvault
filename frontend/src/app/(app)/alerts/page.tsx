@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { useSession } from 'next-auth/react';
 import { useApi, apiSend } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
-import { StatusBadge, ErrorBox, fmtTime, PageHeader, TableSkeleton, EmptyState, useRefreshKey, Pager, useClientPagination } from '@/components/ui';
+import { StatusBadge, ErrorBox, fmtTime, fmtRel, PageHeader, TableSkeleton, EmptyState, useRefreshKey, Pager, useClientPagination } from '@/components/ui';
 import { StatusDot } from '@/components/StatusDot';
 import SiteScopeBanner from '@/components/SiteScopeBanner';
 import { IconAlerts } from '@/components/icons';
@@ -24,6 +24,13 @@ type Alert = {
 
 // ── style tokens (kept inline since globals.css is not editable here) ──
 const CARD_BORDER = '1px solid var(--border)';
+// Opaque sticky table header (suite standard: never a semi-transparent tint).
+const ALERT_TH_STYLE: React.CSSProperties = {
+  fontSize: 'var(--text-xs)', textTransform: 'uppercase', color: 'var(--text-muted)', fontWeight: 600,
+  letterSpacing: '0.06em', padding: '8px 12px', textAlign: 'left', whiteSpace: 'nowrap',
+  position: 'sticky', top: 0, zIndex: 5,
+  background: 'var(--bg-card)', boxShadow: '0 1px 0 var(--border)',
+};
 const SECTION_HEADING: React.CSSProperties = {
   fontSize: 'var(--text-sm)', textTransform: 'uppercase', fontWeight: 600,
   color: 'var(--text-muted)', marginBottom: 8, letterSpacing: '0.06em',
@@ -341,9 +348,9 @@ export default function AlertsPage() {
           </td>
           {/* status */}
           <td style={{ width: 1, whiteSpace: 'nowrap' }}><StatusBadge status={a.status} /></td>
-          {/* time (right-aligned, muted) */}
-          <td style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', textAlign: 'right', whiteSpace: 'nowrap' }}>
-            {fmtTime(a.triggered_at)}
+          {/* time (right-aligned, muted; relative with absolute tooltip) */}
+          <td title={fmtTime(a.triggered_at)} style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', textAlign: 'right', whiteSpace: 'nowrap' }}>
+            {fmtRel(a.triggered_at)}
           </td>
           {/* hover actions */}
           <td style={{ width: 1, textAlign: 'right', whiteSpace: 'nowrap' }}>
@@ -434,6 +441,17 @@ export default function AlertsPage() {
           <TableSkeleton rows={6} cols={6} />
         ) : groups.length ? (
           <table className="sv-table">
+            <thead>
+              <tr style={{ height: 34 }}>
+                <th style={{ ...ALERT_TH_STYLE, width: 28 }} aria-label="Severity" />
+                <th style={ALERT_TH_STYLE}>Type</th>
+                <th style={ALERT_TH_STYLE}>Device</th>
+                <th style={ALERT_TH_STYLE}>Message</th>
+                <th style={ALERT_TH_STYLE}>Status</th>
+                <th style={{ ...ALERT_TH_STYLE, textAlign: 'right' }}>Triggered</th>
+                <th style={{ ...ALERT_TH_STYLE, textAlign: 'right' }} aria-label="Actions" />
+              </tr>
+            </thead>
             <tbody>
               {groupPg.pageRows.map((g) => {
                 // Single-alert groups (incident or standalone) render as one row.

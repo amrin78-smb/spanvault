@@ -264,20 +264,32 @@ function EscalationOnCall({ form, set }: { form: Record<string, any>; set: (k: s
   const [shiftEmail, setShiftEmail] = useState('');
   const [shiftStart, setShiftStart] = useState('');
   const [shiftEnd, setShiftEnd] = useState('');
+  const [stepBusy, setStepBusy] = useState(false);
+  const [stepErr, setStepErr] = useState<string | null>(null);
+  const [shiftBusy, setShiftBusy] = useState(false);
+  const [shiftErr, setShiftErr] = useState<string | null>(null);
   const enabled = String(form.escalation_enabled ?? 'false').toLowerCase() === 'true';
 
   async function addStep() {
-    if (!useOncall && !stepTo.trim()) return;
-    await apiSend('/api/escalation-steps', 'POST', {
-      after_minutes: parseInt(after, 10) || 15, email_to: stepTo.trim() || null, use_oncall: useOncall,
-      step_order: (steps.data?.length || 0) + 1,
-    });
-    setStepTo(''); setUseOncall(false); steps.reload();
+    if (!useOncall && !stepTo.trim()) { setStepErr('Recipients or "Use on-call" is required'); return; }
+    setStepBusy(true); setStepErr(null);
+    try {
+      await apiSend('/api/escalation-steps', 'POST', {
+        after_minutes: parseInt(after, 10) || 15, email_to: stepTo.trim() || null, use_oncall: useOncall,
+        step_order: (steps.data?.length || 0) + 1,
+      });
+      setStepTo(''); setUseOncall(false); steps.reload();
+    } catch (e: any) { setStepErr(e?.message || 'Failed to add step'); }
+    finally { setStepBusy(false); }
   }
   async function addShift() {
-    if (!shiftEmail.trim() || !shiftStart || !shiftEnd) return;
-    await apiSend('/api/oncall-shifts', 'POST', { contact_email: shiftEmail.trim(), starts_at: shiftStart, ends_at: shiftEnd });
-    setShiftEmail(''); setShiftStart(''); setShiftEnd(''); shifts.reload();
+    if (!shiftEmail.trim() || !shiftStart || !shiftEnd) { setShiftErr('Contact, from and to are required'); return; }
+    setShiftBusy(true); setShiftErr(null);
+    try {
+      await apiSend('/api/oncall-shifts', 'POST', { contact_email: shiftEmail.trim(), starts_at: shiftStart, ends_at: shiftEnd });
+      setShiftEmail(''); setShiftStart(''); setShiftEnd(''); shifts.reload();
+    } catch (e: any) { setShiftErr(e?.message || 'Failed to add shift'); }
+    finally { setShiftBusy(false); }
   }
 
   return (
@@ -300,6 +312,7 @@ function EscalationOnCall({ form, set }: { form: Record<string, any>; set: (k: s
       </div>
 
       <h3 style={{ fontSize: 'var(--text-base)', margin: '8px 0' }}>Steps</h3>
+      {stepErr && <div className="sv-err-inline">{stepErr}</div>}
       {(steps.data || []).length > 0 && (
         <table className="sv-table" style={{ marginBottom: 10 }}>
           <thead><tr><th>Order</th><th>After (min)</th><th>Recipients</th><th></th></tr></thead>
@@ -326,10 +339,11 @@ function EscalationOnCall({ form, set }: { form: Record<string, any>; set: (k: s
         <label className="sv-field" style={{ flexDirection: 'row', alignItems: 'center', gap: 6, margin: 0 }}>
           <input type="checkbox" checked={useOncall} onChange={(e) => setUseOncall(e.target.checked)} /> Use on-call
         </label>
-        <button className="sv-btn" onClick={addStep}>Add step</button>
+        <button className="sv-btn" onClick={addStep} disabled={stepBusy}>{stepBusy ? 'Adding…' : 'Add step'}</button>
       </div>
 
       <h3 style={{ fontSize: 'var(--text-base)', margin: '8px 0' }}>On-Call Shifts</h3>
+      {shiftErr && <div className="sv-err-inline">{shiftErr}</div>}
       {(shifts.data || []).length > 0 && (
         <table className="sv-table" style={{ marginBottom: 10 }}>
           <thead><tr><th>Contact</th><th>From</th><th>To</th><th></th></tr></thead>
@@ -355,7 +369,7 @@ function EscalationOnCall({ form, set }: { form: Record<string, any>; set: (k: s
         <label className="sv-field" style={{ margin: 0 }}>To
           <input className="sv-input" type="datetime-local" value={shiftEnd} onChange={(e) => setShiftEnd(e.target.value)} />
         </label>
-        <button className="sv-btn" onClick={addShift}>Add shift</button>
+        <button className="sv-btn" onClick={addShift} disabled={shiftBusy}>{shiftBusy ? 'Adding…' : 'Add shift'}</button>
       </div>
     </div>
   );

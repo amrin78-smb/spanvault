@@ -1,8 +1,8 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useApi } from '@/lib/api';
-import SVGMapView from '@/components/SVGMapView';
+import SVGMapView, { LIVE_REFRESH_MS } from '@/components/SVGMapView';
 import { normalizeMap, type FullMap, type MapSummary } from '@/lib/mapTypes';
 
 const INTERVALS = [10, 15, 30, 60];
@@ -141,6 +141,47 @@ export default function MapWallPage() {
   const currentId = maps.length ? maps[Math.min(index, maps.length - 1)].id : null;
   const map = useApi<FullMap>(currentId != null ? `/api/maps/${currentId}` : null, 0);
 
+  // ── Live-data staleness (NOC safety) ──────────────────────────────
+  // SVGMapView keeps the last-known node colours when its poll fails, so a
+  // wallboard can silently show all-green STALE data during an outage. Track
+  // the last successful update and consecutive poll failures, and drive the
+  // header dot from green → amber → red so operators are warned.
+  const [lastOkAt, setLastOkAt] = useState<number | null>(null);
+  const [fails, setFails] = useState(0);
+  const [now, setNow] = useState(() => Date.now());
+
+  // Tick every second so the "Stale 45s" label counts up live even when the
+  // rotation timer is paused or there is only a single map.
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  // A fresh map fetch (initial load or rotation) is itself a successful update.
+  useEffect(() => {
+    if (map.data) { setLastOkAt(Date.now()); setFails(0); }
+  }, [map.data]);
+
+  const onLiveRefresh = useCallback((ok: boolean) => {
+    if (ok) { setLastOkAt(Date.now()); setFails(0); }
+    else { setFails((f) => f + 1); }
+  }, []);
+
+  // Stale after ~2x the live poll cadence (or 2 consecutive failures); dead
+  // after ~4x (or 4 failures). Fresh keeps the pulsing green "Live" dot.
+  const sinceOkMs = lastOkAt == null ? null : now - lastOkAt;
+  const staleSecs = sinceOkMs == null ? 0 : Math.round(sinceOkMs / 1000);
+  const timeStale = sinceOkMs != null && sinceOkMs > 2 * LIVE_REFRESH_MS;
+  const timeDead = sinceOkMs != null && sinceOkMs > 4 * LIVE_REFRESH_MS;
+  const liveLevel: 'live' | 'stale' | 'dead' =
+    timeDead || fails >= 4 ? 'dead' : timeStale || fails >= 2 ? 'stale' : 'live';
+  const liveDotColor =
+    liveLevel === 'dead' ? 'var(--red)' : liveLevel === 'stale' ? 'var(--yellow)' : 'var(--green)';
+  const liveLabel =
+    liveLevel === 'dead' ? 'No live data — check collector'
+      : liveLevel === 'stale' ? `Stale data · ${staleSecs}s since update`
+        : 'Live status · auto-refreshing';
+
   const handleFullscreen = () => {
     const doc = document as any;
     if (doc.fullscreenElement) {
@@ -170,8 +211,17 @@ export default function MapWallPage() {
           <span className="sep">·</span>
           <span className="ttl">NOC Wallboard</span>
         </div>
-        <div className="refresh">
-          <span className="dot" /> Live status · auto-refreshing
+        <div className="refresh" title={liveLabel}>
+          <span
+            className="dot"
+            style={{
+              background: liveDotColor,
+              // Only the healthy state pulses; stale/dead show a solid warning dot.
+              animation: liveLevel === 'live' ? undefined : 'none',
+              boxShadow: liveLevel === 'live' ? undefined : 'none',
+            }}
+          />{' '}
+          {liveLabel}
         </div>
       </header>
 
@@ -188,7 +238,7 @@ export default function MapWallPage() {
         ) : map.loading && !map.data ? (
           <div style={centerMsg}>Loading…</div>
         ) : map.data ? (
-          <SVGMapView map={normalizeMap(map.data)} refreshUrl={`/api/maps/${currentId}`} />
+          <SVGMapView map={normalizeMap(map.data)} refreshUrl={`/api/maps/${currentId}`} onRefresh={onLiveRefresh} />
         ) : (
           <div style={centerMsg}>Map unavailable.</div>
         )}

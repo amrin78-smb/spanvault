@@ -443,9 +443,33 @@ function SiteAccordion({
           <polyline points="9 18 15 12 9 6" />
         </svg>
       </div>
-      {open && group.devices.map((d) => (
-        <DeviceRow key={d.id} device={d} onEdit={onEdit} onDelete={onDelete} />
-      ))}
+      {open && (
+        <>
+          <DeviceListHeader />
+          {group.devices.map((d) => (
+            <DeviceRow key={d.id} device={d} onEdit={onEdit} onDelete={onDelete} />
+          ))}
+        </>
+      )}
+    </div>
+  );
+}
+
+// ── Column-header row for the device list (top-level component) ─
+// Labels line up with the cells DeviceRow renders below. Non-sticky but opaque
+// (.sv-dev-head → var(--bg-primary)); the "Actions" label shows only when the
+// user can edit, matching DeviceRow's canEdit-gated actions cell.
+function DeviceListHeader() {
+  const { canEdit } = useRbac();
+  return (
+    <div className="sv-dev-row sv-dev-head" style={{ minHeight: 28, padding: '6px 14px', gap: 12 }}>
+      <span style={{ width: 8, flex: 'none' }} />
+      <span className="sv-dev-id" style={{ minWidth: 200 }}>Device</span>
+      <span style={{ minWidth: 60, flex: 'none' }}>Latency</span>
+      <span style={{ width: 40, flex: 'none' }}>7d</span>
+      <span className="sv-mon-badges" style={{ flex: 1 }}>Monitoring</span>
+      <span className="sv-trends" style={{ flex: 'none' }}>Trends</span>
+      {canEdit && <span className="sv-dev-actions">Actions</span>}
     </div>
   );
 }

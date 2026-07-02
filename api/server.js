@@ -32,6 +32,13 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.55.0': [
+    'Alerts table now has labeled column headers and shows relative "x ago" times (with the exact timestamp on hover), matching the Intelligence page',
+    'Devices list now shows labeled column headers on each site group, so latency / uptime / monitoring columns are no longer unlabeled',
+    'Network wallboard now warns when live data goes stale: the header indicator turns amber ("Stale") then red ("No live data — check collector") if the collector stops updating, instead of showing a green "Live" dot over frozen all-green data',
+    'Settings → Escalation & On-Call: adding a step or shift now shows a busy state and surfaces errors instead of failing silently',
+    'Added branded 404 (page not found) and error-recovery pages instead of the default unstyled Next.js screens',
+  ],
   '1.54.0': [
     'UI polish: chart tooltips now use the app theme (readable in dark mode) across the dashboard, device detail, wireless and intelligence charts, instead of the default white popup',
     'UI polish: a consistent keyboard focus ring on buttons, links, inputs and tabs (accessibility), and destructive Delete buttons now render in red so they stand apart from safe actions',

@@ -11,19 +11,29 @@ import { MapGlyph, deviceGlyphFor, isGlyphKind } from '@/lib/mapIcons';
 
 const DEFAULT_LINE = '#94a3b8';
 
+// Live-status poll cadence. Exported so consumers (e.g. the NOC wallboard) can
+// derive staleness thresholds from the same number the poll actually uses.
+export const LIVE_REFRESH_MS = 30000;
+
 /**
  * Read-only renderer for a designed map. Layout (positions/connections/labels)
  * comes from `map` and never changes here. When `refreshUrl` is set, only live
  * device status is re-fetched every 30s and merged in — positions never jump.
  */
 export default function SVGMapView({
-  map, refreshUrl, interactive = false,
+  map, refreshUrl, interactive = false, onRefresh,
 }: {
   map: FullMap;
   refreshUrl?: string;
   interactive?: boolean;
+  // Reports each live-status poll result so a host (e.g. the wallboard) can
+  // detect stale data. `true` = a poll succeeded, `false` = it failed.
+  onRefresh?: (ok: boolean) => void;
 }) {
   const router = useRouter();
+  // Ref so the poll effect never re-subscribes when the callback identity changes.
+  const onRefreshRef = useRef(onRefresh);
+  onRefreshRef.current = onRefresh;
   const [live, setLive] = useState<Record<number, Partial<MapDevice>>>({});
   const [liveConns, setLiveConns] = useState<Record<number, Partial<MapConnection>>>({});
 
@@ -122,11 +132,13 @@ export default function SVGMapView({
           };
         }
         setLiveConns(nextC);
+        onRefreshRef.current?.(true);
       } catch {
-        /* keep last-known status on transient failure */
+        /* keep last-known status on transient failure, but flag it as stale */
+        if (!stopped) onRefreshRef.current?.(false);
       }
     }
-    const id = setInterval(poll, 30000);
+    const id = setInterval(poll, LIVE_REFRESH_MS);
     return () => { stopped = true; clearInterval(id); };
   }, [refreshUrl]);
 
