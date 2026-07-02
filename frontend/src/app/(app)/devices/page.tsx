@@ -491,7 +491,7 @@ function DeviceRow({
       {canEdit && (
         <div className="sv-dev-actions">
           <button className="sv-btn ghost sm" onClick={() => onEdit(device)}>Edit</button>{' '}
-          <button className="sv-btn ghost sm" onClick={() => onDelete(device)}>Delete</button>
+          <button className="sv-btn danger sm" onClick={() => onDelete(device)}>Delete</button>
         </div>
       )}
     </div>

@@ -421,7 +421,7 @@ function ServiceRow({ check, canEdit, onEdit, onDelete }: {
           <span style={{ display: 'inline-flex', gap: 6 }}>
             <button className="sv-btn ghost sm" style={{ height: 24, padding: '0 10px', fontSize: 'var(--text-xs)' }}
               onClick={() => onEdit(check)}>Edit</button>
-            <button className="sv-btn ghost sm" style={{ height: 24, padding: '0 10px', fontSize: 'var(--text-xs)' }}
+            <button className="sv-btn danger sm" style={{ height: 24, padding: '0 10px', fontSize: 'var(--text-xs)' }}
               onClick={() => onDelete(check)}>Delete</button>
           </span>
         </td>

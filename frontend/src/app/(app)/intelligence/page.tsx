@@ -10,7 +10,7 @@ import { useRbac } from '@/lib/rbac';
 import { StatusDot } from '@/components/StatusDot';
 import {
   PageHeader, ErrorBox, Empty, Loading, TableSkeleton, CardSkeleton,
-  StatusBadge, fmtRel, fmtTime, fmtBps,
+  StatusBadge, fmtRel, fmtTime, fmtBps, CHART_TOOLTIP,
 } from '@/components/ui';
 import {
   GradeBadge, TrendArrow, ConfidenceStars, fmtDuration, deviationLabel, deviationTooltip,
@@ -728,8 +728,6 @@ function CapacityResult({ fc }: { fc: Forecast }) {
   const inSeries = buildSeries(history.map((h) => ({ label: dayLabel(h.day), v: h.in_bps })), forecasts.map((f) => ({ label: `+${f.days}d`, v: f.proj_in_bps })));
   const outSeries = buildSeries(history.map((h) => ({ label: dayLabel(h.day), v: h.out_bps })), forecasts.map((f) => ({ label: `+${f.days}d`, v: f.proj_out_bps })));
 
-  const growthInPct = lastIn > 0 ? ((fc.weekly_growth_in || 0) / lastIn) * 100 : 0;
-
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, alignItems: 'stretch' }}>
@@ -752,13 +750,16 @@ function CapacityResult({ fc }: { fc: Forecast }) {
             <tbody>
               {forecasts.map((f) => {
                 const st = capacityStatus(Math.max(f.proj_in_bps / (peakIn || 1), f.proj_out_bps / (peakOut || 1)) * Math.max(peakIn, peakOut), Math.max(peakIn, peakOut));
+                // Per-horizon projected growth of inbound vs the latest actual, so
+                // each row reflects its own projection instead of repeating one rate.
+                const projGrowthPct = lastIn > 0 ? ((f.proj_in_bps - lastIn) / lastIn) * 100 : 0;
                 return (
                   <tr key={f.days} style={ROW_STYLE}>
                     <IntelTD>{f.days} days</IntelTD>
                     <IntelTD right>{fmtBps(f.proj_in_bps)}</IntelTD>
                     <IntelTD right>{fmtBps(f.proj_out_bps)}</IntelTD>
-                    <IntelTD right style={{ color: growthInPct > 0 ? 'var(--yellow)' : 'var(--green)' }}>
-                      {growthInPct >= 0 ? '+' : ''}{growthInPct.toFixed(1)}%/wk
+                    <IntelTD right style={{ color: projGrowthPct > 0 ? 'var(--yellow)' : 'var(--green)' }}>
+                      {projGrowthPct >= 0 ? '+' : ''}{projGrowthPct.toFixed(1)}%
                     </IntelTD>
                     <IntelTD style={{ color: st.color, fontWeight: 600 }}>{st.label}</IntelTD>
                   </tr>
@@ -806,7 +807,7 @@ function ForecastChart({ title, data, peak }: { title: string; data: SeriesPoint
             <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
             <XAxis dataKey="label" fontSize={11} minTickGap={28} />
             <YAxis fontSize={11} width={64} tickFormatter={(v) => fmtBps(Number(v))} />
-            <Tooltip formatter={(v: any, name: any) => [v == null ? '—' : fmtBps(Number(v)), name === 'actual' ? 'Actual' : 'Projected']} />
+            <Tooltip {...CHART_TOOLTIP} formatter={(v: any, name: any) => [v == null ? '—' : fmtBps(Number(v)), name === 'actual' ? 'Actual' : 'Projected']} />
             {peak > 0 && <ReferenceLine y={peak * 0.8} stroke="#e6a700" strokeDasharray="4 4" label={{ value: '80%', position: 'right', fontSize: 10, fill: '#e6a700' }} />}
             {peak > 0 && <ReferenceLine y={peak * 0.95} stroke="#C8102E" strokeDasharray="4 4" label={{ value: '95%', position: 'right', fontSize: 10, fill: '#C8102E' }} />}
             <Area type="monotone" dataKey="actual" stroke="#3b82f6" strokeWidth={2} fill={`url(#g-${title})`} connectNulls={false} isAnimationActive={false} />

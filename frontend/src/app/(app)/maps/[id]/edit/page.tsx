@@ -1275,7 +1275,7 @@ function MultiSelectPanel({
         <button className="sv-btn ghost sm" style={{ flex: 1 }} onClick={onGroup} title="Ctrl+G">Group</button>
         <button className="sv-btn ghost sm" style={{ flex: 1 }} onClick={onUngroup} title="Ctrl+Shift+G">Ungroup</button>
       </div>
-      <button className="sv-btn ghost sm" style={{ marginTop: 8 }} onClick={onDelete}>Delete selected</button>
+      <button className="sv-btn danger sm" style={{ marginTop: 8 }} onClick={onDelete}>Delete selected</button>
     </div>
   );
 }

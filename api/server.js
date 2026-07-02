@@ -32,6 +32,12 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.54.0': [
+    'UI polish: chart tooltips now use the app theme (readable in dark mode) across the dashboard, device detail, wireless and intelligence charts, instead of the default white popup',
+    'UI polish: a consistent keyboard focus ring on buttons, links, inputs and tabs (accessibility), and destructive Delete buttons now render in red so they stand apart from safe actions',
+    'Dark-mode fixes: the teal badge and the map "Public" badge now flip correctly instead of showing light-on-light; incident group headers on the Alerts page tint by severity (amber for warning) and adapt to dark mode',
+    'Fixed the Wireless Access Points "Clear filter" leaving a vendor filter applied; fixed the Capacity forecast "Growth" column showing the same value on every horizon (now per-horizon projected growth)',
+  ],
   '1.53.1': [
     'Fixed a pagination edge case where the Prev button could appear unresponsive: if a live refresh shrank a table while you were on a later page, the page index is now reconciled so Prev/Next step correctly on the first click',
   ],

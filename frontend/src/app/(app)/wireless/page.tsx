@@ -7,7 +7,7 @@ import {
 } from 'recharts';
 import { useApi, apiSend, apiGet } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
-import { Loading, ErrorBox, Empty, fmtRel, fmtTime, UtilBar, pctColor, PageHeader, Pager, useClientPagination } from '@/components/ui';
+import { Loading, ErrorBox, Empty, fmtRel, fmtTime, UtilBar, pctColor, PageHeader, Pager, useClientPagination, CHART_TOOLTIP } from '@/components/ui';
 import { StatusDot } from '@/components/StatusDot';
 
 // ════════════════════════════════════════════════════════════
@@ -1556,7 +1556,7 @@ function AccessPointsTab({
     return groupByController(vendorFiltered, controllers.data || []);
   }, [allAps, vendor, controllers.data]);
 
-  const hasActiveLifted = siteFilter != null || controllerFilter != null || status !== '';
+  const hasActiveLifted = siteFilter != null || controllerFilter != null || status !== '' || vendor !== '';
 
   return (
     <div>
@@ -1599,7 +1599,7 @@ function AccessPointsTab({
         {hasActiveLifted && (
           <button
             className="sv-btn ghost sm"
-            onClick={() => { setSiteFilter(null); setControllerFilter(null); setStatus(''); }}
+            onClick={() => { setSiteFilter(null); setControllerFilter(null); setStatus(''); setVendor(''); }}
           >Clear filter</button>
         )}
       </div>
@@ -1847,7 +1847,7 @@ function ApDetailDrawer({
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
                 <XAxis dataKey="bucket" tickFormatter={fmtBucket} fontSize={11} />
                 <YAxis fontSize={11} allowDecimals={false} />
-                <Tooltip />
+                <Tooltip {...CHART_TOOLTIP} />
                 <Legend />
                 <Line type="monotone" dataKey="clients_total" name="Total" stroke={CHART_COLORS.total} dot={false} />
                 <Line type="monotone" dataKey="clients_2g" name="2.4GHz" stroke={CHART_COLORS.g2} dot={false} />
@@ -1861,7 +1861,7 @@ function ApDetailDrawer({
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
                 <XAxis dataKey="bucket" tickFormatter={fmtBucket} fontSize={11} />
                 <YAxis fontSize={11} domain={[0, 100]} />
-                <Tooltip />
+                <Tooltip {...CHART_TOOLTIP} />
                 <Legend />
                 <Line type="monotone" dataKey="radio_2g_util" name="2.4GHz %" stroke={CHART_COLORS.g2} dot={false} />
                 <Line type="monotone" dataKey="radio_5g_util" name="5GHz %" stroke={CHART_COLORS.g5} dot={false} />
@@ -1874,7 +1874,7 @@ function ApDetailDrawer({
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
                 <XAxis dataKey="bucket" tickFormatter={fmtBucket} fontSize={11} />
                 <YAxis fontSize={11} />
-                <Tooltip />
+                <Tooltip {...CHART_TOOLTIP} />
                 <Legend />
                 <Line type="monotone" dataKey="noise_floor_2g" name="2.4GHz" stroke={CHART_COLORS.g2} dot={false} connectNulls />
                 <Line type="monotone" dataKey="noise_floor_5g" name="5GHz" stroke={CHART_COLORS.g5} dot={false} connectNulls />
@@ -1887,7 +1887,7 @@ function ApDetailDrawer({
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
                 <XAxis dataKey="bucket" tickFormatter={fmtBucket} fontSize={11} />
                 <YAxis fontSize={11} />
-                <Tooltip />
+                <Tooltip {...CHART_TOOLTIP} />
                 <Legend />
                 <Line type="monotone" dataKey="retry_rate_2g" name="2.4GHz %" stroke={CHART_COLORS.g2} dot={false} connectNulls />
                 <Line type="monotone" dataKey="retry_rate_5g" name="5GHz %" stroke={CHART_COLORS.g5} dot={false} connectNulls />
@@ -2483,7 +2483,7 @@ function IntelligenceTab({ onViewApClients }: { onViewApClients?: (apId: number)
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
                 <XAxis dataKey="name" fontSize={11} />
                 <YAxis domain={[0, 100]} fontSize={11} />
-                <Tooltip />
+                <Tooltip {...CHART_TOOLTIP} />
                 <ReferenceLine y={60} stroke="var(--red)" strokeDasharray="4 4" />
                 <Bar dataKey="g2" name="2.4GHz %" fill="#94a3b8" />
                 <Bar dataKey="g5" name="5GHz %" fill="#0ea5e9" />
@@ -2500,7 +2500,7 @@ function IntelligenceTab({ onViewApClients }: { onViewApClients?: (apId: number)
                   <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
                   <XAxis dataKey="name" fontSize={11} />
                   <YAxis fontSize={11} allowDecimals={false} />
-                  <Tooltip />
+                  <Tooltip {...CHART_TOOLTIP} />
                   <Bar dataKey="count" name="APs">
                     {channelChartData.map((c) => (
                       <Cell key={c.ch} fill={c.standard ? 'var(--green)' : '#f97316'} />
@@ -3204,7 +3204,7 @@ function ApCapacityChart({ controllers }: { controllers: OverviewController[] })
             <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
             <XAxis type="number" fontSize={11} allowDecimals={false} />
             <YAxis type="category" dataKey="name" width={100} fontSize={11} />
-            <Tooltip />
+            <Tooltip {...CHART_TOOLTIP} />
             <Legend wrapperStyle={{ fontSize: 'var(--text-xs)' }} />
             <Bar dataKey="licensed" name="Licensed" fill="var(--border)" />
             <Bar dataKey="used" name="Used" fill="var(--green)" />
@@ -3214,7 +3214,7 @@ function ApCapacityChart({ controllers }: { controllers: OverviewController[] })
             <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
             <XAxis dataKey="name" fontSize={11} />
             <YAxis fontSize={11} allowDecimals={false} />
-            <Tooltip />
+            <Tooltip {...CHART_TOOLTIP} />
             <Legend wrapperStyle={{ fontSize: 'var(--text-xs)' }} />
             <Bar dataKey="licensed" name="Licensed" fill="var(--border)" />
             <Bar dataKey="used" name="Used" fill="var(--green)" />
@@ -3230,7 +3230,7 @@ function ApCapacityChart({ controllers }: { controllers: OverviewController[] })
         <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
         <XAxis type="number" fontSize={11} allowDecimals={false} />
         <YAxis type="category" dataKey="name" width={100} fontSize={11} />
-        <Tooltip />
+        <Tooltip {...CHART_TOOLTIP} />
         <Bar dataKey="aps" fill="var(--green)" name="APs" />
       </BarChart>
     </ResponsiveContainer>
@@ -3569,7 +3569,7 @@ function CapabilitiesAccordion({
                             <>
                               <button className="sv-btn ghost sm" onClick={() => onEdit(c)}>Edit</button>
                               <button className="sv-btn ghost sm" onClick={() => onTest(c)}>Test</button>
-                              <button className="sv-btn ghost sm" onClick={() => onDelete(c)}>Delete</button>
+                              <button className="sv-btn danger sm" onClick={() => onDelete(c)}>Delete</button>
                             </>
                           )}
                         </span>

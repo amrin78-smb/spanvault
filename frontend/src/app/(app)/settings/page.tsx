@@ -309,7 +309,7 @@ function EscalationOnCall({ form, set }: { form: Record<string, any>; set: (k: s
                 <td>{s.step_order}</td><td>{s.after_minutes}</td>
                 <td>{s.use_oncall ? 'Current on-call' : s.email_to}</td>
                 <td style={{ textAlign: 'right' }}>
-                  <button className="sv-btn ghost sm" onClick={async () => { await apiSend(`/api/escalation-steps/${s.id}`, 'DELETE'); steps.reload(); }}>Delete</button>
+                  <button className="sv-btn danger sm" onClick={async () => { await apiSend(`/api/escalation-steps/${s.id}`, 'DELETE'); steps.reload(); }}>Delete</button>
                 </td>
               </tr>
             ))}
@@ -338,7 +338,7 @@ function EscalationOnCall({ form, set }: { form: Record<string, any>; set: (k: s
               <tr key={s.id}>
                 <td>{s.contact_email}</td><td>{fmtTime(s.starts_at)}</td><td>{fmtTime(s.ends_at)}</td>
                 <td style={{ textAlign: 'right' }}>
-                  <button className="sv-btn ghost sm" onClick={async () => { await apiSend(`/api/oncall-shifts/${s.id}`, 'DELETE'); shifts.reload(); }}>Delete</button>
+                  <button className="sv-btn danger sm" onClick={async () => { await apiSend(`/api/oncall-shifts/${s.id}`, 'DELETE'); shifts.reload(); }}>Delete</button>
                 </td>
               </tr>
             ))}
@@ -427,7 +427,7 @@ function NotificationRoutes() {
                 <td>{r.match_alert_type || 'Any'}</td>
                 <td style={{ maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.email_to}</td>
                 <td style={{ textAlign: 'right' }}>
-                  <button className="sv-btn ghost sm" onClick={() => remove(r.id)}>Delete</button>
+                  <button className="sv-btn danger sm" onClick={() => remove(r.id)}>Delete</button>
                 </td>
               </tr>
             ))}
@@ -728,7 +728,7 @@ function RulesTable({ rules, onChange }: { rules: Rule[] | null; onChange: () =>
             <td className="sv-muted">{r.notify_recovery ? 'Yes' : '—'}</td>
             <td className="sv-muted">{r.description || '—'}</td>
             <td><button className="sv-btn ghost sm" onClick={() => toggle(r)}>{r.enabled ? 'On' : 'Off'}</button></td>
-            <td><button className="sv-btn ghost sm" onClick={() => remove(r)}>Delete</button></td>
+            <td><button className="sv-btn danger sm" onClick={() => remove(r)}>Delete</button></td>
           </tr>
         ))}
       </tbody>
@@ -995,7 +995,7 @@ function Maintenance() {
                   <td className="sv-muted">{fmtTime(w.starts_at)}</td>
                   <td className="sv-muted">{fmtTime(w.ends_at)}</td>
                   <td>{w.reason || '—'}</td>
-                  <td><button className="sv-btn ghost sm" onClick={() => remove(w)}>Delete</button></td>
+                  <td><button className="sv-btn danger sm" onClick={() => remove(w)}>Delete</button></td>
                 </tr>
               ))}
             </tbody>

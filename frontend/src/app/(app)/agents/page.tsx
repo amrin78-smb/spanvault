@@ -103,7 +103,7 @@ export default function AgentsPage() {
           <span style={{ flex: 1 }} />
           <button className="sv-btn ghost sm" onClick={() => bulkDisable(true)}>Disable</button>
           <button className="sv-btn ghost sm" onClick={() => bulkDisable(false)}>Enable</button>
-          <button className="sv-btn ghost sm" onClick={bulkDelete}>Delete</button>
+          <button className="sv-btn danger sm" onClick={bulkDelete}>Delete</button>
           <button className="sv-btn ghost sm" onClick={() => setSelected(new Set())}>Clear</button>
         </div>
       )}
@@ -237,7 +237,7 @@ function AgentCard({ agent, onDelete, selected, onToggleSelect }: {
       {/* footer — Configure (left) / Delete (right) */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 'auto', paddingTop: 4 }}>
         <Link href={`/agents/${agent.id}`} className="sv-btn ghost sm">Configure</Link>
-        <button className="sv-btn ghost sm" onClick={() => onDelete(agent)}>Delete</button>
+        <button className="sv-btn danger sm" onClick={() => onDelete(agent)}>Delete</button>
       </div>
     </div>
   );

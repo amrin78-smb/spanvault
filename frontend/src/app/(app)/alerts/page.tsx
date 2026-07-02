@@ -448,7 +448,7 @@ export default function AlertsPage() {
                   <Fragment key={`incgrp-${g.incidentId}`}>
                     <tr
                       className="sv-incident-head"
-                      style={{ height: 36, background: 'rgba(220,38,38,0.06)' }}
+                      style={{ height: 36, background: sev === 'critical' ? 'var(--tint-danger)' : 'var(--tint-warn)' }}
                     >
                       <td
                         colSpan={6}

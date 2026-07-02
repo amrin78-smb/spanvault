@@ -11,7 +11,7 @@ import { useApi, apiSend } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
 import { StatusDot } from '@/components/StatusDot';
 import SensorManager from '@/components/SensorManager';
-import { StatusBadge, Loading, ErrorBox, Empty, fmtTime, fmtRel, fmtBps, Pager, useClientPagination } from '@/components/ui';
+import { StatusBadge, Loading, ErrorBox, Empty, fmtTime, fmtRel, fmtBps, Pager, useClientPagination, CHART_TOOLTIP } from '@/components/ui';
 import { GradeBadge, ScoreBar, TrendArrow, n as intelNum } from '@/components/intel';
 
 type Device = {
@@ -550,6 +550,7 @@ function InterfaceTrafficChart({
             <XAxis dataKey="bucket" tickFormatter={tickLabel} fontSize={11} minTickGap={40} />
             <YAxis fontSize={11} width={40} tickFormatter={axisTick} />
             <Tooltip
+              {...CHART_TOOLTIP}
               labelFormatter={tickLabel}
               formatter={(v: any, name: any) => [v == null ? '—' : fmtBps(Number(v)), name]}
             />
@@ -609,7 +610,7 @@ function SensorChart({ deviceId, sensor, range, setRange }: { deviceId: number; 
               domain={unit === 'state' ? [0, 1] : undefined}
               tickFormatter={unit === 'bps' ? (v) => String(Math.round((Number(v) / bpsDiv) * 10) / 10) : undefined}
             />
-            <Tooltip labelFormatter={tickLabel} formatter={(v: any) => [fmtVal(Number(v)), sensor.sensor_name]} />
+            <Tooltip {...CHART_TOOLTIP} labelFormatter={tickLabel} formatter={(v: any) => [fmtVal(Number(v)), sensor.sensor_name]} />
             <Line type="monotone" dataKey="value" stroke={color} strokeWidth={2} dot={false} connectNulls />
           </LineChart>
         </ResponsiveContainer>
@@ -648,6 +649,7 @@ function CustomSensorChart({ deviceId, sensor, range, setRange }: { deviceId: nu
               label={unit ? { value: unit, angle: -90, position: 'insideLeft', fontSize: 'var(--text-xs)' } : undefined}
             />
             <Tooltip
+              {...CHART_TOOLTIP}
               labelFormatter={tickLabel}
               formatter={(v: any) => [`${Number(v)}${unit ? ` ${unit}` : ''}`, label]}
             />
@@ -697,7 +699,7 @@ function LatencyChart({ data, loading, alertTimes = [] }: { data: PingPoint[]; l
         <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
         <XAxis dataKey="bucket" tickFormatter={tickLabel} fontSize={11} minTickGap={40} />
         <YAxis fontSize={11} width={44} />
-        <Tooltip labelFormatter={tickLabel} formatter={(v: any) => [`${v} ms`, 'Latency']} />
+        <Tooltip {...CHART_TOOLTIP} labelFormatter={tickLabel} formatter={(v: any) => [`${v} ms`, 'Latency']} />
         {marks.map((b) => (
           <ReferenceLine key={b} x={b} stroke="#dc2626" strokeDasharray="3 2" strokeOpacity={0.6} />
         ))}
@@ -721,7 +723,7 @@ function SingleChart({
         <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
         <XAxis dataKey="bucket" tickFormatter={tickLabel} fontSize={11} minTickGap={40} />
         <YAxis fontSize={11} width={44} />
-        <Tooltip labelFormatter={tickLabel} formatter={(v: any) => [`${v}${unit}`, '']} />
+        <Tooltip {...CHART_TOOLTIP} labelFormatter={tickLabel} formatter={(v: any) => [`${v}${unit}`, '']} />
         <Line type="monotone" dataKey="value" stroke={color} strokeWidth={2} dot={false} connectNulls />
       </LineChart>
     </ResponsiveContainer>

@@ -11,7 +11,7 @@ import { StatusDot } from '@/components/StatusDot';
 import { useLicense, LicenseDisabledScreen } from '@/components/LicenseGuard';
 import {
   ErrorBox, Empty, fmtRel, fmtTime,
-  PageHeader, TableSkeleton, Skeleton, useRefreshKey,
+  PageHeader, TableSkeleton, Skeleton, useRefreshKey, CHART_TOOLTIP,
 } from '@/components/ui';
 import {
   GradeBadge, scoreColor, n as intelNum, Overview, HealthRow,
@@ -982,6 +982,7 @@ function NetworkTrendChart({ data }: { data: TrendPoint[] }) {
         <XAxis dataKey="bucket" tickFormatter={hhmm} fontSize={11} minTickGap={44} tickLine={false} axisLine={false} />
         <YAxis domain={[domainMin, 100]} fontSize={11} width={40} tickFormatter={(v) => `${v}%`} tickLine={false} axisLine={false} />
         <Tooltip
+          {...CHART_TOOLTIP}
           labelFormatter={(l) => fmtTime(String(l))}
           formatter={(v: any) => [`${Number(v).toFixed(1)}%`, 'Availability']}
         />

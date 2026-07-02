@@ -121,7 +121,7 @@ export default function AgentDetailPage({ params }: { params: { id: string } }) 
         <button className="sv-btn ghost" onClick={handleToggleDisabled}>
           {a.disabled ? 'Enable Agent' : 'Disable Agent'}
         </button>
-        <button className="sv-btn ghost" onClick={handleDelete}>Delete Agent</button>
+        <button className="sv-btn danger" onClick={handleDelete}>Delete Agent</button>
       </PageHeader>
 
       {a.disabled && (

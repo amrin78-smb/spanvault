@@ -75,6 +75,24 @@ export function fmtBps(bps: number | null | undefined): string {
   return `${n.toFixed(0)} bps`;
 }
 
+// ── Shared Recharts tooltip theme ─────────────────────────────
+// Recharts' default <Tooltip> renders an opaque white box with black text,
+// which is unreadable in dark mode. Spread this onto every chart tooltip
+// (`<Tooltip {...CHART_TOOLTIP} .../>`) so it uses the theme tokens and flips
+// with the theme. Mirrors the reports' TOOLTIP_STYLE so all charts match.
+export const CHART_TOOLTIP = {
+  contentStyle: {
+    background: 'var(--bg-card)',
+    border: '1px solid var(--border)',
+    borderRadius: 'var(--radius-sm)',
+    fontSize: 'var(--text-sm)',
+    color: 'var(--text-primary)',
+    boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+  } as React.CSSProperties,
+  labelStyle: { color: 'var(--text-muted)', fontWeight: 600, marginBottom: 2 } as React.CSSProperties,
+  itemStyle: { color: 'var(--text-primary)' } as React.CSSProperties,
+};
+
 // ════════════════════════════════════════════════════════════
 // Shared NocVault suite UI primitives (mirrors DDIVault's ui.tsx).
 // All components defined at module scope (never nested).
@@ -155,7 +173,7 @@ export function EmptyState({ icon, title, message, actionLabel, onAction }: {
       <div style={{ fontSize: 'var(--text-md)', fontWeight: 600, color: 'var(--text-primary)' }}>{title}</div>
       {message && <div style={{ fontSize: 'var(--text-base)', marginTop: 6, maxWidth: 420 }}>{message}</div>}
       {actionLabel && onAction && (
-        <button className="btn btn-primary" style={{ marginTop: 18 }} onClick={onAction}>
+        <button className="sv-btn" style={{ marginTop: 18 }} onClick={onAction}>
           {actionLabel}
         </button>
       )}

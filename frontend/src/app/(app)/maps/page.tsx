@@ -207,7 +207,7 @@ function MapCard({
           <a className="sv-btn ghost sm" href={`/maps/${map.id}`}>View</a>
           {canEdit && <button className="sv-btn ghost sm" onClick={() => onShare(map)}>Share</button>}
           <div style={{ flex: 1 }} />
-          {canEdit && <button className="sv-btn ghost sm" onClick={() => onDelete(map)} title="Delete map">Delete</button>}
+          {canEdit && <button className="sv-btn danger sm" onClick={() => onDelete(map)} title="Delete map">Delete</button>}
         </div>
       </div>
     </div>
