@@ -1,5 +1,7 @@
 'use client';
 
+import { SECTION_TITLE, PANEL, TH, TD } from '@/components/reports/reportStyles';
+
 type TopWorst = {
   metric: 'uptime' | 'response' | 'alerts';
   generated_at: string;
@@ -62,32 +64,6 @@ function barWidthPct(value: number | null, metric: TopWorst['metric'], maxValue:
   if (maxValue <= 0) return 0;
   return Math.max(0, Math.min(100, (value / maxValue) * 100));
 }
-
-// ── Shared REPORT OUTPUT style constants (module scope) ─────────
-const PANEL: React.CSSProperties = { padding: 16 };
-const SECTION_TITLE: React.CSSProperties = {
-  fontSize: 'var(--text-sm)',
-  textTransform: 'uppercase',
-  fontWeight: 600,
-  color: 'var(--text-muted)',
-  letterSpacing: '0.06em',
-  margin: '0 0 8px',
-};
-const TH: React.CSSProperties = {
-  fontSize: 'var(--text-xs)',
-  textTransform: 'uppercase',
-  fontWeight: 600,
-  letterSpacing: '0.06em',
-  color: 'var(--text-muted)',
-  padding: '8px 12px',
-  textAlign: 'left',
-};
-const TD: React.CSSProperties = {
-  fontSize: 'var(--text-sm)',
-  color: 'var(--text-primary)',
-  padding: '8px 12px',
-  height: 36,
-};
 
 export default function TopWorstReport({ data }: { data: TopWorst }) {
   if (!data) return null;

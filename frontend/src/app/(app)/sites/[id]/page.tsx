@@ -6,7 +6,7 @@ import { useParams } from 'next/navigation';
 import { useApi } from '@/lib/api';
 import { StatusDot } from '@/components/StatusDot';
 import { DeviceForm, ImportModal } from '@/components/DeviceModals';
-import { StatusBadge, Loading, ErrorBox, Empty, fmtTime, fmtRel } from '@/components/ui';
+import { StatusBadge, ErrorBox, Empty, fmtTime, fmtRel, PageHeader, TableSkeleton } from '@/components/ui';
 
 type Site = { id: number; name: string; code: string | null; city: string | null };
 type Device = {
@@ -43,10 +43,10 @@ function fmtAvail(pct: number | null): string {
 
 // Colour a 24h availability figure: green ≥99%, warning ≥95%, red below.
 function availColor(pct: number | null): string {
-  if (pct == null) return 'var(--sv-muted)';
-  if (pct >= 99) return 'var(--sv-up)';
-  if (pct >= 95) return 'var(--sv-warning)';
-  return 'var(--sv-down)';
+  if (pct == null) return 'var(--text-muted)';
+  if (pct >= 99) return 'var(--green)';
+  if (pct >= 95) return 'var(--yellow)';
+  return 'var(--red)';
 }
 
 // "8 up (80%) · 2 down (20%) · …" — only non-zero categories, percent of total.
@@ -80,6 +80,11 @@ export default function SiteDetailPage() {
   // Fall back to the site name carried on the devices if the site isn't in the active list.
   const siteName = site?.name || deviceList[0]?.site_name || `Site #${id}`;
   const siteCity = site?.city || null;
+  const siteSubtitle = [
+    siteCity,
+    site?.code,
+    `${deviceList.length} ${deviceList.length === 1 ? 'device' : 'devices'}`,
+  ].filter(Boolean).join(' · ');
 
   const gateway = deviceList.find((d) => d.is_gateway) || null;
   const gatewayDown = !!gateway && gateway.current_status === 'down';
@@ -87,17 +92,13 @@ export default function SiteDetailPage() {
 
   return (
     <div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4, flexWrap: 'wrap' }}>
+      <div style={{ marginBottom: 8 }}>
         <Link href="/devices" className="sv-btn ghost sm">← Back to Devices</Link>
-        <div style={{ flex: 1 }} />
+      </div>
+      <PageHeader title={siteName} subtitle={siteSubtitle}>
         <button className="sv-btn ghost" onClick={() => setShowImport(true)}>Import from NetVault</button>
         <button className="sv-btn" onClick={() => setShowForm(true)}>+ Add Device</button>
-      </div>
-      <h1 className="sv-page-title" style={{ marginTop: 12 }}>{siteName}</h1>
-      <p className="sv-page-sub">
-        {siteCity ? `${siteCity} · ` : ''}{site?.code ? `${site.code} · ` : ''}
-        {deviceList.length} {deviceList.length === 1 ? 'device' : 'devices'}
-      </p>
+      </PageHeader>
       {deviceList.length > 0 && (
         <p className="sv-status-summary">{statusSummary(counts, deviceList.length)}</p>
       )}
@@ -119,33 +120,18 @@ export default function SiteDetailPage() {
 
       {(sites.error || devices.error) && <ErrorBox message={sites.error || devices.error || ''} />}
 
-      <div className="sv-cards">
-        <div className="sv-card total">
-          <div className="num">{deviceList.length}</div>
-          <div className="label">Total Devices</div>
-        </div>
-        <div className="sv-card up">
-          <div className="num">{counts.up}</div>
-          <div className="label">Up</div>
-        </div>
-        <div className="sv-card down">
-          <div className="num">{counts.down}</div>
-          <div className="label">Down</div>
-        </div>
-        <div className="sv-card warning">
-          <div className="num">{counts.warning}</div>
-          <div className="label">Warning</div>
-        </div>
-        <div className="sv-card unknown">
-          <div className="num">{counts.unknown}</div>
-          <div className="label">Unknown</div>
-        </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 8, marginBottom: 16 }}>
+        <SiteStatCard num={deviceList.length} label="Total Devices" color="var(--text-primary)" />
+        <SiteStatCard num={counts.up} label="Up" color="var(--green)" />
+        <SiteStatCard num={counts.down} label="Down" color="var(--red)" />
+        {counts.warning > 0 && <SiteStatCard num={counts.warning} label="Warning" color="var(--yellow)" />}
+        {counts.unknown > 0 && <SiteStatCard num={counts.unknown} label="Unknown" color="var(--text-muted)" />}
       </div>
 
       <div className="sv-panel" style={{ padding: 0, marginBottom: 22 }}>
         <h2 style={{ padding: '14px 16px 0' }}>Devices</h2>
         {devices.loading && !devices.data ? (
-          <Loading />
+          <TableSkeleton rows={5} cols={5} />
         ) : deviceList.length ? (
           <>
             <div className="sv-dev-row sv-dev-head">
@@ -165,7 +151,7 @@ export default function SiteDetailPage() {
       <div className="sv-panel">
         <h2>Active Alerts</h2>
         {alerts.loading && !alerts.data ? (
-          <Loading />
+          <TableSkeleton rows={4} cols={4} />
         ) : siteAlerts.length ? (
           <table className="sv-table">
             <thead>
@@ -207,6 +193,22 @@ export default function SiteDetailPage() {
           onImported={() => { setShowImport(false); devices.reload(); }}
         />
       )}
+    </div>
+  );
+}
+
+// ── Compact KPI stat tile (top-level component, mirrors the dashboard/alerts style) ──
+// 3px coloured left border, no shadow, ~74px min-height. The value always uses
+// --text-primary; the colour tints only the left border.
+function SiteStatCard({ num, label, color }: { num: number; label: string; color: string }) {
+  return (
+    <div style={{
+      background: 'var(--bg-card)', border: '1px solid var(--border)', borderLeft: `3px solid ${color}`,
+      borderRadius: 'var(--radius-sm)', padding: '12px 16px', minHeight: 74,
+      display: 'flex', flexDirection: 'column', justifyContent: 'center',
+    }}>
+      <div style={{ fontSize: 'var(--text-2xl)', fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1.1 }}>{num}</div>
+      <div style={{ fontSize: 'var(--text-xs)', textTransform: 'uppercase', color: 'var(--text-muted)', letterSpacing: '0.04em', marginTop: 4 }}>{label}</div>
     </div>
   );
 }

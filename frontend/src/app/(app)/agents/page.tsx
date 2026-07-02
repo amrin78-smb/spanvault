@@ -6,7 +6,7 @@ import { useRouter } from 'next/navigation';
 import { useApi, apiSend } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
 import {
-  ErrorBox, fmtRel, PageHeader, CardSkeleton, EmptyState, useRefreshKey, Loading,
+  ErrorBox, fmtRel, PageHeader, CardSkeleton, EmptyState, useRefreshKey, Loading, useConfirm,
 } from '@/components/ui';
 import { IconAgents } from '@/components/icons';
 import { AgentInstall, AgentConnectWaiter, NewAgentModal } from '@/components/AgentBits';
@@ -30,6 +30,7 @@ function dotColor(status: string): string {
 export default function AgentsPage() {
   const { canManageAgents } = useRbac();
   const router = useRouter();
+  const { confirm, ConfirmUI } = useConfirm();
   const agents = useApi<Agent[]>(canManageAgents ? '/api/agents' : null, 15000);
   const [showNew, setShowNew] = useState(false);
   const [selected, setSelected] = useState<Set<number>>(new Set());
@@ -45,7 +46,12 @@ export default function AgentsPage() {
   }
 
   async function bulkDelete() {
-    if (!confirm(`Delete ${selected.size} agent(s)? Their devices move back to local polling.`)) return;
+    if (!await confirm({
+      title: `Delete ${selected.size} agent(s)?`,
+      message: `The ${selected.size} selected agent(s) will be removed and their devices will move back to local polling.`,
+      confirmLabel: 'Delete',
+      danger: true,
+    })) return;
     for (const id of selected) { try { await apiSend(`/api/agents/${id}`, 'DELETE'); } catch { /* skip */ } }
     setSelected(new Set());
     agents.reload();
@@ -70,7 +76,12 @@ export default function AgentsPage() {
   }
 
   async function handleDelete(a: Agent) {
-    if (!confirm(`Delete agent "${a.name}"? Its ${a.device_count} device(s) will move back to local polling.`)) return;
+    if (!await confirm({
+      title: 'Delete agent?',
+      message: `Delete agent "${a.name}"? Its ${a.device_count} device(s) will move back to local polling.`,
+      confirmLabel: 'Delete',
+      danger: true,
+    })) return;
     await apiSend(`/api/agents/${a.id}`, 'DELETE');
     agents.reload();
   }
@@ -81,6 +92,7 @@ export default function AgentsPage() {
 
   return (
     <div>
+      {ConfirmUI}
       <PageHeader title="Agents" subtitle="Remote polling agents that monitor devices at sites the server can't reach directly.">
         <button className="sv-btn" onClick={() => setShowNew(true)}>+ New Agent</button>
       </PageHeader>

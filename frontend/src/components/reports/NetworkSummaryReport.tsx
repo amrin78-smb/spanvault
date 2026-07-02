@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { GradeBadge } from '@/components/intel';
+import { SECTION_TITLE, PANEL, STAT_GRID, STAT_CARD, STAT_VALUE, STAT_LABEL, TH, TD } from '@/components/reports/reportStyles';
 
 type NetworkSummary = {
   generated_at: string;
@@ -76,57 +77,6 @@ function uptimeColor(pct: number | null | undefined): string {
   if (pct >= 95) return '#eab308';
   return '#dc2626';
 }
-
-// ── Shared REPORT OUTPUT style constants (module scope) ─────────
-const SECTION_TITLE: React.CSSProperties = {
-  fontSize: 'var(--text-sm)',
-  textTransform: 'uppercase',
-  fontWeight: 600,
-  color: 'var(--text-muted)',
-  letterSpacing: '0.06em',
-  margin: '0 0 8px',
-};
-const PANEL: React.CSSProperties = { padding: 16 };
-const STAT_GRID: React.CSSProperties = {
-  display: 'grid',
-  gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
-  gap: 12,
-  alignItems: 'stretch',
-};
-const STAT_CARD: React.CSSProperties = {
-  background: 'var(--bg-card)',
-  border: '1px solid var(--border)',
-  borderLeftWidth: 3,
-  borderLeftColor: 'var(--text-muted)',
-  borderRadius: 'var(--radius-sm)',
-  padding: '12px 16px',
-  minHeight: 75,
-  display: 'flex',
-  flexDirection: 'column',
-  justifyContent: 'center',
-};
-const STAT_VALUE: React.CSSProperties = { fontSize: 'var(--text-2xl)', fontWeight: 800, lineHeight: 1.1 };
-const STAT_LABEL: React.CSSProperties = {
-  fontSize: 'var(--text-xs)',
-  textTransform: 'uppercase',
-  color: 'var(--text-muted)',
-  letterSpacing: '0.04em',
-  marginTop: 4,
-};
-const TH: React.CSSProperties = {
-  fontSize: 'var(--text-xs)',
-  textTransform: 'uppercase',
-  fontWeight: 600,
-  letterSpacing: '0.06em',
-  color: 'var(--text-muted)',
-  padding: '8px 12px',
-};
-const TD: React.CSSProperties = {
-  fontSize: 'var(--text-sm)',
-  color: 'var(--text-primary)',
-  padding: '8px 12px',
-  height: 36,
-};
 
 function compareSites(a: SiteRow, b: SiteRow, key: SortKey, dir: SortDir): number {
   const av = a[key];

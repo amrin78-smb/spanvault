@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useApi, apiSend } from '@/lib/api';
 import {
-  ErrorBox, Loading, Empty, fmtRel, fmtTime, PageHeader, useRefreshKey,
+  ErrorBox, Loading, Empty, fmtRel, fmtTime, PageHeader, useRefreshKey, useConfirm,
 } from '@/components/ui';
 import { StatusDot } from '@/components/StatusDot';
 import { AgentStatusPill, AgentInstall, AgentDiscovery, AgentHealth, AgentHealthData, AgentLogs, SiteMultiSelect } from '@/components/AgentBits';
@@ -58,6 +58,7 @@ const SECTION_TITLE_STYLE: React.CSSProperties = {
 
 export default function AgentDetailPage({ params }: { params: { id: string } }) {
   const router = useRouter();
+  const { confirm, ConfirmUI } = useConfirm();
   const agent = useApi<AgentDetail>(`/api/agents/${params.id}`, 15000);
   const sites = useApi<Site[]>('/api/netvault/sites');
   const [editSites, setEditSites] = useState(false);
@@ -66,13 +67,23 @@ export default function AgentDetailPage({ params }: { params: { id: string } }) 
 
   async function handleDelete() {
     if (!agent.data) return;
-    if (!confirm(`Delete agent "${agent.data.name}"? Its devices will move back to local polling.`)) return;
+    if (!await confirm({
+      title: 'Delete agent?',
+      message: `Delete agent "${agent.data.name}"? Its devices will move back to local polling.`,
+      confirmLabel: 'Delete',
+      danger: true,
+    })) return;
     await apiSend(`/api/agents/${params.id}`, 'DELETE');
     router.push('/agents');
   }
 
   async function handleRotateKey() {
-    if (!confirm('Rotate this agent\'s API key? The current key stops working immediately — you must re-run the install command (shown below) on the remote server.')) return;
+    if (!await confirm({
+      title: 'Rotate API key?',
+      message: 'Rotate this agent\'s API key? The current key stops working immediately — you must re-run the install command (shown below) on the remote server.',
+      confirmLabel: 'Rotate key',
+      danger: true,
+    })) return;
     await apiSend(`/api/agents/${params.id}/rotate-key`, 'POST');
     agent.reload();
   }
@@ -80,7 +91,12 @@ export default function AgentDetailPage({ params }: { params: { id: string } }) 
   async function handleToggleDisabled() {
     if (!agent.data) return;
     const next = !agent.data.disabled;
-    if (next && !confirm(`Disable agent "${agent.data.name}"? It will be disconnected and refused until re-enabled. Its devices show as agent-offline.`)) return;
+    if (next && !await confirm({
+      title: 'Disable agent?',
+      message: `Disable agent "${agent.data.name}"? It will be disconnected and refused until re-enabled. Its devices show as agent-offline.`,
+      confirmLabel: 'Disable',
+      danger: true,
+    })) return;
     await apiSend(`/api/agents/${params.id}/disabled`, 'POST', { disabled: next });
     agent.reload();
   }
@@ -94,7 +110,12 @@ export default function AgentDetailPage({ params }: { params: { id: string } }) 
   }
 
   async function handleRestart() {
-    if (!confirm('Restart this agent? It will reconnect within a few seconds.')) return;
+    if (!await confirm({
+      title: 'Restart agent?',
+      message: 'Restart this agent? It will reconnect within a few seconds.',
+      confirmLabel: 'Restart',
+      danger: true,
+    })) return;
     try {
       await apiSend(`/api/agents/${params.id}/restart`, 'POST', {});
     } catch (e: any) {
@@ -113,6 +134,7 @@ export default function AgentDetailPage({ params }: { params: { id: string } }) 
 
   return (
     <div>
+      {ConfirmUI}
       <PageHeader title={a.name} subtitle="Remote polling agent detail.">
         <AgentStatusPill status={a.status} />
         <Link href="/agents" className="sv-btn ghost">← Back to Agents</Link>

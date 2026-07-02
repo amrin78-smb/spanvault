@@ -4,7 +4,7 @@ import { useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { useApi, apiSend } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
-import { Loading, ErrorBox, Empty, fmtRel } from '@/components/ui';
+import { Loading, ErrorBox, Empty, fmtRel, useConfirm } from '@/components/ui';
 import type { MapSummary } from '@/lib/mapTypes';
 
 const CANVAS_PRESETS = [
@@ -44,13 +44,14 @@ function ShareLinkBar({ url, onClose }: { url: string; onClose: () => void }) {
 
 export default function MapsPage() {
   const { canEdit } = useRbac();
+  const { confirm, ConfirmUI } = useConfirm();
   const maps = useApi<MapSummary[]>('/api/maps', 0);
   const [showCreate, setShowCreate] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [shareUrl, setShareUrl] = useState<string | null>(null);
 
   async function handleDelete(m: MapSummary) {
-    if (!confirm(`Delete map "${m.name}"? This cannot be undone.`)) return;
+    if (!(await confirm({ title: 'Delete map', message: `Delete map "${m.name}"? This cannot be undone.`, confirmLabel: 'Delete', danger: true }))) return;
     await apiSend(`/api/maps/${m.id}`, 'DELETE');
     maps.reload();
   }
@@ -59,7 +60,7 @@ export default function MapsPage() {
     let isPublic = m.is_public;
     let uuid = m.uuid;
     if (!isPublic) {
-      if (!confirm(`"${m.name}" is private. Make it public so anyone with the link can view it?`)) return;
+      if (!(await confirm({ title: 'Make map public', message: `"${m.name}" is private. Make it public so anyone with the link can view it?`, confirmLabel: 'Make public' }))) return;
       const r = await apiSend<{ is_public: boolean; uuid: string }>(`/api/maps/${m.id}/toggle-public`, 'POST', {});
       isPublic = r.is_public;
       uuid = r.uuid;
@@ -73,6 +74,7 @@ export default function MapsPage() {
 
   return (
     <div>
+      {ConfirmUI}
       <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
         <h1 className="sv-page-title" style={{ margin: 0 }}>Maps</h1>
         <div style={{ flex: 1 }} />

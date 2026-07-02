@@ -7,8 +7,9 @@ import {
 } from 'recharts';
 import { useApi, apiSend, apiGet } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
-import { Loading, ErrorBox, Empty, fmtRel, fmtTime, UtilBar, pctColor, PageHeader, Pager, useClientPagination, CHART_TOOLTIP } from '@/components/ui';
+import { Loading, ErrorBox, Empty, fmtRel, fmtTime, UtilBar, pctColor, PageHeader, Pager, useClientPagination, CHART_TOOLTIP, useConfirm } from '@/components/ui';
 import { StatusDot } from '@/components/StatusDot';
+import { IconCheck, IconWarning, IconRepeat, IconClose, IconTool } from '@/components/icons';
 
 // ════════════════════════════════════════════════════════════
 // Types (mirror the /api/wireless contracts)
@@ -1210,7 +1211,7 @@ function OverviewTab({
               </tbody>
             </table>
           ) : (
-            <div style={{ color: 'var(--green)', fontWeight: 600, fontSize: 'var(--text-base)' }}>All APs online ✓</div>
+            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: 'var(--green)', fontWeight: 600, fontSize: 'var(--text-base)' }}><IconCheck width={14} height={14} /> All APs online</div>
           )}
         </SectionCard>
 
@@ -1234,7 +1235,7 @@ function OverviewTab({
               </tbody>
             </table>
           ) : (
-            <div style={{ color: 'var(--green)', fontWeight: 600, fontSize: 'var(--text-base)' }}>No congestion detected ✓</div>
+            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: 'var(--green)', fontWeight: 600, fontSize: 'var(--text-base)' }}><IconCheck width={14} height={14} /> No congestion detected</div>
           )}
         </SectionCard>
       </EqualRow>
@@ -2135,13 +2136,13 @@ function gradeColor(g: string): string {
   return 'var(--red)';
 }
 
-function prioMeta(p: string): { color: string; dot: string; label: string } {
+function prioMeta(p: string): { color: string; status: 'down' | 'warning' | 'up' | 'unknown'; label: string } {
   switch (p) {
-    case 'critical': return { color: 'var(--red)', dot: '🔴', label: 'Critical' };
-    case 'high': return { color: 'var(--yellow)', dot: '🟡', label: 'High' };
-    case 'medium': return { color: 'var(--yellow)', dot: '🟡', label: 'Medium' };
-    case 'low': return { color: 'var(--green)', dot: '🟢', label: 'Low' };
-    default: return { color: 'var(--text-muted)', dot: '⚪', label: p || '—' };
+    case 'critical': return { color: 'var(--red)', status: 'down', label: 'Critical' };
+    case 'high': return { color: 'var(--yellow)', status: 'warning', label: 'High' };
+    case 'medium': return { color: 'var(--yellow)', status: 'warning', label: 'Medium' };
+    case 'low': return { color: 'var(--green)', status: 'up', label: 'Low' };
+    default: return { color: 'var(--text-muted)', status: 'unknown', label: p || '—' };
   }
 }
 
@@ -2252,8 +2253,8 @@ function RecommendationsTable({
 
   if (!recs.length) {
     return (
-      <div style={{ color: 'var(--green)', fontWeight: 600, fontSize: 'var(--text-base)' }}>
-        ✓ No issues detected — wireless looks healthy.
+      <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: 'var(--green)', fontWeight: 600, fontSize: 'var(--text-base)' }}>
+        <IconCheck width={14} height={14} /> No issues detected — wireless looks healthy.
       </div>
     );
   }
@@ -2290,7 +2291,9 @@ function RecommendationsTable({
             return (
               <tr key={`${recKey(rec)}-${i}`}>
                 <td style={TD_STYLE}>
-                  <span style={{ color: meta.color, fontWeight: 700 }}>{meta.dot} {meta.label}</span>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: meta.color, fontWeight: 700 }}>
+                    <StatusDot status={meta.status} size={9} />{meta.label}
+                  </span>
                 </td>
                 <td style={{ ...TD_STYLE, color: 'var(--text-muted)' }}>{rec.category}</td>
                 <td style={{ ...TD_STYLE, fontWeight: 600 }}>
@@ -2589,21 +2592,21 @@ function ClientStatusBadge({ client }: { client: WirelessClient }) {
   }
   if (rssi != null && rssi < -75) {
     return (
-      <span className="sv-badge" style={{ color: 'var(--red)', borderColor: 'var(--red)' }}>
-        🔴 Low Signal
+      <span className="sv-badge" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: 'var(--red)', borderColor: 'var(--red)' }}>
+        <StatusDot status="down" size={8} /> Low Signal
       </span>
     );
   }
   if (Number(client.roaming_count) > 5) {
     return (
-      <span className="sv-badge" style={{ color: 'var(--yellow)', borderColor: 'var(--yellow)' }}>
-        🔄 Frequent Roamer
+      <span className="sv-badge" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: 'var(--yellow)', borderColor: 'var(--yellow)' }}>
+        <IconRepeat width={12} height={12} /> Frequent Roamer
       </span>
     );
   }
   return (
-    <span className="sv-badge" style={{ color: 'var(--green)', borderColor: 'var(--green)' }}>
-      ✓ Normal
+    <span className="sv-badge" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: 'var(--green)', borderColor: 'var(--green)' }}>
+      <IconCheck width={12} height={12} /> Normal
     </span>
   );
 }
@@ -2855,9 +2858,9 @@ function ClientsTab({
         </select>
         <button
           className="sv-btn ghost sm"
-          style={problemOnly ? { color: 'var(--red)', borderColor: 'var(--red)' } : undefined}
+          style={{ display: 'inline-flex', alignItems: 'center', gap: 4, ...(problemOnly ? { color: 'var(--red)', borderColor: 'var(--red)' } : {}) }}
           onClick={() => setProblemOnly(!problemOnly)}
-        >⚠ Problem clients only</button>
+        ><IconWarning width={12} height={12} /> Problem clients only</button>
         <button
           className="sv-btn ghost sm"
           style={stickyOnly ? { color: 'var(--red)', borderColor: 'var(--red)' } : undefined}
@@ -3146,8 +3149,8 @@ function ControllerInventoryTable({ controllers, capsById }: {
                     {c.name}
                     <span
                       title={probed ? 'Capabilities probed' : 'Capabilities not probed'}
-                      style={{ color: probed ? 'var(--text-muted)' : 'var(--orange)', fontWeight: 700 }}
-                    >{probed ? '✓' : '⚡'}</span>
+                      style={{ display: 'inline-flex', alignItems: 'center', color: probed ? 'var(--text-muted)' : 'var(--orange)', fontWeight: 700 }}
+                    >{probed ? <IconCheck width={12} height={12} /> : <IconWarning width={12} height={12} />}</span>
                   </span>
                 </td>
                 <td style={TD_STYLE}>{c.site_name || '—'}</td>
@@ -3314,7 +3317,12 @@ function HaStatusTable({ controllers }: { controllers: OverviewController[] }) {
                   {role.dot && <span style={{ marginRight: 4 }}>●</span>}{role.text}
                 </td>
                 <td style={{ ...TD_STYLE, color: manual ? 'var(--text-muted)' : (synced ? 'var(--green)' : 'var(--orange)') }}>
-                  {manual ? 'Manual' : (synced ? '✓ Synced' : `⚠ ${c.ha_sync_status || 'Not Synced'}`)}
+                  {manual ? 'Manual' : (
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                      {synced ? <IconCheck width={12} height={12} /> : <IconWarning width={12} height={12} />}
+                      {synced ? 'Synced' : (c.ha_sync_status || 'Not Synced')}
+                    </span>
+                  )}
                 </td>
               </tr>
             );
@@ -3395,7 +3403,10 @@ function CapabilityResultModal({ result, onClose }: {
                 <tr key={d.capability}>
                   <td style={{ fontWeight: 600 }}>{capLabel(d.capability)}</td>
                   <td style={{ color: d.found ? 'var(--green)' : 'var(--text-muted)', whiteSpace: 'nowrap' }}>
-                    {d.found ? '✓ Found' : '✗ Not found'}
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                      {d.found ? <IconCheck width={12} height={12} /> : <IconClose width={12} height={12} />}
+                      {d.found ? 'Found' : 'Not found'}
+                    </span>
                   </td>
                   <td><code style={{ fontSize: 'var(--text-xs)' }}>{d.oid || '—'}</code></td>
                   <td style={{ maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -3524,7 +3535,7 @@ function CapabilitiesAccordion({
           textTransform: 'uppercase', letterSpacing: 0.4, color: 'var(--text-muted)',
         }}
       >
-        <span style={{ color: 'var(--orange)' }}>⚡</span>
+        <span style={{ display: 'inline-flex', alignItems: 'center', color: 'var(--orange)' }}><IconTool width={14} height={14} /></span>
         Controller Capabilities
         <span style={{ flex: 1 }} />
         <span>{open ? '▲' : '▼'}</span>
@@ -3548,11 +3559,11 @@ function CapabilitiesAccordion({
                       <td style={TD_STYLE}>{c.vendor}</td>
                       <td style={TD_STYLE}>
                         {probed ? (
-                          <span style={{ color: 'var(--text-muted)' }}>
-                            ✓ Probed{c.capabilities_probed_at ? ` ${fmtRel(c.capabilities_probed_at)}` : ''}
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: 'var(--text-muted)' }}>
+                            <IconCheck width={12} height={12} /> Probed{c.capabilities_probed_at ? ` ${fmtRel(c.capabilities_probed_at)}` : ''}
                           </span>
                         ) : (
-                          <span style={{ color: 'var(--orange)', fontWeight: 600 }}>⚡ Not probed</span>
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: 'var(--orange)', fontWeight: 600 }}><IconWarning width={12} height={12} /> Not probed</span>
                         )}
                       </td>
                       <td style={{ ...TD_STYLE, textAlign: 'right' }}>
@@ -3589,6 +3600,7 @@ function CapabilitiesAccordion({
 // ── Controllers tab (top-level) ───────────────────────────────
 function ControllersTab({ onViewEvents }: { onViewEvents?: () => void }) {
   const { canEdit, role } = useRbac();
+  const { confirm, ConfirmUI } = useConfirm();
   const controllers = useApi<Controller[]>('/api/wireless/controllers', 0);
   const overview = useApi<ControllerOverview>('/api/wireless/controllers/overview', 30000);
   const events = useApi<ControllerEvent[]>('/api/wireless/controllers/events', 30000);
@@ -3610,7 +3622,13 @@ function ControllersTab({ onViewEvents }: { onViewEvents?: () => void }) {
   }
 
   async function handleDelete(c: Controller) {
-    if (!confirm(`Delete controller "${c.name}"? This cannot be undone.`)) return;
+    const ok = await confirm({
+      title: 'Delete controller?',
+      message: `Delete controller "${c.name}"? This cannot be undone.`,
+      confirmLabel: 'Delete',
+      danger: true,
+    });
+    if (!ok) return;
     await apiSend(`/api/wireless/controllers/${c.id}`, 'DELETE');
     controllers.reload();
     overview.reload();
@@ -3760,6 +3778,7 @@ function ControllersTab({ onViewEvents }: { onViewEvents?: () => void }) {
           onSaved={() => { setShowModal(false); controllers.reload(); overview.reload(); }}
         />
       )}
+      {ConfirmUI}
     </div>
   );
 }

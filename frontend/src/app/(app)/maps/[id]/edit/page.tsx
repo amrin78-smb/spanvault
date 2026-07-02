@@ -5,6 +5,7 @@ import { useParams } from 'next/navigation';
 import { useApi, apiGet, apiSend } from '@/lib/api';
 import { StatusDot } from '@/components/StatusDot';
 import { Loading, ErrorBox } from '@/components/ui';
+import { IconTrash, IconLock, IconUnlock, IconUndo, IconRedo } from '@/components/icons';
 import {
   type FullMap, type MapDevice, type MapConnection, type MapLabel, type MapShape, type MapSummary, type MapNodeLike,
   statusFill, deviceCenter, normalizeMap, connLive, fmtBps, utilColor, elbowPoints, nodeAnchorBox, edgePoint,
@@ -1342,14 +1343,14 @@ function EditorToolbar({
         </select>
         <button className={`sv-btn ghost sm tint-amber ${snapEnabled ? 'on' : ''}`} onClick={onToggleSnap}
           title="Snap to grid">Snap</button>
-        <button className="sv-btn ghost sm tint-blue" onClick={onUndo} disabled={!canUndo} title="Undo (Ctrl+Z)">↶ Undo</button>
-        <button className="sv-btn ghost sm tint-blue" onClick={onRedo} disabled={!canRedo} title="Redo (Ctrl+Shift+Z)">↷ Redo</button>
+        <button className="sv-btn ghost sm tint-blue" onClick={onUndo} disabled={!canUndo} title="Undo (Ctrl+Z)"><IconUndo width={14} height={14} style={{ verticalAlign: '-2px' }} /> Undo</button>
+        <button className="sv-btn ghost sm tint-blue" onClick={onRedo} disabled={!canRedo} title="Redo (Ctrl+Shift+Z)"><IconRedo width={14} height={14} style={{ verticalAlign: '-2px' }} /> Redo</button>
       </div>
 
       <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/gif" style={{ display: 'none' }}
         onChange={(e) => { const f = e.target.files?.[0]; if (f) onUploadBg(f); e.target.value = ''; }} />
       <button className="sv-btn ghost sm tint-teal" onClick={() => fileRef.current?.click()}>Upload BG</button>
-      {hasBg && <button className="sv-btn ghost sm tint-red" onClick={onRemoveBg} title="Remove background">🗑 BG</button>}
+      {hasBg && <button className="sv-btn ghost sm tint-red" onClick={onRemoveBg} title="Remove background"><IconTrash width={14} height={14} style={{ verticalAlign: '-2px' }} /> BG</button>}
 
       <select className="sv-select sm" value={presetKey}
         onChange={(e) => { const p = CANVAS_PRESETS.find((x) => x.key === e.target.value); if (p) onCanvasSize(p.w, p.h); }}>
@@ -1361,7 +1362,7 @@ function EditorToolbar({
 
       {shareUrl && <span className="sv-editor-shareurl" title={shareUrl}>{shareUrl}</span>}
       <span className={`sv-editor-dirty ${dirty ? '' : 'saved'}`}>{dirty ? '● Unsaved' : '✓ Saved'}</span>
-      <button className={`sv-btn ghost sm ${isPublic ? 'tint-green on' : 'tint-blue'}`} onClick={onShare}>{isPublic ? '🔓 Public' : '🔒 Share'}</button>
+      <button className={`sv-btn ghost sm ${isPublic ? 'tint-green on' : 'tint-blue'}`} onClick={onShare}>{isPublic ? <><IconUnlock width={14} height={14} style={{ verticalAlign: '-2px' }} /> Public</> : <><IconLock width={14} height={14} style={{ verticalAlign: '-2px' }} /> Share</>}</button>
       <button className="sv-btn ghost sm tint-violet" onClick={onView}>View Map ↗</button>
       <button className="sv-btn" onClick={onSave} disabled={saving}>
         {saving ? 'Saving…' : savedAt ? '✓ Saved' : 'Save'}

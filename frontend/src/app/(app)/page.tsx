@@ -16,6 +16,9 @@ import {
 import {
   GradeBadge, scoreColor, n as intelNum, Overview, HealthRow,
 } from '@/components/intel';
+import {
+  IconMonitor, IconSearch, IconRepeat, IconTool, IconWarning, IconCheck,
+} from '@/components/icons';
 
 // ── Types ──────────────────────────────────────────────────────
 type Summary = {
@@ -130,6 +133,17 @@ const SECTION_HEADING: React.CSSProperties = {
   marginBottom: 8,
   letterSpacing: '0.06em',
 };
+// Quiet "eyebrow" label that sits ABOVE a row group (Performance / Availability /
+// Predictive / etc.) to give the dashboard a scannable hierarchy. Deliberately
+// lighter than the in-card SECTION_HEADING so it groups without competing.
+const GROUP_LABEL: React.CSSProperties = {
+  fontSize: 'var(--text-xs)',
+  textTransform: 'uppercase',
+  fontWeight: 600,
+  color: 'var(--text-muted)',
+  letterSpacing: '0.06em',
+  margin: '2px 0 6px',
+};
 
 // ── Helpers (top-level) ────────────────────────────────────────
 function num(v: number | string | null | undefined): number | null {
@@ -221,7 +235,7 @@ function NocViewButton() {
   }
   return (
     <button className="sv-btn ghost" onClick={toggle} title="NOC fullscreen view (Esc to exit)">
-      📺 {on ? 'Exit NOC' : 'NOC View'}
+      <IconMonitor width={15} height={15} style={{ verticalAlign: '-2px' }} /> {on ? 'Exit NOC' : 'NOC View'}
     </button>
   );
 }
@@ -347,9 +361,12 @@ export default function DashboardPage() {
         const shown = (showProblems ? 1 : 0) + (showIncidents ? 1 : 0);
         if (shown === 0) return null;
         return (
-          <div style={{ display: 'grid', gridTemplateColumns: shown === 2 ? '1fr 1fr' : '1fr', gap: 10, alignItems: 'stretch', marginBottom: 10 }}>
-            {showProblems && <ActiveProblems api={problems} />}
-            {showIncidents && <OpenIncidents api={incidents} />}
+          <div style={{ marginBottom: 10 }}>
+            <div style={{ ...GROUP_LABEL, color: 'var(--red)' }}>Needs Attention</div>
+            <div style={{ display: 'grid', gridTemplateColumns: shown === 2 ? '1fr 1fr' : '1fr', gap: 10, alignItems: 'stretch' }}>
+              {showProblems && <ActiveProblems api={problems} />}
+              {showIncidents && <OpenIncidents api={incidents} />}
+            </div>
           </div>
         );
       })()}
@@ -358,6 +375,7 @@ export default function DashboardPage() {
       <AgentOfflineGroup api={agentOffline} />
 
       {/* ── Performance / reliability (3-up): slowest · top talkers · least reliable ── */}
+      <div style={GROUP_LABEL}>Performance</div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, alignItems: 'stretch', marginBottom: 10 }}>
         <SlowestDevices api={worst} />
         <TopTalkers api={topTalkers} />
@@ -365,6 +383,7 @@ export default function DashboardPage() {
       </div>
 
       {/* ── Availability (3-up): site health · trend · SLA breaches ── */}
+      <div style={GROUP_LABEL}>Availability</div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, alignItems: 'stretch', marginBottom: 10 }}>
         <SiteHealthCard api={sites} />
         <NetworkAvailabilityCard api={trend} />
@@ -372,6 +391,7 @@ export default function DashboardPage() {
       </div>
 
       {/* ── Predictive (3-up): approaching capacity · recurring patterns · at-risk ── */}
+      <div style={GROUP_LABEL}>Predictive</div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, alignItems: 'stretch', marginBottom: 10 }}>
         <ApproachingCapacity api={capacity} />
         <RecurringPatterns api={patterns} />
@@ -379,6 +399,7 @@ export default function DashboardPage() {
       </div>
 
       {/* ── Recent events + wireless health (wireless self-hides → events fills) ── */}
+      <div style={GROUP_LABEL}>Recent Activity</div>
       <div style={{ display: 'flex', gap: 10, alignItems: 'stretch', marginBottom: 16 }}>
         <div style={{ ...CARD_STYLE, flex: 1, minWidth: 0, height: 220 }}>
           <div style={SECTION_HEADING}>Recent Events</div>
@@ -417,7 +438,7 @@ function RedirectNotice() {
         border: '1px solid rgba(217,119,6,0.30)',
       }}
     >
-      <span aria-hidden>⚠</span><span>{msg}</span>
+      <IconWarning width={15} height={15} aria-hidden style={{ flexShrink: 0 }} /><span>{msg}</span>
     </div>
   );
 }
@@ -446,7 +467,7 @@ function UpdatedNotice() {
         border: '1px solid rgba(22,163,74,0.30)',
       }}
     >
-      <span aria-hidden>✓</span><span>SpanVault updated successfully</span>
+      <IconCheck width={15} height={15} aria-hidden style={{ flexShrink: 0 }} /><span>SpanVault updated successfully</span>
     </div>
   );
 }
@@ -678,7 +699,10 @@ function AnomalyBanner({ data }: { data: Overview | null }) {
         border: '1px solid rgba(37,99,235,0.30)', textDecoration: 'none',
       }}
     >
-      <span>🔍 {c} {c === 1 ? 'anomaly' : 'anomalies'} detected</span>
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+        <IconSearch width={15} height={15} aria-hidden />
+        {c} {c === 1 ? 'anomaly' : 'anomalies'} detected
+      </span>
       <span style={{ marginLeft: 'auto', fontWeight: 700 }}>View Intelligence →</span>
     </Link>
   );
@@ -702,7 +726,7 @@ function AtRiskDevices({ data }: { data: Overview | null }) {
               const s = intelNum(d.score);
               return (
                 <div key={d.id} style={{ display: 'flex', alignItems: 'center', gap: 8, height: 36, borderBottom: '1px solid var(--border-light)', fontSize: 'var(--text-sm)' }}>
-                  <span style={{ color: 'var(--yellow)' }}>⚠</span>
+                  <IconWarning width={14} height={14} aria-hidden style={{ color: 'var(--yellow)', flexShrink: 0 }} />
                   <Link href={`/devices/${d.id}`} style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{d.name}</Link>
                   <span style={{ flex: 1 }} />
                   <span style={{ color: scoreColor(s) }}>Health score {s != null ? Math.round(s) : '—'}/100</span>
@@ -762,7 +786,7 @@ function ActiveProblems({ api }: { api: Api<Problem[]> }) {
             height: '100%', display: 'flex', flexDirection: 'column',
             alignItems: 'center', justifyContent: 'center', gap: 4, color: 'var(--green)',
           }}>
-            <div style={{ fontSize: 'var(--text-2xl)' }}>✓</div>
+            <IconCheck width={28} height={28} aria-hidden />
             <div style={{ fontSize: 'var(--text-base)', fontWeight: 600 }}>All systems operational</div>
           </div>
         ) : (
@@ -1070,7 +1094,7 @@ function AgentOfflineGroup({ api }: { api: Api<AgentOfflineRow[]> }) {
       </div>
       {rows.map((r) => (
         <div key={r.agent_id} style={{ display: 'flex', alignItems: 'center', gap: 8, height: 36, fontSize: 'var(--text-sm)', borderBottom: '1px solid var(--border-light)' }}>
-          <span style={{ color: 'var(--yellow)' }}>⚠</span>
+          <IconWarning width={14} height={14} aria-hidden style={{ color: 'var(--yellow)', flexShrink: 0 }} />
           <Link href={`/agents/${r.agent_id}`} style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{r.agent_name}</Link>
           {r.hostname && <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)' }}>· {r.hostname}</span>}
           <span style={{ flex: 1 }} />
@@ -1143,7 +1167,7 @@ function OpenIncidents({ api }: { api: Api<OpenIncident[]> }) {
             height: '100%', display: 'flex', flexDirection: 'column',
             alignItems: 'center', justifyContent: 'center', gap: 4, color: 'var(--green)',
           }}>
-            <div style={{ fontSize: 'var(--text-2xl)' }}>✓</div>
+            <IconCheck width={28} height={28} aria-hidden />
             <div style={{ fontSize: 'var(--text-base)', fontWeight: 600 }}>No open incidents</div>
           </div>
         ) : (
@@ -1222,7 +1246,7 @@ function SlaBreaches({ api }: { api: Api<Sla> }) {
             height: '100%', display: 'flex', flexDirection: 'column',
             alignItems: 'center', justifyContent: 'center', gap: 4, color: 'var(--green)',
           }}>
-            <div style={{ fontSize: 'var(--text-2xl)' }}>✓</div>
+            <IconCheck width={28} height={28} aria-hidden />
             <div style={{ fontSize: 'var(--text-base)', fontWeight: 600 }}>All devices meeting SLA</div>
           </div>
         ) : (
@@ -1284,7 +1308,7 @@ function ApproachingCapacity({ api }: { api: Api<CapacityRow[]> }) {
             height: '100%', display: 'flex', flexDirection: 'column',
             alignItems: 'center', justifyContent: 'center', gap: 4, color: 'var(--green)',
           }}>
-            <div style={{ fontSize: 'var(--text-2xl)' }}>✓</div>
+            <IconCheck width={28} height={28} aria-hidden />
             <div style={{ fontSize: 'var(--text-base)', fontWeight: 600 }}>No capacity concerns</div>
           </div>
         ) : (
@@ -1375,7 +1399,7 @@ function RecurringPatterns({ api }: { api: Api<PatternRow[]> }) {
             const pct = conf != null ? Math.round(conf * 100) : null;
             return (
               <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 8, height: 36, fontSize: 'var(--text-sm)', borderBottom: '1px solid var(--border-light)' }}>
-                <span style={{ flexShrink: 0 }}>🔁</span>
+                <IconRepeat width={14} height={14} aria-hidden style={{ flexShrink: 0, color: 'var(--text-muted)' }} />
                 <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   <Link href={`/devices/${p.device_id}`} style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
                     {p.device_name}
@@ -1514,7 +1538,7 @@ function MaintenanceGroup({ api }: { api: Api<MaintenanceData> }) {
   return (
     <div style={{ ...CARD_STYLE, borderLeft: '3px solid #2563eb', marginBottom: 12 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-        <span aria-hidden style={{ color: '#2563eb' }}>🛠</span>
+        <IconTool width={15} height={15} aria-hidden style={{ color: '#2563eb', flexShrink: 0 }} />
         <span style={SECTION_HEADING}>Maintenance</span>
         <span style={{ marginLeft: 'auto', fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>{rows.length}</span>
       </div>

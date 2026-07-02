@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 
 /** Small shared presentational helpers — all defined at top level (never nested). */
 
@@ -400,4 +400,72 @@ export function useEscape(cb: () => void) {
     window.addEventListener('keydown', h);
     return () => window.removeEventListener('keydown', h);
   }, []);
+}
+
+// ── Themed confirm dialog (replaces native confirm()) ─────────
+// Suite-standard modal built on the existing .sv-modal classes. Prefer the
+// useConfirm() hook below over rendering this directly.
+export type ConfirmOpts = {
+  title?: string;
+  message: React.ReactNode;
+  confirmLabel?: string;
+  cancelLabel?: string;
+  danger?: boolean; // destructive action → crimson/danger confirm button
+};
+export function ConfirmModal({
+  title = 'Are you sure?',
+  message,
+  confirmLabel = 'Confirm',
+  cancelLabel = 'Cancel',
+  danger = false,
+  onConfirm,
+  onCancel,
+}: ConfirmOpts & { onConfirm: () => void; onCancel: () => void }) {
+  useEscape(onCancel);
+  return (
+    <div
+      className="sv-modal-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
+      onMouseDown={(e) => { if (e.target === e.currentTarget) onCancel(); }}
+    >
+      <div className="sv-modal" style={{ maxWidth: 420 }} onMouseDown={(e) => e.stopPropagation()}>
+        <h2>{title}</h2>
+        <div style={{ fontSize: 'var(--text-md)', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+          {message}
+        </div>
+        <div className="sv-modal-actions">
+          <button type="button" className="sv-btn ghost" onClick={onCancel}>{cancelLabel}</button>
+          <button
+            type="button"
+            className={danger ? 'sv-btn danger' : 'sv-btn'}
+            autoFocus
+            onClick={onConfirm}
+          >
+            {confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Hook: promise-based themed confirmation. Usage:
+//   const { confirm, ConfirmUI } = useConfirm();
+//   ...render {ConfirmUI} once in the component...
+//   if (await confirm({ title, message, danger: true })) doDestructiveThing();
+export function useConfirm() {
+  const [state, setState] = useState<{ opts: ConfirmOpts; resolve: (v: boolean) => void } | null>(null);
+  const confirm = useCallback(
+    (opts: ConfirmOpts) => new Promise<boolean>((resolve) => setState({ opts, resolve })),
+    [],
+  );
+  const settle = useCallback((v: boolean) => {
+    setState((s) => { s?.resolve(v); return null; });
+  }, []);
+  const ConfirmUI = state ? (
+    <ConfirmModal {...state.opts} onConfirm={() => settle(true)} onCancel={() => settle(false)} />
+  ) : null;
+  return { confirm, ConfirmUI };
 }

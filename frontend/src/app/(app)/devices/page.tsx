@@ -4,7 +4,7 @@ import { useState, useEffect, createContext, useContext } from 'react';
 import Link from 'next/link';
 import { useApi, apiSend } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
-import { ErrorBox, fmtRel, PageHeader, TableSkeleton, EmptyState, useRefreshKey } from '@/components/ui';
+import { ErrorBox, fmtRel, PageHeader, TableSkeleton, EmptyState, useRefreshKey, useConfirm } from '@/components/ui';
 import { StatusDot } from '@/components/StatusDot';
 import { Sparkline } from '@/components/Sparkline';
 import SiteScopeBanner from '@/components/SiteScopeBanner';
@@ -169,6 +169,7 @@ function statusTooltip(d: Device): string {
 
 export default function DevicesPage() {
   const { canEdit } = useRbac();
+  const { confirm, ConfirmUI } = useConfirm();
   const [q, setQ] = useState('');
   const [status, setStatus] = useState('');
   const [siteId, setSiteId] = useState('');
@@ -197,7 +198,12 @@ export default function DevicesPage() {
   function openEdit(d: Device) { setEditing(d); setShowForm(true); }
 
   async function handleDelete(d: Device) {
-    if (!confirm(`Stop monitoring "${d.name}"? Historical data will be removed.`)) return;
+    if (!await confirm({
+      title: 'Stop monitoring device?',
+      message: `Stop monitoring "${d.name}"? Historical data will be removed.`,
+      confirmLabel: 'Delete',
+      danger: true,
+    })) return;
     await apiSend(`/api/devices/${d.id}`, 'DELETE');
     devices.reload();
   }
@@ -220,6 +226,7 @@ export default function DevicesPage() {
   return (
     <SparkContext.Provider value={sparklines.data || {}}>
     <div>
+      {ConfirmUI}
       <PageHeader title="Devices" subtitle="Devices currently monitored by SpanVault, grouped by site.">
         {canEdit && (
           <>

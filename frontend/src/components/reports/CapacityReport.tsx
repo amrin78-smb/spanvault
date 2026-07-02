@@ -1,5 +1,7 @@
 'use client';
 
+import { PANEL, TH, TD } from '@/components/reports/reportStyles';
+
 type CapacityRow = {
   device_name: string;
   site_name: string;
@@ -36,23 +38,6 @@ function isAtRisk(row: CapacityRow): boolean {
   return false;
 }
 
-// ── Shared REPORT OUTPUT style constants (module scope) ─────────
-const PANEL: React.CSSProperties = { padding: 16 };
-const TH: React.CSSProperties = {
-  fontSize: 'var(--text-xs)',
-  textTransform: 'uppercase',
-  fontWeight: 600,
-  letterSpacing: '0.06em',
-  color: 'var(--text-muted)',
-  padding: '8px 12px',
-  textAlign: 'left',
-};
-const TD: React.CSSProperties = {
-  fontSize: 'var(--text-sm)',
-  color: 'var(--text-primary)',
-  padding: '8px 12px',
-  height: 36,
-};
 const NUM_TH: React.CSSProperties = { ...TH, textAlign: 'right' };
 const NUM_COL: React.CSSProperties = {
   ...TD,

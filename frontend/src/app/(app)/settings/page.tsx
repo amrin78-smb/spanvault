@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useApi, apiSend } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
-import { Loading, ErrorBox, Empty, fmtTime, PageHeader, TableSkeleton, Pager, useClientPagination } from '@/components/ui';
+import { Loading, ErrorBox, Empty, fmtTime, PageHeader, TableSkeleton, Pager, useClientPagination, useConfirm } from '@/components/ui';
 import { useLicense } from '@/components/LicenseGuard';
 
 const TABS = [
@@ -717,19 +717,22 @@ function RuleForm({ onAdd }: { onAdd: (r: NewRule) => Promise<void> }) {
 
 // Editable rules table (toggle / delete) — top-level component.
 function RulesTable({ rules, onChange }: { rules: Rule[] | null; onChange: () => void }) {
+  const { confirm, ConfirmUI } = useConfirm();
   async function toggle(r: Rule) {
     await apiSend(`/api/alert-rules/${r.id}`, 'PUT', { enabled: !r.enabled });
     onChange();
   }
   async function remove(r: Rule) {
-    if (!confirm('Delete this rule?')) return;
+    if (!(await confirm({ title: 'Delete rule', message: 'Delete this rule?', confirmLabel: 'Delete', danger: true }))) return;
     await apiSend(`/api/alert-rules/${r.id}`, 'DELETE');
     onChange();
   }
   if (!rules) return <Loading />;
   if (!rules.length) return <Empty message="No rules defined at this level." />;
   return (
-    <table className="sv-table">
+    <>
+      {ConfirmUI}
+      <table className="sv-table">
       <thead>
         <tr><th>Metric</th><th>Condition</th><th>Severity</th><th>Recovery</th><th>Description</th><th>Enabled</th><th></th></tr>
       </thead>
@@ -745,8 +748,9 @@ function RulesTable({ rules, onChange }: { rules: Rule[] | null; onChange: () =>
             <td><button className="sv-btn danger sm" onClick={() => remove(r)}>Delete</button></td>
           </tr>
         ))}
-      </tbody>
-    </table>
+        </tbody>
+      </table>
+    </>
   );
 }
 
@@ -947,6 +951,7 @@ type Window = {
 };
 
 function Maintenance() {
+  const { confirm, ConfirmUI } = useConfirm();
   const windows = useApi<Window[]>('/api/maintenance');
   const [form, setForm] = useState({ starts_at: '', ends_at: '', reason: '' });
   const [err, setErr] = useState<string | null>(null);
@@ -966,13 +971,14 @@ function Maintenance() {
     }
   }
   async function remove(w: Window) {
-    if (!confirm('Delete this maintenance window?')) return;
+    if (!(await confirm({ title: 'Delete maintenance window', message: 'Delete this maintenance window?', confirmLabel: 'Delete', danger: true }))) return;
     await apiSend(`/api/maintenance/${w.id}`, 'DELETE');
     windows.reload();
   }
 
   return (
     <div>
+      {ConfirmUI}
       {err && <ErrorBox message={err} />}
       <div className="sv-panel">
         <h2>Schedule Maintenance Window</h2>

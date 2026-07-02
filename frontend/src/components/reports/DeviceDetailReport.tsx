@@ -9,6 +9,10 @@ import {
 import { StatusDot } from '@/components/StatusDot';
 import { GradeBadge } from '@/components/intel';
 import { fmtTime, fmtBps, Skeleton, CardSkeleton } from '@/components/ui';
+import {
+  SECTION_TITLE, PANEL, STAT_GRID, STAT_CARD, STAT_VALUE, STAT_LABEL, TH, TD,
+  CHART_CARD, CHART_TITLE, CHART_NOTE, TOOLTIP_STYLE,
+} from '@/components/reports/reportStyles';
 
 /**
  * Pure presentational device-detail report.
@@ -119,79 +123,18 @@ function sevClass(severity: string): string {
   return '';
 }
 
-// ── Shared REPORT OUTPUT style constants (module scope) ─────────
-const SECTION_TITLE: React.CSSProperties = {
-  fontSize: 'var(--text-sm)',
-  textTransform: 'uppercase',
-  fontWeight: 600,
-  color: 'var(--text-muted)',
-  letterSpacing: '0.06em',
-  margin: '0 0 8px',
-};
-const PANEL: React.CSSProperties = { padding: 16 };
-const STAT_GRID: React.CSSProperties = {
-  display: 'grid',
-  gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
-  gap: 12,
-  alignItems: 'stretch',
-};
-const STAT_CARD: React.CSSProperties = {
-  background: 'var(--bg-card)',
-  border: '1px solid var(--border)',
-  borderLeftWidth: 3,
-  borderLeftColor: 'var(--text-muted)',
-  borderRadius: 'var(--radius-sm)',
-  padding: '12px 16px',
-  minHeight: 75,
-  display: 'flex',
-  flexDirection: 'column',
-  justifyContent: 'center',
-};
-const STAT_VALUE: React.CSSProperties = { fontSize: 'var(--text-2xl)', fontWeight: 800, lineHeight: 1.1 };
-const ANALYSIS_BODY: React.CSSProperties = {
+// ── Report body copy (device-detail only) ──────────────────────
+const ANALYSIS_BODY: CSSProperties = {
   fontSize: 'var(--text-base)',
   lineHeight: 1.6,
   color: 'var(--text-primary)',
   maxWidth: '70ch',
   margin: 0,
 };
-const STAT_LABEL: React.CSSProperties = {
-  fontSize: 'var(--text-xs)',
-  textTransform: 'uppercase',
-  color: 'var(--text-muted)',
-  letterSpacing: '0.04em',
-  marginTop: 4,
-};
-const TH: React.CSSProperties = {
-  fontSize: 'var(--text-xs)',
-  textTransform: 'uppercase',
-  fontWeight: 600,
-  letterSpacing: '0.06em',
-  color: 'var(--text-muted)',
-  padding: '8px 12px',
-  textAlign: 'left',
-};
-const TD: React.CSSProperties = {
-  fontSize: 'var(--text-sm)',
-  color: 'var(--text-primary)',
-  padding: '8px 12px',
-  height: 36,
-};
 
 // ── Chart constants & helpers (module scope) ───────────────────
 const CHART_HEIGHT = 230;
 const MAX_IF_CHARTS = 6; // cap interface charts at the N busiest to avoid 300 charts.
-const CHART_CARD: CSSProperties = { padding: 16, breakInside: 'avoid' };
-const CHART_TITLE: CSSProperties = { ...SECTION_TITLE, margin: '0 0 4px' };
-const CHART_NOTE: CSSProperties = { fontSize: 'var(--text-sm)', color: 'var(--text-muted)', fontStyle: 'italic' };
-
-// Shared recharts tooltip styling — recharts' built-in tooltip background is a
-// hardcoded white box that doesn't flip in dark mode, so theme it with tokens.
-const TOOLTIP_STYLE = {
-  contentStyle: { background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 8, color: 'var(--text-primary)' },
-  labelStyle: { color: 'var(--text-muted)' },
-  itemStyle: { color: 'var(--text-primary)' },
-};
 
 const COLOR_LATENCY = '#C8102E'; // crimson
 const COLOR_LOSS = '#d97706';    // amber

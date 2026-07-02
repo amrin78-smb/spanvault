@@ -8,7 +8,7 @@ import { useRbac } from '@/lib/rbac';
 import { StatusBadge, ErrorBox, fmtTime, fmtRel, PageHeader, TableSkeleton, EmptyState, useRefreshKey, Pager, useClientPagination } from '@/components/ui';
 import { StatusDot } from '@/components/StatusDot';
 import SiteScopeBanner from '@/components/SiteScopeBanner';
-import { IconAlerts } from '@/components/icons';
+import { IconNote, IconCheck } from '@/components/icons';
 
 type Alert = {
   id: number; device_id: number; device_name: string; ip_address: string;
@@ -338,7 +338,7 @@ export default function AlertsPage() {
               title={a.message}
               style={{ maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 'var(--text-sm)', color: 'var(--text-primary)' }}
             >{a.message}</div>
-            {a.note && <div className="sv-alert-note" style={{ fontSize: 'var(--text-xs)' }}>📝 {a.note}</div>}
+            {a.note && <div className="sv-alert-note" style={{ fontSize: 'var(--text-xs)', display: 'flex', alignItems: 'center', gap: 4 }}><IconNote width={12} height={12} /> {a.note}</div>}
             {suppressed && (
               <div style={{ fontSize: 'var(--text-xs)', fontStyle: 'italic', color: 'var(--text-muted)', marginTop: 2 }}>
                 Suppressed{a.suppressed_by_name ? ` — ${a.suppressed_by_name} down`
@@ -502,8 +502,8 @@ export default function AlertsPage() {
         ) : (
           <div style={{ padding: '32px 24px' }}>
             <EmptyState
-              icon={<IconAlerts width={24} height={24} />}
-              title="All clear ✓"
+              icon={<IconCheck width={24} height={24} />}
+              title="All clear"
               message="No alerts in this period."
             />
           </div>

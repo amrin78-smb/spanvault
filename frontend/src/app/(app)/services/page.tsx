@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { useApi, apiSend } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
 import {
-  ErrorBox, fmtRel, PageHeader, TableSkeleton, EmptyState, useRefreshKey, useEscape,
+  ErrorBox, fmtRel, PageHeader, TableSkeleton, EmptyState, useRefreshKey, useEscape, useConfirm,
 } from '@/components/ui';
 import { StatusDot } from '@/components/StatusDot';
 import { IconServices } from '@/components/icons';
@@ -541,6 +541,7 @@ function GroupedServiceRows({ groupId, checks, canEdit, onEditGroup, onDeleteGro
 // ════════════════════════════════════════════════════════════
 export default function ServicesPage() {
   const { canEdit } = useRbac();
+  const { confirm, ConfirmUI } = useConfirm();
   const checks = useApi<ServiceCheck[]>('/api/service-checks', 15000);
   const sites = useApi<Site[]>('/api/netvault/sites');
   const agents = useApi<Agent[]>(canEdit ? '/api/agents' : null);
@@ -560,13 +561,23 @@ export default function ServicesPage() {
   function closeModal() { setModalOpen(false); setEditing(null); setEditingGroup(null); }
 
   async function handleDelete(c: ServiceCheck) {
-    if (!confirm(`Delete service check "${c.name}"?`)) return;
+    if (!await confirm({
+      title: 'Delete service check?',
+      message: `Delete service check "${c.name}"? Its history will be removed.`,
+      confirmLabel: 'Delete',
+      danger: true,
+    })) return;
     await apiSend(`/api/service-checks/${c.id}`, 'DELETE');
     checks.reload();
   }
 
   async function handleDeleteGroup(groupId: string, name: string) {
-    if (!confirm(`Delete all checks in group "${name}"?`)) return;
+    if (!await confirm({
+      title: 'Delete check group?',
+      message: `Delete all checks in group "${name}"? Their history will be removed.`,
+      confirmLabel: 'Delete',
+      danger: true,
+    })) return;
     await apiSend(`/api/service-checks/group/${groupId}`, 'DELETE');
     checks.reload();
   }
@@ -624,6 +635,7 @@ export default function ServicesPage() {
 
   return (
     <div>
+      {ConfirmUI}
       <PageHeader title="Services" subtitle="Synthetic HTTP / TCP / SSL / DNS checks run by the collector or remote agents.">
         {canEdit && <button className="sv-btn" onClick={openNew}>+ New Check</button>}
       </PageHeader>
