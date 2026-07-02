@@ -8,6 +8,20 @@ import { normalizeMap, type FullMap, type MapSummary } from '@/lib/mapTypes';
 const INTERVALS = [10, 15, 30, 60];
 const DEFAULT_INTERVAL = 15;
 
+// Aggregate device rollup from /api/dashboard/summary (same source as TopBar /
+// AlertBanner). Only the fields the band renders are typed here.
+type DashSummary = {
+  total: number; up: number; down: number; warning: number; unknown: number; active_alerts: number;
+};
+
+// HH:MM:SS wall clock from an epoch-ms tick (helper at module scope — no nested
+// component/function definitions per CLAUDE.md).
+function fmtClock(ms: number): string {
+  const d = new Date(ms);
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
 // ── Control bar (top-level component — no nested definitions per CLAUDE.md) ──
 function WallControls(props: {
   name: string;
@@ -203,6 +217,14 @@ export default function MapWallPage() {
 
   const currentName = map.data?.name || (currentId != null ? maps[index]?.name : '') || '';
 
+  // ── Aggregate health band (room-readable rollup + live clock) ──────
+  const summaryApi = useApi<DashSummary>('/api/dashboard/summary', 20000);
+  const summary = summaryApi.data;
+  const downCount = summary?.down ?? 0;
+  const warnCount = summary?.warning ?? 0;
+  const upCount = summary?.up ?? 0;
+  const clock = fmtClock(now); // reuse the existing 1s `now` tick — no extra timer
+
   return (
     <div className="sv-public-map" style={{ background: '#0b1220' }}>
       <header className="sv-public-head">
@@ -224,6 +246,44 @@ export default function MapWallPage() {
           {liveLabel}
         </div>
       </header>
+
+      {/* Aggregate health band — large, high-contrast, readable across a NOC. */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 32,
+          padding: '14px 24px',
+          flex: 'none',
+          background: downCount > 0 ? 'rgba(239,68,68,0.14)' : '#0b1220',
+          borderBottom: downCount > 0 ? '2px solid var(--red)' : '1px solid #1e293b',
+        }}
+      >
+        <div style={bandStat}>
+          <span style={{ ...bandNum, color: 'var(--red)' }}>{downCount}</span>
+          <span style={bandLabel}>Down</span>
+        </div>
+        <div style={bandStat}>
+          <span style={{ ...bandNum, color: 'var(--yellow)' }}>{warnCount}</span>
+          <span style={bandLabel}>Warning</span>
+        </div>
+        <div style={bandStat}>
+          <span style={{ ...bandNum, color: 'var(--green)' }}>{upCount}</span>
+          <span style={bandLabel}>Up</span>
+        </div>
+        <span style={{ flex: 1 }} />
+        <div
+          style={{
+            fontSize: 44,
+            fontWeight: 800,
+            color: '#e2e8f0',
+            fontVariantNumeric: 'tabular-nums',
+            letterSpacing: 1,
+          }}
+        >
+          {clock}
+        </div>
+      </div>
 
       <div className="sv-public-canvas">
         {list.loading && !list.data ? (
@@ -263,6 +323,29 @@ export default function MapWallPage() {
     </div>
   );
 }
+
+// Health-band cell + typography (module scope — shared, no per-render objects
+// beyond the status-tinted number colour). Display sizes are intentional.
+const bandStat: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  alignItems: 'center',
+  lineHeight: 1,
+};
+const bandNum: React.CSSProperties = {
+  fontSize: 56,
+  fontWeight: 800,
+  lineHeight: 1,
+  fontVariantNumeric: 'tabular-nums',
+};
+const bandLabel: React.CSSProperties = {
+  fontSize: 'var(--text-sm)',
+  fontWeight: 600,
+  textTransform: 'uppercase',
+  letterSpacing: 1,
+  color: '#94a3b8',
+  marginTop: 4,
+};
 
 const centerMsg: React.CSSProperties = {
   display: 'flex',

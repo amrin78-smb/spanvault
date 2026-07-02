@@ -588,12 +588,13 @@ function DrillHint({ label }: { label?: string }) {
   );
 }
 
-// Compact table styling helpers (32-36px rows, 12.5px font).
-const TH_STYLE: React.CSSProperties = {
-  fontSize: 'var(--text-xs)', textTransform: 'uppercase', letterSpacing: 0.3,
-  color: 'var(--text-muted)', fontWeight: 600, padding: '8px 12px', textAlign: 'left',
+// Suite-standard opaque sticky header for `.sv-table` headers (CLAUDE.md rule):
+// the `.sv-table th` class already provides font/padding/color; this only adds the
+// sticky positioning + an OPAQUE background so scrolled rows never bleed through.
+const STICKY_TH: React.CSSProperties = {
+  position: 'sticky', top: 0, zIndex: 5,
+  background: 'var(--bg-card)', boxShadow: '0 1px 0 var(--border)',
 };
-const TD_STYLE: React.CSSProperties = { padding: '8px 12px', fontSize: 'var(--text-sm)' };
 
 // CPU/Mem style 4px progress bar, green<60 yellow<80 red.
 function ProgressBar({ pct, width }: { pct: number | null | undefined; width?: number }) {
@@ -889,14 +890,14 @@ function RogueApsTab() {
           <table className="sv-table">
             <thead>
               <tr>
-                <th style={TH_STYLE}>BSSID</th>
-                <th style={TH_STYLE}>SSID</th>
-                <th style={TH_STYLE}>Classification</th>
-                <th style={TH_STYLE}>RSSI</th>
-                <th style={TH_STYLE}>Channel</th>
-                <th style={TH_STYLE}>Detecting AP</th>
-                <th style={TH_STYLE}>Controller</th>
-                <th style={TH_STYLE}>Last Seen</th>
+                <th style={STICKY_TH}>BSSID</th>
+                <th style={STICKY_TH}>SSID</th>
+                <th style={STICKY_TH}>Classification</th>
+                <th style={STICKY_TH}>RSSI</th>
+                <th style={STICKY_TH}>Channel</th>
+                <th style={STICKY_TH}>Detecting AP</th>
+                <th style={STICKY_TH}>Controller</th>
+                <th style={STICKY_TH}>Last Seen</th>
               </tr>
             </thead>
             <tbody>
@@ -988,10 +989,10 @@ function apUtil(ap: AccessPoint): number {
 function ControllerStatusCard({ controllers, onSelect }: { controllers: Controller[]; onSelect?: (controllerId: number) => void }) {
   if (!controllers.length) return <Empty message="No controllers." />;
   return (
-    <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+    <table className="sv-table">
       <thead><tr>
-        <th style={TH_STYLE}>Controller</th><th style={TH_STYLE}>APs</th>
-        <th style={TH_STYLE}>Clients</th><th style={TH_STYLE}>CPU</th>
+        <th style={STICKY_TH}>Controller</th><th style={STICKY_TH}>APs</th>
+        <th style={STICKY_TH}>Clients</th><th style={STICKY_TH}>CPU</th>
       </tr></thead>
       <tbody>
         {controllers.map((c) => {
@@ -1001,15 +1002,15 @@ function ControllerStatusCard({ controllers, onSelect }: { controllers: Controll
               style={onSelect ? { cursor: 'pointer' } : undefined}
               onClick={onSelect ? () => onSelect(c.id) : undefined}
               title={onSelect ? 'View access points for this controller' : undefined}>
-              <td style={{ ...TD_STYLE, fontWeight: 600 }}>
+              <td style={{ fontWeight: 600 }}>
                 <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                   <StatusDot status={c.status === 'ok' ? 'up' : (c.status ? 'down' : 'unknown')} />
                   {c.name}
                 </span>
               </td>
-              <td style={TD_STYLE}>{fmtInt(c.ap_count)}</td>
-              <td style={TD_STYLE}>{fmtInt(c.client_count)}</td>
-              <td style={{ ...TD_STYLE, color: cpu != null ? pctColor(cpu) : 'var(--text-muted)', fontWeight: 600 }}>
+              <td>{fmtInt(c.ap_count)}</td>
+              <td>{fmtInt(c.client_count)}</td>
+              <td style={{ color: cpu != null ? pctColor(cpu) : 'var(--text-muted)', fontWeight: 600 }}>
                 {cpu != null ? fmtPct(cpu) : '—'}
               </td>
             </tr>
@@ -1109,20 +1110,20 @@ function OverviewTab({
       <EqualRow>
         <SectionCard title="Site Breakdown" maxHeight={200} minWidth={240}>
           {s.by_site.length ? (
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <table className="sv-table">
               <thead><tr>
-                <th style={TH_STYLE}>Site</th><th style={TH_STYLE}>APs</th>
-                <th style={TH_STYLE}>Online</th><th style={TH_STYLE}>Clients</th><th style={TH_STYLE}>Avg Util</th>
+                <th style={STICKY_TH}>Site</th><th style={STICKY_TH}>APs</th>
+                <th style={STICKY_TH}>Online</th><th style={STICKY_TH}>Clients</th><th style={STICKY_TH}>Avg Util</th>
               </tr></thead>
               <tbody>
                 {s.by_site.map((row: SummarySite) => (
                   <tr key={`${row.site_id ?? 'none'}-${row.site_name}`} style={{ cursor: 'pointer' }}
                     onClick={() => onSelectSite(row.site_id)} title="View access points for this site">
-                    <td style={{ ...TD_STYLE, fontWeight: 600 }}>{row.site_name}</td>
-                    <td style={TD_STYLE}>{row.aps}</td>
-                    <td style={TD_STYLE}>{row.online}</td>
-                    <td style={TD_STYLE}>{row.clients}</td>
-                    <td style={{ ...TD_STYLE, color: pctColor(row.avg_util ?? 0), fontWeight: 600 }}>{fmtPct(row.avg_util ?? 0)}</td>
+                    <td style={{ fontWeight: 600 }}>{row.site_name}</td>
+                    <td>{row.aps}</td>
+                    <td>{row.online}</td>
+                    <td>{row.clients}</td>
+                    <td style={{ color: pctColor(row.avg_util ?? 0), fontWeight: 600 }}>{fmtPct(row.avg_util ?? 0)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -1132,17 +1133,17 @@ function OverviewTab({
 
         <SectionCard title="Top APs by Clients" action={<DrillHint />} maxHeight={200} minWidth={240}>
           {topApsByClients.length ? (
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <table className="sv-table">
               <thead><tr>
-                <th style={TH_STYLE}>AP Name</th><th style={TH_STYLE}>Clients</th><th style={TH_STYLE}>Util%</th>
+                <th style={STICKY_TH}>AP Name</th><th style={STICKY_TH}>Clients</th><th style={STICKY_TH}>Util%</th>
               </tr></thead>
               <tbody>
                 {topApsByClients.map((ap) => (
                   <tr key={ap.id} style={{ cursor: 'pointer' }}
                     onClick={() => setSelectedApId(ap.id)} title="View access point details">
-                    <td style={{ ...TD_STYLE, fontWeight: 600 }}>{ap.name}</td>
-                    <td style={TD_STYLE}>{ap.clients_total}</td>
-                    <td style={{ ...TD_STYLE, color: pctColor(apUtil(ap)), fontWeight: 600 }}>{fmtPct(apUtil(ap))}</td>
+                    <td style={{ fontWeight: 600 }}>{ap.name}</td>
+                    <td>{ap.clients_total}</td>
+                    <td style={{ color: pctColor(apUtil(ap)), fontWeight: 600 }}>{fmtPct(apUtil(ap))}</td>
                   </tr>
                 ))}
               </tbody>
@@ -1152,18 +1153,18 @@ function OverviewTab({
 
         <SectionCard title="Top SSIDs by Clients" action={<DrillHint />} maxHeight={200} minWidth={240}>
           {ssidSummary.data && ssidSummary.data.top_ssids.length ? (
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <table className="sv-table">
               <thead><tr>
-                <th style={TH_STYLE}>SSID</th><th style={TH_STYLE}>Controller</th><th style={TH_STYLE}>Clients</th>
+                <th style={STICKY_TH}>SSID</th><th style={STICKY_TH}>Controller</th><th style={STICKY_TH}>Clients</th>
               </tr></thead>
               <tbody>
                 {ssidSummary.data.top_ssids.slice(0, 5).map((row: Ssid) => (
                   <tr key={row.id} style={{ cursor: 'pointer' }}
                     onClick={() => onSsidsForController(row.controller_id)}
                     title="View SSIDs for this controller">
-                    <td style={{ ...TD_STYLE, fontWeight: 600 }}>{row.ssid_name}</td>
-                    <td style={{ ...TD_STYLE, color: 'var(--text-muted)' }}>{row.controller_name || '—'}</td>
-                    <td style={TD_STYLE}>{row.clients_total}</td>
+                    <td style={{ fontWeight: 600 }}>{row.ssid_name}</td>
+                    <td style={{ color: 'var(--text-muted)' }}>{row.controller_name || '—'}</td>
+                    <td>{row.clients_total}</td>
                   </tr>
                 ))}
               </tbody>
@@ -1189,23 +1190,23 @@ function OverviewTab({
           minWidth={280}
         >
           {offlineAps.length ? (
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <table className="sv-table">
               <thead><tr>
-                <th style={TH_STYLE}>AP</th><th style={TH_STYLE}>Controller</th>
-                <th style={TH_STYLE}>Site</th><th style={TH_STYLE}>Last Seen</th>
+                <th style={STICKY_TH}>AP</th><th style={STICKY_TH}>Controller</th>
+                <th style={STICKY_TH}>Site</th><th style={STICKY_TH}>Last Seen</th>
               </tr></thead>
               <tbody>
                 {offlineAps.map((ap) => (
                   <tr key={ap.id} style={{ cursor: 'pointer' }}
                     onClick={() => setSelectedApId(ap.id)} title="View access point details">
-                    <td style={{ ...TD_STYLE, fontWeight: 600 }}>
+                    <td style={{ fontWeight: 600 }}>
                       <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                         <StatusDot status="down" />{ap.name}
                       </span>
                     </td>
-                    <td style={{ ...TD_STYLE, color: 'var(--text-muted)' }}>{ap.controller_name || '—'}</td>
-                    <td style={TD_STYLE}>{ap.site_name || '—'}</td>
-                    <td style={{ ...TD_STYLE, color: 'var(--text-muted)' }}>{fmtRel(ap.last_seen_at)}</td>
+                    <td style={{ color: 'var(--text-muted)' }}>{ap.controller_name || '—'}</td>
+                    <td>{ap.site_name || '—'}</td>
+                    <td style={{ color: 'var(--text-muted)' }}>{fmtRel(ap.last_seen_at)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -1219,17 +1220,17 @@ function OverviewTab({
           action={highUtilAps.length > 0 ? <DrillHint /> : undefined}
           maxHeight={160} minWidth={280}>
           {highUtilAps.length ? (
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <table className="sv-table">
               <thead><tr>
-                <th style={TH_STYLE}>AP</th><th style={TH_STYLE}>Util%</th><th style={TH_STYLE}>Clients</th>
+                <th style={STICKY_TH}>AP</th><th style={STICKY_TH}>Util%</th><th style={STICKY_TH}>Clients</th>
               </tr></thead>
               <tbody>
                 {highUtilAps.map((ap) => (
                   <tr key={ap.id} style={{ cursor: 'pointer' }}
                     onClick={() => setSelectedApId(ap.id)} title="View access point details">
-                    <td style={{ ...TD_STYLE, fontWeight: 600 }}>{ap.name}</td>
-                    <td style={{ ...TD_STYLE, color: pctColor(apUtil(ap)), fontWeight: 600 }}>{fmtPct(apUtil(ap))}</td>
-                    <td style={TD_STYLE}>{ap.clients_total}</td>
+                    <td style={{ fontWeight: 600 }}>{ap.name}</td>
+                    <td style={{ color: pctColor(apUtil(ap)), fontWeight: 600 }}>{fmtPct(apUtil(ap))}</td>
+                    <td>{ap.clients_total}</td>
                   </tr>
                 ))}
               </tbody>
@@ -2277,11 +2278,11 @@ function RecommendationsTable({
   const shown = showAll ? recs : recs.slice(0, 5);
   return (
     <div>
-      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+      <table className="sv-table">
         <thead><tr>
-          <th style={TH_STYLE}>Priority</th><th style={TH_STYLE}>Category</th>
-          <th style={TH_STYLE}>Issue</th><th style={TH_STYLE}>Action</th>
-          <th style={TH_STYLE}>Affected</th><th style={{ ...TH_STYLE, textAlign: 'right' }}></th>
+          <th style={STICKY_TH}>Priority</th><th style={STICKY_TH}>Category</th>
+          <th style={STICKY_TH}>Issue</th><th style={STICKY_TH}>Action</th>
+          <th style={STICKY_TH}>Affected</th><th style={{ ...STICKY_TH, textAlign: 'right' }}></th>
         </tr></thead>
         <tbody>
           {shown.map((rec, i) => {
@@ -2290,21 +2291,21 @@ function RecommendationsTable({
             const affected = rec.affected_count ?? aps.length;
             return (
               <tr key={`${recKey(rec)}-${i}`}>
-                <td style={TD_STYLE}>
+                <td>
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: meta.color, fontWeight: 700 }}>
                     <StatusDot status={meta.status} size={9} />{meta.label}
                   </span>
                 </td>
-                <td style={{ ...TD_STYLE, color: 'var(--text-muted)' }}>{rec.category}</td>
-                <td style={{ ...TD_STYLE, fontWeight: 600 }}>
+                <td style={{ color: 'var(--text-muted)' }}>{rec.category}</td>
+                <td style={{ fontWeight: 600 }}>
                   {rec.issue}
                   {rec.controller_name && (
                     <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}> · {rec.controller_name}</span>
                   )}
                 </td>
-                <td style={{ ...TD_STYLE, color: 'var(--text-secondary)' }}>{rec.action}</td>
-                <td style={TD_STYLE}>{affected > 0 ? affected : '—'}</td>
-                <td style={{ ...TD_STYLE, textAlign: 'right' }}>
+                <td style={{ color: 'var(--text-secondary)' }}>{rec.action}</td>
+                <td>{affected > 0 ? affected : '—'}</td>
+                <td style={{ textAlign: 'right' }}>
                   <button className="sv-btn ghost sm" onClick={() => onDismiss(rec)}>Dismiss</button>
                 </td>
               </tr>
@@ -2457,20 +2458,20 @@ function IntelligenceTab({ onViewApClients }: { onViewApClients?: (apId: number)
       <EqualRow>
         <SectionCard title="Per-Controller Scores" minWidth={260}>
           {rows.length ? (
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <table className="sv-table">
               <thead><tr>
-                <th style={TH_STYLE}>Controller</th><th style={TH_STYLE}>Score</th>
-                <th style={TH_STYLE}>Bar</th><th style={TH_STYLE}>Grade</th>
+                <th style={STICKY_TH}>Controller</th><th style={STICKY_TH}>Score</th>
+                <th style={STICKY_TH}>Bar</th><th style={STICKY_TH}>Grade</th>
               </tr></thead>
               <tbody>
                 {rows.map((r) => {
                   const sc = Math.round(Number(r.overall_score));
                   return (
                     <tr key={r.controller_id}>
-                      <td style={{ ...TD_STYLE, fontWeight: 600 }}>{r.controller_name}</td>
-                      <td style={{ ...TD_STYLE, color: scoreColor(sc), fontWeight: 700 }}>{sc}</td>
-                      <td style={TD_STYLE}><ProgressBar pct={sc} width={70} /></td>
-                      <td style={TD_STYLE}><GradeBadge grade={r.overall_grade} /></td>
+                      <td style={{ fontWeight: 600 }}>{r.controller_name}</td>
+                      <td style={{ color: scoreColor(sc), fontWeight: 700 }}>{sc}</td>
+                      <td><ProgressBar pct={sc} width={70} /></td>
+                      <td><GradeBadge grade={r.overall_grade} /></td>
                     </tr>
                   );
                 })}
@@ -2524,10 +2525,10 @@ function IntelligenceTab({ onViewApClients }: { onViewApClients?: (apId: number)
       <EqualRow>
         <SectionCard title="AP Health Leaderboard (Worst 8)" flex="1 1 55%" minWidth={320}>
           {summary.worst_aps && summary.worst_aps.length ? (
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <table className="sv-table">
               <thead><tr>
-                <th style={TH_STYLE}>AP</th><th style={TH_STYLE}>Score</th>
-                <th style={TH_STYLE}>Grade</th><th style={TH_STYLE}>Load</th><th style={TH_STYLE}>Issues</th>
+                <th style={STICKY_TH}>AP</th><th style={STICKY_TH}>Score</th>
+                <th style={STICKY_TH}>Grade</th><th style={STICKY_TH}>Load</th><th style={STICKY_TH}>Issues</th>
               </tr></thead>
               <tbody>
                 {summary.worst_aps.slice(0, 8).map((ap: WorstAp) => {
@@ -2535,11 +2536,11 @@ function IntelligenceTab({ onViewApClients }: { onViewApClients?: (apId: number)
                   const issues = ap.issues || [];
                   return (
                     <tr key={ap.ap_id} style={{ cursor: 'pointer' }} onClick={() => setDrawerApId(ap.ap_id)}>
-                      <td style={{ ...TD_STYLE, fontWeight: 600 }}>{ap.ap_name}</td>
-                      <td style={{ ...TD_STYLE, color: scoreColor(sc), fontWeight: 700 }}>{Math.round(sc)}</td>
-                      <td style={TD_STYLE}><GradeBadge grade={ap.health_grade} /></td>
-                      <td style={TD_STYLE}>{ap.load_status}</td>
-                      <td style={{ ...TD_STYLE, color: 'var(--text-muted)' }}>
+                      <td style={{ fontWeight: 600 }}>{ap.ap_name}</td>
+                      <td style={{ color: scoreColor(sc), fontWeight: 700 }}>{Math.round(sc)}</td>
+                      <td><GradeBadge grade={ap.health_grade} /></td>
+                      <td>{ap.load_status}</td>
+                      <td style={{ color: 'var(--text-muted)' }}>
                         {issues.slice(0, 2).join(', ')}{issues.length > 2 ? ` +${issues.length - 2}` : ''}
                         {onViewApClients && (
                           <button
@@ -3129,11 +3130,11 @@ function ControllerInventoryTable({ controllers, capsById }: {
 }) {
   return (
     <div style={{ overflowX: 'auto' }}>
-      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+      <table className="sv-table">
         <thead><tr>
-          <th style={TH_STYLE}>Name</th><th style={TH_STYLE}>Site</th><th style={TH_STYLE}>Model</th>
-          <th style={TH_STYLE}>APs</th><th style={TH_STYLE}>Cap%</th><th style={TH_STYLE}>Clients</th>
-          <th style={TH_STYLE}>CPU</th><th style={TH_STYLE}>Mem</th><th style={TH_STYLE}>HA</th><th style={TH_STYLE}>Uptime</th>
+          <th style={STICKY_TH}>Name</th><th style={STICKY_TH}>Site</th><th style={STICKY_TH}>Model</th>
+          <th style={STICKY_TH}>APs</th><th style={STICKY_TH}>Cap%</th><th style={STICKY_TH}>Clients</th>
+          <th style={STICKY_TH}>CPU</th><th style={STICKY_TH}>Mem</th><th style={STICKY_TH}>HA</th><th style={STICKY_TH}>Uptime</th>
         </tr></thead>
         <tbody>
           {controllers.map((c) => {
@@ -3143,7 +3144,7 @@ function ControllerInventoryTable({ controllers, capsById }: {
             const probed = capsById.get(c.id) === true;
             return (
               <tr key={c.id}>
-                <td style={{ ...TD_STYLE, fontWeight: 600 }}>
+                <td style={{ fontWeight: 600 }}>
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                     <StatusDot status={c.status === 'ok' ? 'up' : c.status === 'error' ? 'down' : 'unknown'} />
                     {c.name}
@@ -3153,15 +3154,15 @@ function ControllerInventoryTable({ controllers, capsById }: {
                     >{probed ? <IconCheck width={12} height={12} /> : <IconWarning width={12} height={12} />}</span>
                   </span>
                 </td>
-                <td style={TD_STYLE}>{c.site_name || '—'}</td>
-                <td style={TD_STYLE}>
+                <td>{c.site_name || '—'}</td>
+                <td>
                   {c.model || c.vendor}
                   {c.firmware_version && (
                     <span style={{ color: 'var(--text-muted)' }}> · {c.firmware_version}</span>
                   )}
                 </td>
-                <td style={TD_STYLE}>{fmtInt(c.ap_count)}</td>
-                <td style={TD_STYLE}>
+                <td>{fmtInt(c.ap_count)}</td>
+                <td>
                   {hasLic ? (
                     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                       <span>{fmtInt(c.ap_count)}/{fmtInt(c.licensed_aps)}{cap != null && ` ${Math.round(Number(cap))}%`}</span>
@@ -3171,14 +3172,14 @@ function ControllerInventoryTable({ controllers, capsById }: {
                     <span style={{ color: 'var(--text-muted)' }}>{fmtInt(c.ap_count)} APs</span>
                   )}
                 </td>
-                <td style={TD_STYLE}>{fmtInt(c.client_count)}</td>
-                <td style={TD_STYLE}>{c.cpu_pct != null ? `${Math.round(Number(c.cpu_pct))}%` : '—'}</td>
-                <td style={TD_STYLE}>{c.mem_pct != null ? `${Math.round(Number(c.mem_pct))}%` : '—'}</td>
-                <td style={{ ...TD_STYLE, color: ha.color, fontWeight: 600 }}>
+                <td>{fmtInt(c.client_count)}</td>
+                <td>{c.cpu_pct != null ? `${Math.round(Number(c.cpu_pct))}%` : '—'}</td>
+                <td>{c.mem_pct != null ? `${Math.round(Number(c.mem_pct))}%` : '—'}</td>
+                <td style={{ color: ha.color, fontWeight: 600 }}>
                   {ha.dot && <span style={{ marginRight: 4 }}>●</span>}
                   {ha.text === 'N/A' || ha.text === 'Standalone' ? (ha.text === 'N/A' ? 'N/A' : '—') : ha.text}
                 </td>
-                <td style={TD_STYLE}>{fmtUptimeShort(c.uptime_seconds)}</td>
+                <td>{fmtUptimeShort(c.uptime_seconds)}</td>
               </tr>
             );
           })}
@@ -3244,41 +3245,41 @@ function ApCapacityChart({ controllers }: { controllers: OverviewController[] })
 function ControllerHealthTable({ controllers }: { controllers: OverviewController[] }) {
   return (
     <div style={{ overflowX: 'auto' }}>
-      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+      <table className="sv-table">
         <thead><tr>
-          <th style={TH_STYLE}>Name</th><th style={TH_STYLE}>Uptime</th><th style={TH_STYLE}>CPU</th>
-          <th style={TH_STYLE}>Mem</th><th style={TH_STYLE}>Disc (24h)</th><th style={TH_STYLE}>Polled</th>
+          <th style={STICKY_TH}>Name</th><th style={STICKY_TH}>Uptime</th><th style={STICKY_TH}>CPU</th>
+          <th style={STICKY_TH}>Mem</th><th style={STICKY_TH}>Disc (24h)</th><th style={STICKY_TH}>Polled</th>
         </tr></thead>
         <tbody>
           {controllers.map((c) => {
             const disc = Number(c.ap_disconnects_24h || 0);
             return (
               <tr key={c.id}>
-                <td style={{ ...TD_STYLE, fontWeight: 600 }}>
+                <td style={{ fontWeight: 600 }}>
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                     <StatusDot status={c.status === 'ok' ? 'up' : c.status === 'error' ? 'down' : 'unknown'} />
                     {c.name}
                   </span>
                 </td>
-                <td style={TD_STYLE}>{fmtUptimeShort(c.uptime_seconds)}</td>
-                <td style={TD_STYLE}>
+                <td>{fmtUptimeShort(c.uptime_seconds)}</td>
+                <td>
                   {c.cpu_pct != null ? (
                     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                       <ProgressBar pct={c.cpu_pct} /> {Math.round(Number(c.cpu_pct))}%
                     </span>
                   ) : '—'}
                 </td>
-                <td style={TD_STYLE}>
+                <td>
                   {c.mem_pct != null ? (
                     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                       <ProgressBar pct={c.mem_pct} /> {Math.round(Number(c.mem_pct))}%
                     </span>
                   ) : '—'}
                 </td>
-                <td style={{ ...TD_STYLE, color: disc > 10 ? 'var(--red)' : undefined, fontWeight: disc > 10 ? 700 : 400 }}>
+                <td style={{ color: disc > 10 ? 'var(--red)' : undefined, fontWeight: disc > 10 ? 700 : 400 }}>
                   {c.ap_disconnects_24h != null ? disc : '—'}
                 </td>
-                <td style={{ ...TD_STYLE, color: 'var(--text-muted)' }}>{fmtRel(c.last_polled_at)}</td>
+                <td style={{ color: 'var(--text-muted)' }}>{fmtRel(c.last_polled_at)}</td>
               </tr>
             );
           })}
@@ -3297,10 +3298,10 @@ function HaStatusTable({ controllers }: { controllers: OverviewController[] }) {
   }
   return (
     <div style={{ overflowX: 'auto' }}>
-      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+      <table className="sv-table">
         <thead><tr>
-          <th style={TH_STYLE}>Controller</th><th style={TH_STYLE}>Peer</th>
-          <th style={TH_STYLE}>Role</th><th style={TH_STYLE}>Sync</th>
+          <th style={STICKY_TH}>Controller</th><th style={STICKY_TH}>Peer</th>
+          <th style={STICKY_TH}>Role</th><th style={STICKY_TH}>Sync</th>
         </tr></thead>
         <tbody>
           {haCtls.map((c) => {
@@ -3311,12 +3312,12 @@ function HaStatusTable({ controllers }: { controllers: OverviewController[] }) {
               : haCellLabel(c.ha_mode, c.ha_sync_status);
             return (
               <tr key={c.id}>
-                <td style={{ ...TD_STYLE, fontWeight: 600 }}>{c.name}</td>
-                <td style={TD_STYLE}>{manual ? (c.ha_peer_name || '—') : (c.ha_peer_ip || '—')}</td>
-                <td style={{ ...TD_STYLE, color: role.color, fontWeight: 600 }}>
+                <td style={{ fontWeight: 600 }}>{c.name}</td>
+                <td>{manual ? (c.ha_peer_name || '—') : (c.ha_peer_ip || '—')}</td>
+                <td style={{ color: role.color, fontWeight: 600 }}>
                   {role.dot && <span style={{ marginRight: 4 }}>●</span>}{role.text}
                 </td>
-                <td style={{ ...TD_STYLE, color: manual ? 'var(--text-muted)' : (synced ? 'var(--green)' : 'var(--orange)') }}>
+                <td style={{ color: manual ? 'var(--text-muted)' : (synced ? 'var(--green)' : 'var(--orange)') }}>
                   {manual ? 'Manual' : (
                     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                       {synced ? <IconCheck width={12} height={12} /> : <IconWarning width={12} height={12} />}
@@ -3543,10 +3544,10 @@ function CapabilitiesAccordion({
       {open && (
         <div style={{ padding: '0 20px 16px', overflowX: 'auto' }}>
           {controllers.length ? (
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <table className="sv-table">
               <thead><tr>
-                <th style={TH_STYLE}>Controller</th><th style={TH_STYLE}>Vendor</th>
-                <th style={TH_STYLE}>Probe Status</th><th style={{ ...TH_STYLE, textAlign: 'right' }}></th>
+                <th style={STICKY_TH}>Controller</th><th style={STICKY_TH}>Vendor</th>
+                <th style={STICKY_TH}>Probe Status</th><th style={{ ...STICKY_TH, textAlign: 'right' }}></th>
               </tr></thead>
               <tbody>
                 {controllers.map((c) => {
@@ -3555,9 +3556,9 @@ function CapabilitiesAccordion({
                   const busy = probingId === c.id;
                   return (
                     <tr key={c.id}>
-                      <td style={{ ...TD_STYLE, fontWeight: 600 }}>{c.name}</td>
-                      <td style={TD_STYLE}>{c.vendor}</td>
-                      <td style={TD_STYLE}>
+                      <td style={{ fontWeight: 600 }}>{c.name}</td>
+                      <td>{c.vendor}</td>
+                      <td>
                         {probed ? (
                           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: 'var(--text-muted)' }}>
                             <IconCheck width={12} height={12} /> Probed{c.capabilities_probed_at ? ` ${fmtRel(c.capabilities_probed_at)}` : ''}
@@ -3566,7 +3567,7 @@ function CapabilitiesAccordion({
                           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: 'var(--orange)', fontWeight: 600 }}><IconWarning width={12} height={12} /> Not probed</span>
                         )}
                       </td>
-                      <td style={{ ...TD_STYLE, textAlign: 'right' }}>
+                      <td style={{ textAlign: 'right' }}>
                         <span style={{ display: 'inline-flex', gap: 6, justifyContent: 'flex-end' }}>
                           {isSnmp && canProbe && (
                             <button className="sv-btn ghost sm" disabled={busy} onClick={() => onProbe(c)}>

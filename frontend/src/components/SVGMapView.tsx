@@ -11,6 +11,11 @@ import { MapGlyph, deviceGlyphFor, isGlyphKind } from '@/lib/mapIcons';
 
 const DEFAULT_LINE = '#94a3b8';
 
+// Sample points for the weathermap link-utilization legend. Swatch colours are
+// derived from utilColor() (never a parallel hardcoded scale) so the on-map key
+// always matches the live link colouring.
+const UTIL_LEGEND_STOPS = [0, 50, 80, 100];
+
 // Live-status poll cadence. Exported so consumers (e.g. the NOC wallboard) can
 // derive staleness thresholds from the same number the poll actually uses.
 export const LIVE_REFRESH_MS = 30000;
@@ -170,6 +175,11 @@ export default function SVGMapView({
     ['warning', '#eab308', 'Warning'], ['unknown', '#94a3b8', 'Unknown'],
   ] as const).filter(([k]) => counts[k] > 0);
 
+  // Show the utilization colour scale only when at least one link is bound to an
+  // interface (a weathermap link) — otherwise util colouring never applies.
+  const hasUtilLinks = connections.some((c) => connLive(c).bound);
+  const utilLegend = UTIL_LEGEND_STOPS.map((pct) => ({ pct, color: utilColor(pct) }));
+
   return (
     <div className="sv-mapview-wrap" ref={wrapRef} onMouseDown={onWrapMouseDown}
       style={{ position: 'relative', width: '100%', height: '100%', overflow: 'hidden', cursor: panning.current ? 'grabbing' : 'grab' }}>
@@ -232,8 +242,8 @@ export default function SVGMapView({
         <span className="lvl">{Math.round(zoom * 100)}%</span>
       </div>
 
-      {/* Status legend */}
-      {legendItems.length > 0 && (
+      {/* Status legend (node colours) + weathermap link-utilization scale */}
+      {(legendItems.length > 0 || hasUtilLinks) && (
         <div className="sv-map-legend" onMouseDown={(e) => e.stopPropagation()}>
           {legendItems.map(([k, color, label]) => (
             <span key={k} className="item">
@@ -241,6 +251,20 @@ export default function SVGMapView({
               {label} <b>{counts[k]}</b>
             </span>
           ))}
+          {legendItems.length > 0 && hasUtilLinks && (
+            <span style={{ width: 1, alignSelf: 'stretch', background: 'var(--border)' }} />
+          )}
+          {hasUtilLinks && (
+            <span className="item" style={{ gap: 6 }}>
+              <span style={{ fontWeight: 600 }}>Link util</span>
+              {utilLegend.map(({ pct, color }) => (
+                <span key={pct} className="item" style={{ gap: 3 }}>
+                  <span style={{ width: 10, height: 10, borderRadius: 2, background: color, display: 'inline-block' }} />
+                  {pct}%
+                </span>
+              ))}
+            </span>
+          )}
         </div>
       )}
     </div>

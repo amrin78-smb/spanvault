@@ -601,6 +601,45 @@ a { color: inherit; text-decoration: none; }
 .sv-sidebar.collapsed .sv-collapse-btn { justify-content: center; padding: 10px 0; }
 .sv-sidebar.collapsed .sv-collapse-btn svg { transform: rotate(180deg); }
 
+/* Hamburger — hidden on desktop; shown on narrow viewports to open the
+   off-canvas sidebar. Scoped to .sv-topbar so it wins over .sv-icon-btn. */
+.sv-topbar .sv-hamburger { display: none; }
+.sv-sidebar-backdrop { display: none; }
+
+/* ── Responsive: off-canvas sidebar below tablet width ───────────── */
+@media (max-width: 768px) {
+  .sv-topbar .sv-hamburger { display: inline-flex; }
+  /* Sidebar slides in over the content instead of taking a fixed column. */
+  .sv-sidebar {
+    position: fixed;
+    top: var(--header-height);
+    left: 0;
+    height: calc(100vh - var(--header-height));
+    z-index: 60;
+    transform: translateX(-100%);
+    transition: transform 0.2s ease;
+    box-shadow: var(--shadow-lg);
+    /* Ignore the desktop collapse state on mobile — always full width when open. */
+    width: var(--sidebar-width); min-width: var(--sidebar-width);
+  }
+  .sv-sidebar.mobile-open { transform: translateX(0); }
+  /* Keep labels visible even if the desktop "collapsed" class is set. */
+  .sv-sidebar.collapsed .sv-nav-label,
+  .sv-sidebar.collapsed .sv-nav a > span:not(.sv-nav-chip),
+  .sv-sidebar.collapsed .sv-collapse-btn span,
+  .sv-sidebar.collapsed .sv-version { display: revert; }
+  .sv-sidebar.collapsed .sv-nav a { justify-content: flex-start; padding: 11px 20px; }
+  /* Hide the desktop collapse toggle on mobile (drawer closes via backdrop/nav). */
+  .sv-collapse-btn { display: none; }
+  .sv-sidebar-backdrop.mobile-open {
+    display: block;
+    position: fixed;
+    top: var(--header-height); left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.45);
+    z-index: 55;
+  }
+}
+
 /* ── Header — 72px navy, full page width (spans over the sidebar) ─── */
 .sv-topbar {
   height: var(--header-height);

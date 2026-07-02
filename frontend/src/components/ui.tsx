@@ -402,6 +402,39 @@ export function useEscape(cb: () => void) {
   }, []);
 }
 
+// ── Hook: focus trap for modals/drawers (a11y) ────────────────
+// Returns a ref to put on the dialog container. While `active`, Tab/Shift+Tab
+// cycle within the container, initial focus moves inside (unless something —
+// e.g. an autoFocus button — already holds focus there), and focus is restored
+// to the previously-focused element on close. Pair with role="dialog" + useEscape.
+export function useFocusTrap<T extends HTMLElement>(active: boolean) {
+  const ref = useRef<T>(null);
+  useEffect(() => {
+    if (!active) return;
+    const el = ref.current;
+    if (!el) return;
+    const prev = document.activeElement as HTMLElement | null;
+    const SEL = 'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
+    const focusables = () => Array.from(el.querySelectorAll<HTMLElement>(SEL)).filter((x) => x.offsetParent !== null);
+    if (!el.contains(document.activeElement)) focusables()[0]?.focus();
+    function onKey(e: KeyboardEvent) {
+      if (e.key !== 'Tab') return;
+      const f = focusables();
+      if (!f.length) return;
+      const first = f[0];
+      const last = f[f.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    }
+    el.addEventListener('keydown', onKey);
+    return () => {
+      el.removeEventListener('keydown', onKey);
+      if (prev && typeof prev.focus === 'function') prev.focus();
+    };
+  }, [active]);
+  return ref;
+}
+
 // ── Themed confirm dialog (replaces native confirm()) ─────────
 // Suite-standard modal built on the existing .sv-modal classes. Prefer the
 // useConfirm() hook below over rendering this directly.
@@ -422,6 +455,7 @@ export function ConfirmModal({
   onCancel,
 }: ConfirmOpts & { onConfirm: () => void; onCancel: () => void }) {
   useEscape(onCancel);
+  const trap = useFocusTrap<HTMLDivElement>(true);
   return (
     <div
       className="sv-modal-backdrop"
@@ -430,7 +464,7 @@ export function ConfirmModal({
       aria-label={title}
       onMouseDown={(e) => { if (e.target === e.currentTarget) onCancel(); }}
     >
-      <div className="sv-modal" style={{ maxWidth: 420 }} onMouseDown={(e) => e.stopPropagation()}>
+      <div ref={trap} className="sv-modal" style={{ maxWidth: 420 }} onMouseDown={(e) => e.stopPropagation()}>
         <h2>{title}</h2>
         <div style={{ fontSize: 'var(--text-md)', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
           {message}
@@ -493,6 +527,7 @@ export function PromptModal({
 }: PromptOpts & { onSubmit: (v: string) => void; onCancel: () => void }) {
   const [value, setValue] = useState(defaultValue);
   useEscape(onCancel);
+  const trap = useFocusTrap<HTMLDivElement>(true);
   return (
     <div
       className="sv-modal-backdrop"
@@ -501,7 +536,7 @@ export function PromptModal({
       aria-label={title}
       onMouseDown={(e) => { if (e.target === e.currentTarget) onCancel(); }}
     >
-      <div className="sv-modal" style={{ maxWidth: 440 }} onMouseDown={(e) => e.stopPropagation()}>
+      <div ref={trap} className="sv-modal" style={{ maxWidth: 440 }} onMouseDown={(e) => e.stopPropagation()}>
         <h2>{title}</h2>
         {message && (
           <div style={{ fontSize: 'var(--text-md)', color: 'var(--text-secondary)', lineHeight: 1.5, marginBottom: 12 }}>

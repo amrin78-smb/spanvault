@@ -262,6 +262,7 @@ function MapTab({
         >
           {hasGraph && (
             <>
+              {/* Link protocol colors */}
               <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                 <span style={{ display: 'inline-block', width: 22, height: 3, background: '#2563eb', borderRadius: 2 }} />
                 LLDP
@@ -269,6 +270,23 @@ function MapTab({
               <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                 <span style={{ display: 'inline-block', width: 22, height: 3, background: '#f97316', borderRadius: 2 }} />
                 CDP
+              </span>
+              <span style={{ color: 'var(--border)' }}>·</span>
+              {/* Node status colors */}
+              {([
+                ['#22c55e', 'Up'],
+                ['#ef4444', 'Down'],
+                ['#eab308', 'Warning'],
+                ['#94a3b8', 'Unknown'],
+              ] as const).map(([color, label]) => (
+                <span key={label} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                  <span style={{ display: 'inline-block', width: 10, height: 10, background: color, borderRadius: 3 }} />
+                  {label}
+                </span>
+              ))}
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ color: '#f59e0b' }}>★</span>
+                Gateway
               </span>
             </>
           )}

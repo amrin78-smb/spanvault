@@ -1,6 +1,8 @@
 'use client';
 
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { edgePoint } from '@/lib/mapTypes';
 
 export interface TopoNode {
   device_id: number;
@@ -75,6 +77,34 @@ function statusColor(status: string): string {
 function truncate(s: string, max: number): string {
   if (s.length <= max) return s;
   return s.slice(0, max) + '…';
+}
+
+// ---- Zoom / pan helpers -----------------------------------------------------
+const ZOOM_MIN = 0.3;
+const ZOOM_MAX = 3;
+
+function clampZoom(z: number): number {
+  if (!isFinite(z)) return 1;
+  return Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, z));
+}
+
+// Convert a client-space point (mouse coords) into the SVG's user coordinate
+// system — the space the pan/zoom <g> transform operates in. Accounts for the
+// viewBox scaling so wheel-zoom can lock onto the point under the cursor.
+function clientToUser(
+  svg: SVGSVGElement,
+  clientX: number,
+  clientY: number,
+): { x: number; y: number } | null {
+  const ctm = svg.getScreenCTM();
+  if (!ctm) return null;
+  const inv = ctm.inverse();
+  const pt = svg.createSVGPoint();
+  pt.x = clientX;
+  pt.y = clientY;
+  const p = pt.matrixTransform(inv);
+  if (!isFinite(p.x) || !isFinite(p.y)) return null;
+  return { x: p.x, y: p.y };
 }
 
 // ---- Internal layout types --------------------------------------------------
@@ -249,6 +279,90 @@ export default function TopologyMapView({
   const router = useRouter();
   const isInteractive = !!interactive;
 
+  // ── Zoom / pan (SVG-space transform on a wrapping <g>) ──────────────────
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const panning = useRef<{ sx: number; sy: number; ox: number; oy: number; moved: boolean } | null>(null);
+  const justPanned = useRef(false);
+  const [grabbing, setGrabbing] = useState(false);
+
+  // Wheel zoom toward the cursor (non-passive so we can preventDefault scroll).
+  useEffect(() => {
+    const el = svgRef.current;
+    if (!el) return;
+    function onWheel(e: WheelEvent) {
+      e.preventDefault();
+      const u = clientToUser(el!, e.clientX, e.clientY);
+      setZoom((z: number) => {
+        const nz = clampZoom(z * (e.deltaY < 0 ? 1.1 : 1 / 1.1));
+        const k = nz / z;
+        if (u) setPan((p) => ({ x: u.x - (u.x - p.x) * k, y: u.y - (u.y - p.y) * k }));
+        return nz;
+      });
+    }
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, []);
+
+  // Drag to pan (window listeners so the drag survives leaving the element).
+  useEffect(() => {
+    function move(e: MouseEvent) {
+      const p = panning.current;
+      if (!p) return;
+      const el = svgRef.current;
+      const ctm = el ? el.getScreenCTM() : null;
+      const s = ctm && ctm.a ? ctm.a : 1; // screen→user scale (uniform w/ meet)
+      const rawDx = e.clientX - p.sx;
+      const rawDy = e.clientY - p.sy;
+      if (Math.abs(rawDx) + Math.abs(rawDy) > 3) p.moved = true;
+      setPan({ x: p.ox + rawDx / s, y: p.oy + rawDy / s });
+    }
+    function up() {
+      const p = panning.current;
+      if (p && p.moved) {
+        justPanned.current = true;
+        setTimeout(() => { justPanned.current = false; }, 0);
+      }
+      panning.current = null;
+      setGrabbing(false);
+    }
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', up);
+    return () => {
+      window.removeEventListener('mousemove', move);
+      window.removeEventListener('mouseup', up);
+    };
+  }, []);
+
+  const onSvgMouseDown = (e: React.MouseEvent): void => {
+    if (e.button !== 0) return;
+    panning.current = { sx: e.clientX, sy: e.clientY, ox: pan.x, oy: pan.y, moved: false };
+    setGrabbing(true);
+  };
+
+  const zoomByCenter = (factor: number): void => {
+    const el = svgRef.current;
+    const u = el
+      ? clientToUser(
+          el,
+          el.getBoundingClientRect().left + el.getBoundingClientRect().width / 2,
+          el.getBoundingClientRect().top + el.getBoundingClientRect().height / 2,
+        )
+      : null;
+    setZoom((z: number) => {
+      const nz = clampZoom(z * factor);
+      const k = nz / z;
+      if (u) setPan((p) => ({ x: u.x - (u.x - p.x) * k, y: u.y - (u.y - p.y) * k }));
+      return nz;
+    });
+  };
+
+  const resetView = (): void => {
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
+  };
+
   // 1. Filtering: only nodes that appear in at least one edge.
   const connectedIds = new Set<number>();
   edges.forEach((e: TopoEdge) => {
@@ -355,54 +469,77 @@ export default function TopologyMapView({
   const totalHeight = rowStartY - CLUSTER_GAP + OUTER_MARGIN;
 
   const handleNodeClick = (deviceId: number): void => {
+    if (justPanned.current) return; // ignore the click that ends a pan-drag
     if (isInteractive && deviceId) {
       router.push('/devices/' + deviceId);
     }
   };
 
   return (
-    <svg
-      viewBox={`0 0 ${totalWidth} ${totalHeight}`}
-      width="100%"
-      height="100%"
-      preserveAspectRatio="xMidYMid meet"
-    >
-      {/* 1. Site boundary boxes + 2. labels */}
-      {clusters.map((c: ClusterLayout) => (
-        <SiteBox key={'box-' + c.siteName} cluster={c} />
-      ))}
+    <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+      <svg
+        ref={svgRef}
+        viewBox={`0 0 ${totalWidth} ${totalHeight}`}
+        width="100%"
+        height="100%"
+        preserveAspectRatio="xMidYMid meet"
+        onMouseDown={onSvgMouseDown}
+        style={{ display: 'block', cursor: grabbing ? 'grabbing' : 'grab', touchAction: 'none' }}
+      >
+        <g transform={`translate(${pan.x},${pan.y}) scale(${zoom})`}>
+          {/* 1. Site boundary boxes + 2. labels */}
+          {clusters.map((c: ClusterLayout) => (
+            <SiteBox key={'box-' + c.siteName} cluster={c} />
+          ))}
 
-      {/* 3. Connections (on top of boxes) */}
-      {edges.map((e: TopoEdge, i: number) => {
-        const a = posMap.get(e.from_device_id);
-        const b = posMap.get(e.to_device_id);
-        if (!a || !b) return null;
-        const stroke = e.protocol === 'cdp' ? '#f97316' : '#2563eb';
-        const label = [e.from_port, e.to_port].filter(Boolean).join(' → ');
-        return (
-          <Connection
-            key={'edge-' + i}
-            x1={a.cx}
-            y1={a.cy}
-            x2={b.cx}
-            y2={b.cy}
-            stroke={stroke}
-            label={label}
-          />
-        );
-      })}
+          {/* 3. Connections (on top of boxes) — anchored to node edges */}
+          {edges.map((e: TopoEdge, i: number) => {
+            const a = posMap.get(e.from_device_id);
+            const b = posMap.get(e.to_device_id);
+            if (!a || !b) return null;
+            const stroke = e.protocol === 'cdp' ? '#f97316' : '#2563eb';
+            const label = [e.from_port, e.to_port].filter(Boolean).join(' → ');
+            // Attach each end to the perimeter of its node rect (intersection of
+            // the centre-to-centre line with the box) so links no longer run
+            // through/under the node boxes.
+            const boxA = { x: a.x, y: a.y, w: NODE_W, h: NODE_H };
+            const boxB = { x: b.x, y: b.y, w: NODE_W, h: NODE_H };
+            const pa = edgePoint(boxA, b.cx, b.cy);
+            const pb = edgePoint(boxB, a.cx, a.cy);
+            return (
+              <Connection
+                key={'edge-' + i}
+                x1={pa.cx}
+                y1={pa.cy}
+                x2={pb.cx}
+                y2={pb.cy}
+                stroke={stroke}
+                label={label}
+              />
+            );
+          })}
 
-      {/* 4. Device nodes (on top) */}
-      {clusters.map((c: ClusterLayout) =>
-        c.devices.map((d: DeviceLayout) => (
-          <DeviceNode
-            key={'node-' + d.node.device_id}
-            layout={d}
-            interactive={isInteractive}
-            onClick={handleNodeClick}
-          />
-        ))
-      )}
-    </svg>
+          {/* 4. Device nodes (on top) */}
+          {clusters.map((c: ClusterLayout) =>
+            c.devices.map((d: DeviceLayout) => (
+              <DeviceNode
+                key={'node-' + d.node.device_id}
+                layout={d}
+                interactive={isInteractive}
+                onClick={handleNodeClick}
+              />
+            ))
+          )}
+        </g>
+      </svg>
+
+      {/* Zoom controls (screen-fixed overlay) */}
+      <div className="sv-map-zoomctl" onMouseDown={(e) => e.stopPropagation()}>
+        <button type="button" title="Zoom in" onClick={() => zoomByCenter(1.2)}>+</button>
+        <button type="button" title="Zoom out" onClick={() => zoomByCenter(1 / 1.2)}>−</button>
+        <button type="button" title="Reset to 100%" onClick={resetView}>⤢</button>
+        <span className="lvl">{Math.round(zoom * 100)}%</span>
+      </div>
+    </div>
   );
 }

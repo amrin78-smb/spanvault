@@ -32,6 +32,13 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.58.0': [
+    'The navigation sidebar now collapses into a slide-in drawer (with a hamburger menu button) on small/tablet screens, so the app is usable on narrow viewports',
+    'Network Topology map now supports zoom and pan with a zoom control, and links now connect to the edges of device boxes (instead of running through them) plus a node-status legend',
+    'Network wallboard now shows a large at-a-glance Down/Warning/Up health band and a live clock for across-the-room monitoring; the map legend now also explains the link-utilization colour scale',
+    'Wireless page: all tables now share one consistent style with opaque sticky headers (previously several tables looked different)',
+    'Accessibility: confirmation and input dialogs now trap keyboard focus and restore it on close',
+  ],
   '1.57.0': [
     'Settings reorganised: the old "Email Alerts" tab is split into a "Notifications" tab and an "Escalation & On-Call" tab; numeric fields now validate inline (min/max) and Save is enabled only when there are unsaved, valid changes, with a "Saved" confirmation toast',
     'Agent rename now uses a themed dialog and restart failures show a toast (no more browser pop-ups); the disabled-agent banner uses a proper icon',

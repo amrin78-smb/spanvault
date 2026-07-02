@@ -31,12 +31,29 @@ export default function Sidebar() {
   const { canManageAgents, canManageSettings } = useRbac();
   // Manual collapse toggle, persisted to localStorage so it survives refresh.
   const [collapsed, setCollapsed] = useState(false);
+  // Off-canvas drawer state for narrow (mobile/tablet) viewports.
+  const [mobileOpen, setMobileOpen] = useState(false);
   // App version fetched from the API health endpoint on mount.
   const [version, setVersion] = useState<string | null>(null);
 
   useEffect(() => {
     try { setCollapsed(localStorage.getItem(COLLAPSE_KEY) === 'true'); } catch { /* ignore */ }
   }, []);
+
+  // Open/close the mobile drawer from the TopBar hamburger; close on Escape.
+  useEffect(() => {
+    const toggle = () => setMobileOpen((o) => !o);
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setMobileOpen(false); };
+    window.addEventListener('spanvault:toggle-sidebar', toggle);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('spanvault:toggle-sidebar', toggle);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, []);
+
+  // Close the drawer whenever the route changes (a nav item was tapped).
+  useEffect(() => { setMobileOpen(false); }, [pathname]);
 
   useEffect(() => {
     let cancelled = false;
@@ -59,7 +76,13 @@ export default function Sidebar() {
   }
 
   return (
-    <aside className={`sv-sidebar ${collapsed ? 'collapsed' : ''}`}>
+    <>
+    <div
+      className={`sv-sidebar-backdrop ${mobileOpen ? 'mobile-open' : ''}`}
+      onClick={() => setMobileOpen(false)}
+      aria-hidden="true"
+    />
+    <aside className={`sv-sidebar ${collapsed ? 'collapsed' : ''} ${mobileOpen ? 'mobile-open' : ''}`}>
       <div className="sv-nav-label">Navigation</div>
       <nav className="sv-nav">
         {NAV.map(({ href, label, Icon, exact, requires, color, bg }) => {
@@ -92,5 +115,6 @@ export default function Sidebar() {
 
       <div className="sv-version">SpanVault{version ? ` v${version}` : ''}</div>
     </aside>
+    </>
   );
 }
