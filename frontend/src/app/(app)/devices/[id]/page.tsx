@@ -28,6 +28,7 @@ type Alert = {
   id: number; alert_type: string; severity: string; message: string;
   triggered_at: string; resolved_at: string | null; status: string;
 };
+type AlertsResponse = { rows: Alert[]; total: number };
 type Sensor = {
   id: number; sensor_key: string; sensor_name: string; category: string;
   metric_name: string; oid: string | null; enabled: boolean;
@@ -99,7 +100,14 @@ const TAB_BTN_ACTIVE: CSSProperties = {
 const GRAPH_HEIGHT = 160;
 
 // Alert History is paginated client-side to keep the table readable.
+// The API returns the newest ALERT_LIMIT_DEFAULT by default; "Load older"
+// grows the fetch limit by ALERT_LOAD_STEP up to ALERT_LIMIT_MAX. Growing the
+// limit (rather than appending offset pages) keeps the view live-polled with
+// no offset drift, at the cost of re-fetching the enlarged set each poll.
 const ALERTS_PER_PAGE = 50;
+const ALERT_LIMIT_DEFAULT = 200;
+const ALERT_LOAD_STEP = 200;
+const ALERT_LIMIT_MAX = 1000;
 const ALERT_PAGER: CSSProperties = {
   display: 'flex', alignItems: 'center', justifyContent: 'space-between',
   gap: 12, marginTop: 12, flexWrap: 'wrap',
@@ -124,11 +132,12 @@ export default function DeviceDetailPage() {
   const [sensorsOpen, setSensorsOpen] = useState(false);
   const [toast, setToast] = useState<TestResult | null>(null);
   const [alertPage, setAlertPage] = useState(0);
+  const [alertLimit, setAlertLimit] = useState(ALERT_LIMIT_DEFAULT);
 
   const device = useApi<Device>(`/api/devices/${id}`, 20000);
   const ping = useApi<PingPoint[]>(`/api/devices/${id}/ping-history?range=${range}`, 20000);
   const sensors = useApi<Sensor[]>(`/api/devices/${id}/sensors`, 0);
-  const alerts = useApi<Alert[]>(`/api/devices/${id}/alerts`, 20000);
+  const alerts = useApi<AlertsResponse>(`/api/devices/${id}/alerts?limit=${alertLimit}`, 20000);
 
   // Auto-dismiss the SNMP-test toast.
   useEffect(() => {
@@ -202,7 +211,7 @@ export default function DeviceDetailPage() {
           <LatencyChart
             data={ping.data || []}
             loading={ping.loading}
-            alertTimes={(alerts.data || []).map((a) => a.triggered_at)}
+            alertTimes={(alerts.data?.rows || []).map((a) => a.triggered_at)}
           />
         </GraphCard>
         <GraphCard title="Packet Loss (%)" range={range} setRange={setRange}>
@@ -250,13 +259,21 @@ export default function DeviceDetailPage() {
         <div style={SECTION_HEADING}>Alert History</div>
         {alerts.loading && !alerts.data ? (
           <Loading />
-        ) : alerts.data && alerts.data.length ? (
+        ) : alerts.data && alerts.data.rows.length ? (
           (() => {
-            const total = alerts.data.length;
-            const pageCount = Math.ceil(total / ALERTS_PER_PAGE);
+            const rows = alerts.data.rows;
+            const loaded = rows.length;
+            const grandTotal = alerts.data.total;
+            const pageCount = Math.ceil(loaded / ALERTS_PER_PAGE);
             const page = Math.min(alertPage, pageCount - 1);
             const start = page * ALERTS_PER_PAGE;
-            const pageRows = alerts.data.slice(start, start + ALERTS_PER_PAGE);
+            const pageRows = rows.slice(start, start + ALERTS_PER_PAGE);
+            // More history exists on the server than we've fetched, and we're
+            // still under the fetch cap.
+            const canLoadOlder = loaded < grandTotal && alertLimit < ALERT_LIMIT_MAX;
+            // We've fetched the cap but the device has still more history.
+            const cappedBelowTotal = alertLimit >= ALERT_LIMIT_MAX && grandTotal > loaded;
+            const loadingOlder = alerts.loading && !!alerts.data;
             return (
               <>
                 <table className="sv-table">
@@ -276,32 +293,50 @@ export default function DeviceDetailPage() {
                     ))}
                   </tbody>
                 </table>
-                {pageCount > 1 && (
-                  <div style={ALERT_PAGER}>
-                    <span className="sv-muted" style={{ fontSize: 'var(--text-sm)' }}>
-                      {start + 1}–{Math.min(start + ALERTS_PER_PAGE, total)} of {total}
-                    </span>
-                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <div style={ALERT_PAGER}>
+                  <span className="sv-muted" style={{ fontSize: 'var(--text-sm)' }}>
+                    {start + 1}–{Math.min(start + ALERTS_PER_PAGE, loaded)} of {loaded.toLocaleString()}
+                    {grandTotal > loaded && <> loaded · {grandTotal.toLocaleString()} total</>}
+                  </span>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    {(canLoadOlder || loadingOlder) && (
                       <button
                         type="button"
-                        style={page <= 0 ? PAGER_BTN_DISABLED : PAGER_BTN}
-                        disabled={page <= 0}
-                        onClick={() => setAlertPage((p) => Math.max(0, p - 1))}
+                        style={loadingOlder ? PAGER_BTN_DISABLED : PAGER_BTN}
+                        disabled={loadingOlder}
+                        onClick={() => setAlertLimit((l) => Math.min(ALERT_LIMIT_MAX, l + ALERT_LOAD_STEP))}
                       >
-                        ← Prev
+                        {loadingOlder ? 'Loading…' : 'Load older'}
                       </button>
-                      <span className="sv-muted" style={{ fontSize: 'var(--text-sm)' }}>
-                        Page {page + 1} of {pageCount}
-                      </span>
-                      <button
-                        type="button"
-                        style={page >= pageCount - 1 ? PAGER_BTN_DISABLED : PAGER_BTN}
-                        disabled={page >= pageCount - 1}
-                        onClick={() => setAlertPage((p) => Math.min(pageCount - 1, p + 1))}
-                      >
-                        Next →
-                      </button>
-                    </div>
+                    )}
+                    {pageCount > 1 && (
+                      <>
+                        <button
+                          type="button"
+                          style={page <= 0 ? PAGER_BTN_DISABLED : PAGER_BTN}
+                          disabled={page <= 0}
+                          onClick={() => setAlertPage((p) => Math.max(0, p - 1))}
+                        >
+                          ← Prev
+                        </button>
+                        <span className="sv-muted" style={{ fontSize: 'var(--text-sm)' }}>
+                          Page {page + 1} of {pageCount}
+                        </span>
+                        <button
+                          type="button"
+                          style={page >= pageCount - 1 ? PAGER_BTN_DISABLED : PAGER_BTN}
+                          disabled={page >= pageCount - 1}
+                          onClick={() => setAlertPage((p) => Math.min(pageCount - 1, p + 1))}
+                        >
+                          Next →
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </div>
+                {cappedBelowTotal && (
+                  <div className="sv-muted" style={{ fontSize: 'var(--text-sm)', marginTop: 8 }}>
+                    Showing the newest {loaded.toLocaleString()} of {grandTotal.toLocaleString()} alerts. Use Reports for the full history.
                   </div>
                 )}
               </>

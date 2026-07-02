@@ -34,6 +34,7 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 const releaseNotes = {
   '1.52.0': [
     'Device detail: the Alert History table is now paginated at 50 rows per page with Prev/Next controls and an "X–Y of N" range indicator, so devices with long alert histories no longer render one very long table',
+    'Device detail: Alert History loads the newest 200 alerts by default and shows a "Load older" button (plus a total count) to page back through history on demand, up to the newest 1,000',
   ],
   '1.51.2': [
     'Reports: interface utilization-% charts now also recognise bare metric names (if_in_util_pct / if_out_util_pct), matching the throughput fix, so utilization renders for devices that store metrics without the per-interface prefix',
@@ -1882,12 +1883,17 @@ app.get('/api/devices/:id/snmp-history', wrap(async (req, res) => {
 
 app.get('/api/devices/:id/alerts', wrap(async (req, res) => {
   const id = parseInt(req.params.id, 10);
+  // Default to the newest 200; the device page can grow this up to 1000 via
+  // ?limit= to reach older history on demand. Returns { rows, total } so the
+  // UI knows how much history exists beyond what was fetched.
+  const limit = safeInt(req.query.limit, 200, 1000);
+  const cr = await sv.query('SELECT COUNT(*)::int AS n FROM alerts WHERE device_id = $1', [id]);
   const r = await sv.query(`
     SELECT id, alert_type, severity, message, metric_value,
            triggered_at, acknowledged_at, acknowledged_by, resolved_at, status
-    FROM alerts WHERE device_id = $1 ORDER BY triggered_at DESC LIMIT 200
-  `, [id]);
-  res.json(r.rows);
+    FROM alerts WHERE device_id = $1 ORDER BY triggered_at DESC LIMIT $2
+  `, [id, limit]);
+  res.json({ rows: r.rows, total: cr.rows[0].n });
 }));
 
 // Per-day availability for the 90-day calendar (only days with data are
