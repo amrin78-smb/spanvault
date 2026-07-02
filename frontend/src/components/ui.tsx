@@ -265,8 +265,11 @@ export function useClientPagination<T>(rows: T[], perPage: number, resetKey?: un
     start,
     total: rows.length,
     pageRows: rows.slice(start, start + perPage),
-    prev: () => setPage((p) => Math.max(0, p - 1)),
-    next: () => setPage((p) => Math.min(pageCount - 1, p + 1)),
+    // Clamp the (possibly stale) page state to the current page count before
+    // stepping, so Prev/Next stay responsive right after a live poll shrinks
+    // the row set while the user is on a now-out-of-range page.
+    prev: () => setPage((p) => Math.max(0, Math.min(p, pageCount - 1) - 1)),
+    next: () => setPage((p) => Math.min(pageCount - 1, Math.min(p, pageCount - 1) + 1)),
   };
 }
 

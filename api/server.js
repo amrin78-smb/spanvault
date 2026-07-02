@@ -32,6 +32,9 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.53.1': [
+    'Fixed a pagination edge case where the Prev button could appear unresponsive: if a live refresh shrank a table while you were on a later page, the page index is now reconciled so Prev/Next step correctly on the first click',
+  ],
   '1.53.0': [
     'Pagination rolled out to the largest tables via a shared pager: the global Alerts page (paged by incident group, 50/page), the Settings → Audit Log, and Wireless Clients (paged per controller, 50/page) — each keeps the newest rows fast and no longer renders one very long list',
     'Alerts and Audit Log gained a "Load older" control to page back through history on demand (up to the newest 1,000); Wireless Clients now fetches up to the server cap and shows a count when more exist, pointing to search/filters',
