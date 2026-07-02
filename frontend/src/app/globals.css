@@ -121,7 +121,6 @@ textarea:focus-visible,
 [role="button"]:focus-visible {
   outline: 2px solid var(--primary);
   outline-offset: 2px;
-  border-radius: var(--radius-sm);
 }
 /* Inputs read better with a soft ring than a hard outline. */
 input:focus-visible,
@@ -1169,7 +1168,6 @@ body.sv-noc .sv-status-dot { transform: scale(1.5); }
      CSS in Chrome's print engine, so this carries brand + confidentiality +
      generated date, and the browser's print dialog supplies the page number. */
   .sv-print-footer {
-    display: block;
     position: fixed;
     bottom: 4mm; left: 0; right: 0;
     font-size: 9px; color: #555;
@@ -1178,8 +1176,10 @@ body.sv-noc .sv-status-dot { transform: scale(1.5); }
     display: flex; justify-content: space-between;
   }
 }
-/* Footer is print-only. */
-.sv-print-footer { display: none; }
+/* Footer is print-only — hidden on screen. Scoped to @media screen (not an
+   unconditional rule) so it never overrides the @media print display above
+   regardless of source order. */
+@media screen { .sv-print-footer { display: none; } }
 
 /* ── SNMP test (inline, in device form) ────────────────── */
 .sv-snmp-test { display: flex; align-items: center; gap: 12px; margin-top: 14px; flex-wrap: wrap; }

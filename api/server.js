@@ -32,6 +32,11 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.58.1': [
+    'Fixed the reports print footer (brand · confidential · generated date) not appearing on printed/PDF pages',
+    'Hardened the shared confirm/prompt dialogs so a pending dialog can no longer leave a promise unresolved if it is superseded or the page navigates away',
+    'Minor: keyboard focus outline no longer nudges the corners of square buttons; removed dead code',
+  ],
   '1.58.0': [
     'The navigation sidebar now collapses into a slide-in drawer (with a hamburger menu button) on small/tablet screens, so the app is usable on narrow viewports',
     'Network Topology map now supports zoom and pan with a zoom control, and links now connect to the edges of device boxes (instead of running through them) plus a node-status legend',

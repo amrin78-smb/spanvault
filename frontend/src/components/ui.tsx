@@ -490,14 +490,27 @@ export function ConfirmModal({
 //   ...render {ConfirmUI} once in the component...
 //   if (await confirm({ title, message, danger: true })) doDestructiveThing();
 export function useConfirm() {
-  const [state, setState] = useState<{ opts: ConfirmOpts; resolve: (v: boolean) => void } | null>(null);
+  const [state, setState] = useState<{ opts: ConfirmOpts } | null>(null);
+  // Pending resolver held in a ref so it can be settled without setState —
+  // safe to call from unmount cleanup (a setState there is a no-op in React 18
+  // and may never run the updater, so it can't be relied on to resolve).
+  const pending = useRef<((v: boolean) => void) | null>(null);
   const confirm = useCallback(
-    (opts: ConfirmOpts) => new Promise<boolean>((resolve) => setState({ opts, resolve })),
+    (opts: ConfirmOpts) => new Promise<boolean>((resolve) => {
+      pending.current?.(false); // supersede any open dialog → its promise resolves (cancelled)
+      pending.current = resolve;
+      setState({ opts });
+    }),
     [],
   );
   const settle = useCallback((v: boolean) => {
-    setState((s) => { s?.resolve(v); return null; });
+    const r = pending.current;
+    pending.current = null;
+    setState(null);
+    r?.(v);
   }, []);
+  // Resolve a still-pending promise as cancelled if the host unmounts.
+  useEffect(() => () => { pending.current?.(false); pending.current = null; }, []);
   const ConfirmUI = state ? (
     <ConfirmModal {...state.opts} onConfirm={() => settle(true)} onCancel={() => settle(false)} />
   ) : null;
@@ -579,14 +592,23 @@ export function PromptModal({
 //   const name = await prompt({ title: 'Rename agent', defaultValue: a.name });
 //   if (name) rename(name);
 export function usePrompt() {
-  const [state, setState] = useState<{ opts: PromptOpts; resolve: (v: string | null) => void } | null>(null);
+  const [state, setState] = useState<{ opts: PromptOpts } | null>(null);
+  const pending = useRef<((v: string | null) => void) | null>(null);
   const prompt = useCallback(
-    (opts: PromptOpts) => new Promise<string | null>((resolve) => setState({ opts, resolve })),
+    (opts: PromptOpts) => new Promise<string | null>((resolve) => {
+      pending.current?.(null); // supersede any open prompt → its promise resolves (cancelled)
+      pending.current = resolve;
+      setState({ opts });
+    }),
     [],
   );
   const settle = useCallback((v: string | null) => {
-    setState((s) => { s?.resolve(v); return null; });
+    const r = pending.current;
+    pending.current = null;
+    setState(null);
+    r?.(v);
   }, []);
+  useEffect(() => () => { pending.current?.(null); pending.current = null; }, []);
   const PromptUI = state ? (
     <PromptModal {...state.opts} onSubmit={(v) => settle(v)} onCancel={() => settle(null)} />
   ) : null;
@@ -600,9 +622,7 @@ export function usePrompt() {
 //   toast('Saved', 'ok') / toast('Restart failed', 'err')
 export function useToast(autoDismissMs = 5000) {
   const [msg, setMsg] = useState<{ text: string; kind: 'ok' | 'err' } | null>(null);
-  const seq = useRef(0);
   const toast = useCallback((text: string, kind: 'ok' | 'err' = 'ok') => {
-    seq.current += 1;
     setMsg({ text, kind });
   }, []);
   useEffect(() => {
