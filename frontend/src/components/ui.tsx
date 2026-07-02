@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 /** Small shared presentational helpers — all defined at top level (never nested). */
 
@@ -241,6 +241,121 @@ export function Spinner({ size = 14, color = 'var(--primary)' }: { size?: number
       border: `2px solid var(--border)`, borderTopColor: color,
       borderRadius: '50%', animation: 'spin 0.8s linear infinite',
     }} />
+  );
+}
+
+// ── Client-side pagination ────────────────────────────────────
+// Slices an already-fetched array into fixed-size pages. The page index is
+// clamped whenever the row count shrinks (e.g. a live poll returns fewer rows),
+// so callers never render an out-of-range empty page.
+export function useClientPagination<T>(rows: T[], perPage: number, resetKey?: unknown) {
+  const [page, setPage] = useState(0);
+  // Jump back to the first page whenever the caller's filter identity changes
+  // (e.g. a status/search filter), so we never strand the user on a page that
+  // no longer exists for the new result set.
+  useEffect(() => { setPage(0); }, [resetKey]);
+  const pageCount = Math.max(1, Math.ceil(rows.length / perPage));
+  const clamped = Math.min(page, pageCount - 1);
+  const start = clamped * perPage;
+  return {
+    page: clamped,
+    setPage,
+    pageCount,
+    perPage,
+    start,
+    total: rows.length,
+    pageRows: rows.slice(start, start + perPage),
+    prev: () => setPage((p) => Math.max(0, p - 1)),
+    next: () => setPage((p) => Math.min(pageCount - 1, p + 1)),
+  };
+}
+
+const PAGER_ROW: React.CSSProperties = {
+  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+  gap: 12, marginTop: 12, flexWrap: 'wrap',
+};
+const PAGER_BTN: React.CSSProperties = {
+  fontSize: 'var(--text-base)', padding: '4px 12px', borderRadius: 6,
+  border: '1px solid var(--border)', background: 'var(--bg-card)',
+  color: 'var(--text-primary)', cursor: 'pointer', lineHeight: 1.4,
+};
+const PAGER_BTN_DISABLED: React.CSSProperties = {
+  ...PAGER_BTN, color: 'var(--text-muted)', cursor: 'not-allowed', opacity: 0.5,
+};
+
+// Prev/Next pager with an "X–Y of N" range indicator. Optionally exposes a
+// server-side "Load older" button (for tables that grow their fetch limit on
+// demand) and a note when the fetch cap sits below the true total. Renders
+// nothing when there is only one page and no load-older affordance.
+export function Pager({
+  page, pageCount, start, perPage, total,
+  onPrev, onNext,
+  grandTotal, onLoadOlder, loadingOlder = false, canLoadOlder = false, cappedNote,
+}: {
+  page: number;
+  pageCount: number;
+  start: number;
+  perPage: number;
+  total: number;
+  onPrev: () => void;
+  onNext: () => void;
+  grandTotal?: number;
+  onLoadOlder?: () => void;
+  loadingOlder?: boolean;
+  canLoadOlder?: boolean;
+  cappedNote?: string;
+}) {
+  const showOlder = !!onLoadOlder && (canLoadOlder || loadingOlder);
+  const showNav = pageCount > 1;
+  if (!showNav && !showOlder && !cappedNote) return null;
+  const end = Math.min(start + perPage, total);
+  return (
+    <>
+      <div style={PAGER_ROW}>
+        <span className="sv-muted" style={{ fontSize: 'var(--text-sm)' }}>
+          {total === 0 ? '0' : `${start + 1}–${end}`} of {total.toLocaleString()}
+          {grandTotal !== undefined && grandTotal > total && <> loaded · {grandTotal.toLocaleString()} total</>}
+        </span>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          {showOlder && (
+            <button
+              type="button"
+              style={loadingOlder ? PAGER_BTN_DISABLED : PAGER_BTN}
+              disabled={loadingOlder}
+              onClick={onLoadOlder}
+            >
+              {loadingOlder ? 'Loading…' : 'Load older'}
+            </button>
+          )}
+          {showNav && (
+            <>
+              <button
+                type="button"
+                style={page <= 0 ? PAGER_BTN_DISABLED : PAGER_BTN}
+                disabled={page <= 0}
+                onClick={onPrev}
+              >
+                ← Prev
+              </button>
+              <span className="sv-muted" style={{ fontSize: 'var(--text-sm)' }}>
+                Page {page + 1} of {pageCount}
+              </span>
+              <button
+                type="button"
+                style={page >= pageCount - 1 ? PAGER_BTN_DISABLED : PAGER_BTN}
+                disabled={page >= pageCount - 1}
+                onClick={onNext}
+              >
+                Next →
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+      {cappedNote && (
+        <div className="sv-muted" style={{ fontSize: 'var(--text-sm)', marginTop: 8 }}>{cappedNote}</div>
+      )}
+    </>
   );
 }
 

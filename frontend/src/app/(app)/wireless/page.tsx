@@ -7,7 +7,7 @@ import {
 } from 'recharts';
 import { useApi, apiSend, apiGet } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
-import { Loading, ErrorBox, Empty, fmtRel, fmtTime, UtilBar, pctColor, PageHeader } from '@/components/ui';
+import { Loading, ErrorBox, Empty, fmtRel, fmtTime, UtilBar, pctColor, PageHeader, Pager, useClientPagination } from '@/components/ui';
 import { StatusDot } from '@/components/StatusDot';
 
 // ════════════════════════════════════════════════════════════
@@ -2624,6 +2624,7 @@ function SignalCell({ rssi }: { rssi: number | null }) {
 
 // ── One controller's collapsible client group (collapse state shared with ──────
 // the APs/SSIDs tabs via the sv-wireless-ctrl-{id}-collapsed localStorage key) ─
+const CLIENTS_PER_PAGE = 50;
 function ClientControllerGroup({
   controller, clients, totalClients, problemClients, onSelectMac,
 }: {
@@ -2635,6 +2636,7 @@ function ClientControllerGroup({
 }) {
   const online = controllerOnline(controller);
   const [collapsed, setCollapsed] = useState<boolean>(false);
+  const pg = useClientPagination(clients, CLIENTS_PER_PAGE);
 
   useEffect(() => { setCollapsed(readCollapsed(controller.id, false)); }, [controller.id]);
 
@@ -2668,7 +2670,7 @@ function ClientControllerGroup({
               </tr>
             </thead>
             <tbody>
-              {clients.map((c: WirelessClient) => (
+              {pg.pageRows.map((c: WirelessClient) => (
                 <tr key={c.id} style={{ cursor: 'pointer' }} onClick={() => onSelectMac(c.mac_address)}>
                   <td style={{ fontWeight: 600 }}>{c.mac_address}</td>
                   <td>{c.ip_address || '—'}</td>
@@ -2685,6 +2687,17 @@ function ClientControllerGroup({
               ))}
             </tbody>
           </table>
+          <div style={{ padding: '0 12px 12px' }}>
+            <Pager
+              page={pg.page}
+              pageCount={pg.pageCount}
+              start={pg.start}
+              perPage={CLIENTS_PER_PAGE}
+              total={pg.total}
+              onPrev={pg.prev}
+              onNext={pg.next}
+            />
+          </div>
         </div>
       )}
     </div>
@@ -2715,7 +2728,10 @@ function ClientsTab({
     if (apFilter != null) params.push(`ap_id=${apFilter}`);
     if (problemOnly) params.push('problem=true');
     if (stickyOnly) params.push('sticky=true');
-    params.push('limit=200');
+    // Fetch up to the server cap (500) so we don't silently drop clients below
+    // the allowance; per-controller tables paginate client-side. Beyond the
+    // cap, the summary total + note steer users to search/filters.
+    params.push('limit=500');
     return `?${params.join('&')}`;
   }, [search, apFilter, problemOnly, stickyOnly]);
 
@@ -2857,6 +2873,13 @@ function ClientsTab({
       </div>
 
       {clientsApi.error && <ErrorBox message={clientsApi.error} />}
+
+      {allClients.length >= 500 && summary.data && Number(summary.data.total_clients) > allClients.length && (
+        <div className="sv-muted" style={{ fontSize: 'var(--text-sm)', margin: '4px 0 12px' }}>
+          Showing the first {allClients.length.toLocaleString()} of {Number(summary.data.total_clients).toLocaleString()} clients.
+          Use the search box or the controller / SSID / band filters to narrow to specific clients.
+        </div>
+      )}
 
       {clientsApi.loading && !clientsApi.data ? (
         <div className="sv-panel"><Loading /></div>

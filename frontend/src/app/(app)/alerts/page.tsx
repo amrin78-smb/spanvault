@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { useSession } from 'next-auth/react';
 import { useApi, apiSend } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
-import { StatusBadge, ErrorBox, fmtTime, PageHeader, TableSkeleton, EmptyState, useRefreshKey } from '@/components/ui';
+import { StatusBadge, ErrorBox, fmtTime, PageHeader, TableSkeleton, EmptyState, useRefreshKey, Pager, useClientPagination } from '@/components/ui';
 import { StatusDot } from '@/components/StatusDot';
 import SiteScopeBanner from '@/components/SiteScopeBanner';
 import { IconAlerts } from '@/components/icons';
@@ -87,6 +87,13 @@ function passesChips(a: Alert, active: Set<string>, search: string): boolean {
   if (active.has('suppressed') && a.status !== 'suppressed') return false;
   return true;
 }
+
+// Incident groups per page (client-side). The fetch starts at ALERT_LIMIT_DEFAULT
+// newest alerts and "Load older" grows it up to ALERT_LIMIT_MAX on demand.
+const GROUPS_PER_PAGE = 50;
+const ALERT_LIMIT_DEFAULT = 200;
+const ALERT_LOAD_STEP = 200;
+const ALERT_LIMIT_MAX = 1000;
 
 type Group = { incidentId: number | null; title: string | null; alerts: Alert[] };
 function buildGroups(list: Alert[]): Group[] {
@@ -179,10 +186,12 @@ export default function AlertsPage() {
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [ackingId, setAckingId] = useState<number | null>(null);
   const [noteText, setNoteText] = useState('');
+  const [limit, setLimit] = useState(ALERT_LIMIT_DEFAULT);
 
   const params = new URLSearchParams();
   if (status) params.set('status', status);
   if (severity) params.set('severity', severity);
+  params.set('limit', String(limit));
   const alerts = useApi<Alert[]>(`/api/alerts?${params.toString()}`, 15000);
 
   useRefreshKey(() => alerts.reload());
@@ -228,6 +237,17 @@ export default function AlertsPage() {
   const all = alerts.data || [];
   const filtered = all.filter((a) => passesChips(a, chips, search.trim()));
   const groups = buildGroups(filtered);
+  // Reset to page 1 when the filter identity changes (not when limit grows, so
+  // "Load older" preserves the current page position).
+  const groupPg = useClientPagination(
+    groups, GROUPS_PER_PAGE,
+    `${status}|${severity}|${search.trim()}|${[...chips].sort().join(',')}`,
+  );
+  // The server caps the fetch at `limit`; if it returned a full page, older
+  // alerts likely exist. No total is available (endpoint returns a bare array),
+  // so this is a heuristic, deliberately non-breaking for other callers.
+  const canLoadOlder = all.length >= limit && limit < ALERT_LIMIT_MAX;
+  const loadingOlder = alerts.loading && !!alerts.data;
 
   // Stat counts over the currently fetched set (pre-chip) for an at-a-glance summary.
   const cCritical = all.filter((a) => a.severity === 'critical' && a.status !== 'resolved').length;
@@ -415,7 +435,7 @@ export default function AlertsPage() {
         ) : groups.length ? (
           <table className="sv-table">
             <tbody>
-              {groups.map((g) => {
+              {groupPg.pageRows.map((g) => {
                 // Single-alert groups (incident or standalone) render as one row.
                 if (g.incidentId == null || g.alerts.length === 1) {
                   return alertRow(g.alerts[0], false);
@@ -471,6 +491,26 @@ export default function AlertsPage() {
           </div>
         )}
       </div>
+
+      {groups.length > 0 && (
+        <Pager
+          page={groupPg.page}
+          pageCount={groupPg.pageCount}
+          start={groupPg.start}
+          perPage={GROUPS_PER_PAGE}
+          total={groupPg.total}
+          onPrev={groupPg.prev}
+          onNext={groupPg.next}
+          canLoadOlder={canLoadOlder}
+          loadingOlder={loadingOlder}
+          onLoadOlder={() => setLimit((l) => Math.min(ALERT_LIMIT_MAX, l + ALERT_LOAD_STEP))}
+          cappedNote={
+            limit >= ALERT_LIMIT_MAX && all.length >= limit
+              ? `Showing the newest ${limit.toLocaleString()} alerts. Narrow the filters or use Reports for older history.`
+              : undefined
+          }
+        />
+      )}
     </div>
   );
 }

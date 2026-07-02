@@ -32,6 +32,10 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.53.0': [
+    'Pagination rolled out to the largest tables via a shared pager: the global Alerts page (paged by incident group, 50/page), the Settings → Audit Log, and Wireless Clients (paged per controller, 50/page) — each keeps the newest rows fast and no longer renders one very long list',
+    'Alerts and Audit Log gained a "Load older" control to page back through history on demand (up to the newest 1,000); Wireless Clients now fetches up to the server cap and shows a count when more exist, pointing to search/filters',
+  ],
   '1.52.0': [
     'Device detail: the Alert History table is now paginated at 50 rows per page with Prev/Next controls and an "X–Y of N" range indicator, so devices with long alert histories no longer render one very long table',
     'Device detail: Alert History loads the newest 200 alerts by default and shows a "Load older" button (plus a total count) to page back through history on demand, up to the newest 1,000',

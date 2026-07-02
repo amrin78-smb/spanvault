@@ -11,7 +11,7 @@ import { useApi, apiSend } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
 import { StatusDot } from '@/components/StatusDot';
 import SensorManager from '@/components/SensorManager';
-import { StatusBadge, Loading, ErrorBox, Empty, fmtTime, fmtRel, fmtBps } from '@/components/ui';
+import { StatusBadge, Loading, ErrorBox, Empty, fmtTime, fmtRel, fmtBps, Pager, useClientPagination } from '@/components/ui';
 import { GradeBadge, ScoreBar, TrendArrow, n as intelNum } from '@/components/intel';
 
 type Device = {
@@ -108,18 +108,6 @@ const ALERTS_PER_PAGE = 50;
 const ALERT_LIMIT_DEFAULT = 200;
 const ALERT_LOAD_STEP = 200;
 const ALERT_LIMIT_MAX = 1000;
-const ALERT_PAGER: CSSProperties = {
-  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-  gap: 12, marginTop: 12, flexWrap: 'wrap',
-};
-const PAGER_BTN: CSSProperties = {
-  fontSize: 'var(--text-base)', padding: '4px 12px', borderRadius: 6,
-  border: '1px solid var(--border)', background: 'var(--bg-card)',
-  color: 'var(--text-primary)', cursor: 'pointer', lineHeight: 1.4,
-};
-const PAGER_BTN_DISABLED: CSSProperties = {
-  ...PAGER_BTN, color: 'var(--text-muted)', cursor: 'not-allowed', opacity: 0.5,
-};
 
 // Combined interface-traffic line colours (In = blue, Out = orange).
 const TRAFFIC_IN_COLOR = '#3b82f6';
@@ -131,13 +119,13 @@ export default function DeviceDetailPage() {
   const [range, setRange] = useState('24h');
   const [sensorsOpen, setSensorsOpen] = useState(false);
   const [toast, setToast] = useState<TestResult | null>(null);
-  const [alertPage, setAlertPage] = useState(0);
   const [alertLimit, setAlertLimit] = useState(ALERT_LIMIT_DEFAULT);
 
   const device = useApi<Device>(`/api/devices/${id}`, 20000);
   const ping = useApi<PingPoint[]>(`/api/devices/${id}/ping-history?range=${range}`, 20000);
   const sensors = useApi<Sensor[]>(`/api/devices/${id}/sensors`, 0);
   const alerts = useApi<AlertsResponse>(`/api/devices/${id}/alerts?limit=${alertLimit}`, 20000);
+  const alertPg = useClientPagination(alerts.data?.rows ?? [], ALERTS_PER_PAGE);
 
   // Auto-dismiss the SNMP-test toast.
   useEffect(() => {
@@ -260,88 +248,43 @@ export default function DeviceDetailPage() {
         {alerts.loading && !alerts.data ? (
           <Loading />
         ) : alerts.data && alerts.data.rows.length ? (
-          (() => {
-            const rows = alerts.data.rows;
-            const loaded = rows.length;
-            const grandTotal = alerts.data.total;
-            const pageCount = Math.ceil(loaded / ALERTS_PER_PAGE);
-            const page = Math.min(alertPage, pageCount - 1);
-            const start = page * ALERTS_PER_PAGE;
-            const pageRows = rows.slice(start, start + ALERTS_PER_PAGE);
-            // More history exists on the server than we've fetched, and we're
-            // still under the fetch cap.
-            const canLoadOlder = loaded < grandTotal && alertLimit < ALERT_LIMIT_MAX;
-            // We've fetched the cap but the device has still more history.
-            const cappedBelowTotal = alertLimit >= ALERT_LIMIT_MAX && grandTotal > loaded;
-            const loadingOlder = alerts.loading && !!alerts.data;
-            return (
-              <>
-                <table className="sv-table">
-                  <thead>
-                    <tr><th>Severity</th><th>Type</th><th>Message</th><th>Triggered</th><th>Resolved</th><th>Status</th></tr>
-                  </thead>
-                  <tbody>
-                    {pageRows.map((a) => (
-                      <tr key={a.id}>
-                        <td><StatusBadge status={a.severity} /></td>
-                        <td>{a.alert_type}</td>
-                        <td>{a.message}</td>
-                        <td className="sv-muted">{fmtTime(a.triggered_at)}</td>
-                        <td className="sv-muted">{a.resolved_at ? fmtTime(a.resolved_at) : '—'}</td>
-                        <td><StatusBadge status={a.status} /></td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                <div style={ALERT_PAGER}>
-                  <span className="sv-muted" style={{ fontSize: 'var(--text-sm)' }}>
-                    {start + 1}–{Math.min(start + ALERTS_PER_PAGE, loaded)} of {loaded.toLocaleString()}
-                    {grandTotal > loaded && <> loaded · {grandTotal.toLocaleString()} total</>}
-                  </span>
-                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                    {(canLoadOlder || loadingOlder) && (
-                      <button
-                        type="button"
-                        style={loadingOlder ? PAGER_BTN_DISABLED : PAGER_BTN}
-                        disabled={loadingOlder}
-                        onClick={() => setAlertLimit((l) => Math.min(ALERT_LIMIT_MAX, l + ALERT_LOAD_STEP))}
-                      >
-                        {loadingOlder ? 'Loading…' : 'Load older'}
-                      </button>
-                    )}
-                    {pageCount > 1 && (
-                      <>
-                        <button
-                          type="button"
-                          style={page <= 0 ? PAGER_BTN_DISABLED : PAGER_BTN}
-                          disabled={page <= 0}
-                          onClick={() => setAlertPage((p) => Math.max(0, p - 1))}
-                        >
-                          ← Prev
-                        </button>
-                        <span className="sv-muted" style={{ fontSize: 'var(--text-sm)' }}>
-                          Page {page + 1} of {pageCount}
-                        </span>
-                        <button
-                          type="button"
-                          style={page >= pageCount - 1 ? PAGER_BTN_DISABLED : PAGER_BTN}
-                          disabled={page >= pageCount - 1}
-                          onClick={() => setAlertPage((p) => Math.min(pageCount - 1, p + 1))}
-                        >
-                          Next →
-                        </button>
-                      </>
-                    )}
-                  </div>
-                </div>
-                {cappedBelowTotal && (
-                  <div className="sv-muted" style={{ fontSize: 'var(--text-sm)', marginTop: 8 }}>
-                    Showing the newest {loaded.toLocaleString()} of {grandTotal.toLocaleString()} alerts. Use Reports for the full history.
-                  </div>
-                )}
-              </>
-            );
-          })()
+          <>
+            <table className="sv-table">
+              <thead>
+                <tr><th>Severity</th><th>Type</th><th>Message</th><th>Triggered</th><th>Resolved</th><th>Status</th></tr>
+              </thead>
+              <tbody>
+                {alertPg.pageRows.map((a) => (
+                  <tr key={a.id}>
+                    <td><StatusBadge status={a.severity} /></td>
+                    <td>{a.alert_type}</td>
+                    <td>{a.message}</td>
+                    <td className="sv-muted">{fmtTime(a.triggered_at)}</td>
+                    <td className="sv-muted">{a.resolved_at ? fmtTime(a.resolved_at) : '—'}</td>
+                    <td><StatusBadge status={a.status} /></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <Pager
+              page={alertPg.page}
+              pageCount={alertPg.pageCount}
+              start={alertPg.start}
+              perPage={ALERTS_PER_PAGE}
+              total={alertPg.total}
+              onPrev={alertPg.prev}
+              onNext={alertPg.next}
+              grandTotal={alerts.data.total}
+              canLoadOlder={alerts.data.rows.length < alerts.data.total && alertLimit < ALERT_LIMIT_MAX}
+              loadingOlder={alerts.loading && !!alerts.data}
+              onLoadOlder={() => setAlertLimit((l) => Math.min(ALERT_LIMIT_MAX, l + ALERT_LOAD_STEP))}
+              cappedNote={
+                alertLimit >= ALERT_LIMIT_MAX && alerts.data.total > alerts.data.rows.length
+                  ? `Showing the newest ${alerts.data.rows.length.toLocaleString()} of ${alerts.data.total.toLocaleString()} alerts. Use Reports for the full history.`
+                  : undefined
+              }
+            />
+          </>
         ) : (
           <Empty message="No alerts recorded for this device." />
         )}

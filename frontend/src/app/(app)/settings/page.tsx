@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useApi, apiSend } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
-import { Loading, ErrorBox, Empty, fmtTime, PageHeader, TableSkeleton } from '@/components/ui';
+import { Loading, ErrorBox, Empty, fmtTime, PageHeader, TableSkeleton, Pager, useClientPagination } from '@/components/ui';
 import { useLicense } from '@/components/LicenseGuard';
 
 const TABS = [
@@ -518,11 +518,21 @@ type AuditRow = {
   id: number; ts: string; user_email: string | null; user_role: string | null;
   method: string; path: string; status: number | null; detail: any; ip: string | null;
 };
+const AUDIT_PER_PAGE = 50;
+const AUDIT_LIMIT_DEFAULT = 200;
+const AUDIT_LOAD_STEP = 200;
+const AUDIT_LIMIT_MAX = 1000;
 function AuditLog() {
-  const audit = useApi<AuditRow[]>('/api/audit', 30000);
+  const [limit, setLimit] = useState(AUDIT_LIMIT_DEFAULT);
+  const audit = useApi<AuditRow[]>(`/api/audit?limit=${limit}`, 30000);
+  const rows = audit.data || [];
+  const pg = useClientPagination(rows, AUDIT_PER_PAGE);
   if (audit.loading && !audit.data) return <Loading />;
   if (audit.error) return <ErrorBox message={audit.error} />;
-  const rows = audit.data || [];
+  // The endpoint returns a bare array with no total; a full page implies more
+  // history exists (heuristic), so offer "Load older" up to the fetch cap.
+  const canLoadOlder = rows.length >= limit && limit < AUDIT_LIMIT_MAX;
+  const loadingOlder = audit.loading && !!audit.data;
   return (
     <div className="sv-panel">
       <h2>Audit Log</h2>
@@ -530,23 +540,42 @@ function AuditLog() {
         Recent configuration and operational changes (most recent first).
       </p>
       {!rows.length ? <Empty message="No audit entries yet." /> : (
-        <table className="sv-table">
-          <thead><tr><th>When</th><th>User</th><th>Role</th><th>Action</th><th>Detail</th></tr></thead>
-          <tbody>
-            {rows.map((r) => (
-              <tr key={r.id}>
-                <td style={{ whiteSpace: 'nowrap' }}>{fmtTime(r.ts)}</td>
-                <td>{r.user_email || '—'}</td>
-                <td>{r.user_role || '—'}</td>
-                <td><code style={{ fontSize: 'var(--text-xs)' }}>{r.method} {r.path}</code></td>
-                <td style={{ maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-                    title={r.detail ? JSON.stringify(r.detail) : ''}>
-                  {r.detail ? JSON.stringify(r.detail) : '—'}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <>
+          <table className="sv-table">
+            <thead><tr><th>When</th><th>User</th><th>Role</th><th>Action</th><th>Detail</th></tr></thead>
+            <tbody>
+              {pg.pageRows.map((r) => (
+                <tr key={r.id}>
+                  <td style={{ whiteSpace: 'nowrap' }}>{fmtTime(r.ts)}</td>
+                  <td>{r.user_email || '—'}</td>
+                  <td>{r.user_role || '—'}</td>
+                  <td><code style={{ fontSize: 'var(--text-xs)' }}>{r.method} {r.path}</code></td>
+                  <td style={{ maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                      title={r.detail ? JSON.stringify(r.detail) : ''}>
+                    {r.detail ? JSON.stringify(r.detail) : '—'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <Pager
+            page={pg.page}
+            pageCount={pg.pageCount}
+            start={pg.start}
+            perPage={AUDIT_PER_PAGE}
+            total={pg.total}
+            onPrev={pg.prev}
+            onNext={pg.next}
+            canLoadOlder={canLoadOlder}
+            loadingOlder={loadingOlder}
+            onLoadOlder={() => setLimit((l) => Math.min(AUDIT_LIMIT_MAX, l + AUDIT_LOAD_STEP))}
+            cappedNote={
+              limit >= AUDIT_LIMIT_MAX && rows.length >= limit
+                ? `Showing the newest ${limit.toLocaleString()} entries.`
+                : undefined
+            }
+          />
+        </>
       )}
     </div>
   );
