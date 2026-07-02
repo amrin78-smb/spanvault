@@ -15,4 +15,7 @@ agent/buffer.json
 .claude-web-files/
 .claude-web-images/
 
+# local dev seed script (not source)
+frontend/demo-seed.js
+
 .commit-msg.tmp
