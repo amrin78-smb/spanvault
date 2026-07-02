@@ -32,6 +32,9 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.52.0': [
+    'Device detail: the Alert History table is now paginated at 50 rows per page with Prev/Next controls and an "X–Y of N" range indicator, so devices with long alert histories no longer render one very long table',
+  ],
   '1.51.2': [
     'Reports: interface utilization-% charts now also recognise bare metric names (if_in_util_pct / if_out_util_pct), matching the throughput fix, so utilization renders for devices that store metrics without the per-interface prefix',
     'Hardening: the nocvault_readonly Hub read-grant self-heal can no longer be aborted by a non-owner USAGE grant on the updater path — the critical SELECT grant always applies',

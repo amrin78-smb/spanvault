@@ -98,6 +98,21 @@ const TAB_BTN_ACTIVE: CSSProperties = {
 
 const GRAPH_HEIGHT = 160;
 
+// Alert History is paginated client-side to keep the table readable.
+const ALERTS_PER_PAGE = 50;
+const ALERT_PAGER: CSSProperties = {
+  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+  gap: 12, marginTop: 12, flexWrap: 'wrap',
+};
+const PAGER_BTN: CSSProperties = {
+  fontSize: 'var(--text-base)', padding: '4px 12px', borderRadius: 6,
+  border: '1px solid var(--border)', background: 'var(--bg-card)',
+  color: 'var(--text-primary)', cursor: 'pointer', lineHeight: 1.4,
+};
+const PAGER_BTN_DISABLED: CSSProperties = {
+  ...PAGER_BTN, color: 'var(--text-muted)', cursor: 'not-allowed', opacity: 0.5,
+};
+
 // Combined interface-traffic line colours (In = blue, Out = orange).
 const TRAFFIC_IN_COLOR = '#3b82f6';
 const TRAFFIC_OUT_COLOR = '#f97316';
@@ -108,6 +123,7 @@ export default function DeviceDetailPage() {
   const [range, setRange] = useState('24h');
   const [sensorsOpen, setSensorsOpen] = useState(false);
   const [toast, setToast] = useState<TestResult | null>(null);
+  const [alertPage, setAlertPage] = useState(0);
 
   const device = useApi<Device>(`/api/devices/${id}`, 20000);
   const ping = useApi<PingPoint[]>(`/api/devices/${id}/ping-history?range=${range}`, 20000);
@@ -235,23 +251,62 @@ export default function DeviceDetailPage() {
         {alerts.loading && !alerts.data ? (
           <Loading />
         ) : alerts.data && alerts.data.length ? (
-          <table className="sv-table">
-            <thead>
-              <tr><th>Severity</th><th>Type</th><th>Message</th><th>Triggered</th><th>Resolved</th><th>Status</th></tr>
-            </thead>
-            <tbody>
-              {alerts.data.map((a) => (
-                <tr key={a.id}>
-                  <td><StatusBadge status={a.severity} /></td>
-                  <td>{a.alert_type}</td>
-                  <td>{a.message}</td>
-                  <td className="sv-muted">{fmtTime(a.triggered_at)}</td>
-                  <td className="sv-muted">{a.resolved_at ? fmtTime(a.resolved_at) : '—'}</td>
-                  <td><StatusBadge status={a.status} /></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          (() => {
+            const total = alerts.data.length;
+            const pageCount = Math.ceil(total / ALERTS_PER_PAGE);
+            const page = Math.min(alertPage, pageCount - 1);
+            const start = page * ALERTS_PER_PAGE;
+            const pageRows = alerts.data.slice(start, start + ALERTS_PER_PAGE);
+            return (
+              <>
+                <table className="sv-table">
+                  <thead>
+                    <tr><th>Severity</th><th>Type</th><th>Message</th><th>Triggered</th><th>Resolved</th><th>Status</th></tr>
+                  </thead>
+                  <tbody>
+                    {pageRows.map((a) => (
+                      <tr key={a.id}>
+                        <td><StatusBadge status={a.severity} /></td>
+                        <td>{a.alert_type}</td>
+                        <td>{a.message}</td>
+                        <td className="sv-muted">{fmtTime(a.triggered_at)}</td>
+                        <td className="sv-muted">{a.resolved_at ? fmtTime(a.resolved_at) : '—'}</td>
+                        <td><StatusBadge status={a.status} /></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {pageCount > 1 && (
+                  <div style={ALERT_PAGER}>
+                    <span className="sv-muted" style={{ fontSize: 'var(--text-sm)' }}>
+                      {start + 1}–{Math.min(start + ALERTS_PER_PAGE, total)} of {total}
+                    </span>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                      <button
+                        type="button"
+                        style={page <= 0 ? PAGER_BTN_DISABLED : PAGER_BTN}
+                        disabled={page <= 0}
+                        onClick={() => setAlertPage((p) => Math.max(0, p - 1))}
+                      >
+                        ← Prev
+                      </button>
+                      <span className="sv-muted" style={{ fontSize: 'var(--text-sm)' }}>
+                        Page {page + 1} of {pageCount}
+                      </span>
+                      <button
+                        type="button"
+                        style={page >= pageCount - 1 ? PAGER_BTN_DISABLED : PAGER_BTN}
+                        disabled={page >= pageCount - 1}
+                        onClick={() => setAlertPage((p) => Math.min(pageCount - 1, p + 1))}
+                      >
+                        Next →
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </>
+            );
+          })()
         ) : (
           <Empty message="No alerts recorded for this device." />
         )}
