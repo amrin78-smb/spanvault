@@ -514,8 +514,13 @@ a { color: inherit; text-decoration: none; }
 .sv-shell { display: flex; flex-direction: column; height: 100vh; overflow: hidden; background: var(--bg-primary); }
 .sv-body { display: flex; flex: 1; min-height: 0; overflow: hidden; }
 /* Content column: holds the alert/license/update banners (content-width) above
-   the scrolling .sv-content, so banners never span the full screen over the sidebar. */
-.sv-content-col { display: flex; flex-direction: column; flex: 1; min-width: 0; overflow: hidden; }
+   the scrolling .sv-content, so banners never span the full screen over the sidebar.
+   position/z-index:0 confines this column to its own stacking context so a banner
+   flex-item (the LicenseBanner carries an inline z-index:100) can no longer escape
+   into the root stacking context and paint OVER the header + its open avatar
+   dropdown (which live in .sv-topbar at z-index:50). Matches DDIVault, where the
+   banner sits in a plain block and its z-index is inert. */
+.sv-content-col { display: flex; flex-direction: column; flex: 1; min-width: 0; overflow: hidden; position: relative; z-index: 0; }
 
 /* Sidebar — 240px navy, NAVIGATION label, rounded items, red indicator.
    Sits below the full-width header and fills the remaining height. */

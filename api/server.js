@@ -32,6 +32,9 @@ const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.58.2': [
+    'Fixed the trial/license banner overlapping the avatar dropdown menu — the open menu now correctly appears in front of the banner (z-index/stacking fix)',
+  ],
   '1.58.1': [
     'Fixed the reports print footer (brand · confidential · generated date) not appearing on printed/PDF pages',
     'Hardened the shared confirm/prompt dialogs so a pending dialog can no longer leave a promise unresolved if it is superseded or the page navigates away',
