@@ -583,14 +583,764 @@ function renderExecutive(doc, data, layout) {
   }
 }
 
+// ════════════════════════════════════════════════════════════
+// Shared local helpers for the additional report renderers.
+// (Faithful copies of the equivalents in api/server.js so the PDF path fetches
+// the SAME data shape server-side, using the `db` handle it is given.)
+// ════════════════════════════════════════════════════════════
+function round1(v) { return v == null ? null : Math.round(Number(v) * 10) / 10; }
+function gradeFromScore(s) {
+  if (s == null) return null;
+  const n = Number(s);
+  return n >= 90 ? 'A' : n >= 80 ? 'B' : n >= 70 ? 'C' : n >= 60 ? 'D' : 'F';
+}
+
+// Per-device aggregation shared by several report templates (mirror of
+// server.js perDeviceAggSql). $1/$2 are the window; any site clause is appended
+// by the caller. `caps.health` decides whether device_health_scores is joined.
+function perDeviceAggSql(extraWhere, caps) {
+  const hasHealth = caps && caps.health;
+  const healthSel = hasHealth
+    ? 'h.score AS health_score, h.grade AS health_grade'
+    : 'NULL::numeric AS health_score, NULL::text AS health_grade';
+  const healthJoin = hasHealth ? 'LEFT JOIN device_health_scores h ON h.device_id = d.id' : '';
+  return `
+    SELECT d.id, d.name AS device_name, d.ip_address, d.device_type,
+           COALESCE(d.site_name, 'Unassigned') AS site_name, d.site_id,
+           d.current_status, d.poll_interval_seconds,
+           COALESCE(pa.total_checks, 0)::int  AS total_checks,
+           COALESCE(pa.failed_checks, 0)::int AS failed_checks,
+           CASE WHEN pa.total_checks > 0
+                THEN ROUND((1 - pa.failed_checks::numeric / pa.total_checks) * 100, 2)
+                ELSE NULL END AS uptime_pct,
+           ROUND(pa.avg_ms::numeric, 1) AS avg_response_ms,
+           COALESCE(al.cnt, 0)::int AS alerts_count,
+           ${healthSel}
+    FROM monitored_devices d
+    LEFT JOIN LATERAL (
+      SELECT COUNT(*)::int AS total_checks,
+             SUM(CASE WHEN status <> 'up' THEN 1 ELSE 0 END)::int AS failed_checks,
+             AVG(response_ms) FILTER (WHERE status = 'up') AS avg_ms
+      FROM ping_results WHERE device_id = d.id AND ts BETWEEN $1 AND $2
+    ) pa ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT COUNT(*)::int AS cnt FROM alerts
+       WHERE device_id = d.id AND alert_type <> 'recovery' AND triggered_at BETWEEN $1 AND $2
+    ) al ON TRUE
+    ${healthJoin}
+    WHERE d.active = TRUE${extraWhere || ''}`;
+}
+function downtimeMin(d) {
+  return Math.round((d.failed_checks * (d.poll_interval_seconds || 300) / 60) * 10) / 10;
+}
+
+// Per-gatherer query wrapper: never throws — logs and degrades to the supplied
+// fallback rows so an empty/un-migrated DB still yields a valid PDF.
+function mkRunQ(db, tag) {
+  return async (label, sql, p, fb) => {
+    try { return await db.query(sql, p); }
+    catch (e) { console.error(`[reportsPdf/${tag}] query '${label}' failed: ${e.message}`); return { rows: fb }; }
+  };
+}
+
+// Daily availability (% up) trend for the chart. Optional site_id + RBAC filter.
+async function uptimeTrendPoints(runQ, win, siteFilter, siteId) {
+  const tp = [win.start, win.end];
+  let extra = '';
+  if (siteId != null && !isNaN(siteId)) { tp.push(siteId); extra += ` AND d.site_id = $${tp.length}`; }
+  const sc = siteClause(siteFilter, tp, 'd.site_id');
+  if (sc) extra += ` AND ${sc}`;
+  const trend = await runQ('trend', `
+    SELECT to_char(date_trunc('day', p.ts), 'YYYY-MM-DD') AS day,
+           COUNT(*)::int AS tc,
+           SUM(CASE WHEN p.status <> 'up' THEN 1 ELSE 0 END)::int AS bad
+    FROM ping_results p JOIN monitored_devices d ON d.id = p.device_id
+    WHERE p.ts BETWEEN $1::timestamptz AND $2::timestamptz${extra}
+    GROUP BY 1 ORDER BY 1`, tp, []);
+  return trend.rows.map((r) => ({ t: r.day, v: pct2(r.bad, r.tc) })).filter((x) => x.v != null);
+}
+
+// Section title (adds a page when there's no room for it + a first row).
+function sectionTitle(doc, layout, text) {
+  const { left, contentW, pageH } = layout;
+  if (doc.y + 46 > pageH - doc.page.margins.bottom) doc.addPage();
+  doc.fillColor(NAVY).fontSize(12).font('Helvetica-Bold').text(text, left, doc.y, { width: contentW });
+}
+
+// Titled trend chart block; advances doc.y past it.
+function renderChartBlock(doc, layout, title, points, opts) {
+  const { left, contentW, pageH } = layout;
+  const chartH = 150;
+  if (doc.y + chartH + 60 > pageH - doc.page.margins.bottom) doc.addPage();
+  doc.fillColor(NAVY).fontSize(12).font('Helvetica-Bold').text(title, left, doc.y, { width: contentW });
+  const y = doc.y + 6;
+  renderTrendChart(doc, Object.assign({ x: left, y, width: contentW, height: chartH, points: points || [] }, opts || {}));
+  doc.y = y + chartH + 18;
+}
+
+// Red-bulleted list (key findings / risk lines / analysis fallback).
+function bulletList(doc, layout, items, emptyText) {
+  const { left, contentW, pageH } = layout;
+  if (!items || !items.length) {
+    doc.fillColor(MUTED).fontSize(10).font('Helvetica-Oblique').text(emptyText || 'None.', left, doc.y + 4, { width: contentW });
+    doc.y += 4;
+    return;
+  }
+  doc.y += 4;
+  items.forEach((r) => {
+    const rh = doc.heightOfString(pdfSafe(String(r)), { width: contentW - 16 });
+    if (doc.y + rh + 8 > pageH - doc.page.margins.bottom) doc.addPage();
+    const y2 = doc.y + 4;
+    doc.fillColor(RED).fontSize(9).font('Helvetica-Bold').text('-', left, y2, { width: 12, lineBreak: false });
+    doc.fillColor('#334155').fontSize(10).font('Helvetica').text(String(r), left + 12, y2, { width: contentW - 16 });
+    doc.y += 2;
+  });
+}
+
+const uptimeCol = (r) => r._u == null ? MUTED : (r._u >= 99 ? GREEN : r._u >= 95 ? YELLOW : RED);
+
+// ════════════════════════════════════════════════════════════
+// NETWORK SUMMARY — mirror of GET /api/reports/network-summary
+// ════════════════════════════════════════════════════════════
+async function gatherNetworkSummary(db, params) {
+  const q = params || {};
+  const win = getDateRange({ ...q, range: q.range || '30d' });
+  const siteFilter = resolveSiteFilter(q);
+  const caps = await getCaps(db);
+  const runQ = mkRunQ(db, 'network-summary');
+
+  const pAgg = [win.start, win.end];
+  const scAgg = siteClause(siteFilter, pAgg, 'd.site_id');
+  const dr = await runQ('agg', perDeviceAggSql(scAgg ? ` AND ${scAgg}` : '', caps), pAgg, []);
+
+  const pMttr = [win.start, win.end];
+  const scMttr = siteClause(siteFilter, pMttr, 'd.site_id');
+  const mr = await runQ('mttr', `
+    SELECT ROUND(AVG(EXTRACT(EPOCH FROM (a.resolved_at - a.triggered_at)) / 60.0)::numeric, 1) AS mttr
+    FROM alerts a JOIN monitored_devices d ON d.id = a.device_id
+    WHERE a.resolved_at IS NOT NULL AND a.triggered_at BETWEEN $1 AND $2${scMttr ? ` AND ${scMttr}` : ''}`,
+    pMttr, [{ mttr: null }]);
+
+  const devices = dr.rows;
+  const siteMap = new Map();
+  let tChecks = 0, tFailed = 0, tAlerts = 0, respSum = 0, respN = 0, upN = 0, downN = 0;
+  for (const d of devices) {
+    const s = siteMap.get(d.site_name) || { site_name: d.site_name, devices: 0, up: 0, down: 0, warning: 0, checks: 0, failed: 0, alerts: 0, respSum: 0, respN: 0 };
+    s.devices++;
+    const st = (d.current_status || 'unknown').toLowerCase();
+    if (st === 'up') { s.up++; upN++; } else if (st === 'down') { s.down++; downN++; } else if (st === 'warning') s.warning++;
+    s.checks += d.total_checks; s.failed += d.failed_checks; s.alerts += d.alerts_count;
+    if (d.avg_response_ms != null) { s.respSum += Number(d.avg_response_ms); s.respN++; respSum += Number(d.avg_response_ms); respN++; }
+    siteMap.set(d.site_name, s);
+    tChecks += d.total_checks; tFailed += d.failed_checks; tAlerts += d.alerts_count;
+  }
+  const sites = Array.from(siteMap.values()).map((s) => ({
+    site_name: s.site_name, devices: s.devices, up: s.up, down: s.down, warning: s.warning,
+    uptime_pct: pct2(s.failed, s.checks),
+    avg_response_ms: s.respN ? round1(s.respSum / s.respN) : null,
+    alerts_count: s.alerts,
+    grade: gradeFromUptime(pct2(s.failed, s.checks)),
+  })).sort((a, b) => a.site_name.localeCompare(b.site_name));
+
+  const withDt = devices.map((d) => ({ ...d, downtime_minutes: downtimeMin(d) }));
+  const top_issues = withDt.filter((d) => d.failed_checks > 0)
+    .sort((a, b) => b.downtime_minutes - a.downtime_minutes).slice(0, 5)
+    .map((d) => ({ device_name: d.device_name, site_name: d.site_name, uptime_pct: d.uptime_pct, downtime_minutes: d.downtime_minutes }));
+  const top_alerts = withDt.filter((d) => d.alerts_count > 0)
+    .sort((a, b) => b.alerts_count - a.alerts_count).slice(0, 5)
+    .map((d) => ({ device_name: d.device_name, alerts_count: d.alerts_count }));
+
+  const uptimePct = pct2(tFailed, tChecks);
+  const trendPoints = await uptimeTrendPoints(runQ, win, siteFilter, null);
+
+  // Key findings (faithful to the endpoint) — compares current vs previous window.
+  const periodLabel = ({ '24h': 'the last 24 hours', '7d': 'the last 7 days', '30d': 'the last 30 days', '90d': 'the last 90 days' })[q.range] || 'this period';
+  const durationMs = Date.parse(win.end) - Date.parse(win.start);
+  const prevStart = new Date(Date.parse(win.start) - durationMs).toISOString();
+  const prevParams = [prevStart, win.start];
+  const prevSc = siteClause(siteFilter, prevParams, 'd.site_id');
+  const prevResp = await runQ('prevResp', `
+    SELECT p.device_id, AVG(p.response_ms) AS avg_ms
+    FROM ping_results p JOIN monitored_devices d ON d.id = p.device_id
+    WHERE p.status = 'up' AND p.ts >= $1::timestamptz AND p.ts < $2::timestamptz${prevSc ? ` AND ${prevSc}` : ''}
+    GROUP BY p.device_id`, prevParams, []);
+  const cpuParams = [win.start, win.end];
+  const cpuSc = siteClause(siteFilter, cpuParams, 'd.site_id');
+  const cpuRisk = await runQ('cpuRisk', `
+    SELECT d.name AS device_name, ROUND(AVG(s.value)::numeric, 0) AS cpu
+    FROM snmp_results s JOIN monitored_devices d ON d.id = s.device_id
+    WHERE s.metric_name ILIKE '%cpu%' AND s.ts BETWEEN $1 AND $2${cpuSc ? ` AND ${cpuSc}` : ''}
+    GROUP BY d.name HAVING AVG(s.value) >= 75 ORDER BY cpu DESC LIMIT 1`, cpuParams, []);
+
+  const key_findings = [];
+  const bestSite = [...sites].filter((s) => s.uptime_pct != null).sort((a, b) => b.uptime_pct - a.uptime_pct)[0];
+  if (bestSite) key_findings.push(`${bestSite.site_name} was the most available site at ${bestSite.uptime_pct}% over ${periodLabel}.`);
+  const prevMap = new Map(prevResp.rows.map((r) => [r.device_id, r.avg_ms != null ? Number(r.avg_ms) : null]));
+  let improved = null;
+  for (const d of devices) {
+    const cur = d.avg_response_ms != null ? Number(d.avg_response_ms) : null;
+    const prev = prevMap.get(d.id);
+    if (cur != null && prev != null && prev > 0) {
+      const ch = ((prev - cur) / prev) * 100;
+      if (ch > 20 && (!improved || ch > improved.ch)) improved = { name: d.device_name, ch: Math.round(ch) };
+    }
+  }
+  if (improved) key_findings.push(`${improved.name} response time improved ${improved.ch}% versus the previous period.`);
+  if (top_alerts[0] && top_alerts[0].alerts_count > 0) key_findings.push(`${top_alerts[0].device_name} triggered ${top_alerts[0].alerts_count} alerts - the most in the network.`);
+  if (cpuRisk.rows[0]) key_findings.push(`${cpuRisk.rows[0].device_name} CPU is averaging ${cpuRisk.rows[0].cpu}% - approaching its threshold.`);
+
+  const gradeCounts = { A: 0, B: 0, C: 0, D: 0, F: 0 };
+  for (const s of sites) if (s.grade && gradeCounts[s.grade] != null) gradeCounts[s.grade]++;
+
+  return {
+    title: 'Network Summary',
+    dateRange: win.label,
+    rangeLabel: `Availability - ${win.label}`,
+    headline: `Network was ${uptimePct != null ? uptimePct : '—'}% available over ${periodLabel}`,
+    kpis: {
+      devices: devices.length, uptime_pct: uptimePct, total_alerts: tAlerts,
+      avg_response_ms: respN ? round1(respSum / respN) : null,
+      mttr_minutes: mr.rows[0] ? mr.rows[0].mttr : null,
+    },
+    sites, top_issues, key_findings, gradeCounts, trendPoints,
+    summary: [
+      { label: 'Total Devices', value: String(devices.length), color: NAVY },
+      { label: 'Overall Uptime', value: pctStr(uptimePct), color: GREEN },
+      { label: 'Total Alerts', value: String(tAlerts), color: RED },
+    ],
+  };
+}
+
+function renderNetworkSummary(doc, data, layout) {
+  const { left, contentW } = layout;
+  doc.addPage();
+  let y = doc.page.margins.top;
+
+  doc.fillColor(NAVY).fontSize(20).font('Helvetica-Bold').text(data.title, left, y, { width: contentW });
+  y = doc.y + 2;
+  doc.fillColor(MUTED).fontSize(11).font('Helvetica').text(data.headline || '', left, y, { width: contentW });
+  y = doc.y + 4;
+  doc.moveTo(left, y).lineTo(left + 90, y).lineWidth(2).stroke(RED);
+  y += 14;
+
+  const k = data.kpis || {};
+  y = drawKpiTiles(doc, layout, y, [
+    { value: String(k.devices != null ? k.devices : 0), label: 'Total Devices', color: NAVY },
+    { value: pctStr(k.uptime_pct), label: 'Overall Uptime', color: GREEN },
+    { value: String(k.total_alerts != null ? k.total_alerts : 0), label: 'Total Alerts', color: YELLOW },
+    { value: `${k.avg_response_ms != null ? k.avg_response_ms : '—'} ms`, label: 'Avg Response', color: NAVY },
+    { value: `${k.mttr_minutes != null ? k.mttr_minutes : '—'} min`, label: 'Avg MTTR', color: RED },
+  ]);
+  y += 22;
+  doc.y = y;
+
+  renderChartBlock(doc, layout, 'Availability Trend', data.trendPoints, { yMax: 100, ySuffix: '%', color: RED, rangeLabel: data.rangeLabel });
+
+  sectionTitle(doc, layout, 'Sites');
+  drawTable(doc, {
+    columns: [
+      { key: 'site_name', label: 'Site', width: 150 },
+      { key: 'devices', label: 'Devices', width: 60, align: 'right' },
+      { key: 'up', label: 'Up', width: 45, align: 'right' },
+      { key: 'down', label: 'Down', width: 50, align: 'right' },
+      { key: 'uptime', label: 'Uptime %', width: 75, align: 'right', color: uptimeCol },
+      { key: 'avg_ms', label: 'Avg ms', width: 60, align: 'right' },
+      { key: 'alerts_count', label: 'Alerts', width: 55, align: 'right' },
+      { key: 'grade', label: 'Grade', width: 50, align: 'center' },
+    ],
+    rows: (data.sites || []).map((s) => ({
+      site_name: s.site_name, devices: s.devices, up: s.up, down: s.down,
+      uptime: s.uptime_pct == null ? '—' : `${s.uptime_pct}%`, _u: s.uptime_pct,
+      avg_ms: s.avg_response_ms == null ? '—' : String(s.avg_response_ms),
+      alerts_count: s.alerts_count, grade: s.grade || '—',
+    })),
+  }, layout, { continueOnPage: true });
+  doc.y += 18;
+
+  sectionTitle(doc, layout, 'Key Findings');
+  bulletList(doc, layout, data.key_findings, 'No notable findings this period.');
+  doc.y += 14;
+
+  sectionTitle(doc, layout, 'Top Issues');
+  drawTable(doc, {
+    columns: [
+      { key: 'device_name', label: 'Device', width: 180 },
+      { key: 'site_name', label: 'Site', width: 150 },
+      { key: 'uptime', label: 'Uptime %', width: 90, align: 'right', color: uptimeCol },
+      { key: 'downtime', label: 'Downtime (min)', width: 100, align: 'right' },
+    ],
+    rows: (data.top_issues || []).map((d) => ({
+      device_name: d.device_name, site_name: d.site_name,
+      uptime: d.uptime_pct == null ? '—' : `${d.uptime_pct}%`, _u: d.uptime_pct,
+      downtime: String(d.downtime_minutes),
+    })),
+  }, layout, { continueOnPage: true });
+  doc.y += 18;
+
+  sectionTitle(doc, layout, 'Health Grade Distribution');
+  const gc = data.gradeCounts || {};
+  drawTable(doc, {
+    columns: [
+      { key: 'grade', label: 'Grade', width: 120, align: 'center' },
+      { key: 'count', label: 'Sites', width: 120, align: 'right' },
+    ],
+    rows: ['A', 'B', 'C', 'D', 'F'].map((g) => ({ grade: g, count: String(gc[g] || 0) })),
+  }, layout, { continueOnPage: true });
+}
+
+// ════════════════════════════════════════════════════════════
+// SITE REPORT — mirror of GET /api/reports/site-summary
+// ════════════════════════════════════════════════════════════
+async function gatherSite(db, params) {
+  const q = params || {};
+  const win = getDateRange({ ...q, range: q.range || '30d' });
+  const siteFilter = resolveSiteFilter(q);
+  const siteId = parseInt(q.site_id, 10);
+  const t = parseFloat(q.sla_target);
+  const slaTarget = isNaN(t) ? 99.5 : t;
+  const caps = await getCaps(db);
+  const runQ = mkRunQ(db, 'site');
+
+  let devices = [], rows = [], site_name = q.site_name || (isNaN(siteId) ? 'Site' : `Site ${siteId}`);
+  if (!isNaN(siteId)) {
+    const p = [win.start, win.end, siteId];
+    const sc = siteClause(siteFilter, p, 'd.site_id');
+    const r = await runQ('agg', perDeviceAggSql(` AND d.site_id = $3${sc ? ` AND ${sc}` : ''}`, caps) + ` ORDER BY uptime_pct ASC NULLS LAST, d.name`, p, []);
+    rows = r.rows;
+    devices = rows.map((d) => ({
+      name: d.device_name, ip: d.ip_address, device_type: d.device_type,
+      uptime_pct: d.uptime_pct, avg_response_ms: d.avg_response_ms, alerts_count: d.alerts_count,
+      sla_met: d.uptime_pct != null && Number(d.uptime_pct) >= slaTarget,
+      health_grade: d.health_grade, downtime_minutes: downtimeMin(d),
+    }));
+    if (rows[0] && rows[0].site_name) site_name = rows[0].site_name;
+  }
+
+  const withData = rows.filter((d) => d.total_checks > 0);
+  const checks = withData.reduce((a, d) => a + d.total_checks, 0);
+  const failed = withData.reduce((a, d) => a + d.failed_checks, 0);
+  const up = rows.filter((d) => (d.current_status || '').toLowerCase() === 'up').length;
+  const down = rows.filter((d) => (d.current_status || '').toLowerCase() === 'down').length;
+  const avgUptime = pct2(failed, checks);
+  const total_alerts = devices.reduce((a, d) => a + d.alerts_count, 0);
+
+  // Site analysis paragraph (faithful to the endpoint).
+  const periodLabel = ({ '24h': 'the last 24 hours', '7d': 'the last 7 days', '30d': 'the last 30 days', '90d': 'the last 90 days' })[q.range] || 'this period';
+  const netAvg = await runQ('netAvg', `SELECT ROUND(AVG(response_ms)::numeric, 1) AS avg FROM ping_results WHERE status = 'up' AND ts BETWEEN $1 AND $2`, [win.start, win.end], []);
+  const best = devices.filter((d) => d.uptime_pct != null).sort((a, b) => Number(b.uptime_pct) - Number(a.uptime_pct))[0];
+  const mostAlerts = [...devices].sort((a, b) => b.alerts_count - a.alerts_count)[0];
+  const respVals = devices.map((d) => d.avg_response_ms).filter((v) => v != null).map(Number);
+  const siteAvg = respVals.length ? Math.round((respVals.reduce((a, b) => a + b, 0) / respVals.length) * 10) / 10 : null;
+  const netAvgMs = netAvg.rows[0] && netAvg.rows[0].avg != null ? Number(netAvg.rows[0].avg) : null;
+  let analysis = `${site_name} maintained ${avgUptime != null ? avgUptime : '—'}% availability over ${periodLabel}.`;
+  if (best) analysis += ` ${best.name} was the most reliable device (${best.uptime_pct != null ? best.uptime_pct : '—'}% uptime).`;
+  if (mostAlerts && mostAlerts.alerts_count > 0) analysis += ` ${mostAlerts.name} had the most issues with ${mostAlerts.alerts_count} alert${mostAlerts.alerts_count > 1 ? 's' : ''}.`;
+  if (siteAvg != null) {
+    const cmp = netAvgMs == null ? null : siteAvg < netAvgMs ? 'better than' : siteAvg > netAvgMs ? 'worse than' : 'in line with';
+    analysis += ` Average response time was ${siteAvg}ms${cmp ? `, ${cmp} the network average of ${netAvgMs}ms` : ''}.`;
+  }
+
+  const trendPoints = isNaN(siteId) ? [] : await uptimeTrendPoints(runQ, win, siteFilter, siteId);
+
+  return {
+    title: site_name,
+    dateRange: win.label,
+    rangeLabel: `Availability - ${win.label}`,
+    slaTarget,
+    kpis: { total: devices.length, up, down, avg_uptime: avgUptime, total_alerts },
+    analysis, devices, trendPoints,
+    summary: [
+      { label: 'Devices', value: String(devices.length), color: NAVY },
+      { label: 'Overall Uptime', value: avgUptime == null ? '—' : `${avgUptime}%`, color: GREEN },
+      { label: 'Total Alerts', value: String(total_alerts), color: RED },
+    ],
+  };
+}
+
+function renderSite(doc, data, layout) {
+  const { left, contentW } = layout;
+  doc.addPage();
+  let y = doc.page.margins.top;
+
+  doc.fillColor(NAVY).fontSize(20).font('Helvetica-Bold').text(data.title, left, y, { width: contentW });
+  y = doc.y + 2;
+  const k = data.kpis || {};
+  doc.fillColor(MUTED).fontSize(11).font('Helvetica')
+    .text(`${k.total || 0} devices  ·  ${k.avg_uptime == null ? '—' : k.avg_uptime + '%'} overall uptime  ·  ${k.total_alerts || 0} alerts`, left, y, { width: contentW });
+  y = doc.y + 4;
+  doc.moveTo(left, y).lineTo(left + 90, y).lineWidth(2).stroke(RED);
+  y += 14;
+
+  y = drawKpiTiles(doc, layout, y, [
+    { value: String(k.total || 0), label: 'Devices', color: NAVY },
+    { value: String(k.up || 0), label: 'Up', color: GREEN },
+    { value: String(k.down || 0), label: 'Down', color: RED },
+    { value: k.avg_uptime == null ? '—' : `${k.avg_uptime}%`, label: 'Overall Uptime', color: YELLOW },
+  ]);
+  y += 22;
+  doc.y = y;
+
+  renderChartBlock(doc, layout, 'Availability Trend', data.trendPoints, { yMax: 100, ySuffix: '%', color: RED, rangeLabel: data.rangeLabel });
+
+  if (data.analysis && data.analysis.trim() !== '') {
+    sectionTitle(doc, layout, 'Site Analysis');
+    doc.fillColor('#334155').fontSize(10).font('Helvetica').text(data.analysis, left, doc.y + 6, { width: contentW, align: 'left' });
+    doc.y += 14;
+  }
+
+  sectionTitle(doc, layout, 'Devices');
+  drawTable(doc, {
+    columns: [
+      { key: 'name', label: 'Device', width: 130 },
+      { key: 'device_type', label: 'Type', width: 80 },
+      { key: 'ip', label: 'IP', width: 90 },
+      { key: 'uptime', label: 'Uptime %', width: 70, align: 'right', color: uptimeCol },
+      { key: 'avg_ms', label: 'Avg ms', width: 55, align: 'right' },
+      { key: 'alerts_count', label: 'Alerts', width: 50, align: 'right' },
+      { key: 'sla', label: 'SLA', width: 60, align: 'center', color: (r) => r._met ? GREEN : RED },
+      { key: 'grade', label: 'Grade', width: 50, align: 'center' },
+    ],
+    rows: (data.devices || []).map((d) => ({
+      name: d.name || '—', device_type: d.device_type || '—', ip: d.ip || '—',
+      uptime: d.uptime_pct == null ? '—' : `${d.uptime_pct}%`, _u: d.uptime_pct,
+      avg_ms: d.avg_response_ms == null ? '—' : String(d.avg_response_ms),
+      alerts_count: d.alerts_count == null ? 0 : d.alerts_count,
+      sla: d.sla_met ? 'MET' : 'FAILED', _met: d.sla_met, grade: d.health_grade || '—',
+    })),
+  }, layout, { continueOnPage: true });
+}
+
+// ════════════════════════════════════════════════════════════
+// SLA COMPLIANCE — mirror of GET /api/reports/sla-compliance
+// ════════════════════════════════════════════════════════════
+async function slaComplianceRows(runQ, q, siteFilter) {
+  const win = getDateRange(q);
+  const params = [win.start, win.end];
+  const filters = ['d.active = TRUE'];
+  if (q.site_id)   { params.push(parseInt(q.site_id, 10));   filters.push(`d.site_id = $${params.length}`); }
+  if (q.device_id) { params.push(parseInt(q.device_id, 10)); filters.push(`d.id = $${params.length}`); }
+  const sc = siteClause(siteFilter, params, 'd.site_id');
+  if (sc) filters.push(sc);
+  const t = parseFloat(q.sla_target);
+  const slaTarget = isNaN(t) ? 99.5 : t;
+  const r = await runQ('sla', `
+    WITH pings AS (
+      SELECT device_id, COUNT(*)::int AS total_checks,
+             SUM(CASE WHEN status <> 'up' THEN 1 ELSE 0 END)::int AS failed_checks,
+             AVG(response_ms) FILTER (WHERE status = 'up') AS avg_ms
+      FROM ping_results WHERE ts BETWEEN $1 AND $2 GROUP BY device_id
+    )
+    SELECT d.id AS device_id, d.name AS device_name, d.site_name,
+           COALESCE(pg.total_checks, 0)  AS total_checks,
+           COALESCE(pg.failed_checks, 0) AS failed_checks,
+           CASE WHEN pg.total_checks > 0
+                THEN ROUND((1 - pg.failed_checks::numeric / pg.total_checks) * 100, 3)
+                ELSE NULL END AS uptime_pct,
+           ROUND(COALESCE(pg.failed_checks, 0) * d.poll_interval_seconds / 60.0, 1) AS downtime_minutes
+    FROM monitored_devices d
+    LEFT JOIN pings pg ON pg.device_id = d.id
+    WHERE ${filters.join(' AND ')}
+    ORDER BY uptime_pct ASC NULLS LAST, d.name`, params, []);
+  const rows = r.rows.map((row) => ({ ...row, sla_met: row.uptime_pct != null && Number(row.uptime_pct) >= slaTarget }));
+  return { rows, slaTarget, win };
+}
+
+async function gatherSla(db, params) {
+  const q = params || {};
+  const siteFilter = resolveSiteFilter(q);
+  const runQ = mkRunQ(db, 'sla-compliance');
+  const { rows, slaTarget, win } = await slaComplianceRows(runQ, q, siteFilter);
+
+  const withData = rows.filter((r) => r.total_checks > 0);
+  const tChecks = withData.reduce((a, r) => a + r.total_checks, 0);
+  const tFailed = withData.reduce((a, r) => a + r.failed_checks, 0);
+
+  const at_risk = [];
+  for (const r of rows) {
+    const u = r.uptime_pct != null ? Number(r.uptime_pct) : null;
+    if (u == null || u >= 100) continue;
+    if (u >= 99 && u <= slaTarget + 0.4 && u >= slaTarget - 0.6) {
+      const minsPerCheck = r.failed_checks > 0 ? Number(r.downtime_minutes) / r.failed_checks : null;
+      const periodMins = minsPerCheck != null ? r.total_checks * minsPerCheck : null;
+      const toBreach = periodMins != null ? Math.max(0, Math.round(periodMins * (u - slaTarget) / 100)) : null;
+      at_risk.push({ device_name: r.device_name, site_name: r.site_name, uptime_pct: u, minutes_to_breach: toBreach });
+    }
+  }
+  at_risk.sort((a, b) => a.uptime_pct - b.uptime_pct);
+
+  const trends = [];
+  try {
+    const durationMs = Date.parse(win.end) - Date.parse(win.start);
+    const fmtD = (ms) => new Date(ms).toISOString().slice(0, 10);
+    const prevQ = { range: 'custom', from: fmtD(Date.parse(win.start) - durationMs), to: fmtD(Date.parse(win.start)),
+      sla_target: q.sla_target, site_id: q.site_id, device_id: q.device_id };
+    const prev = await slaComplianceRows(runQ, prevQ, siteFilter);
+    const prevMap = new Map(prev.rows.map((r) => [r.device_id, Number(r.downtime_minutes) || 0]));
+    const incr = [];
+    for (const r of rows) {
+      const cur = Number(r.downtime_minutes) || 0;
+      const pv = prevMap.get(r.device_id);
+      if (pv != null && pv > 0 && cur > pv) {
+        const pct = Math.round(((cur - pv) / pv) * 100);
+        if (pct >= 40) incr.push({ name: r.device_name, pct });
+      }
+    }
+    incr.sort((a, b) => b.pct - a.pct);
+    for (const i of incr.slice(0, 2)) trends.push(`${i.name} downtime increased ${i.pct}% versus the previous period.`);
+  } catch (e) { console.error('[reportsPdf/sla-compliance] trend failed:', e.message); }
+
+  // Worst-first ordering (failing first) to match the on-screen table.
+  const sorted = rows.map((d, index) => ({ d, index })).sort((a, b) => {
+    if (a.d.sla_met !== b.d.sla_met) return a.d.sla_met ? 1 : -1;
+    const au = a.d.uptime_pct == null ? Infinity : a.d.uptime_pct;
+    const bu = b.d.uptime_pct == null ? Infinity : b.d.uptime_pct;
+    if (au !== bu) return au - bu;
+    return a.index - b.index;
+  }).map((e) => e.d);
+
+  const overall = tChecks ? Math.round((1 - tFailed / tChecks) * 100000) / 1000 : null;
+  const stats = {
+    total: rows.length,
+    meeting: rows.filter((r) => r.sla_met).length,
+    failing: rows.filter((r) => !r.sla_met && r.uptime_pct != null).length,
+    overall_uptime_pct: overall,
+    total_downtime_minutes: Math.round(rows.reduce((a, r) => a + (Number(r.downtime_minutes) || 0), 0) * 10) / 10,
+  };
+  const trendPoints = await uptimeTrendPoints(runQ, win, siteFilter, q.site_id ? parseInt(q.site_id, 10) : null);
+
+  return {
+    title: 'SLA Compliance',
+    dateRange: win.label,
+    rangeLabel: `Availability - ${win.label}`,
+    slaTarget, stats, devices: sorted, risk: { at_risk, trends }, trendPoints,
+    summary: [
+      { label: 'Meeting SLA', value: `${stats.meeting}/${stats.total}`, color: GREEN },
+      { label: 'Failing', value: String(stats.failing), color: RED },
+      { label: 'Overall Uptime', value: overall == null ? '—' : `${overall}%`, color: NAVY },
+    ],
+  };
+}
+
+function renderSla(doc, data, layout) {
+  const { left, contentW } = layout;
+  doc.addPage();
+  let y = doc.page.margins.top;
+
+  doc.fillColor(NAVY).fontSize(20).font('Helvetica-Bold').text(data.title, left, y, { width: contentW });
+  y = doc.y + 2;
+  doc.fillColor(MUTED).fontSize(11).font('Helvetica').text(`SLA target ${data.slaTarget}%`, left, y, { width: contentW });
+  y = doc.y + 4;
+  doc.moveTo(left, y).lineTo(left + 90, y).lineWidth(2).stroke(RED);
+  y += 14;
+
+  const s = data.stats || {};
+  y = drawKpiTiles(doc, layout, y, [
+    { value: `${data.slaTarget}%`, label: 'SLA Target', color: RED },
+    { value: `${s.meeting || 0}/${s.total || 0}`, label: 'Meeting SLA', color: GREEN },
+    { value: String(s.failing || 0), label: 'Failing', color: RED },
+    { value: s.overall_uptime_pct == null ? '—' : `${s.overall_uptime_pct}%`, label: 'Overall Uptime', color: NAVY },
+    { value: `${s.total_downtime_minutes || 0} min`, label: 'Total Downtime', color: YELLOW },
+  ]);
+  y += 22;
+  doc.y = y;
+
+  renderChartBlock(doc, layout, 'Availability Trend', data.trendPoints, { yMax: 100, ySuffix: '%', color: RED, rangeLabel: data.rangeLabel });
+
+  sectionTitle(doc, layout, 'Device Compliance');
+  drawTable(doc, {
+    columns: [
+      { key: 'device_name', label: 'Device', width: 170 },
+      { key: 'site_name', label: 'Site', width: 130 },
+      { key: 'uptime', label: 'Uptime %', width: 80, align: 'right', color: (r) => r._u == null ? MUTED : (r._met ? GREEN : RED) },
+      { key: 'downtime', label: 'Downtime (min)', width: 100, align: 'right' },
+      { key: 'status', label: 'SLA Status', width: 80, align: 'center', color: (r) => r._met ? GREEN : RED },
+    ],
+    rows: (data.devices || []).map((d) => ({
+      device_name: d.device_name || '—', site_name: d.site_name || '—',
+      uptime: d.uptime_pct == null ? '—' : `${d.uptime_pct}%`, _u: d.uptime_pct,
+      downtime: d.downtime_minutes == null ? '—' : String(d.downtime_minutes),
+      status: d.sla_met ? 'PASS' : 'FAIL', _met: d.sla_met,
+    })),
+  }, layout, { continueOnPage: true });
+  doc.y += 18;
+
+  const risk = data.risk || {};
+  const atRisk = risk.at_risk || [];
+  const trends = risk.trends || [];
+  sectionTitle(doc, layout, 'Risk Assessment');
+  const riskLines = [
+    ...atRisk.map((r) => `At Risk: ${r.device_name}${r.site_name ? ` (${r.site_name})` : ''} at ${r.uptime_pct}%${r.minutes_to_breach != null ? ` - ${r.minutes_to_breach} minutes from SLA breach` : ''}`),
+    ...trends,
+  ];
+  bulletList(doc, layout, riskLines, 'No SLA risks detected - all devices have comfortable headroom.');
+}
+
+// ════════════════════════════════════════════════════════════
+// CAPACITY — mirror of GET /api/reports/capacity
+// ════════════════════════════════════════════════════════════
+function capacityAtRisk(row) {
+  if (row.utilization_pct != null && row.utilization_pct >= 80) return true;
+  if (row.trend_in === 'increasing' && (row.proj_90d_in || 0) > (row.avg_in_mbps || 0) * 1.5) return true;
+  return false;
+}
+
+async function gatherCapacity(db, params) {
+  const q = params || {};
+  const win = getDateRange({ ...q, range: q.range || '90d' });
+  const siteFilter = resolveSiteFilter(q);
+  const runQ = mkRunQ(db, 'capacity');
+  const midpoint = new Date((Date.parse(win.start) + Date.parse(win.end)) / 2).toISOString();
+
+  const p = [win.start, win.end, midpoint];
+  const filters = [`s.metric_name ~ '^if_[0-9]+_(in|out)_bps$'`, `s.ts BETWEEN $1 AND $2`];
+  if (q.site_id) { p.push(parseInt(q.site_id, 10)); filters.push(`d.site_id = $${p.length}`); }
+  const sc = siteClause(siteFilter, p, 'd.site_id');
+  if (sc) filters.push(sc);
+  const r = await runQ('capacity', `
+    SELECT s.device_id, d.name AS device_name, COALESCE(d.site_name, 'Unassigned') AS site_name,
+           s.if_name, s.metric_name,
+           AVG(s.value) AS avg_bps, MAX(s.value) AS peak_bps,
+           AVG(s.value) FILTER (WHERE s.ts <  $3) AS first_half,
+           AVG(s.value) FILTER (WHERE s.ts >= $3) AS second_half
+    FROM snmp_results s JOIN monitored_devices d ON d.id = s.device_id
+    WHERE ${filters.join(' AND ')}
+    GROUP BY s.device_id, d.name, site_name, s.if_name, s.metric_name`, p, []);
+
+  const toMbps = (v) => (v == null ? null : Math.round(Number(v) / 1e6 * 100) / 100);
+  const map = new Map();
+  for (const row of r.rows) {
+    const m = /^if_(\d+)_(in|out)_bps$/.exec(row.metric_name);
+    if (!m) continue;
+    const idx = m[1], dir = m[2];
+    const key = `${row.device_id}|${idx}`;
+    let e = map.get(key) || {
+      device_name: row.device_name, site_name: row.site_name, interface: row.if_name || `Interface ${idx}`,
+      avg_in_mbps: null, avg_out_mbps: null, peak_in_mbps: null, peak_out_mbps: null, _f: null, _s: null,
+    };
+    if (row.if_name) e.interface = row.if_name;
+    if (dir === 'in') { e.avg_in_mbps = toMbps(row.avg_bps); e.peak_in_mbps = toMbps(row.peak_bps); e._f = row.first_half; e._s = row.second_half; }
+    else { e.avg_out_mbps = toMbps(row.avg_bps); e.peak_out_mbps = toMbps(row.peak_bps); }
+    map.set(key, e);
+  }
+  const rows = Array.from(map.values()).map((e) => {
+    const f = Number(e._f) || 0, sh = Number(e._s) || 0;
+    let trend_in = 'stable';
+    if (f > 0) { const r2 = (sh - f) / f; trend_in = r2 > 0.1 ? 'increasing' : r2 < -0.1 ? 'decreasing' : 'stable'; }
+    else if (sh > 0) trend_in = 'increasing';
+    const cur = e.avg_in_mbps || 0;
+    const growthPerMonth = Math.max(0, (sh - f) / 1e6);
+    const proj = (months) => Math.round((cur + growthPerMonth * months) * 100) / 100;
+    delete e._f; delete e._s;
+    return { ...e, trend_in, proj_30d_in: proj(1), proj_60d_in: proj(2), proj_90d_in: proj(3), utilization_pct: null };
+  }).sort((a, b) => (a.device_name || '').localeCompare(b.device_name || '') || (a.interface || '').localeCompare(b.interface || ''));
+
+  for (const row of rows) row._atRisk = capacityAtRisk(row);
+
+  // Aggregate inbound-bandwidth trend for the chart (daily average, Mbps).
+  const tp = [win.start, win.end];
+  const tFilters = [`s.metric_name ~ '^if_[0-9]+_in_bps$'`, `s.ts BETWEEN $1 AND $2`];
+  if (q.site_id) { tp.push(parseInt(q.site_id, 10)); tFilters.push(`d.site_id = $${tp.length}`); }
+  const tsc = siteClause(siteFilter, tp, 'd.site_id');
+  if (tsc) tFilters.push(tsc);
+  const tr = await runQ('bwtrend', `
+    SELECT to_char(date_trunc('day', s.ts), 'YYYY-MM-DD') AS day, AVG(s.value) AS avg_bps
+    FROM snmp_results s JOIN monitored_devices d ON d.id = s.device_id
+    WHERE ${tFilters.join(' AND ')}
+    GROUP BY 1 ORDER BY 1`, tp, []);
+  const trendPoints = tr.rows.map((x) => ({ t: x.day, v: x.avg_bps == null ? null : Math.round(Number(x.avg_bps) / 1e6 * 100) / 100 })).filter((x) => x.v != null);
+  const maxV = trendPoints.reduce((a, x) => Math.max(a, x.v), 0);
+  const trendYMax = maxV > 0 ? Math.max(4, Math.ceil(maxV * 1.2)) : 100;
+
+  const atRiskCount = rows.filter((row) => row._atRisk).length;
+  const avgInVals = rows.map((row) => row.avg_in_mbps).filter((v) => v != null).map(Number);
+  const avgIn = avgInVals.length ? Math.round((avgInVals.reduce((a, b) => a + b, 0) / avgInVals.length) * 100) / 100 : null;
+  const peakIn = rows.reduce((a, row) => Math.max(a, row.peak_in_mbps || 0), 0);
+
+  return {
+    title: 'Capacity Planning',
+    dateRange: win.label,
+    rangeLabel: `Inbound bandwidth (Mbps) - ${win.label}`,
+    rows,
+    kpis: { interfaces: rows.length, atRisk: atRiskCount, avgIn, peakIn: rows.length ? peakIn : null },
+    trendPoints, trendYMax,
+    summary: [
+      { label: 'Interfaces', value: String(rows.length), color: NAVY },
+      { label: 'At Risk', value: String(atRiskCount), color: atRiskCount > 0 ? RED : GREEN },
+      { label: 'Avg In (Mbps)', value: avgIn == null ? '—' : String(avgIn), color: NAVY },
+    ],
+  };
+}
+
+function renderCapacity(doc, data, layout) {
+  const { left, contentW } = layout;
+  const fmtMbps = (v) => (v == null ? '—' : `${Number(v).toFixed(2)} Mbps`);
+  doc.addPage();
+  let y = doc.page.margins.top;
+
+  doc.fillColor(NAVY).fontSize(20).font('Helvetica-Bold').text(data.title, left, y, { width: contentW });
+  y = doc.y + 2;
+  doc.fillColor(MUTED).fontSize(11).font('Helvetica').text('Bandwidth trends and utilization projections', left, y, { width: contentW });
+  y = doc.y + 4;
+  doc.moveTo(left, y).lineTo(left + 90, y).lineWidth(2).stroke(RED);
+  y += 14;
+
+  const k = data.kpis || {};
+  y = drawKpiTiles(doc, layout, y, [
+    { value: String(k.interfaces || 0), label: 'Interfaces', color: NAVY },
+    { value: String(k.atRisk || 0), label: 'At Risk', color: (k.atRisk || 0) > 0 ? RED : GREEN },
+    { value: fmtMbps(k.avgIn), label: 'Avg In', color: NAVY },
+    { value: fmtMbps(k.peakIn), label: 'Peak In', color: YELLOW },
+  ]);
+  y += 22;
+  doc.y = y;
+
+  renderChartBlock(doc, layout, 'Inbound Bandwidth Trend', data.trendPoints, { yMax: data.trendYMax, ySuffix: ' Mb', color: RED, rangeLabel: data.rangeLabel });
+
+  sectionTitle(doc, layout, 'Interface Capacity');
+  drawTable(doc, {
+    columns: [
+      { key: 'device', label: 'Device / Site', width: 130 },
+      { key: 'interface', label: 'Interface', width: 80 },
+      { key: 'avg_in', label: 'Avg In', width: 65, align: 'right' },
+      { key: 'avg_out', label: 'Avg Out', width: 65, align: 'right' },
+      { key: 'peak', label: 'Peak In/Out', width: 95, align: 'right' },
+      { key: 'trend', label: 'Trend', width: 65, color: (r) => r.trend === 'increasing' ? RED : r.trend === 'decreasing' ? MUTED : GREEN },
+      { key: 'p30', label: '30d', width: 55, align: 'right' },
+      { key: 'p60', label: '60d', width: 55, align: 'right' },
+      { key: 'p90', label: '90d', width: 55, align: 'right' },
+      { key: 'status', label: 'Status', width: 55, align: 'center', color: (r) => r._risk ? RED : GREEN },
+    ],
+    rows: (data.rows || []).map((row) => ({
+      device: `${row.device_name || '—'}${row.site_name ? ` / ${row.site_name}` : ''}`,
+      interface: row.interface || '—',
+      avg_in: fmtMbps(row.avg_in_mbps), avg_out: fmtMbps(row.avg_out_mbps),
+      peak: `${fmtMbps(row.peak_in_mbps)} / ${fmtMbps(row.peak_out_mbps)}`,
+      trend: row.trend_in,
+      p30: fmtMbps(row.proj_30d_in), p60: fmtMbps(row.proj_60d_in), p90: fmtMbps(row.proj_90d_in),
+      status: row._atRisk ? 'At Risk' : 'OK', _risk: row._atRisk,
+    })),
+  }, layout, { continueOnPage: true });
+}
+
 // ── Renderer registry ─────────────────────────────────────────
 // Canonical template keys → { title, gather, render }. `hasPdfRenderer` and
 // `generateReportPdf` both resolve through normalizeTemplate() so an alias like
 // 'executive-summary' maps to the same 'executive' renderer.
 const RENDERERS = {
   'executive': { title: 'Executive Summary', gather: gatherExecutive, render: renderExecutive },
+  'network-summary': { title: 'Network Summary', gather: gatherNetworkSummary, render: renderNetworkSummary },
+  'site-summary': { title: 'Site Report', gather: gatherSite, render: renderSite },
+  'sla-compliance': { title: 'SLA Compliance', gather: gatherSla, render: renderSla },
+  'capacity': { title: 'Capacity Planning', gather: gatherCapacity, render: renderCapacity },
 };
-const ALIASES = { 'executive-summary': 'executive' };
+const ALIASES = {
+  'executive-summary': 'executive',
+  'network': 'network-summary',
+  'site': 'site-summary',
+  'sla': 'sla-compliance',
+  'sla-report': 'sla-compliance',
+  'capacity-planning': 'capacity',
+};
 
 function normalizeTemplate(template) {
   const t = String(template || '').trim();

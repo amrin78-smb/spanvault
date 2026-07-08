@@ -31,6 +31,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.59.1': [
+    'More reports now generate as server-side PDFs (and can be attached to scheduled emails): Network Summary, Site, SLA Compliance and Capacity — each with KPI tiles, a trend chart and detail tables, matching the on-screen report.',
+  ],
   '1.59.0': [
     'Reports page redesigned into a clean two-pane layout: a grouped report catalog on the left (Overview, Performance & SLA, Wireless, Detail) and a workspace on the right with View / Saved tabs and a sticky config bar — no more long single scroll.',
     'Reports can now be generated as proper server-side PDFs (not just browser print). The first report, Executive Summary, is available as a real PDF; the remaining reports are being converted onto the same engine.',
