@@ -18,6 +18,7 @@ import WirelessAPHealthReport from '@/components/reports/WirelessAPHealthReport'
 import WirelessClientReport from '@/components/reports/WirelessClientReport';
 import WirelessRFReport from '@/components/reports/WirelessRFReport';
 import WirelessCapacityReport from '@/components/reports/WirelessCapacityReport';
+import ReportsCatalog, { CatalogReport } from '@/components/reports/ReportsCatalog';
 
 // ── Types ──────────────────────────────────────────────────────
 type Site = { id: number; name: string };
@@ -40,6 +41,9 @@ type Template = {
   scope: ScopeKind; sla?: boolean; metric?: boolean; wireless?: boolean;
   // granular = uses the flexible time range / bucket / metric-checkbox controls.
   granular?: boolean;
+  // category = left-rail catalog grouping (display metadata only; does not affect
+  // report generation).
+  category: string;
 };
 type Applied = {
   template: string; range: string; from: string; to: string; bucket: string;
@@ -51,23 +55,32 @@ type Applied = {
   entities: EntityRef[]; selectedMetrics: string[];
 };
 
+// Left-rail catalog group order. Each template carries a `category` matching one of
+// these; the catalog renders groups in this order and lists templates in array order
+// within each group.
+const GROUP_ORDER = ['Overview', 'Performance & SLA', 'Wireless', 'Detail'];
+
 const TEMPLATES: Template[] = [
-  { key: 'network-summary', icon: '📊', label: 'Network Summary', desc: 'Overall health across all sites and devices', scope: 'all' },
-  { key: 'site-summary', icon: '🏢', label: 'Site Report', desc: 'All devices in a site with comparison table', scope: 'site' },
-  { key: 'device-detail', icon: '🖥', label: 'Device Detail', desc: 'Time-series charts, history and metrics for one or more devices', scope: 'deviceMulti', granular: true },
-  { key: 'ap-detail', icon: '📡', label: 'AP Detail', desc: 'Time-series charts, clients, RF and throughput for one or more access points', scope: 'apMulti', granular: true },
-  { key: 'sla-compliance', icon: '✅', label: 'SLA Compliance', desc: 'Pass/fail per device vs SLA target', scope: 'flexible', sla: true },
-  { key: 'top-worst', icon: '⚠', label: 'Top 10 Worst', desc: 'Lowest availability, highest latency or most alerts', scope: 'flexibleNoDevice', metric: true },
-  { key: 'alert-analysis', icon: '🔔', label: 'Alert Analysis', desc: 'Most alerted devices, MTTR, and patterns', scope: 'flexibleNoDevice' },
-  { key: 'capacity', icon: '📈', label: 'Capacity', desc: 'Bandwidth trends and utilization projections', scope: 'flexibleNoDevice' },
-  { key: 'executive', icon: '📋', label: 'Executive', desc: 'Management-level overview with recommendations', scope: 'all' },
-  { key: 'wireless-overview', icon: '📶', label: 'Wireless Overview', desc: 'AP status, clients and utilization across all sites', scope: 'all', wireless: true },
-  { key: 'wireless-ap-health', icon: '📡', label: 'AP Health', desc: 'Per-AP health scores, channels and utilization', scope: 'all', wireless: true },
-  { key: 'wireless-clients', icon: '👥', label: 'Client Analysis', desc: 'Client distribution, problem clients and roaming', scope: 'all', wireless: true },
-  { key: 'wireless-rf', icon: '📻', label: 'RF Health', desc: 'Co-channel interference, band steering and RF scores', scope: 'all', wireless: true },
-  { key: 'wireless-capacity', icon: '📊', label: 'Wireless Capacity', desc: 'AP capacity usage and client growth trends', scope: 'all', wireless: true },
+  { key: 'executive', icon: '📋', label: 'Executive', desc: 'Management-level overview with recommendations', scope: 'all', category: 'Overview' },
+  { key: 'network-summary', icon: '📊', label: 'Network Summary', desc: 'Overall health across all sites and devices', scope: 'all', category: 'Overview' },
+  { key: 'site-summary', icon: '🏢', label: 'Site Report', desc: 'All devices in a site with comparison table', scope: 'site', category: 'Overview' },
+  { key: 'sla-compliance', icon: '✅', label: 'SLA Compliance', desc: 'Pass/fail per device vs SLA target', scope: 'flexible', sla: true, category: 'Performance & SLA' },
+  { key: 'capacity', icon: '📈', label: 'Capacity', desc: 'Bandwidth trends and utilization projections', scope: 'flexibleNoDevice', category: 'Performance & SLA' },
+  { key: 'top-worst', icon: '⚠', label: 'Top 10 Worst', desc: 'Lowest availability, highest latency or most alerts', scope: 'flexibleNoDevice', metric: true, category: 'Performance & SLA' },
+  { key: 'alert-analysis', icon: '🔔', label: 'Alerts & Anomalies', desc: 'Most alerted devices, MTTR, and patterns', scope: 'flexibleNoDevice', category: 'Performance & SLA' },
+  { key: 'wireless-overview', icon: '📶', label: 'Wireless Overview', desc: 'AP status, clients and utilization across all sites', scope: 'all', wireless: true, category: 'Wireless' },
+  { key: 'wireless-ap-health', icon: '📡', label: 'Wireless AP Health', desc: 'Per-AP health scores, channels and utilization', scope: 'all', wireless: true, category: 'Wireless' },
+  { key: 'wireless-clients', icon: '👥', label: 'Wireless Client', desc: 'Client distribution, problem clients and roaming', scope: 'all', wireless: true, category: 'Wireless' },
+  { key: 'wireless-rf', icon: '📻', label: 'Wireless RF', desc: 'Co-channel interference, band steering and RF scores', scope: 'all', wireless: true, category: 'Wireless' },
+  { key: 'wireless-capacity', icon: '📊', label: 'Wireless Capacity', desc: 'AP capacity usage and client growth trends', scope: 'all', wireless: true, category: 'Wireless' },
+  { key: 'device-detail', icon: '🖥', label: 'Device Detail', desc: 'Time-series charts, history and metrics for one or more devices', scope: 'deviceMulti', granular: true, category: 'Detail' },
+  { key: 'ap-detail', icon: '📡', label: 'AP Detail', desc: 'Time-series charts, clients, RF and throughput for one or more access points', scope: 'apMulti', granular: true, category: 'Detail' },
 ];
 const TEMPLATE_BY_KEY: Record<string, Template> = Object.fromEntries(TEMPLATES.map((t) => [t.key, t]));
+// Catalog rows (display metadata) derived once from the templates.
+const CATALOG_REPORTS: CatalogReport[] = TEMPLATES.map((t) => ({
+  key: t.key, short: t.label, title: t.label, desc: t.desc, icon: t.icon, category: t.category,
+}));
 
 const RANGES = [
   { key: '24h', label: 'Last 24h' },
@@ -257,35 +270,6 @@ const presetBtn = (active: boolean): React.CSSProperties => ({
   color: active ? '#fff' : 'var(--text-primary)',
 });
 
-// ── Compact pill tabs (top-level component) ────────────────────
-function TemplatePills({ active, onSelect }: { active: string; onSelect: (k: string) => void }) {
-  return (
-    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
-      {TEMPLATES.map((t) => {
-        const on = active === t.key;
-        return (
-          <button
-            key={t.key}
-            onClick={() => onSelect(t.key)}
-            style={{
-              display: 'inline-flex', alignItems: 'center', gap: 6,
-              height: CTRL_H, padding: '0 12px', fontSize: 'var(--text-sm)', fontWeight: 600,
-              cursor: 'pointer', borderRadius: 'var(--radius-sm)',
-              border: `1px solid ${on ? 'var(--primary)' : 'var(--border)'}`,
-              background: on ? 'var(--primary)' : 'var(--bg-card)',
-              color: on ? '#fff' : 'var(--text-primary)',
-              transition: 'all 0.12s',
-            }}
-          >
-            <span style={{ fontSize: 'var(--text-base)', lineHeight: 1 }}>{t.icon}</span>
-            <span>{t.label}</span>
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
 export default function ReportsPage() {
   const { data: session } = useSession();
   const email = session?.user?.email || '';
@@ -316,6 +300,8 @@ export default function ReportsPage() {
   const [saving, setSaving] = useState(false);
   const [saveName, setSaveName] = useState('');
   const [showSave, setShowSave] = useState(false);
+  // Right-workspace active tab (View = configure + render; Saved = saved reports).
+  const [tab, setTab] = useState<'view' | 'saved'>('view');
 
   const tpl = TEMPLATE_BY_KEY[template];
 
@@ -480,31 +466,113 @@ export default function ReportsPage() {
       entities: [], selectedMetrics: defaultMetrics(s.template),
     });
     setShowSave(false);
+    setTab('view'); // surface the loaded report in the workspace
+  }
+
+  // Select a template from the catalog rail: set the template and surface the View tab.
+  function selectTemplate(key: string) {
+    setTemplate(key);
+    setTab('view');
   }
 
   const showScopeSelector = tpl.scope === 'flexible' || tpl.scope === 'flexibleNoDevice';
 
   return (
     <div>
+      {/* Print-layout guard: collapse the two-pane wrappers in print so the report
+          output (#report-print, absolutely positioned by globals.css) prints exactly
+          as it did in the old single-scroll layout — no reserved-height blank pages,
+          no overflow clipping, no card chrome. Scoped to this page's own classes. */}
+      <style>{`
+        @media print {
+          .sv-rpt-2pane { display: block !important; height: auto !important; min-height: 0 !important; overflow: visible !important; }
+          .sv-rpt-workspace { display: block !important; overflow: visible !important; border: none !important; background: transparent !important; border-radius: 0 !important; }
+          .sv-rpt-tabcontent { display: block !important; overflow: visible !important; }
+          #report-print.sv-report-output { padding: 0 !important; }
+        }
+      `}</style>
+
+      {/* Page heading */}
       <div className="sv-no-print">
-        {/* Page heading */}
         <div className="page-title" style={{ marginBottom: 2 }}>Reports</div>
         <div className="page-subtitle" style={{ marginBottom: 14 }}>
           Run reports across your network — printable for management.
         </div>
+      </div>
 
-        {/* Template selector — compact pill tabs */}
-        <TemplatePills active={template} onSelect={setTemplate} />
+      {/* Two-pane layout: catalog rail (own scroll) + workspace (tab strip + content).
+          NOT wrapped in .sv-no-print — the report output lives inside the View tab and
+          must stay printable; chrome pieces are individually marked .sv-no-print. */}
+      <div className="sv-rpt-2pane" style={{ display: 'flex', gap: 16, alignItems: 'stretch', height: 'calc(100vh - 200px)', minHeight: 480 }}>
 
-        {/* Selected-template description */}
-        <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', fontStyle: 'italic', marginTop: 6, marginBottom: 12 }}>{tpl.desc}</div>
-
-        {/* Controls — single inline row */}
-        <div style={{
-          background: 'var(--bg-card)', border: '1px solid var(--border)',
-          borderRadius: 'var(--radius-sm)', padding: '12px 16px', marginBottom: 12,
+        {/* ── LEFT RAIL — grouped report catalog ── */}
+        <div className="sv-no-print" style={{
+          width: 260, flexShrink: 0, background: 'var(--bg-card)', border: '1px solid var(--border)',
+          borderRadius: 'var(--radius)', padding: 12, display: 'flex', flexDirection: 'column', minHeight: 0,
         }}>
-          <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12 }}>
+          <ReportsCatalog
+            reports={CATALOG_REPORTS}
+            groupOrder={GROUP_ORDER}
+            activeKey={template}
+            onSelect={selectTemplate}
+          />
+        </div>
+
+        {/* ── RIGHT WORKSPACE ── */}
+        <div className="sv-rpt-workspace" style={{
+          flex: 1, minWidth: 0, background: 'var(--bg-card)', border: '1px solid var(--border)',
+          borderRadius: 'var(--radius)', display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden',
+        }}>
+
+          {/* Tab strip — View | Saved */}
+          <div className="sv-no-print" style={{ display: 'flex', gap: 4, padding: '0 16px', borderBottom: '1px solid var(--border-light)', flexShrink: 0 }}>
+            {([
+              { key: 'view' as const, label: 'View' },
+              { key: 'saved' as const, label: `Saved (${saved.data?.length || 0})` },
+            ]).map((t) => {
+              const on = tab === t.key;
+              return (
+                <button
+                  key={t.key}
+                  type="button"
+                  onClick={() => setTab(t.key)}
+                  style={{
+                    padding: '12px 14px', background: 'transparent', border: 'none',
+                    borderBottom: on ? '2px solid var(--primary)' : '2px solid transparent',
+                    color: on ? 'var(--text-primary)' : 'var(--text-secondary)',
+                    fontSize: 'var(--text-base)', fontWeight: on ? 600 : 500, cursor: 'pointer',
+                    marginBottom: -1, fontFamily: 'inherit',
+                  }}
+                >
+                  {t.label}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Tab content (independently scrolls) */}
+          <div className="sv-rpt-tabcontent" style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
+
+            {/* ── VIEW TAB ── */}
+            {tab === 'view' && (
+              <>
+                {/* Selected-template header */}
+                <div className="sv-no-print" style={{ padding: '16px 18px', borderBottom: '1px solid var(--border-light)' }}>
+                  <div style={{ fontSize: 'var(--text-lg)', fontWeight: 700, color: 'var(--text-primary)', display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                    <span aria-hidden style={{ fontSize: 'var(--text-lg)', lineHeight: 1 }}>{tpl.icon}</span>
+                    {tpl.label}
+                  </div>
+                  <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', fontStyle: 'italic', marginTop: 4 }}>{tpl.desc}</div>
+                </div>
+
+                {/* Sticky config bar — opaque bg + z-index so scrolled report content
+                    never bleeds through (suite sticky-header rule). */}
+                <div className="sv-no-print" style={{
+                  position: 'sticky', top: 0, zIndex: 20, background: 'var(--bg-card)',
+                  borderBottom: '1px solid var(--border-light)', boxShadow: '0 1px 0 var(--border)',
+                  padding: '12px 18px',
+                }}>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12 }}>
             {/* Wireless controller scope */}
             {tpl.wireless && (
               <label style={fieldLabel}>Controller
@@ -637,60 +705,14 @@ export default function ReportsPage() {
               {...(!canRun() ? { 'aria-disabled': true } : {})}>
               Run Report →
             </button>
-          </div>
-        </div>
+                  </div>
+                </div>
 
-        {/* Saved Reports — slim inline chips */}
-        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6, marginBottom: 16 }}>
-          <span style={{ fontSize: 'var(--text-xs)', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em', marginRight: 2 }}>
-            Saved:
-          </span>
-          {(saved.data?.length || 0) === 0 && (
-            <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)' }}>none yet</span>
-          )}
-          {saved.data?.map((s) => (
-            <span key={s.id} style={{
-              display: 'inline-flex', alignItems: 'center', height: 24,
-              border: '1px solid var(--border)', borderRadius: 999, overflow: 'hidden',
-              background: 'var(--bg-card)',
-            }}>
-              <button onClick={() => loadSaved(s)} title={`Load "${s.name}"`}
-                style={{ border: 'none', background: 'transparent', cursor: 'pointer', fontSize: 'var(--text-xs)', fontWeight: 600, color: 'var(--text-primary)', padding: '0 8px', height: 24 }}>
-                {s.name}
-              </button>
-              <button onClick={() => deleteSaved(s.id)} title="Delete"
-                style={{ border: 'none', borderLeft: '1px solid var(--border)', background: 'transparent', cursor: 'pointer', color: 'var(--text-muted)', padding: '0 7px', height: 24, fontSize: 'var(--text-sm)' }}>
-                ×
-              </button>
-            </span>
-          ))}
-          {applied && !empty && !loading && !showSave && (
-            <button onClick={() => setShowSave(true)}
-              style={{ display: 'inline-flex', alignItems: 'center', height: 24, border: '1px dashed var(--border)', borderRadius: 999, background: 'var(--bg-card)', cursor: 'pointer', fontSize: 'var(--text-xs)', fontWeight: 600, color: 'var(--primary)', padding: '0 10px' }}>
-              + Save this report
-            </button>
-          )}
-          {applied && !empty && !loading && showSave && (
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-              <input style={{ ...ctrlBase, height: 24, fontSize: 'var(--text-xs)', width: 170 }} placeholder="Name this report…"
-                value={saveName} autoFocus onChange={(e) => setSaveName(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter') saveReport(); if (e.key === 'Escape') setShowSave(false); }} />
-              <button onClick={saveReport} disabled={saving || !saveName.trim()}
-                style={{ ...presetBtn(true), height: 24, padding: '0 10px', fontSize: 'var(--text-xs)', opacity: saving || !saveName.trim() ? 0.5 : 1 }}>
-                {saving ? 'Saving…' : 'Save'}
-              </button>
-              <button onClick={() => { setShowSave(false); setSaveName(''); }}
-                style={{ ...presetBtn(false), height: 24, padding: '0 9px', fontSize: 'var(--text-xs)' }}>
-                ×
-              </button>
-            </span>
-          )}
-        </div>
-      </div>
-
-      {/* Report output */}
-      {applied && (
-        <div className="sv-report-output" id="report-print">
+                {/* Report output — on screen this sits below the sticky config bar;
+                    in print it is the ONLY visible subtree (globals.css). Not wrapped
+                    in .sv-no-print so it stays printable. */}
+                {applied ? (
+                <div className="sv-report-output" id="report-print" style={{ padding: '16px 18px' }}>
           {/* Print-only repeating page footer (brand · confidential · generated). */}
           <div className="sv-print-footer">
             <span>SpanVault · NocVault Suite</span>
@@ -774,8 +796,75 @@ export default function ReportsPage() {
           ) : report.data ? (
             <ReportBody template={applied.template} data={report.data} />
           ) : null}
+                </div>
+                ) : (
+                  <div className="sv-no-print" style={{ padding: 48, textAlign: 'center' }}>
+                    <p className="sv-muted" style={{ margin: 0 }}>
+                      Configure the options above and choose “Run Report →” to generate the {tpl.label} report.
+                    </p>
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* ── SAVED TAB — the existing saved-reports UI ── */}
+            {tab === 'saved' && (
+              <div className="sv-no-print" style={{ padding: 18 }}>
+                <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6 }}>
+                  <span style={{ fontSize: 'var(--text-xs)', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em', marginRight: 2 }}>
+                    Saved:
+                  </span>
+                  {(saved.data?.length || 0) === 0 && (
+                    <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)' }}>none yet</span>
+                  )}
+                  {saved.data?.map((s) => (
+                    <span key={s.id} style={{
+                      display: 'inline-flex', alignItems: 'center', height: 24,
+                      border: '1px solid var(--border)', borderRadius: 999, overflow: 'hidden',
+                      background: 'var(--bg-card)',
+                    }}>
+                      <button onClick={() => loadSaved(s)} title={`Load "${s.name}"`}
+                        style={{ border: 'none', background: 'transparent', cursor: 'pointer', fontSize: 'var(--text-xs)', fontWeight: 600, color: 'var(--text-primary)', padding: '0 8px', height: 24 }}>
+                        {s.name}
+                      </button>
+                      <button onClick={() => deleteSaved(s.id)} title="Delete"
+                        style={{ border: 'none', borderLeft: '1px solid var(--border)', background: 'transparent', cursor: 'pointer', color: 'var(--text-muted)', padding: '0 7px', height: 24, fontSize: 'var(--text-sm)' }}>
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                  {applied && !empty && !loading && !showSave && (
+                    <button onClick={() => setShowSave(true)}
+                      style={{ display: 'inline-flex', alignItems: 'center', height: 24, border: '1px dashed var(--border)', borderRadius: 999, background: 'var(--bg-card)', cursor: 'pointer', fontSize: 'var(--text-xs)', fontWeight: 600, color: 'var(--primary)', padding: '0 10px' }}>
+                      + Save this report
+                    </button>
+                  )}
+                  {applied && !empty && !loading && showSave && (
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                      <input style={{ ...ctrlBase, height: 24, fontSize: 'var(--text-xs)', width: 170 }} placeholder="Name this report…"
+                        value={saveName} autoFocus onChange={(e) => setSaveName(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === 'Enter') saveReport(); if (e.key === 'Escape') setShowSave(false); }} />
+                      <button onClick={saveReport} disabled={saving || !saveName.trim()}
+                        style={{ ...presetBtn(true), height: 24, padding: '0 10px', fontSize: 'var(--text-xs)', opacity: saving || !saveName.trim() ? 0.5 : 1 }}>
+                        {saving ? 'Saving…' : 'Save'}
+                      </button>
+                      <button onClick={() => { setShowSave(false); setSaveName(''); }}
+                        style={{ ...presetBtn(false), height: 24, padding: '0 9px', fontSize: 'var(--text-xs)' }}>
+                        ×
+                      </button>
+                    </span>
+                  )}
+                </div>
+                {applied && !empty && !loading && (
+                  <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', marginTop: 10 }}>
+                    Saving stores the current report’s template, scope and date range so you can re-run it later.
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         </div>
-      )}
+      </div>
     </div>
   );
 }

@@ -16,6 +16,7 @@
 
 const http = require('http');
 const nodemailer = require('nodemailer');
+const { generateReportPdf, hasPdfRenderer } = require('./reportsPdf');
 
 const API_PORT = parseInt(process.env.SV_API_PORT || '3009', 10);
 
@@ -107,12 +108,39 @@ async function runAndEmailReport(pool, report, getSmtpSettings) {
   });
 
   const recipients = String(report.recipients).split(',').map((e) => e.trim()).filter(Boolean);
-  await transporter.sendMail({
+  const mailOptions = {
     from: smtp.from || smtp.user || 'spanvault@nocvault.com',
     to: recipients,
     subject: `SpanVault Report: ${report.name}`,
     html,
-  });
+  };
+
+  // If a pdfkit renderer exists for this template, attach the rich PDF alongside
+  // the HTML body. A PDF failure must NEVER break the email — on any error we log
+  // and fall back to sending the HTML-only message unchanged.
+  if (hasPdfRenderer(report.template)) {
+    try {
+      const pdfBuffer = await generateReportPdf(pool, {
+        template: report.template,
+        params: buildReportParams(report),
+        meta: {
+          title: report.name,
+          company: process.env.SV_BRAND || 'SpanVault',
+          generatedBy: 'Scheduled report',
+          generatedAt: new Date(),
+        },
+      });
+      mailOptions.attachments = [{
+        filename: `${report.template}-${isoDate(new Date())}.pdf`,
+        content: pdfBuffer,
+        contentType: 'application/pdf',
+      }];
+    } catch (e) {
+      console.error(`[Reports] PDF generation failed for "${report.name}" (#${report.id}); sending HTML-only:`, e.message);
+    }
+  }
+
+  await transporter.sendMail(mailOptions);
 
   await pool.query(`
     INSERT INTO report_history
@@ -168,6 +196,52 @@ function buildReportUrl(report) {
     default:
       return `/api/reports/network-summary?${p}`;
   }
+}
+
+// Build the plain params object the PDF renderer receives — the same stored
+// scope/range/target the run already uses to fetch data (mirrors buildReportUrl).
+function buildReportParams(report) {
+  const range = report.date_range || '30d';
+  const params = { range };
+  if (range === 'custom' && report.date_from && report.date_to) {
+    params.date_from = isoDate(report.date_from);
+    params.date_to = isoDate(report.date_to);
+  }
+
+  const scopeId = report.scope_id;
+  params.scope_type = report.scope_type;
+  params.scope_id = scopeId != null ? scopeId : null;
+
+  switch (report.template) {
+    case 'site-summary':
+      if (scopeId) params.site_id = scopeId;
+      if (report.sla_target != null) params.sla_target = report.sla_target;
+      break;
+    case 'device-detail':
+      if (scopeId) params.device_id = scopeId;
+      break;
+    case 'sla-compliance':
+      if (report.scope_type === 'site' && scopeId) params.site_id = scopeId;
+      if (report.scope_type === 'device' && scopeId) params.device_id = scopeId;
+      if (report.sla_target != null) params.sla_target = report.sla_target;
+      break;
+    case 'top-worst':
+      if (report.scope_type === 'site' && scopeId) params.site_id = scopeId;
+      params.metric = 'uptime';
+      params.limit = 10;
+      break;
+    case 'alert-analysis':
+      if (report.scope_type === 'site' && scopeId) params.site_id = scopeId;
+      break;
+    case 'capacity':
+      if (report.scope_type === 'site' && scopeId) params.site_id = scopeId;
+      break;
+    case 'executive':
+    case 'network-summary':
+    default:
+      break;
+  }
+  return params;
 }
 
 // Normalise a DATE column (Date object or 'YYYY-MM-DD' string) to YYYY-MM-DD.

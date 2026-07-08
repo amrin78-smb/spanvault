@@ -22,6 +22,7 @@ const { startWsServer, connectedAgents, agentLogs, pushConfigToAgent, pushConfig
 const intelligence = require('./intelligence');
 const { getLicense, getLicenseState } = require('./licenseCheck');
 const reportScheduler = require('./reportScheduler');
+const { generateReportPdf, hasPdfRenderer } = require('./reportsPdf');
 
 // App version — single source of truth is the root package.json.
 const { version } = require('../package.json');
@@ -30,6 +31,11 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.59.0': [
+    'Reports page redesigned into a clean two-pane layout: a grouped report catalog on the left (Overview, Performance & SLA, Wireless, Detail) and a workspace on the right with View / Saved tabs and a sticky config bar — no more long single scroll.',
+    'Reports can now be generated as proper server-side PDFs (not just browser print). The first report, Executive Summary, is available as a real PDF; the remaining reports are being converted onto the same engine.',
+    'Scheduled reports now email the rich PDF (with charts) as an attachment instead of a plain HTML summary, for reports that have been converted (Executive Summary to start).',
+  ],
   '1.58.4': [
     'The update-available banner check now also uses git instead of GitHub\'s rate-limited web APIs, completing the update-check fix — the background check no longer contributes to the rate limiting that caused "Could not check for updates".',
   ],
@@ -6030,6 +6036,40 @@ app.get('/api/reports/executive', wrap(async (req, res) => {
     console.error('[reports/executive] FULL ERROR:', err);
     console.error('[reports/executive] STACK:', err.stack);
     res.status(500).json({ error: err.message });
+  }
+}));
+
+// ── Server-side PDF export ────────────────────────────────────
+// Renders a report to a branded pdfkit PDF and streams it as an attachment.
+// Guarded like the other report routes (RBAC site scoping is threaded through
+// params._siteFilter). Only templates with a pdfkit renderer are accepted;
+// anything else returns 404. DB/stack detail is never leaked to the client.
+app.get('/api/reports/pdf/:template', wrap(async (req, res) => {
+  const template = String(req.params.template || '');
+  if (!hasPdfRenderer(template)) {
+    return res.status(404).json({ error: `No PDF renderer for report "${template}"` });
+  }
+  const params = { ...req.query };
+  const siteFilter = getSiteFilter(req);
+  if (siteFilter) params._siteFilter = siteFilter;
+
+  const meta = {
+    title: undefined, // renderer supplies its own default title
+    company: process.env.SV_BRAND || 'SpanVault',
+    generatedBy: req.headers['x-user-email'] || req.headers['x-user-role'] || 'system',
+    generatedAt: new Date(),
+  };
+
+  const stamp = new Date().toISOString().slice(0, 10);
+  try {
+    const buffer = await generateReportPdf(sv, { template, params, meta });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${template}-${stamp}.pdf"`);
+    res.setHeader('Content-Length', buffer.length);
+    return res.end(buffer);
+  } catch (err) {
+    console.error('[reports/pdf] generation failed:', err.message);
+    return res.status(500).json({ error: 'Failed to generate PDF report' });
   }
 }));
 
