@@ -34,6 +34,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.59.5': [
+    'The report "Export PDF" button now downloads a real server-generated PDF (with proper charts and tables) instead of using the browser\'s print-to-PDF, which didn\'t render reliably. It exports the report you\'re viewing with the same filters, and detail reports include each selected device/AP.',
+  ],
   '1.59.4': [
     'Bug-sweep fixes: the git-based update check now runs asynchronously (a slow/unreachable GitHub can no longer briefly stall the server and ingestion); selecting a different report in the catalog no longer shows the previous report\'s data under the new title until you Run it; scheduled wireless reports now email that report\'s real data (they were pulling Network Summary data); and per-device/AP report sections no longer needlessly reload when switching tabs or editing an unrelated filter.',
   ],

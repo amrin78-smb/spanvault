@@ -221,6 +221,21 @@ function buildEndpoint(a: Applied): string {
     default: return `/api/reports/network-summary?${p}`;
   }
 }
+
+// Server-side PDF export URL for the applied report — routes the SAME params the
+// on-screen report uses to the pdfkit endpoint (GET /api/reports/pdf/:template).
+// Granular detail reports pass their selected entity ids + chosen metric keys.
+function buildPdfUrl(a: Applied): string {
+  const base = `/api/reports/pdf/${encodeURIComponent(a.template)}`;
+  if (a.template === 'ap-detail' || a.template === 'device-detail') {
+    const p = granularRangeParams(a);
+    p.set('entity_ids', a.entities.map((e) => e.id).join(','));
+    if (a.selectedMetrics.length) p.set('metrics', a.selectedMetrics.join(','));
+    return `${base}?${p}`;
+  }
+  const q = buildEndpoint(a).split('?')[1] || '';
+  return q ? `${base}?${q}` : base;
+}
 // Whether a loaded report payload has no meaningful data to show.
 function isEmptyReport(template: string, data: any): boolean {
   if (!data) return true;
@@ -309,6 +324,8 @@ export default function ReportsPage() {
   const [metric, setMetric] = useState('uptime');
   // Granular detail reports: multi-entity selection + metric checkboxes.
   const [entityIds, setEntityIds] = useState<string[]>([]);
+  // Server-side PDF export state (replaces window.print).
+  const [exporting, setExporting] = useState(false);
   const [entitySearch, setEntitySearch] = useState('');
   const [selectedMetrics, setSelectedMetrics] = useState<string[]>(defaultMetrics('network-summary'));
   const [applied, setApplied] = useState<Applied | null>(null);
@@ -421,6 +438,36 @@ export default function ReportsPage() {
   const isMulti = applied?.template === 'ap-detail' || applied?.template === 'device-detail';
   const endpoint = applied && !isMulti ? buildEndpoint(applied) : null;
   const report = useApi<any>(endpoint, 0);
+
+  // Export the applied report as a server-generated PDF (pdfkit). Same-origin fetch
+  // carries the session cookie; middleware.ts injects the RBAC headers before the
+  // Express route. Streams the PDF as an attachment; download via a temp anchor.
+  async function exportPdf() {
+    if (!applied || exporting) return;
+    setExporting(true);
+    try {
+      const res = await fetch(buildPdfUrl(applied));
+      if (!res.ok) {
+        let msg = `HTTP ${res.status}`;
+        try { msg = (await res.json()).error || msg; } catch { /* non-JSON body */ }
+        throw new Error(msg);
+      }
+      const blob = await res.blob();
+      let filename = `${applied.template}-${new Date().toISOString().slice(0, 10)}.pdf`;
+      const cd = res.headers.get('content-disposition');
+      const m = cd && /filename\*?=(?:UTF-8'')?"?([^"';]+)"?/i.exec(cd);
+      if (m) { try { filename = decodeURIComponent(m[1]); } catch { filename = m[1]; } }
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = filename;
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      window.alert(`PDF export failed: ${(e as Error).message || 'error'}`);
+    } finally {
+      setExporting(false);
+    }
+  }
 
   // loading = any in-flight fetch (incl. refetch on template switch) so we never
   // render a body with stale/mismatched data from the previous template.
@@ -782,9 +829,9 @@ export default function ReportsPage() {
               </div>
             </div>
             {(isMulti || (!empty && !loading && !report.error)) && (
-              <button onClick={() => window.print()}
-                style={{ ...presetBtn(false), padding: '0 14px', flex: 'none' }}>
-                Export PDF
+              <button onClick={exportPdf} disabled={exporting}
+                style={{ ...presetBtn(false), padding: '0 14px', flex: 'none', opacity: exporting ? 0.6 : 1, cursor: exporting ? 'default' : 'pointer' }}>
+                {exporting ? 'Generating…' : 'Export PDF'}
               </button>
             )}
           </div>
