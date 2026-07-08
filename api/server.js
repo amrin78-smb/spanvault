@@ -25,13 +25,14 @@ const reportScheduler = require('./reportScheduler');
 
 // App version — single source of truth is the root package.json.
 const { version } = require('../package.json');
-// Raw GitHub base for remote version checks (no auth, public repo).
-const GH_RAW = 'https://raw.githubusercontent.com/amrin78-smb/spanvault/main';
 
 // Structured release notes keyed by version. When bumping the version, add an
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.58.4': [
+    'The update-available banner check now also uses git instead of GitHub\'s rate-limited web APIs, completing the update-check fix — the background check no longer contributes to the rate limiting that caused "Could not check for updates".',
+  ],
   '1.58.3': [
     'Fixed "Could not check for updates" in Settings → Updates. The update check was calling GitHub\'s public web APIs (api.github.com + raw.githubusercontent.com), which are rate-limited per source IP — from a shared network with several apps checking, raw.githubusercontent started returning 429 and the check failed. It now checks via git (the same transport the updater already uses), which is not rate-limited.',
   ],
@@ -1032,23 +1033,13 @@ let updateAvailable = null; // { current, latest } when an update exists, else n
 async function checkForUpdates() {
   try {
     const localHash = localCommitHash();
-    const [commitRes, pkgRes] = await Promise.all([
-      fetch('https://api.github.com/repos/amrin78-smb/spanvault/commits/main', {
-        headers: { 'Accept': 'application/vnd.github.v3+json' },
-        cache: 'no-store',
-      }),
-      fetch(`${GH_RAW}/package.json?cb=${Date.now()}`, { cache: 'no-store' }),
-    ]);
-    const commit = await commitRes.json();
-    const remoteHash = commit && commit.sha ? String(commit.sha).slice(0, 7) : null;
-    const remotePkg = await pkgRes.json();
-    const remoteVersion = remotePkg.version;
-
-    updateAvailable = (localHash && remoteHash && remoteHash !== localHash)
-      ? { current: version, latest: remoteVersion }
+    const remoteHash = remoteCommitHash();
+    const changed = !!(localHash && remoteHash && remoteHash !== localHash);
+    updateAvailable = changed
+      ? { current: version, latest: remotePackageVersion(version) }
       : null;
   } catch {
-    // never block on network failure — keep the last known state
+    // never block on failure — keep the last known state
   }
 }
 
