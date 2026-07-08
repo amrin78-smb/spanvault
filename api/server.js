@@ -31,6 +31,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.59.2': [
+    'The five wireless reports now generate as server-side PDFs (and can be attached to scheduled emails): Wireless Overview, AP Health, Clients, RF and Capacity — each with its KPI tiles, trend charts where applicable, and detail tables.',
+  ],
   '1.59.1': [
     'More reports now generate as server-side PDFs (and can be attached to scheduled emails): Network Summary, Site, SLA Compliance and Capacity — each with KPI tiles, a trend chart and detail tables, matching the on-screen report.',
   ],

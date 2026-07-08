@@ -1322,6 +1322,782 @@ function renderCapacity(doc, data, layout) {
   }, layout, { continueOnPage: true });
 }
 
+// ════════════════════════════════════════════════════════════
+// WIRELESS REPORTS — faithful mirrors of GET /api/reports/wireless-*.
+// Those endpoints scope by controller_id (wlCtrl) rather than by site; the PDF
+// path mirrors that AND additionally honours params._siteFilter (RBAC) on
+// wireless_aps.site_id (the one wireless table that carries a site_id). Every
+// wireless table is treated as optional — queries are wrapped by mkRunQ so an
+// un-migrated / empty DB degrades to empty rows and still yields a valid PDF.
+// ════════════════════════════════════════════════════════════
+// SQL expression for an AP's effective utilisation (higher of the two bands) —
+// identical to server.js WL_UTIL.
+const WL_UTIL = 'GREATEST(COALESCE(a.radio_2g_util_pct,0), COALESCE(a.radio_5g_util_pct,0))';
+const wlMean = (arr) => (arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0);
+// Coerce a JSONB issues/recommendations element to a display string (server parity).
+function wlText(v) {
+  if (v == null) return null;
+  if (typeof v === 'string') return v;
+  if (typeof v === 'object') return v.message || v.text || v.title || v.recommendation || JSON.stringify(v);
+  return String(v);
+}
+function wlGradeFromUtil(util) {
+  if (util == null) return null;
+  return gradeFromScore(Math.max(0, 100 - Number(util)));
+}
+function wlPctStr(v) { return v == null || v === '' ? '—' : `${Number(v)}%`; }
+function wlNumOrDash(v) { return v == null || v === '' ? '—' : String(v); }
+function wlLastSeen(v) {
+  if (v == null || v === '') return '—';
+  const d = new Date(v);
+  return isNaN(d.getTime()) ? '—' : d.toLocaleString('en-GB', { hour12: false });
+}
+function wlFmtUptime(seconds) {
+  if (seconds == null || !isFinite(Number(seconds))) return '—';
+  const total = Math.max(0, Math.floor(Number(seconds)));
+  const days = Math.floor(total / 86400);
+  const hours = Math.floor((total % 86400) / 3600);
+  const mins = Math.floor((total % 3600) / 60);
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${mins}m`;
+  return `${mins}m`;
+}
+function wlSortChannels(keys) {
+  const numeric = keys.filter((k) => String(k).toLowerCase() !== 'other');
+  const other = keys.filter((k) => String(k).toLowerCase() === 'other');
+  numeric.sort((a, b) => {
+    const na = parseInt(a, 10), nb = parseInt(b, 10);
+    if (isNaN(na) && isNaN(nb)) return String(a).localeCompare(String(b));
+    if (isNaN(na)) return 1;
+    if (isNaN(nb)) return -1;
+    return na - nb;
+  });
+  return [...numeric, ...other];
+}
+// controller_id + RBAC context for the wireless family.
+function wlScope(q) {
+  const id = parseInt(q && q.controller_id, 10);
+  return { hasCtrl: !isNaN(id), ctrlId: isNaN(id) ? null : id, siteFilter: resolveSiteFilter(q) };
+}
+// Build the WHERE/AND clause + params for a wireless_aps query aliased `a`
+// (controller_id filter, mirroring wlCtrl, plus optional RBAC site_id clause).
+function wlApClauses(scope) {
+  const params = [];
+  const parts = [];
+  if (scope.hasCtrl) { params.push(scope.ctrlId); parts.push(`a.controller_id = $${params.length}`); }
+  const sc = siteClause(scope.siteFilter, params, 'a.site_id'); if (sc) parts.push(sc);
+  return { params, where: parts.length ? 'WHERE ' + parts.join(' AND ') : '', and: parts.length ? ' AND ' + parts.join(' AND ') : '' };
+}
+// controller-only clause (tables without a site_id: controllers/ssids/clients/intel).
+function wlCtrlOnly(scope, col) {
+  const params = [];
+  let where = '', and = '';
+  if (scope.hasCtrl) { params.push(scope.ctrlId); where = `WHERE ${col} = $1`; and = ` AND ${col} = $1`; }
+  return { params, where, and };
+}
+
+// Section header used by the maxUtil colour rules in the AP-health table.
+const wlUtilCol = (r) => r._util == null ? '#1e293b' : (r._util > 85 ? RED : r._util > 70 ? YELLOW : '#1e293b');
+const wlRssiCol = (r) => r._rssi == null ? MUTED : (r._rssi < -75 ? RED : r._rssi < -67 ? YELLOW : GREEN);
+const wlStatusCol = (r) => {
+  const s = String(r.status || '').toLowerCase();
+  return s === 'online' ? GREEN : s === 'offline' ? RED : MUTED;
+};
+
+// ── Wireless Overview — mirror of GET /api/reports/wireless-overview ──
+async function gatherWirelessOverview(db, params) {
+  const q = params || {};
+  const scope = wlScope(q);
+  const win = getDateRange({ ...q, range: q.range || '30d' });
+  const runQ = mkRunQ(db, 'wireless-overview');
+
+  // Combined summary: controllers subquery + AP aggregate (controller id shared).
+  const sp = [];
+  let ctrlSub = '';
+  const apParts = [];
+  if (scope.hasCtrl) { sp.push(scope.ctrlId); ctrlSub = `WHERE id = $${sp.length}`; apParts.push(`a.controller_id = $${sp.length}`); }
+  const sSite = siteClause(scope.siteFilter, sp, 'a.site_id'); if (sSite) apParts.push(sSite);
+  const apW = apParts.length ? 'WHERE ' + apParts.join(' AND ') : '';
+  const sum = await runQ('summary', `
+    SELECT
+      (SELECT COUNT(*)::int FROM wireless_controllers ${ctrlSub}) AS total_controllers,
+      COUNT(*)::int AS total_aps,
+      COUNT(*) FILTER (WHERE a.status = 'online')::int  AS online_aps,
+      COUNT(*) FILTER (WHERE a.status = 'offline')::int AS offline_aps,
+      COALESCE(SUM(a.clients_total), 0)::int AS total_clients,
+      ROUND(AVG(${WL_UTIL})::numeric, 1) AS avg_utilization
+    FROM wireless_aps a ${apW}`, sp, [{}]);
+
+  const co = wlCtrlOnly(scope, 'controller_id');
+  const intel = await runQ('intel', `
+    SELECT ROUND(AVG(overall_score)::numeric, 0) AS score
+    FROM wireless_intelligence ${co.where}`, co.params, []);
+
+  const bs = wlApClauses(scope);
+  const bySite = await runQ('by_site', `
+    SELECT COALESCE(a.site_name, 'Unassigned') AS site_name,
+           COUNT(DISTINCT a.controller_id)::int AS controllers,
+           COUNT(*)::int AS aps,
+           COUNT(*) FILTER (WHERE a.status = 'online')::int AS online_aps,
+           COALESCE(SUM(a.clients_total), 0)::int AS clients,
+           ROUND(AVG(${WL_UTIL})::numeric, 1) AS avg_utilization
+    FROM wireless_aps a ${bs.where}
+    GROUP BY 1 ORDER BY 1`, bs.params, []);
+
+  const ta = wlApClauses(scope);
+  const topAps = await runQ('top_aps', `
+    SELECT a.name, COALESCE(a.site_name, 'Unassigned') AS site_name,
+           COALESCE(a.clients_total, 0)::int AS clients,
+           ROUND(${WL_UTIL}::numeric, 1) AS util
+    FROM wireless_aps a ${ta.where}
+    ORDER BY a.clients_total DESC NULLS LAST LIMIT 5`, ta.params, []);
+
+  const ss = wlCtrlOnly(scope, 'controller_id');
+  const topSsids = await runQ('top_ssids', `
+    SELECT ssid_name, COALESCE(clients_total, 0)::int AS client_count
+    FROM wireless_ssids ${ss.where}
+    ORDER BY clients_total DESC NULLS LAST LIMIT 5`, ss.params, []);
+
+  const of = wlApClauses(scope);
+  const offline = await runQ('offline', `
+    SELECT a.name, COALESCE(a.site_name, 'Unassigned') AS site_name, a.last_seen_at AS last_seen
+    FROM wireless_aps a WHERE a.status = 'offline'${of.and}
+    ORDER BY a.last_seen_at ASC NULLS LAST LIMIT 50`, of.params, []);
+
+  const s = sum.rows[0] || {};
+  const score = intel.rows[0] && intel.rows[0].score != null ? Number(intel.rows[0].score) : null;
+  const summary = {
+    total_controllers: s.total_controllers || 0,
+    total_aps: s.total_aps || 0,
+    online_aps: s.online_aps || 0,
+    offline_aps: s.offline_aps || 0,
+    total_clients: s.total_clients || 0,
+    avg_utilization: s.avg_utilization != null ? Number(s.avg_utilization) : null,
+    overall_health_score: score,
+    overall_grade: gradeFromScore(score),
+  };
+  return {
+    title: 'Wireless Overview',
+    dateRange: win.label,
+    headline: `${summary.total_aps} access point${summary.total_aps === 1 ? '' : 's'} - ${summary.online_aps} online, ${summary.total_clients} clients`,
+    stats: summary,
+    by_site: bySite.rows.map((r) => ({ ...r, health_grade: wlGradeFromUtil(r.avg_utilization) })),
+    top_aps: topAps.rows,
+    top_ssids: topSsids.rows,
+    offline_aps: offline.rows,
+    summary: [
+      { label: 'Total APs', value: String(summary.total_aps), color: NAVY },
+      { label: 'Online APs', value: String(summary.online_aps), color: GREEN },
+      { label: 'Total Clients', value: String(summary.total_clients), color: RED },
+    ],
+  };
+}
+
+function renderWirelessOverview(doc, data, layout) {
+  const { left, contentW } = layout;
+  const s = data.stats || {};
+  doc.addPage();
+  let y = doc.page.margins.top;
+  doc.fillColor(NAVY).fontSize(20).font('Helvetica-Bold').text(data.title, left, y, { width: contentW });
+  y = doc.y + 2;
+  doc.fillColor(MUTED).fontSize(11).font('Helvetica').text(data.headline || '', left, y, { width: contentW });
+  y = doc.y + 4;
+  doc.moveTo(left, y).lineTo(left + 90, y).lineWidth(2).stroke(RED);
+  y += 14;
+  y = drawKpiTiles(doc, layout, y, [
+    { value: String(s.total_controllers || 0), label: 'Controllers', color: NAVY },
+    { value: String(s.total_aps || 0), label: 'Total APs', color: NAVY },
+    { value: String(s.online_aps || 0), label: 'Online APs', color: GREEN },
+    { value: String(s.offline_aps || 0), label: 'Offline APs', color: (s.offline_aps || 0) > 0 ? RED : MUTED },
+  ]);
+  y += 12;
+  y = drawKpiTiles(doc, layout, y, [
+    { value: String(s.total_clients || 0), label: 'Total Clients', color: NAVY },
+    { value: wlPctStr(s.avg_utilization), label: 'Avg Utilization', color: YELLOW },
+    { value: s.overall_health_score == null ? '—' : `${s.overall_health_score}${s.overall_grade ? ' ' + s.overall_grade : ''}`, label: 'Overall Health', color: GREEN },
+  ]);
+  doc.y = y + 22;
+
+  sectionTitle(doc, layout, 'Site Breakdown');
+  drawTable(doc, {
+    columns: [
+      { key: 'site_name', label: 'Site', width: 150 },
+      { key: 'controllers', label: 'Controllers', width: 75, align: 'right' },
+      { key: 'aps', label: 'APs', width: 55, align: 'right' },
+      { key: 'online', label: 'Online', width: 55, align: 'right' },
+      { key: 'clients', label: 'Clients', width: 60, align: 'right' },
+      { key: 'util', label: 'Avg Util %', width: 75, align: 'right' },
+      { key: 'grade', label: 'Grade', width: 50, align: 'center' },
+    ],
+    rows: (data.by_site || []).map((r) => ({
+      site_name: r.site_name, controllers: r.controllers, aps: r.aps, online: r.online_aps,
+      clients: r.clients, util: r.avg_utilization == null ? '—' : String(r.avg_utilization), grade: r.health_grade || '—',
+    })),
+  }, layout, { continueOnPage: true });
+  doc.y += 18;
+
+  sectionTitle(doc, layout, 'Top APs by Clients');
+  drawTable(doc, {
+    columns: [
+      { key: 'name', label: 'Access Point', width: 190 },
+      { key: 'site_name', label: 'Site', width: 150 },
+      { key: 'clients', label: 'Clients', width: 70, align: 'right' },
+      { key: 'util', label: 'Util %', width: 70, align: 'right' },
+    ],
+    rows: (data.top_aps || []).map((r) => ({
+      name: r.name || '—', site_name: r.site_name || '—',
+      clients: r.clients == null ? 0 : r.clients, util: wlPctStr(r.util),
+    })),
+  }, layout, { continueOnPage: true });
+  doc.y += 18;
+
+  sectionTitle(doc, layout, 'Top SSIDs');
+  drawTable(doc, {
+    columns: [
+      { key: 'ssid_name', label: 'SSID', width: 300 },
+      { key: 'client_count', label: 'Clients', width: 90, align: 'right' },
+    ],
+    rows: (data.top_ssids || []).map((r) => ({ ssid_name: r.ssid_name || '—', client_count: r.client_count == null ? 0 : r.client_count })),
+  }, layout, { continueOnPage: true });
+
+  if (data.offline_aps && data.offline_aps.length) {
+    doc.y += 18;
+    sectionTitle(doc, layout, 'Offline APs');
+    drawTable(doc, {
+      columns: [
+        { key: 'name', label: 'Access Point', width: 180 },
+        { key: 'site_name', label: 'Site', width: 150 },
+        { key: 'last_seen', label: 'Last Seen', width: 130, align: 'right' },
+      ],
+      rows: data.offline_aps.map((r) => ({ name: r.name || '—', site_name: r.site_name || '—', last_seen: wlLastSeen(r.last_seen) })),
+    }, layout, { continueOnPage: true });
+  }
+}
+
+// ── Wireless AP Health — mirror of GET /api/reports/wireless-ap-health ──
+async function gatherWirelessApHealth(db, params) {
+  const q = params || {};
+  const scope = wlScope(q);
+  const win = getDateRange({ ...q, range: q.range || '30d' });
+  const runQ = mkRunQ(db, 'wireless-ap-health');
+  const cl = wlApClauses(scope);
+  const baseCols = `
+    a.name, c.name AS controller_name, COALESCE(a.site_name, 'Unassigned') AS site_name,
+    a.status, COALESCE(a.clients_total, 0)::int AS clients,
+    a.radio_2g_channel, a.radio_5g_channel, a.radio_2g_util_pct, a.radio_5g_util_pct,
+    a.noise_floor_2g, a.noise_floor_5g, a.uptime_seconds`;
+
+  // Try with the optional AP-intelligence join; fall back without it.
+  let rows;
+  const full = await runQ('aps-full', `
+    SELECT ${baseCols},
+           ai.health_score, ai.health_grade, ai.load_status,
+           ROUND(ai.load_pct::numeric, 1) AS load_pct,
+           COALESCE(ai.issues, '[]'::jsonb) AS issues
+    FROM wireless_aps a
+    LEFT JOIN wireless_controllers c ON c.id = a.controller_id
+    LEFT JOIN wireless_ap_intelligence ai ON ai.ap_id = a.id
+    ${cl.where}
+    ORDER BY ai.health_score ASC NULLS LAST, a.name`, cl.params, null);
+  if (full.rows == null) {
+    const cl2 = wlApClauses(scope);
+    const base = await runQ('aps-base', `
+      SELECT ${baseCols}, NULL::numeric AS health_score, NULL::text AS health_grade,
+             NULL::text AS load_status, NULL::numeric AS load_pct, '[]'::jsonb AS issues
+      FROM wireless_aps a LEFT JOIN wireless_controllers c ON c.id = a.controller_id
+      ${cl2.where} ORDER BY a.name`, cl2.params, []);
+    rows = base.rows;
+  } else {
+    rows = full.rows;
+  }
+
+  const aps = rows.map((r) => {
+    const util = Math.max(Number(r.radio_2g_util_pct || 0), Number(r.radio_5g_util_pct || 0));
+    return {
+      name: r.name, controller_name: r.controller_name, site_name: r.site_name,
+      status: r.status, clients: r.clients,
+      radio_2g_channel: r.radio_2g_channel, radio_5g_channel: r.radio_5g_channel,
+      radio_2g_util_pct: r.radio_2g_util_pct != null ? Number(r.radio_2g_util_pct) : null,
+      radio_5g_util_pct: r.radio_5g_util_pct != null ? Number(r.radio_5g_util_pct) : null,
+      noise_floor_2g: r.noise_floor_2g, noise_floor_5g: r.noise_floor_5g,
+      uptime_seconds: r.uptime_seconds != null ? Number(r.uptime_seconds) : null,
+      health_score: r.health_score != null ? Number(r.health_score) : null,
+      health_grade: r.health_grade || null,
+      util, _load_status: r.load_status,
+      issues: Array.isArray(r.issues) ? r.issues.map(wlText).filter(Boolean) : [],
+    };
+  });
+  const scores = aps.map((a) => a.health_score).filter((v) => v != null);
+  const summary = {
+    total: aps.length,
+    online: aps.filter((a) => a.status === 'online').length,
+    offline: aps.filter((a) => a.status === 'offline').length,
+    avg_health_score: scores.length ? Math.round(wlMean(scores)) : null,
+    overloaded_count: aps.filter((a) => a._load_status === 'overloaded' || a.util > 85).length,
+    high_util_count: aps.filter((a) => a.util > 70).length,
+  };
+  return {
+    title: 'Wireless AP Health',
+    dateRange: win.label,
+    headline: `${summary.total} access point${summary.total === 1 ? '' : 's'} - avg health ${summary.avg_health_score == null ? 'n/a' : summary.avg_health_score}`,
+    aps, stats: summary,
+    summary: [
+      { label: 'Total APs', value: String(summary.total), color: NAVY },
+      { label: 'Online', value: String(summary.online), color: GREEN },
+      { label: 'Avg Health', value: summary.avg_health_score == null ? '—' : String(summary.avg_health_score), color: YELLOW },
+    ],
+  };
+}
+
+function renderWirelessApHealth(doc, data, layout) {
+  const { left, contentW } = layout;
+  const s = data.stats || {};
+  doc.addPage();
+  let y = doc.page.margins.top;
+  doc.fillColor(NAVY).fontSize(20).font('Helvetica-Bold').text(data.title, left, y, { width: contentW });
+  y = doc.y + 2;
+  doc.fillColor(MUTED).fontSize(11).font('Helvetica').text(data.headline || '', left, y, { width: contentW });
+  y = doc.y + 4;
+  doc.moveTo(left, y).lineTo(left + 90, y).lineWidth(2).stroke(RED);
+  y += 14;
+  y = drawKpiTiles(doc, layout, y, [
+    { value: String(s.total || 0), label: 'Total APs', color: NAVY },
+    { value: String(s.online || 0), label: 'Online', color: GREEN },
+    { value: String(s.offline || 0), label: 'Offline', color: (s.offline || 0) > 0 ? RED : MUTED },
+  ]);
+  y += 12;
+  y = drawKpiTiles(doc, layout, y, [
+    { value: s.avg_health_score == null ? '—' : String(s.avg_health_score), label: 'Avg Health Score', color: GREEN },
+    { value: String(s.overloaded_count || 0), label: 'Overloaded', color: (s.overloaded_count || 0) > 0 ? RED : MUTED },
+    { value: String(s.high_util_count || 0), label: 'High Util', color: (s.high_util_count || 0) > 0 ? YELLOW : MUTED },
+  ]);
+  doc.y = y + 22;
+
+  sectionTitle(doc, layout, 'Access Points');
+  drawTable(doc, {
+    columns: [
+      { key: 'name', label: 'Name', width: 130 },
+      { key: 'site_name', label: 'Site', width: 90 },
+      { key: 'status', label: 'Status', width: 60, color: wlStatusCol },
+      { key: 'clients', label: 'Clients', width: 50, align: 'right' },
+      { key: 'chan', label: 'Ch 2.4/5', width: 60, align: 'center' },
+      { key: 'util', label: 'Util', width: 45, align: 'right', color: wlUtilCol },
+      { key: 'noise', label: 'Noise (dBm)', width: 75, align: 'center' },
+      { key: 'uptime', label: 'Uptime', width: 55, align: 'right' },
+      { key: 'grade', label: 'Grade', width: 45, align: 'center' },
+    ],
+    rows: (data.aps || []).map((ap) => ({
+      name: ap.issues && ap.issues.length ? `${ap.name || '—'}\n${ap.issues.join(', ')}` : (ap.name || '—'),
+      site_name: ap.site_name || '—',
+      status: ap.status || '—',
+      clients: ap.clients == null ? 0 : ap.clients,
+      chan: `${ap.radio_2g_channel == null ? '—' : ap.radio_2g_channel} / ${ap.radio_5g_channel == null ? '—' : ap.radio_5g_channel}`,
+      util: ap.util == null ? '—' : `${Math.round(ap.util)}%`, _util: ap.util,
+      noise: `${ap.noise_floor_2g == null ? '—' : ap.noise_floor_2g} / ${ap.noise_floor_5g == null ? '—' : ap.noise_floor_5g}`,
+      uptime: wlFmtUptime(ap.uptime_seconds),
+      grade: ap.health_grade || '—',
+    })),
+  }, layout, { continueOnPage: true });
+}
+
+// ── Wireless Client — mirror of GET /api/reports/wireless-clients ──
+async function gatherWirelessClients(db, params) {
+  const q = params || {};
+  const scope = wlScope(q);
+  const win = getDateRange({ ...q, range: q.range || '30d' });
+  const runQ = mkRunQ(db, 'wireless-clients');
+  const c = wlCtrlOnly(scope, 'controller_id');
+
+  const sum = await runQ('summary', `
+    SELECT COUNT(*)::int AS total_clients,
+           COUNT(*) FILTER (WHERE is_problem)::int AS problem_clients,
+           COUNT(*) FILTER (WHERE rssi_dbm < -75)::int AS low_signal_count,
+           COUNT(*) FILTER (WHERE roaming_count > 5)::int AS frequent_roamers,
+           COUNT(*) FILTER (WHERE band = '2.4GHz')::int AS b2,
+           COUNT(*) FILTER (WHERE band = '5GHz')::int  AS b5
+    FROM wireless_clients ${c.where}`, c.params, [{}]);
+  const problem = await runQ('problem', `
+    SELECT mac_address, hostname, ap_name, ssid_name, band, rssi_dbm, COALESCE(roaming_count, 0)::int AS roaming_count
+    FROM wireless_clients WHERE is_problem = TRUE${c.and}
+    ORDER BY rssi_dbm ASC NULLS LAST LIMIT 100`, c.params, []);
+  const byBand = await runQ('by_band', `
+    SELECT COALESCE(band, 'Unknown') AS band, COUNT(*)::int AS n
+    FROM wireless_clients ${c.where} GROUP BY 1`, c.params, []);
+  const roam = await runQ('roam', `
+    SELECT COUNT(*)::int AS n FROM wireless_client_events
+    WHERE event_type = 'roam' AND ts >= NOW() - INTERVAL '24 hours'${c.and}`, c.params, [{ n: 0 }]);
+  const busiest = await runQ('busiest', `
+    SELECT ap_name AS name, COUNT(*)::int AS clients
+    FROM wireless_clients WHERE ap_name IS NOT NULL${c.and}
+    GROUP BY ap_name ORDER BY clients DESC LIMIT 5`, c.params, []);
+
+  const s = sum.rows[0] || {};
+  const bandTotal = (s.b2 || 0) + (s.b5 || 0);
+  const by_band = {};
+  for (const r of byBand.rows) by_band[r.band] = r.n;
+  const summary = {
+    total_clients: s.total_clients || 0,
+    problem_clients: s.problem_clients || 0,
+    low_signal_count: s.low_signal_count || 0,
+    frequent_roamers: s.frequent_roamers || 0,
+    band_2g_pct: bandTotal ? Math.round((s.b2 / bandTotal) * 1000) / 10 : null,
+    band_5g_pct: bandTotal ? Math.round((s.b5 / bandTotal) * 1000) / 10 : null,
+  };
+  const problem_clients = problem.rows.map((r) => {
+    const reasons = [];
+    if (r.rssi_dbm != null && r.rssi_dbm < -75) reasons.push('Low signal');
+    if (r.roaming_count > 5) reasons.push('Frequent roaming');
+    return { ...r, reason: reasons.join(', ') || 'Flagged' };
+  });
+  return {
+    title: 'Wireless Client',
+    dateRange: win.label,
+    headline: `${summary.total_clients} client${summary.total_clients === 1 ? '' : 's'} - ${summary.problem_clients} flagged`,
+    stats: summary, problem_clients, by_band,
+    roaming_events_24h: roam.rows[0] ? roam.rows[0].n : 0,
+    busiest_aps: busiest.rows,
+    summary: [
+      { label: 'Total Clients', value: String(summary.total_clients), color: NAVY },
+      { label: 'Problem Clients', value: String(summary.problem_clients), color: RED },
+      { label: 'Roaming 24h', value: String(roam.rows[0] ? roam.rows[0].n : 0), color: YELLOW },
+    ],
+  };
+}
+
+function renderWirelessClients(doc, data, layout) {
+  const { left, contentW } = layout;
+  const s = data.stats || {};
+  doc.addPage();
+  let y = doc.page.margins.top;
+  doc.fillColor(NAVY).fontSize(20).font('Helvetica-Bold').text(data.title, left, y, { width: contentW });
+  y = doc.y + 2;
+  doc.fillColor(MUTED).fontSize(11).font('Helvetica').text(data.headline || '', left, y, { width: contentW });
+  y = doc.y + 4;
+  doc.moveTo(left, y).lineTo(left + 90, y).lineWidth(2).stroke(RED);
+  y += 14;
+  y = drawKpiTiles(doc, layout, y, [
+    { value: String(s.total_clients || 0), label: 'Total Clients', color: NAVY },
+    { value: String(s.problem_clients || 0), label: 'Problem Clients', color: (s.problem_clients || 0) > 0 ? RED : MUTED },
+    { value: String(s.low_signal_count || 0), label: 'Low Signal', color: YELLOW },
+  ]);
+  y += 12;
+  y = drawKpiTiles(doc, layout, y, [
+    { value: String(s.frequent_roamers || 0), label: 'Frequent Roamers', color: NAVY },
+    { value: String(data.roaming_events_24h || 0), label: 'Roaming Events 24h', color: YELLOW },
+    { value: `2.4G ${s.band_2g_pct == null ? 0 : Math.round(s.band_2g_pct)}% / 5G ${s.band_5g_pct == null ? 0 : Math.round(s.band_5g_pct)}%`, label: 'Band Split', color: NAVY },
+  ]);
+  doc.y = y + 22;
+
+  sectionTitle(doc, layout, 'Band Distribution');
+  const bandEntries = Object.entries(data.by_band || {});
+  const bandTotal = bandEntries.reduce((acc, [, n]) => acc + (n || 0), 0);
+  drawTable(doc, {
+    columns: [
+      { key: 'band', label: 'Band', width: 160 },
+      { key: 'clients', label: 'Clients', width: 100, align: 'right' },
+      { key: 'pct', label: 'Share', width: 100, align: 'right' },
+    ],
+    rows: bandEntries.map(([band, n]) => ({
+      band, clients: n == null ? 0 : n,
+      pct: bandTotal > 0 ? `${Math.round(((n || 0) / bandTotal) * 100)}%` : '—',
+    })),
+  }, layout, { continueOnPage: true });
+  doc.y += 18;
+
+  sectionTitle(doc, layout, 'Problem Clients');
+  drawTable(doc, {
+    columns: [
+      { key: 'client', label: 'Client', width: 120 },
+      { key: 'ap', label: 'AP', width: 90 },
+      { key: 'ssid', label: 'SSID', width: 80 },
+      { key: 'band', label: 'Band', width: 55 },
+      { key: 'rssi', label: 'RSSI (dBm)', width: 70, align: 'right', color: wlRssiCol },
+      { key: 'roams', label: 'Roams', width: 50, align: 'right' },
+      { key: 'reason', label: 'Reason', width: 100 },
+    ],
+    rows: (data.problem_clients || []).map((r) => ({
+      client: r.hostname || r.mac_address || '—', ap: r.ap_name || '—', ssid: r.ssid_name || '—',
+      band: r.band || '—', rssi: r.rssi_dbm == null ? '—' : String(r.rssi_dbm), _rssi: r.rssi_dbm,
+      roams: r.roaming_count == null ? 0 : r.roaming_count, reason: r.reason || '—',
+    })),
+  }, layout, { continueOnPage: true });
+  doc.y += 18;
+
+  sectionTitle(doc, layout, 'Busiest APs');
+  drawTable(doc, {
+    columns: [
+      { key: 'name', label: 'Name', width: 320 },
+      { key: 'clients', label: 'Clients', width: 90, align: 'right' },
+    ],
+    rows: (data.busiest_aps || []).map((r) => ({ name: r.name || '—', clients: r.clients == null ? 0 : r.clients })),
+  }, layout, { continueOnPage: true });
+}
+
+// ── Wireless RF — mirror of GET /api/reports/wireless-rf ──
+async function gatherWirelessRf(db, params) {
+  const q = params || {};
+  const scope = wlScope(q);
+  const win = getDateRange({ ...q, range: q.range || '30d' });
+  const runQ = mkRunQ(db, 'wireless-rf');
+  const ci = wlCtrlOnly(scope, 'controller_id');
+
+  const agg = await runQ('agg', `
+    SELECT ROUND(AVG(overall_score)::numeric, 0)      AS overall_score,
+           COALESCE(SUM(co_channel_pairs), 0)::int     AS co_channel_affected,
+           ROUND(AVG(interference_score)::numeric, 1)  AS interference_score,
+           ROUND(AVG(band_steering_score)::numeric, 1) AS band_steering_score,
+           ROUND(AVG(band_2g_pct)::numeric, 1)         AS band_2g_pct,
+           ROUND(AVG(band_5g_pct)::numeric, 1)         AS band_5g_pct,
+           ROUND(AVG(load_balance_score)::numeric, 1)  AS load_balance_score,
+           COALESCE(SUM(overloaded_aps), 0)::int       AS overloaded_aps
+    FROM wireless_intelligence ${ci.where}`, ci.params, [{}]);
+  const recRows = await runQ('recs', `
+    SELECT recommendations FROM wireless_intelligence ${ci.where}`, ci.params, []);
+  const ch = wlApClauses(scope);
+  const chans = await runQ('chans', `
+    SELECT a.radio_2g_channel AS ch2, a.radio_5g_channel AS ch5
+    FROM wireless_aps a ${ch.where}`, ch.params, []);
+  const gr = wlApClauses(scope);
+  const grades = await runQ('grades', `
+    SELECT ai.health_grade AS g, COUNT(*)::int AS n
+    FROM wireless_ap_intelligence ai JOIN wireless_aps a ON a.id = ai.ap_id ${gr.where}
+    GROUP BY 1`, gr.params, []);
+
+  const recommendations = [];
+  const seen = new Set();
+  for (const row of recRows.rows) {
+    const arr = Array.isArray(row.recommendations) ? row.recommendations : [];
+    for (const item of arr) {
+      const t = wlText(item);
+      if (t && !seen.has(t)) { seen.add(t); recommendations.push(t); }
+    }
+  }
+  const dist24 = { '1': 0, '6': 0, '11': 0, other: 0 };
+  const dist5 = {};
+  for (const r of chans.rows) {
+    if (r.ch2 != null) { const k = [1, 6, 11].includes(r.ch2) ? String(r.ch2) : 'other'; dist24[k] = (dist24[k] || 0) + 1; }
+    if (r.ch5 != null) { const k = String(r.ch5); dist5[k] = (dist5[k] || 0) + 1; }
+  }
+  const ap_health_distribution = { A: 0, B: 0, C: 0, D: 0, F: 0 };
+  for (const r of grades.rows) {
+    if (r.g && Object.prototype.hasOwnProperty.call(ap_health_distribution, r.g)) ap_health_distribution[r.g] = r.n;
+  }
+  const a = agg.rows[0] || {};
+  const score = a.overall_score != null ? Number(a.overall_score) : null;
+  return {
+    title: 'Wireless RF',
+    dateRange: win.label,
+    headline: `RF health ${score == null ? 'n/a' : score}${score != null ? ` (${gradeFromScore(score)})` : ''} - ${a.overloaded_aps || 0} overloaded AP(s)`,
+    overall_score: score, overall_grade: gradeFromScore(score),
+    co_channel_affected: a.co_channel_affected || 0,
+    interference_score: a.interference_score != null ? Number(a.interference_score) : null,
+    band_steering_score: a.band_steering_score != null ? Number(a.band_steering_score) : null,
+    load_balance_score: a.load_balance_score != null ? Number(a.load_balance_score) : null,
+    overloaded_aps: a.overloaded_aps || 0,
+    recommendations: recommendations.slice(0, 10),
+    channel_distribution: { '2.4GHz': dist24, '5GHz': dist5 },
+    ap_health_distribution,
+    summary: [
+      { label: 'Overall Score', value: score == null ? '—' : String(score), color: GREEN },
+      { label: 'Co-Channel', value: String(a.co_channel_affected || 0), color: YELLOW },
+      { label: 'Overloaded APs', value: String(a.overloaded_aps || 0), color: RED },
+    ],
+  };
+}
+
+function renderWirelessRf(doc, data, layout) {
+  const { left, contentW } = layout;
+  doc.addPage();
+  let y = doc.page.margins.top;
+  doc.fillColor(NAVY).fontSize(20).font('Helvetica-Bold').text(data.title, left, y, { width: contentW });
+  y = doc.y + 2;
+  doc.fillColor(MUTED).fontSize(11).font('Helvetica').text(data.headline || '', left, y, { width: contentW });
+  y = doc.y + 4;
+  doc.moveTo(left, y).lineTo(left + 90, y).lineWidth(2).stroke(RED);
+  y += 14;
+  y = drawKpiTiles(doc, layout, y, [
+    { value: data.overall_score == null ? '—' : `${data.overall_score}${data.overall_grade ? ' ' + data.overall_grade : ''}`, label: 'Overall', color: GREEN },
+    { value: data.interference_score == null ? '—' : String(data.interference_score), label: 'Interference', color: NAVY },
+    { value: data.band_steering_score == null ? '—' : String(data.band_steering_score), label: 'Band Steering', color: NAVY },
+  ]);
+  y += 12;
+  y = drawKpiTiles(doc, layout, y, [
+    { value: data.load_balance_score == null ? '—' : String(data.load_balance_score), label: 'Load Balance', color: NAVY },
+    { value: String(data.co_channel_affected || 0), label: 'Co-Channel Affected', color: YELLOW },
+    { value: String(data.overloaded_aps || 0), label: 'Overloaded APs', color: (data.overloaded_aps || 0) > 0 ? RED : MUTED },
+  ]);
+  doc.y = y + 22;
+
+  sectionTitle(doc, layout, 'Recommendations');
+  bulletList(doc, layout, data.recommendations, 'No RF recommendations - the wireless environment looks healthy.');
+  doc.y += 14;
+
+  const cd = data.channel_distribution || { '2.4GHz': {}, '5GHz': {} };
+  const chanRows = (map) => wlSortChannels(Object.keys(map || {})).map((k) => ({ ch: k, aps: String(map[k] || 0) }));
+  sectionTitle(doc, layout, 'Channel Distribution - 2.4GHz');
+  drawTable(doc, {
+    columns: [
+      { key: 'ch', label: 'Channel', width: 200, align: 'center' },
+      { key: 'aps', label: 'APs', width: 120, align: 'right' },
+    ],
+    rows: chanRows(cd['2.4GHz']),
+  }, layout, { continueOnPage: true });
+  doc.y += 18;
+
+  sectionTitle(doc, layout, 'Channel Distribution - 5GHz');
+  drawTable(doc, {
+    columns: [
+      { key: 'ch', label: 'Channel', width: 200, align: 'center' },
+      { key: 'aps', label: 'APs', width: 120, align: 'right' },
+    ],
+    rows: chanRows(cd['5GHz']),
+  }, layout, { continueOnPage: true });
+  doc.y += 18;
+
+  const gd = data.ap_health_distribution || {};
+  sectionTitle(doc, layout, 'AP Grade Distribution');
+  drawTable(doc, {
+    columns: [
+      { key: 'grade', label: 'Grade', width: 200, align: 'center' },
+      { key: 'count', label: 'APs', width: 120, align: 'right' },
+    ],
+    rows: ['A', 'B', 'C', 'D', 'F'].map((g) => ({ grade: g, count: String(gd[g] || 0) })),
+  }, layout, { continueOnPage: true });
+}
+
+// ── Wireless Capacity — mirror of GET /api/reports/wireless-capacity ──
+async function gatherWirelessCapacity(db, params) {
+  const q = params || {};
+  const scope = wlScope(q);
+  const win = getDateRange({ ...q, range: q.range || '90d' });
+  const runQ = mkRunQ(db, 'wireless-capacity');
+
+  const lc = wlCtrlOnly(scope, 'id');
+  const lic = await runQ('licensed', `
+    SELECT COALESCE(SUM(licensed_aps), 0)::int AS licensed
+    FROM wireless_controllers ${lc.where}`, lc.params, [{ licensed: 0 }]);
+  const uc = wlApClauses(scope);
+  const used = await runQ('used', `
+    SELECT COUNT(*)::int AS used, COALESCE(SUM(a.clients_total), 0)::int AS total_clients
+    FROM wireless_aps a ${uc.where}`, uc.params, [{ used: 0, total_clients: 0 }]);
+  const tc = wlApClauses(scope);
+  const trendR = await runQ('trend', `
+    WITH per_poll AS (
+      SELECT date_trunc('hour', h.ts) AS bucket, SUM(h.clients_total) AS total
+      FROM wireless_history h JOIN wireless_aps a ON a.id = h.ap_id
+      WHERE h.ts >= NOW() - INTERVAL '30 days'${tc.and}
+      GROUP BY 1
+    )
+    SELECT to_char(date_trunc('day', bucket), 'YYYY-MM-DD') AS day, ROUND(AVG(total))::int AS clients
+    FROM per_poll GROUP BY 1 ORDER BY 1`, tc.params, []);
+  const hc = wlApClauses(scope);
+  const highUtil = await runQ('high_util', `
+    SELECT a.name, COALESCE(a.site_name, 'Unassigned') AS site_name, ROUND(${WL_UTIL}::numeric, 1) AS util
+    FROM wireless_aps a WHERE ${WL_UTIL} > 70${hc.and}
+    ORDER BY util DESC LIMIT 50`, hc.params, []);
+
+  const licensed = lic.rows[0] ? lic.rows[0].licensed : 0;
+  const usedAps = used.rows[0] ? used.rows[0].used : 0;
+  const totalClients = used.rows[0] ? used.rows[0].total_clients : 0;
+  const trend = trendR.rows;
+  const capacity_pct = licensed > 0 ? Math.round((usedAps / licensed) * 1000) / 10 : null;
+  let peak = null;
+  for (const t of trend) if (!peak || t.clients > peak.count) peak = { date: t.day, count: t.clients };
+
+  let growth_rate = 'n/a', days_to_80pct = null, days_to_full = null;
+  if (trend.length >= 8) {
+    const half = Math.floor(trend.length / 2);
+    const firstAvg = wlMean(trend.slice(0, half).map((t) => t.clients));
+    const lastAvg = wlMean(trend.slice(-half).map((t) => t.clients));
+    const gap = Math.max(1, trend.length - half);
+    const perDay = (lastAvg - firstAvg) / gap;
+    if (firstAvg > 0 && perDay > 0) {
+      growth_rate = `${Math.round((perDay * 7 / firstAvg) * 1000) / 10}% per week`;
+      const ceiling = licensed > 0 ? licensed * 50 : null;
+      if (ceiling) {
+        const d80 = (0.8 * ceiling - lastAvg) / perDay;
+        const dFull = (ceiling - lastAvg) / perDay;
+        if (d80 > 0 && isFinite(d80)) days_to_80pct = Math.round(d80);
+        if (dFull > 0 && isFinite(dFull)) days_to_full = Math.round(dFull);
+      }
+    } else {
+      growth_rate = 'flat/declining';
+    }
+  }
+  const trendPoints = trend.map((t) => ({ t: t.day, v: t.clients == null ? null : Number(t.clients) })).filter((x) => x.v != null);
+  const maxV = trendPoints.reduce((a, x) => Math.max(a, x.v), 0);
+  return {
+    title: 'Wireless Capacity',
+    dateRange: win.label,
+    rangeLabel: 'Client trend (last 30 days)',
+    headline: `${usedAps} of ${licensed || 'n/a'} licensed AP(s) in use${capacity_pct == null ? '' : ` - ${capacity_pct}% capacity`}`,
+    licensed_aps: licensed || null, used_aps: usedAps, capacity_pct,
+    avg_clients_per_ap: usedAps > 0 ? Math.round((totalClients / usedAps) * 10) / 10 : null,
+    peak_clients: peak, growth_rate,
+    projected_capacity: { days_to_80pct, days_to_full },
+    high_util_aps: highUtil.rows,
+    trendPoints, trendYMax: maxV > 0 ? Math.max(4, Math.ceil(maxV * 1.2)) : 10,
+    summary: [
+      { label: 'Used APs', value: String(usedAps), color: NAVY },
+      { label: 'Capacity %', value: capacity_pct == null ? '—' : `${capacity_pct}%`, color: RED },
+      { label: 'Peak Clients', value: peak ? String(peak.count) : '—', color: YELLOW },
+    ],
+  };
+}
+
+function renderWirelessCapacity(doc, data, layout) {
+  const { left, contentW } = layout;
+  doc.addPage();
+  let y = doc.page.margins.top;
+  doc.fillColor(NAVY).fontSize(20).font('Helvetica-Bold').text(data.title, left, y, { width: contentW });
+  y = doc.y + 2;
+  doc.fillColor(MUTED).fontSize(11).font('Helvetica').text(data.headline || '', left, y, { width: contentW });
+  y = doc.y + 4;
+  doc.moveTo(left, y).lineTo(left + 90, y).lineWidth(2).stroke(RED);
+  y += 14;
+  y = drawKpiTiles(doc, layout, y, [
+    { value: wlNumOrDash(data.licensed_aps), label: 'Licensed APs', color: NAVY },
+    { value: String(data.used_aps || 0), label: 'Used APs', color: NAVY },
+    { value: data.capacity_pct == null ? '—' : `${data.capacity_pct}%`, label: 'Capacity', color: RED },
+  ]);
+  y += 12;
+  y = drawKpiTiles(doc, layout, y, [
+    { value: wlNumOrDash(data.avg_clients_per_ap), label: 'Avg Clients/AP', color: NAVY },
+    { value: data.peak_clients ? String(data.peak_clients.count) : '—', label: 'Peak Clients', color: YELLOW },
+    { value: String(data.growth_rate || 'n/a'), label: 'Growth Rate', color: GREEN },
+  ]);
+  doc.y = y + 22;
+
+  renderChartBlock(doc, layout, 'Client Trend (last 30 days)', data.trendPoints, { yMax: data.trendYMax, ySuffix: '', color: RED, rangeLabel: data.rangeLabel });
+
+  sectionTitle(doc, layout, 'Licensed vs Used');
+  doc.fillColor('#334155').fontSize(11).font('Helvetica')
+    .text(`${data.used_aps || 0} of ${wlNumOrDash(data.licensed_aps)} licensed access points in use${data.capacity_pct == null ? '.' : ` (${data.capacity_pct}% capacity).`}`, left, doc.y + 6, { width: contentW });
+  doc.y += 14;
+
+  const pc = data.projected_capacity || {};
+  sectionTitle(doc, layout, 'Growth Projection');
+  bulletList(doc, layout, [
+    `Days to 80% capacity: ${pc.days_to_80pct == null ? 'Not projected' : pc.days_to_80pct}`,
+    `Days to full: ${pc.days_to_full == null ? 'Not projected' : pc.days_to_full}`,
+    `Growth rate: ${data.growth_rate || 'n/a'}`,
+  ], 'No growth projection available.');
+  doc.y += 14;
+
+  sectionTitle(doc, layout, 'High Utilization APs');
+  drawTable(doc, {
+    columns: [
+      { key: 'name', label: 'Name', width: 200 },
+      { key: 'site_name', label: 'Site', width: 140 },
+      { key: 'util', label: 'Util %', width: 80, align: 'right', color: (r) => r._u == null ? MUTED : (r._u > 85 ? RED : r._u > 70 ? YELLOW : '#1e293b') },
+    ],
+    rows: (data.high_util_aps || []).map((r) => ({
+      name: r.name || '—', site_name: r.site_name || '—',
+      util: r.util == null ? '—' : `${r.util}%`, _u: r.util == null ? null : Number(r.util),
+    })),
+  }, layout, { continueOnPage: true });
+}
+
 // ── Renderer registry ─────────────────────────────────────────
 // Canonical template keys → { title, gather, render }. `hasPdfRenderer` and
 // `generateReportPdf` both resolve through normalizeTemplate() so an alias like
@@ -1332,6 +2108,11 @@ const RENDERERS = {
   'site-summary': { title: 'Site Report', gather: gatherSite, render: renderSite },
   'sla-compliance': { title: 'SLA Compliance', gather: gatherSla, render: renderSla },
   'capacity': { title: 'Capacity Planning', gather: gatherCapacity, render: renderCapacity },
+  'wireless-overview': { title: 'Wireless Overview', gather: gatherWirelessOverview, render: renderWirelessOverview },
+  'wireless-ap-health': { title: 'Wireless AP Health', gather: gatherWirelessApHealth, render: renderWirelessApHealth },
+  'wireless-clients': { title: 'Wireless Client', gather: gatherWirelessClients, render: renderWirelessClients },
+  'wireless-rf': { title: 'Wireless RF', gather: gatherWirelessRf, render: renderWirelessRf },
+  'wireless-capacity': { title: 'Wireless Capacity', gather: gatherWirelessCapacity, render: renderWirelessCapacity },
 };
 const ALIASES = {
   'executive-summary': 'executive',
@@ -1340,6 +2121,16 @@ const ALIASES = {
   'sla': 'sla-compliance',
   'sla-report': 'sla-compliance',
   'capacity-planning': 'capacity',
+  // Wireless aliases — canonical keys mirror the /api/reports/wireless-* endpoints
+  // and the frontend TEMPLATES list; these map obvious variants onto them.
+  'wireless-client': 'wireless-clients',
+  'wireless-clients-report': 'wireless-clients',
+  'wireless': 'wireless-overview',
+  'wireless-summary': 'wireless-overview',
+  'wireless-ap': 'wireless-ap-health',
+  'wireless-ap-health-report': 'wireless-ap-health',
+  'wireless-rf-health': 'wireless-rf',
+  'wireless-capacity-planning': 'wireless-capacity',
 };
 
 function normalizeTemplate(template) {
