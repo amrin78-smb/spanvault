@@ -2098,6 +2098,616 @@ function renderWirelessCapacity(doc, data, layout) {
   }, layout, { continueOnPage: true });
 }
 
+// ════════════════════════════════════════════════════════════
+// TOP N WORST — mirror of GET /api/reports/top-worst
+// KPIs + the ranked table. The on-screen TopWorstReport has NO trend chart,
+// so this renderer has none either.
+// ════════════════════════════════════════════════════════════
+async function gatherTopWorst(db, params) {
+  const q = params || {};
+  const win = getDateRange({ ...q, range: q.range || '30d' });
+  const siteFilter = resolveSiteFilter(q);
+  const metric = ['uptime', 'response', 'alerts'].includes(q.metric) ? q.metric : 'uptime';
+  const limitN = Math.max(1, Math.min(parseInt(q.limit, 10) || 10, 100));
+  const caps = await getCaps(db);
+  const runQ = mkRunQ(db, 'top-worst');
+
+  const p = [win.start, win.end];
+  const sc = siteClause(siteFilter, p, 'd.site_id');
+  let extra = sc ? ` AND ${sc}` : '';
+  const siteId = parseInt(q.site_id, 10);
+  if (!isNaN(siteId)) { p.push(siteId); extra += ` AND d.site_id = $${p.length}`; }
+
+  const r = await runQ('agg', perDeviceAggSql(extra, caps), p, []);
+  let rows = r.rows.map((d) => ({
+    device_id: d.id, device_name: d.device_name, site_name: d.site_name,
+    uptime_pct: d.uptime_pct, avg_response_ms: d.avg_response_ms,
+    alerts_count: d.alerts_count, downtime_minutes: downtimeMin(d),
+  }));
+  if (metric === 'uptime') rows = rows.filter((d) => d.uptime_pct != null).sort((a, b) => Number(a.uptime_pct) - Number(b.uptime_pct));
+  else if (metric === 'response') rows = rows.filter((d) => d.avg_response_ms != null).sort((a, b) => Number(b.avg_response_ms) - Number(a.avg_response_ms));
+  else rows = rows.filter((d) => d.alerts_count > 0).sort((a, b) => b.alerts_count - a.alerts_count);
+  rows = rows.slice(0, limitN);
+
+  const label = { uptime: 'Availability', response: 'Response Time', alerts: 'Alerts' }[metric];
+  const valHeader = { uptime: 'Uptime %', response: 'Avg Response', alerts: 'Alerts' }[metric];
+  const fmtVal = (d) => metric === 'uptime'
+    ? (d.uptime_pct == null ? '—' : `${d.uptime_pct}%`)
+    : metric === 'response'
+      ? (d.avg_response_ms == null ? '—' : `${d.avg_response_ms} ms`)
+      : String(d.alerts_count == null ? 0 : d.alerts_count);
+  const worst = rows[0];
+
+  return {
+    title: 'Top Worst', metric, label, valHeader, fmtVal, rows,
+    dateRange: win.label,
+    kpis: { ranked: rows.length, worstValue: worst ? fmtVal(worst) : '—', worstName: worst ? worst.device_name : '—' },
+    summary: [
+      { label: 'Devices Ranked', value: String(rows.length), color: NAVY },
+      { label: `Worst by ${label}`, value: worst ? fmtVal(worst) : '—', color: RED },
+      { label: 'Metric', value: label, color: YELLOW },
+    ],
+  };
+}
+
+function renderTopWorst(doc, data, layout) {
+  const { left, contentW } = layout;
+  const rows = data.rows || [];
+  doc.addPage();
+  let y = doc.page.margins.top;
+
+  doc.fillColor(NAVY).fontSize(20).font('Helvetica-Bold').text(`Top ${rows.length} Worst by ${data.label}`, left, y, { width: contentW });
+  y = doc.y + 2;
+  doc.fillColor(MUTED).fontSize(11).font('Helvetica').text(`Ranked worst-first over ${data.dateRange}`, left, y, { width: contentW });
+  y = doc.y + 4;
+  doc.moveTo(left, y).lineTo(left + 90, y).lineWidth(2).stroke(RED);
+  y += 14;
+
+  const k = data.kpis || {};
+  y = drawKpiTiles(doc, layout, y, [
+    { value: String(k.ranked || 0), label: 'Devices Ranked', color: NAVY },
+    { value: String(k.worstValue || '—'), label: `Worst ${data.label}`, color: RED },
+    { value: String(k.worstName || '—'), label: 'Worst Device', color: YELLOW },
+  ]);
+  doc.y = y + 22;
+
+  sectionTitle(doc, layout, 'Ranked Devices');
+  drawTable(doc, {
+    columns: [
+      { key: 'rank', label: 'Rank', width: 45, align: 'center', color: (r) => r._rank <= 3 ? RED : MUTED },
+      { key: 'device', label: 'Device', width: 180 },
+      { key: 'site', label: 'Site', width: 140 },
+      { key: 'value', label: data.valHeader, width: 100, align: 'right', color: (r) => r._rank <= 3 ? RED : '#1e293b' },
+    ],
+    rows: rows.map((d, i) => ({
+      rank: `#${i + 1}`, _rank: i + 1,
+      device: d.device_name || '—', site: d.site_name || '—', value: data.fmtVal(d),
+    })),
+  }, layout, { continueOnPage: true });
+}
+
+// ════════════════════════════════════════════════════════════
+// ALERT ANALYSIS — mirror of GET /api/reports/alert-analysis
+// KPIs + an alert-volume trend chart (daily counts, derived here — the JSON
+// carries no series) + breakdown tables.
+// ════════════════════════════════════════════════════════════
+const AA_DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+function aaDayName(d) { return (d == null || d < 0 || d > 6) ? '—' : AA_DAY_NAMES[d]; }
+function aaHour(h) { return (h == null || h < 0 || h > 23) ? '—' : `${String(h).padStart(2, '0')}:00`; }
+
+async function gatherAlertAnalysis(db, params) {
+  const q = params || {};
+  const win = getDateRange({ ...q, range: q.range || '30d' });
+  const siteFilter = resolveSiteFilter(q);
+  const runQ = mkRunQ(db, 'alert-analysis');
+
+  const p = [win.start, win.end];
+  const sc = siteClause(siteFilter, p, 'd.site_id');
+  let extra = sc ? ` AND ${sc}` : '';
+  const siteId = parseInt(q.site_id, 10);
+  if (!isNaN(siteId)) { p.push(siteId); extra += ` AND d.site_id = $${p.length}`; }
+  const base = `FROM alerts a JOIN monitored_devices d ON d.id = a.device_id
+    WHERE a.alert_type <> 'recovery' AND a.triggered_at BETWEEN $1 AND $2${extra}`;
+
+  const tot = await runQ('tot', `SELECT COUNT(*)::int AS c ${base}`, p, [{ c: 0 }]);
+  const byType = await runQ('byType', `SELECT a.alert_type AS key, COUNT(*)::int AS count ${base} GROUP BY a.alert_type ORDER BY count DESC`, p, []);
+  const bySev = await runQ('bySev', `SELECT a.severity AS key, COUNT(*)::int AS count ${base} GROUP BY a.severity ORDER BY count DESC`, p, []);
+  const bySite = await runQ('bySite', `SELECT COALESCE(d.site_name, 'Unassigned') AS key, COUNT(*)::int AS count ${base} GROUP BY 1 ORDER BY count DESC`, p, []);
+  const byDevice = await runQ('byDevice', `
+    SELECT d.id AS device_id, d.name AS device_name, COALESCE(d.site_name, 'Unassigned') AS site_name,
+           COUNT(*)::int AS count,
+           ROUND(AVG(EXTRACT(EPOCH FROM (a.resolved_at - a.triggered_at)) / 60.0)
+             FILTER (WHERE a.resolved_at IS NOT NULL)::numeric, 1) AS mttr_minutes
+    ${base} GROUP BY d.id, d.name, site_name ORDER BY count DESC LIMIT 10`, p, []);
+  const mttr = await runQ('mttr', `
+    SELECT ROUND(AVG(EXTRACT(EPOCH FROM (a.resolved_at - a.triggered_at)) / 60.0)::numeric, 1) AS mttr
+    ${base} AND a.resolved_at IS NOT NULL`, p, [{ mttr: null }]);
+  const hour = await runQ('hour', `SELECT EXTRACT(HOUR FROM a.triggered_at)::int AS key, COUNT(*)::int AS count ${base} GROUP BY 1 ORDER BY count DESC LIMIT 1`, p, []);
+  const day = await runQ('day', `SELECT EXTRACT(DOW FROM a.triggered_at)::int AS key, COUNT(*)::int AS count ${base} GROUP BY 1 ORDER BY count DESC LIMIT 1`, p, []);
+  const trend = await runQ('trend', `SELECT to_char(date_trunc('day', a.triggered_at), 'YYYY-MM-DD') AS day, COUNT(*)::int AS count ${base} GROUP BY 1 ORDER BY 1`, p, []);
+
+  const trendPoints = trend.rows.map((r) => ({ t: r.day, v: Number(r.count) })).filter((x) => isFinite(x.v));
+  const maxV = trendPoints.reduce((a, x) => Math.max(a, x.v), 0);
+  const busiestHour = hour.rows[0] ? hour.rows[0].key : null;
+  const busiestDay = day.rows[0] ? day.rows[0].key : null;
+
+  return {
+    title: 'Alerts & Anomalies',
+    dateRange: win.label,
+    rangeLabel: `Alerts per day - ${win.label}`,
+    total_alerts: tot.rows[0] ? tot.rows[0].c : 0,
+    avg_mttr_minutes: mttr.rows[0] ? mttr.rows[0].mttr : null,
+    busiest_hour: busiestHour, busiest_day: busiestDay,
+    by_type: byType.rows, by_severity: bySev.rows, by_site: bySite.rows,
+    top_alerted: byDevice.rows,
+    trendPoints, trendYMax: maxV > 0 ? Math.max(4, Math.ceil(maxV * 1.2)) : 5,
+    summary: [
+      { label: 'Total Alerts', value: String(tot.rows[0] ? tot.rows[0].c : 0), color: YELLOW },
+      { label: 'Avg MTTR (min)', value: mttr.rows[0] && mttr.rows[0].mttr != null ? String(Math.round(mttr.rows[0].mttr)) : '—', color: NAVY },
+      { label: 'Busiest Hour', value: aaHour(busiestHour), color: RED },
+    ],
+  };
+}
+
+function renderAlertAnalysis(doc, data, layout) {
+  const { left, contentW } = layout;
+  doc.addPage();
+  let y = doc.page.margins.top;
+
+  doc.fillColor(NAVY).fontSize(20).font('Helvetica-Bold').text(data.title, left, y, { width: contentW });
+  y = doc.y + 2;
+  doc.fillColor(MUTED).fontSize(11).font('Helvetica').text(`Alert volume, MTTR and patterns over ${data.dateRange}`, left, y, { width: contentW });
+  y = doc.y + 4;
+  doc.moveTo(left, y).lineTo(left + 90, y).lineWidth(2).stroke(RED);
+  y += 14;
+
+  y = drawKpiTiles(doc, layout, y, [
+    { value: String(data.total_alerts || 0), label: 'Total Alerts', color: YELLOW },
+    { value: data.avg_mttr_minutes != null ? `${Math.round(data.avg_mttr_minutes)} min` : '—', label: 'Avg MTTR', color: NAVY },
+    { value: aaHour(data.busiest_hour), label: 'Busiest Hour', color: RED },
+    { value: aaDayName(data.busiest_day), label: 'Busiest Day', color: NAVY },
+  ]);
+  y += 22;
+  doc.y = y;
+
+  renderChartBlock(doc, layout, 'Alert Volume (daily)', data.trendPoints, { yMax: data.trendYMax, ySuffix: '', color: RED, rangeLabel: data.rangeLabel });
+
+  // Pattern insight line.
+  sectionTitle(doc, layout, 'Alert Pattern');
+  const hasPattern = data.busiest_day != null && data.busiest_hour != null;
+  doc.fillColor('#334155').fontSize(10).font('Helvetica').text(
+    hasPattern
+      ? `Most alerts occur on ${aaDayName(data.busiest_day)} around ${aaHour(data.busiest_hour)}.`
+      : 'Not enough data to detect a pattern.',
+    left, doc.y + 6, { width: contentW });
+  doc.y += 14;
+
+  sectionTitle(doc, layout, 'Top Alerted Devices');
+  drawTable(doc, {
+    columns: [
+      { key: 'device_name', label: 'Device', width: 180 },
+      { key: 'site_name', label: 'Site', width: 140 },
+      { key: 'count', label: 'Alerts', width: 70, align: 'right' },
+      { key: 'mttr', label: 'MTTR (min)', width: 90, align: 'right' },
+    ],
+    rows: (data.top_alerted || []).map((d) => ({
+      device_name: d.device_name || '—', site_name: d.site_name || '—',
+      count: d.count == null ? 0 : d.count,
+      mttr: d.mttr_minutes == null ? '—' : String(Math.round(d.mttr_minutes)),
+    })),
+  }, layout, { continueOnPage: true });
+  doc.y += 18;
+
+  sectionTitle(doc, layout, 'By Type');
+  drawTable(doc, {
+    columns: [
+      { key: 'key', label: 'Type', width: 300 },
+      { key: 'count', label: 'Count', width: 90, align: 'right' },
+    ],
+    rows: (data.by_type || []).map((t) => ({ key: t.key || '—', count: t.count == null ? 0 : t.count })),
+  }, layout, { continueOnPage: true });
+  doc.y += 18;
+
+  sectionTitle(doc, layout, 'By Severity');
+  drawTable(doc, {
+    columns: [
+      { key: 'key', label: 'Severity', width: 300 },
+      { key: 'count', label: 'Count', width: 90, align: 'right' },
+    ],
+    rows: (data.by_severity || []).map((s) => ({ key: s.key || '—', count: s.count == null ? 0 : s.count })),
+  }, layout, { continueOnPage: true });
+  doc.y += 18;
+
+  sectionTitle(doc, layout, 'By Site');
+  drawTable(doc, {
+    columns: [
+      { key: 'key', label: 'Site', width: 300 },
+      { key: 'count', label: 'Count', width: 90, align: 'right' },
+    ],
+    rows: (data.by_site || []).map((s) => ({ key: s.key || '—', count: s.count == null ? 0 : s.count })),
+  }, layout, { continueOnPage: true });
+}
+
+// ════════════════════════════════════════════════════════════
+// GRANULAR PER-ENTITY REPORTS — device-detail & ap-detail
+// Each renders ONE OR MORE selected entities; every entity is its own PDF
+// SECTION (starts on a fresh page → clean breaks, charts never split) with an
+// entity header, a row of summary KPI tiles, and one trend chart per selected
+// metric series. Mirrors GET /api/reports/device-detail?device_id=&from=&to=&bucket=
+// and GET /api/reports/ap-detail/:id?from=&to=&bucket=.
+// ════════════════════════════════════════════════════════════
+
+// Whitelisted bucket intervals + range resolver (faithful copies of server.js
+// BUCKET_INTERVALS / bucketIntervalSql / resolveSeriesRange). The SQL interval
+// string is chosen from this whitelist only — never interpolated from raw input.
+const PDF_BUCKET_INTERVALS = {
+  '5m': { sql: '5 minutes', minutes: 5 },
+  '15m': { sql: '15 minutes', minutes: 15 },
+  '1h': { sql: '1 hour', minutes: 60 },
+  '6h': { sql: '6 hours', minutes: 360 },
+  '1d': { sql: '1 day', minutes: 1440 },
+};
+const PDF_BUCKET_ORDER = ['5m', '15m', '1h', '6h', '1d'];
+function pdfAutoBucketKey(windowMs) {
+  const hours = windowMs / 3600000;
+  if (hours <= 6) return '5m';
+  if (hours <= 48) return '15m';
+  if (hours <= 24 * 14) return '1h';
+  if (hours <= 24 * 60) return '6h';
+  return '1d';
+}
+function pdfResolveSeriesRange(query) {
+  const q = query || {};
+  const PRESET_DAYS = { '24h': 1, '7d': 7, '30d': 30, '90d': 90 };
+  let from, to;
+  if (q.from && q.to && isFinite(Date.parse(q.from)) && isFinite(Date.parse(q.to))) {
+    from = new Date(q.from).toISOString();
+    to = new Date(q.to).toISOString();
+  } else {
+    const days = PRESET_DAYS[q.range] || 7;
+    to = new Date().toISOString();
+    from = new Date(Date.now() - days * 24 * 3600000).toISOString();
+  }
+  const fromMs = Date.parse(from), toMs = Date.parse(to);
+  const windowMs = (isFinite(fromMs) && isFinite(toMs) && toMs > fromMs) ? (toMs - fromMs) : 7 * 24 * 3600000;
+  let key = (q.bucket && q.bucket !== 'auto' && PDF_BUCKET_INTERVALS[q.bucket]) ? q.bucket : pdfAutoBucketKey(windowMs);
+  let idx = PDF_BUCKET_ORDER.indexOf(key);
+  while (idx < PDF_BUCKET_ORDER.length - 1) {
+    if ((windowMs / 60000) / PDF_BUCKET_INTERVALS[PDF_BUCKET_ORDER[idx]].minutes <= 1500) break;
+    idx += 1;
+  }
+  key = PDF_BUCKET_ORDER[idx];
+  return { from, to, bucket: key, intervalSql: PDF_BUCKET_INTERVALS[key].sql };
+}
+
+// Parse a param that may be a CSV string, single value, or array into a deduped
+// list of positive integer ids (order-preserving).
+function parseIdList() {
+  const out = [], seen = new Set();
+  for (let i = 0; i < arguments.length; i++) {
+    const v = arguments[i];
+    if (v == null) continue;
+    const arr = Array.isArray(v) ? v : String(v).split(',');
+    for (const x of arr) {
+      const n = parseInt(String(x).trim(), 10);
+      if (!isNaN(n) && n > 0 && !seen.has(n)) { seen.add(n); out.push(n); }
+    }
+  }
+  return out;
+}
+// Parse selected metric keys (CSV/array). Returns null when none supplied, which
+// means "render every metric that has data" (mirrors the components' undefined).
+function parseMetricList() {
+  const out = [], seen = new Set();
+  for (let i = 0; i < arguments.length; i++) {
+    const v = arguments[i];
+    if (v == null) continue;
+    const arr = Array.isArray(v) ? v : String(v).split(',');
+    for (const x of arr) {
+      const k = String(x).trim();
+      if (k && !seen.has(k)) { seen.add(k); out.push(k); }
+    }
+  }
+  return out.length ? out : null;
+}
+// Build { t, v } points from bucketed rows for a single numeric column.
+function seriesPointsCol(rows, vKey, transform) {
+  const out = [];
+  for (const r of rows) {
+    const raw = r[vKey];
+    if (raw == null) continue;
+    let v = Number(raw);
+    if (!isFinite(v)) continue;
+    if (transform) v = transform(v);
+    out.push({ t: r.ts, v });
+  }
+  return out;
+}
+// A sane y-axis top for a non-percentage series (headroom above the peak).
+function autoYMax(points) {
+  const m = points.reduce((a, p) => Math.max(a, p.v), 0);
+  return m > 0 ? Math.max(1, Math.ceil(m * 1.2)) : 10;
+}
+
+// Shared per-entity section renderer (used by device-detail + ap-detail). Each
+// entity starts on a fresh page so charts never split across a page boundary.
+function renderEntitySection(doc, layout, ent) {
+  const { left, contentW } = layout;
+  doc.addPage();
+  let y = doc.page.margins.top;
+  doc.fillColor(NAVY).fontSize(18).font('Helvetica-Bold').text(ent.header.name || '—', left, y, { width: contentW });
+  y = doc.y + 2;
+  if (ent.header.subline) {
+    doc.fillColor(MUTED).fontSize(10).font('Helvetica').text(ent.header.subline, left, y, { width: contentW });
+    y = doc.y + 4;
+  }
+  doc.moveTo(left, y).lineTo(left + 90, y).lineWidth(2).stroke(RED);
+  y += 14;
+  if (ent.stats && ent.stats.length) { y = drawKpiTiles(doc, layout, y, ent.stats); y += 22; }
+  doc.y = y;
+
+  if (!ent.charts || !ent.charts.length) {
+    doc.fillColor(MUTED).fontSize(10).font('Helvetica-Oblique')
+      .text('No time-series data for the selected metrics in this period.', left, doc.y + 6, { width: contentW });
+    return;
+  }
+  ent.charts.forEach((c) => renderChartBlock(doc, layout, c.title, c.points,
+    { yMax: c.yMax, ySuffix: c.ySuffix, color: c.color, rangeLabel: c.rangeLabel }));
+}
+
+// Shared entry point for both granular reports. Produces a valid "nothing
+// selected" PDF when no entity resolved.
+function renderEntityReport(doc, data, layout, noun) {
+  const { left, contentW } = layout;
+  const ents = data.entities || [];
+  if (!ents.length) {
+    doc.addPage();
+    const y = doc.page.margins.top;
+    doc.fillColor(NAVY).fontSize(20).font('Helvetica-Bold').text(data.title, left, y, { width: contentW });
+    doc.moveTo(left, doc.y + 4).lineTo(left + 90, doc.y + 4).lineWidth(2).stroke(RED);
+    doc.fillColor(MUTED).fontSize(11).font('Helvetica')
+      .text(`No ${noun} selected, or no data available for the selected ${noun}(s) in this period.`, left, doc.y + 16, { width: contentW });
+    return;
+  }
+  ents.forEach((e) => renderEntitySection(doc, layout, e));
+}
+
+// ── Device Detail — mirror of GET /api/reports/device-detail ──
+// Metric keys (frontend DETAIL_METRICS['device-detail']): latency, cpu, mem,
+// interfaces, sessions.
+const DD_COLORS = { latency: RED, cpu: '#2563eb', mem: '#7c3aed', sessions: '#16a34a', iface: '#2563eb' };
+const DD_MAX_IFACES = 4;
+
+async function gatherDeviceDetail(db, params) {
+  const q = params || {};
+  const siteFilter = resolveSiteFilter(q);
+  const runQ = mkRunQ(db, 'device-detail');
+  const range = pdfResolveSeriesRange(q);
+  const ids = parseIdList(q.device_id, q.device_ids, q.entity_ids, q.ids);
+  const metrics = parseMetricList(q.metrics, q.selected_metrics, q._metrics);
+  const want = (kk) => !metrics || metrics.includes(kk);
+  const dateRange = `${fmtDay(range.from)} to ${fmtDay(range.to)}`;
+  const rangeLabel = `Series - ${dateRange}`;
+
+  const entities = [];
+  for (const id of ids) {
+    const dev = await runQ('device', `
+      SELECT id, name, ip_address, site_name, site_id, device_type, device_vendor, snmp_enabled, poll_interval_seconds
+      FROM monitored_devices WHERE id = $1`, [id], []);
+    const d = dev.rows[0];
+    if (!d) continue;
+    if (siteFilter && siteFilter.length && !siteFilter.includes(d.site_id)) continue; // RBAC
+
+    const avail = await runQ('avail', `
+      SELECT COUNT(*)::int AS total_checks,
+             SUM(CASE WHEN status <> 'up' THEN 1 ELSE 0 END)::int AS failed_checks
+      FROM ping_results WHERE device_id = $1 AND ts BETWEEN $2 AND $3`, [id, range.from, range.to], [{ total_checks: 0, failed_checks: 0 }]);
+    const resp = await runQ('resp', `
+      SELECT ROUND(AVG(response_ms)::numeric, 1) AS avg_ms
+      FROM ping_results WHERE device_id = $1 AND status = 'up' AND ts BETWEEN $2 AND $3`, [id, range.from, range.to], [{ avg_ms: null }]);
+    const alertsCnt = await runQ('alerts', `
+      SELECT COUNT(*)::int AS c FROM alerts
+      WHERE device_id = $1 AND alert_type <> 'recovery' AND triggered_at BETWEEN $2 AND $3`, [id, range.from, range.to], [{ c: 0 }]);
+
+    const scalar = await runQ('scalar', `
+      WITH ping AS (
+        SELECT date_bin($2::interval, ts, TIMESTAMPTZ '2000-01-01') AS b,
+               ROUND(AVG(response_ms) FILTER (WHERE status = 'up')::numeric, 1) AS latency_ms,
+               ROUND(AVG(COALESCE(packet_loss_pct, CASE WHEN status = 'up' THEN 0 ELSE 100 END))::numeric, 1) AS packet_loss_pct
+        FROM ping_results WHERE device_id = $1 AND ts BETWEEN $3 AND $4 GROUP BY 1
+      ),
+      snmp AS (
+        SELECT date_bin($2::interval, ts, TIMESTAMPTZ '2000-01-01') AS b,
+               ROUND(AVG(value) FILTER (WHERE metric_name = 'cpu_pct')::numeric, 1)           AS cpu_pct,
+               ROUND(AVG(value) FILTER (WHERE metric_name = 'mem_pct')::numeric, 1)           AS mem_pct,
+               ROUND(AVG(value) FILTER (WHERE metric_name = 'session_count')::numeric, 0)     AS session_count,
+               ROUND(AVG(value) FILTER (WHERE metric_name = 'session_util_pct')::numeric, 1)  AS session_util_pct,
+               ROUND(AVG(value) FILTER (WHERE metric_name = 'gp_tunnels')::numeric, 0)        AS gp_tunnels
+        FROM snmp_results
+        WHERE device_id = $1 AND ts BETWEEN $3 AND $4
+          AND metric_name IN ('cpu_pct','mem_pct','session_count','session_util_pct','gp_tunnels')
+        GROUP BY 1
+      )
+      SELECT COALESCE(ping.b, snmp.b) AS ts,
+             ping.latency_ms, ping.packet_loss_pct,
+             snmp.cpu_pct, snmp.mem_pct, snmp.session_count, snmp.session_util_pct, snmp.gp_tunnels
+      FROM ping FULL OUTER JOIN snmp ON ping.b = snmp.b
+      ORDER BY ts`, [id, range.intervalSql, range.from, range.to], []);
+
+    const ifRows = await runQ('iface', `
+      SELECT if_index,
+             MAX(if_name) AS if_name,
+             date_bin($2::interval, ts, TIMESTAMPTZ '2000-01-01') AS ts,
+             ROUND(AVG(value) FILTER (WHERE metric_name = 'if_in_bps' OR metric_name LIKE 'if\\_%\\_in\\_bps')::numeric, 0)        AS in_bps,
+             ROUND(AVG(value) FILTER (WHERE metric_name = 'if_out_bps' OR metric_name LIKE 'if\\_%\\_out\\_bps')::numeric, 0)       AS out_bps
+      FROM snmp_results
+      WHERE device_id = $1 AND ts BETWEEN $3 AND $4
+        AND if_index IS NOT NULL
+        AND (metric_name = 'if_in_bps' OR metric_name = 'if_out_bps'
+             OR metric_name LIKE 'if\\_%\\_in\\_bps' OR metric_name LIKE 'if\\_%\\_out\\_bps')
+      GROUP BY if_index, date_bin($2::interval, ts, TIMESTAMPTZ '2000-01-01')
+      ORDER BY if_index, ts`, [id, range.intervalSql, range.from, range.to], []);
+
+    const ifMap = new Map();
+    for (const row of ifRows.rows) {
+      if (!ifMap.has(row.if_index)) ifMap.set(row.if_index, { if_index: row.if_index, if_name: row.if_name, points: [] });
+      const e = ifMap.get(row.if_index);
+      if (!e.if_name && row.if_name) e.if_name = row.if_name;
+      e.points.push({ ts: row.ts, in_bps: row.in_bps == null ? null : Number(row.in_bps) });
+    }
+
+    const a0 = avail.rows[0] || { total_checks: 0, failed_checks: 0 };
+    const poll = d.poll_interval_seconds || 300;
+    const uptime = pct2(a0.failed_checks, a0.total_checks);
+    const avgMs = resp.rows[0] && resp.rows[0].avg_ms != null ? Number(resp.rows[0].avg_ms) : null;
+    const downtime = round1(a0.failed_checks * poll / 60);
+
+    const scalarRows = scalar.rows;
+    const charts = [];
+    if (want('latency')) { const pts = seriesPointsCol(scalarRows, 'latency_ms'); if (pts.length) charts.push({ title: 'Latency (ms)', points: pts, yMax: autoYMax(pts), ySuffix: ' ms', color: DD_COLORS.latency, rangeLabel }); }
+    if (want('cpu')) { const pts = seriesPointsCol(scalarRows, 'cpu_pct'); if (pts.length) charts.push({ title: 'CPU utilization (%)', points: pts, yMax: 100, ySuffix: '%', color: DD_COLORS.cpu, rangeLabel }); }
+    if (want('mem')) { const pts = seriesPointsCol(scalarRows, 'mem_pct'); if (pts.length) charts.push({ title: 'Memory utilization (%)', points: pts, yMax: 100, ySuffix: '%', color: DD_COLORS.mem, rangeLabel }); }
+    if (want('sessions')) { const pts = seriesPointsCol(scalarRows, 'session_count'); if (pts.length) charts.push({ title: 'Sessions', points: pts, yMax: autoYMax(pts), ySuffix: '', color: DD_COLORS.sessions, rangeLabel }); }
+    if (want('interfaces')) {
+      const usable = Array.from(ifMap.values()).filter((f) => f.points.some((pp) => pp.in_bps != null));
+      usable.sort((a, b) => b.points.reduce((m, pp) => Math.max(m, pp.in_bps || 0), 0) - a.points.reduce((m, pp) => Math.max(m, pp.in_bps || 0), 0));
+      for (const iface of usable.slice(0, DD_MAX_IFACES)) {
+        const pts = seriesPointsCol(iface.points, 'in_bps', (v) => Math.round(v / 1e6 * 100) / 100);
+        if (pts.length) charts.push({ title: `${iface.if_name || ('Interface ' + iface.if_index)} in (Mbps)`, points: pts, yMax: autoYMax(pts), ySuffix: ' Mb', color: DD_COLORS.iface, rangeLabel });
+      }
+    }
+
+    const subline = [d.ip_address, d.device_type, d.site_name, d.device_vendor].filter((x) => x != null && x !== '').join(' · ');
+    entities.push({
+      header: { name: d.name, subline },
+      stats: [
+        { value: uptime == null ? '—' : `${uptime}%`, label: 'Uptime', color: GREEN },
+        { value: avgMs == null ? '—' : `${avgMs} ms`, label: 'Avg Response', color: NAVY },
+        { value: `${downtime} min`, label: 'Downtime', color: RED },
+        { value: String(alertsCnt.rows[0] ? alertsCnt.rows[0].c : 0), label: 'Alerts', color: YELLOW },
+      ],
+      charts,
+    });
+  }
+
+  return {
+    title: 'Device Detail',
+    dateRange,
+    entities,
+    summary: [
+      { label: 'Devices', value: String(entities.length), color: NAVY },
+      { label: 'Metrics', value: metrics ? String(metrics.length) : 'All', color: YELLOW },
+      { label: 'Bucket', value: range.bucket, color: GREEN },
+    ],
+  };
+}
+
+function renderDeviceDetail(doc, data, layout) { renderEntityReport(doc, data, layout, 'device'); }
+
+// ── AP Detail — mirror of GET /api/reports/ap-detail/:id ──
+// Metric keys (frontend DETAIL_METRICS['ap-detail']): clients, radio_util,
+// noise, throughput.
+const AP_COLORS = { clients: '#7c3aed', util: YELLOW, noise: '#f97316', throughput: '#2563eb' };
+
+async function gatherApDetail(db, params) {
+  const q = params || {};
+  const siteFilter = resolveSiteFilter(q);
+  const runQ = mkRunQ(db, 'ap-detail');
+  const range = pdfResolveSeriesRange(q);
+  const ids = parseIdList(q.id, q.ap_id, q.ap_ids, q.ids, q.entity_ids);
+  const metrics = parseMetricList(q.metrics, q.selected_metrics, q._metrics);
+  const want = (kk) => !metrics || metrics.includes(kk);
+  const dateRange = `${fmtDay(range.from)} to ${fmtDay(range.to)}`;
+  const rangeLabel = `Series - ${dateRange}`;
+
+  const intervalMin = (PDF_BUCKET_INTERVALS[range.bucket] || { minutes: 60 }).minutes;
+  const windowMin = Math.max(1, (Date.parse(range.to) - Date.parse(range.from)) / 60000);
+  const expected = Math.max(1, Math.round(windowMin / intervalMin));
+
+  const entities = [];
+  for (const id of ids) {
+    const apQ = await runQ('ap', `
+      SELECT a.id, a.name, a.model, a.mac_address, a.ip_address, a.controller_id,
+             c.name AS controller_name, a.site_id, a.site_name,
+             a.firmware_version, a.uptime_seconds, a.status, a.radio_2g_channel, a.radio_5g_channel
+      FROM wireless_aps a LEFT JOIN wireless_controllers c ON c.id = a.controller_id
+      WHERE a.id = $1`, [id], []);
+    const ap = apQ.rows[0];
+    if (!ap) continue;
+    if (siteFilter && siteFilter.length && !siteFilter.includes(ap.site_id)) continue; // RBAC
+
+    const seriesQ = await runQ('series', `
+      SELECT date_bin($2::interval, ts, TIMESTAMPTZ '2000-01-01') AS ts,
+             ROUND(AVG(clients_total)::numeric, 1)  AS clients_total,
+             ROUND(AVG(radio_2g_util)::numeric, 1)  AS radio_2g_util,
+             ROUND(AVG(radio_5g_util)::numeric, 1)  AS radio_5g_util,
+             ROUND(AVG(noise_floor_2g)::numeric, 1) AS noise_floor_2g,
+             ROUND(AVG(noise_floor_5g)::numeric, 1) AS noise_floor_5g,
+             ROUND(AVG(throughput_in_bps)::numeric, 0)  AS throughput_in_bps
+      FROM wireless_history
+      WHERE ap_id = $1 AND ts BETWEEN $3 AND $4
+      GROUP BY 1 ORDER BY 1`, [id, range.intervalSql, range.from, range.to], []);
+    const disco = await runQ('disco', `
+      SELECT COUNT(*)::int AS c FROM wireless_client_events
+      WHERE from_ap_id = $1 AND event_type = 'leave' AND ts BETWEEN $2 AND $3`, [id, range.from, range.to], [{ c: 0 }]);
+
+    const seriesRows = seriesQ.rows;
+    const sampleCount = seriesRows.length;
+    const online = Math.min(sampleCount, expected);
+    const uptimePct = expected > 0 ? Math.round((online / expected) * 1000) / 10 : null;
+    const downEvents = Math.max(0, expected - online);
+    const disconnects = disco.rows[0] ? disco.rows[0].c : 0;
+
+    const charts = [];
+    if (want('clients')) { const pts = seriesPointsCol(seriesRows, 'clients_total'); if (pts.length) charts.push({ title: 'Connected clients', points: pts, yMax: autoYMax(pts), ySuffix: '', color: AP_COLORS.clients, rangeLabel }); }
+    if (want('radio_util')) {
+      const pts = [];
+      for (const r of seriesRows) {
+        if (r.radio_2g_util == null && r.radio_5g_util == null) continue;
+        pts.push({ t: r.ts, v: Math.max(Number(r.radio_2g_util || 0), Number(r.radio_5g_util || 0)) });
+      }
+      if (pts.length) charts.push({ title: 'Radio utilization (%)', points: pts, yMax: 100, ySuffix: '%', color: AP_COLORS.util, rangeLabel });
+    }
+    if (want('noise')) {
+      // Noise floor is negative dBm; the chart renderer plots [0..yMax], so we
+      // chart its magnitude (|dBm|) as a trend indicator.
+      const pts = [];
+      for (const r of seriesRows) {
+        const n = r.noise_floor_5g != null ? r.noise_floor_5g : r.noise_floor_2g;
+        if (n == null) continue;
+        pts.push({ t: r.ts, v: Math.abs(Number(n)) });
+      }
+      if (pts.length) charts.push({ title: 'Noise floor (|dBm|)', points: pts, yMax: autoYMax(pts), ySuffix: '', color: AP_COLORS.noise, rangeLabel });
+    }
+    if (want('throughput')) { const pts = seriesPointsCol(seriesRows, 'throughput_in_bps', (v) => Math.round(v / 1e6 * 100) / 100); if (pts.length) charts.push({ title: 'Throughput in (Mbps)', points: pts, yMax: autoYMax(pts), ySuffix: ' Mb', color: AP_COLORS.throughput, rangeLabel }); }
+
+    const subline = [ap.model, ap.ip_address, ap.controller_name, ap.site_name].filter((x) => x != null && x !== '').join(' · ');
+    entities.push({
+      header: { name: ap.name, subline },
+      stats: [
+        { value: uptimePct == null ? '—' : `${uptimePct}%`, label: 'Uptime', color: GREEN },
+        { value: String(sampleCount), label: 'Samples', color: NAVY },
+        { value: String(downEvents), label: 'Down Events', color: RED },
+        { value: String(disconnects), label: 'Disconnects', color: YELLOW },
+      ],
+      charts,
+    });
+  }
+
+  return {
+    title: 'AP Detail',
+    dateRange,
+    entities,
+    summary: [
+      { label: 'Access Points', value: String(entities.length), color: NAVY },
+      { label: 'Metrics', value: metrics ? String(metrics.length) : 'All', color: YELLOW },
+      { label: 'Bucket', value: range.bucket, color: GREEN },
+    ],
+  };
+}
+
+function renderApDetail(doc, data, layout) { renderEntityReport(doc, data, layout, 'access point'); }
+
 // ── Renderer registry ─────────────────────────────────────────
 // Canonical template keys → { title, gather, render }. `hasPdfRenderer` and
 // `generateReportPdf` both resolve through normalizeTemplate() so an alias like
@@ -2113,6 +2723,10 @@ const RENDERERS = {
   'wireless-clients': { title: 'Wireless Client', gather: gatherWirelessClients, render: renderWirelessClients },
   'wireless-rf': { title: 'Wireless RF', gather: gatherWirelessRf, render: renderWirelessRf },
   'wireless-capacity': { title: 'Wireless Capacity', gather: gatherWirelessCapacity, render: renderWirelessCapacity },
+  'top-worst': { title: 'Top 10 Worst', gather: gatherTopWorst, render: renderTopWorst },
+  'alert-analysis': { title: 'Alerts & Anomalies', gather: gatherAlertAnalysis, render: renderAlertAnalysis },
+  'device-detail': { title: 'Device Detail', gather: gatherDeviceDetail, render: renderDeviceDetail },
+  'ap-detail': { title: 'AP Detail', gather: gatherApDetail, render: renderApDetail },
 };
 const ALIASES = {
   'executive-summary': 'executive',
@@ -2131,6 +2745,22 @@ const ALIASES = {
   'wireless-ap-health-report': 'wireless-ap-health',
   'wireless-rf-health': 'wireless-rf',
   'wireless-capacity-planning': 'wireless-capacity',
+  // Aggregate + granular detail aliases (canonical keys mirror the frontend
+  // TEMPLATES list + the /api/reports/* endpoints).
+  'top-10-worst': 'top-worst',
+  'topworst': 'top-worst',
+  'worst': 'top-worst',
+  'alerts': 'alert-analysis',
+  'alerts-analysis': 'alert-analysis',
+  'alert-anomalies': 'alert-analysis',
+  'alerts-and-anomalies': 'alert-analysis',
+  'device': 'device-detail',
+  'device-details': 'device-detail',
+  'devices-detail': 'device-detail',
+  'ap': 'ap-detail',
+  'ap-details': 'ap-detail',
+  'access-point-detail': 'ap-detail',
+  'wireless-ap-detail': 'ap-detail',
 };
 
 function normalizeTemplate(template) {
