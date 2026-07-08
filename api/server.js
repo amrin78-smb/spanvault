@@ -34,6 +34,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.59.6': [
+    'Updater hardening: the update script now pins the build directory to its true on-disk casing, so a build can no longer fail with a duplicate-React "useContext" error when the updater is invoked with a different path casing than a previous run (Next.js caches absolute paths, so a casing change between runs collided).',
+  ],
   '1.59.5': [
     'The report "Export PDF" button now downloads a real server-generated PDF (with proper charts and tables) instead of using the browser\'s print-to-PDF, which didn\'t render reliably. It exports the report you\'re viewing with the same filters, and detail reports include each selected device/AP.',
   ],
