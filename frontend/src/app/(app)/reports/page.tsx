@@ -47,6 +47,11 @@ type Template = {
 };
 type Applied = {
   template: string; range: string; from: string; to: string; bucket: string;
+  // Resolved ISO from/to frozen at Run time so the granular per-entity endpoint
+  // string is stable across unrelated re-renders (typing, tab switch). Without
+  // this, granularRangeParams recomputes `to` via new Date() every render, which
+  // changes the endpoint and refires EntityReportSection's fetch effect.
+  resolvedFrom: string; resolvedTo: string;
   scopeMode: 'all' | 'site' | 'device';
   siteId: string; siteLabel: string; deviceId: string; deviceLabel: string;
   controllerId: string; controllerLabel: string;
@@ -146,18 +151,28 @@ function presetToIso(range: string): { from: string; to: string } {
 // (the contract accepts both; we prefer sending from/to). bucket always sent.
 function granularRangeParams(a: Applied): URLSearchParams {
   const p = new URLSearchParams();
-  if (a.range === 'custom') {
-    if (a.from) p.set('from', new Date(a.from).toISOString());
-    if (a.to) p.set('to', new Date(a.to).toISOString());
-  } else {
-    const { from, to } = presetToIso(a.range);
-    p.set('from', from);
-    p.set('to', to);
-    // Also pass the preset name so the API can fall back to `range` if it prefers.
-    p.set('range', a.range);
-  }
+  // Use the from/to resolved once at Run time (frozen in `applied`) — never
+  // new Date() here, or the endpoint string changes on every render and refires
+  // the per-entity fetch effect.
+  if (a.resolvedFrom) p.set('from', a.resolvedFrom);
+  if (a.resolvedTo) p.set('to', a.resolvedTo);
+  // For preset ranges, also pass the preset name so the API can fall back to
+  // `range` if it prefers. (Custom ranges carry only explicit from/to.)
+  if (a.range !== 'custom') p.set('range', a.range);
   p.set('bucket', a.bucket || 'auto');
   return p;
+}
+
+// Resolve the effective ISO from/to for a report at Run time. Custom → the picked
+// endpoints; preset → computed once from the preset window. Frozen into `applied`.
+function resolveRange(range: string, from: string, to: string): { from: string; to: string } {
+  if (range === 'custom') {
+    return {
+      from: from ? new Date(from).toISOString() : '',
+      to: to ? new Date(to).toISOString() : '',
+    };
+  }
+  return presetToIso(range);
 }
 // Per-entity endpoint for a multi-entity detail report.
 //   ap-detail     → GET /api/reports/ap-detail/:id?from=&to=&bucket=
@@ -362,9 +377,11 @@ export default function ReportsPage() {
         return { id, label: d ? `${d.name}${d.ip_address ? ` (${d.ip_address})` : ''}` : id };
       });
     }
+    const resolved = resolveRange(range, from, to);
     setApplied({
       template, range, from, to, bucket, scopeMode, siteId, siteLabel, deviceId, deviceLabel,
       controllerId, controllerLabel, slaTarget, metric,
+      resolvedFrom: resolved.from, resolvedTo: resolved.to,
       entities, selectedMetrics: [...selectedMetrics],
     });
     setSaveName('');
@@ -457,7 +474,7 @@ export default function ReportsPage() {
     setSelectedMetrics(defaultMetrics(s.template));
     setApplied({
       template: s.template, range: s.date_range && s.date_range !== 'custom' ? s.date_range : '30d',
-      from: '', to: '', bucket: 'auto', scopeMode: mode === 'site' || mode === 'device' ? mode : 'all',
+      from: '', to: '', resolvedFrom: '', resolvedTo: '', bucket: 'auto', scopeMode: mode === 'site' || mode === 'device' ? mode : 'all',
       siteId: mode === 'site' && s.scope_id ? String(s.scope_id) : '',
       siteLabel, deviceId: mode === 'device' && s.scope_id ? String(s.scope_id) : '',
       deviceLabel, controllerId: '', controllerLabel: '',
@@ -710,8 +727,13 @@ export default function ReportsPage() {
 
                 {/* Report output — on screen this sits below the sticky config bar;
                     in print it is the ONLY visible subtree (globals.css). Not wrapped
-                    in .sv-no-print so it stays printable. */}
-                {applied ? (
+                    in .sv-no-print so it stays printable.
+                    Gate on applied.template === template: the title/cover/h1 use the
+                    LIVE tpl while the body uses the FROZEN applied, so if the user
+                    picks a different report in the rail without clicking Run we'd show
+                    report A's data under report B's title. Only render once the applied
+                    (run) report matches the current selection. */}
+                {applied && applied.template === template ? (
                 <div className="sv-report-output" id="report-print" style={{ padding: '16px 18px' }}>
           {/* Print-only repeating page footer (brand · confidential · generated). */}
           <div className="sv-print-footer">

@@ -115,10 +115,17 @@ async function runAndEmailReport(pool, report, getSmtpSettings) {
     html,
   };
 
+  // device-detail / ap-detail are multi-entity reports whose selected entity ids
+  // are NOT persisted in saved_reports, so a scheduled run has no entity to render
+  // and the PDF would come out as an empty "No entity selected" page. Until entity
+  // ids are persisted, skip the PDF for these and send the HTML-only email instead
+  // of attaching a misleading empty PDF.
+  const isDetailTemplate = report.template === 'device-detail' || report.template === 'ap-detail';
+
   // If a pdfkit renderer exists for this template, attach the rich PDF alongside
   // the HTML body. A PDF failure must NEVER break the email — on any error we log
   // and fall back to sending the HTML-only message unchanged.
-  if (hasPdfRenderer(report.template)) {
+  if (!isDetailTemplate && hasPdfRenderer(report.template)) {
     try {
       const pdfBuffer = await generateReportPdf(pool, {
         template: report.template,
@@ -192,6 +199,16 @@ function buildReportUrl(report) {
       return `/api/reports/capacity?${p}`;
     case 'executive':
       return `/api/reports/executive?${p}`;
+    // Wireless reports are scoped by an optional controller_id (not site/device),
+    // and each maps to its OWN endpoint. Without these explicit cases they fell
+    // through to network-summary, so the email body + history stored the wrong data.
+    case 'wireless-overview':
+    case 'wireless-ap-health':
+    case 'wireless-clients':
+    case 'wireless-rf':
+    case 'wireless-capacity':
+      if (report.scope_type === 'controller' && scopeId) p.set('controller_id', String(scopeId));
+      return `/api/reports/${report.template}?${p}`;
     case 'network-summary':
     default:
       return `/api/reports/network-summary?${p}`;
@@ -235,6 +252,15 @@ function buildReportParams(report) {
       break;
     case 'capacity':
       if (report.scope_type === 'site' && scopeId) params.site_id = scopeId;
+      break;
+    // Wireless reports carry an optional controller_id scope; mirror buildReportUrl
+    // so the PDF renderer receives the same params the data fetch used.
+    case 'wireless-overview':
+    case 'wireless-ap-health':
+    case 'wireless-clients':
+    case 'wireless-rf':
+    case 'wireless-capacity':
+      if (report.scope_type === 'controller' && scopeId) params.controller_id = scopeId;
       break;
     case 'executive':
     case 'network-summary':

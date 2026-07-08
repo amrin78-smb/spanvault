@@ -11,7 +11,10 @@ require('dotenv').config({ path: require('path').join(__dirname, '..', '.env.loc
 
 const express  = require('express');
 const path     = require('path');
-const { execSync } = require('child_process');
+const { execSync, execFile } = require('child_process');
+const { promisify } = require('util');
+const execFileP = promisify(execFile);
+const GIT_ENV = { ...process.env, GIT_TERMINAL_PROMPT: '0' };
 const cors     = require('cors');
 const ping     = require('ping');
 const { Pool } = require('pg');
@@ -31,6 +34,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.59.4': [
+    'Bug-sweep fixes: the git-based update check now runs asynchronously (a slow/unreachable GitHub can no longer briefly stall the server and ingestion); selecting a different report in the catalog no longer shows the previous report\'s data under the new title until you Run it; scheduled wireless reports now email that report\'s real data (they were pulling Network Summary data); and per-device/AP report sections no longer needlessly reload when switching tabs or editing an unrelated filter.',
+  ],
   '1.59.3': [
     'All reports can now generate as server-side PDFs, completing the set: Top 10 Worst, Alerts & Anomalies, plus the detailed Device and AP reports (each selected device/AP gets its own section with a chart per chosen metric). Scheduled reports can now email any of them as a rich PDF attachment.',
   ],
@@ -968,12 +974,12 @@ function localCommitHash() {
 // shared/proxied egress raw.githubusercontent returns 429 (non-JSON) and
 // api.github.com intermittently times out; the server's git transport works.
 // Returns null when git or the remote is unreachable.
-function remoteCommitHash() {
+async function remoteCommitHash() {
   try {
-    const out = execSync('git ls-remote origin main', {
-      cwd: APP_ROOT, encoding: 'utf8', timeout: 10000,
+    const { stdout } = await execFileP('git', ['ls-remote', 'origin', 'main'], {
+      cwd: APP_ROOT, encoding: 'utf8', timeout: 10000, env: GIT_ENV,
     });
-    const token = String(out).trim().split(/\s+/)[0];
+    const token = String(stdout).trim().split(/\s+/)[0];
     return token ? token.slice(0, 7) : null;
   } catch {
     return null;
@@ -983,15 +989,15 @@ function remoteCommitHash() {
 // Version string from origin/main's package.json over git transport. Fetches
 // the ref first, then reads the file straight out of git. Falls back to the
 // supplied local version if the fetch/read/parse fails.
-function remotePackageVersion(fallback) {
+async function remotePackageVersion(fallback) {
   try {
-    execSync('git fetch --quiet origin main', {
-      cwd: APP_ROOT, timeout: 20000, stdio: 'ignore',
+    await execFileP('git', ['fetch', '--quiet', 'origin', 'main'], {
+      cwd: APP_ROOT, timeout: 20000, env: GIT_ENV,
     });
-    const pkg = execSync('git show origin/main:package.json', {
-      cwd: APP_ROOT, encoding: 'utf8', timeout: 10000,
+    const { stdout } = await execFileP('git', ['show', 'FETCH_HEAD:package.json'], {
+      cwd: APP_ROOT, encoding: 'utf8', timeout: 10000, env: GIT_ENV,
     });
-    return JSON.parse(pkg).version || fallback;
+    return JSON.parse(stdout).version || fallback;
   } catch {
     return fallback;
   }
@@ -1005,11 +1011,11 @@ app.get('/api/system/update-status', wrap(async (_req, res) => {
   const localVersion = version;
   const localHash = localCommitHash();
   try {
-    const remoteHash = remoteCommitHash();
+    const remoteHash = await remoteCommitHash();
     // Remote hash unreadable (git/remote unavailable, e.g. 429/timeout on a
     // non-git deploy) → keep the graceful "could not check" response.
     if (!remoteHash) {
-      return res.json({ up_to_date: true, error: 'Could not check for updates' });
+      return res.json({ up_to_date: true, current_version: localVersion, error: 'Could not check for updates' });
     }
 
     // Any differing commit = update available. Only pull the remote version
@@ -1017,7 +1023,7 @@ app.get('/api/system/update-status', wrap(async (_req, res) => {
     // local version is authoritative.
     const updateAvail = !!localHash && remoteHash !== localHash;
     const remoteVersion = updateAvail
-      ? remotePackageVersion(localVersion)
+      ? await remotePackageVersion(localVersion)
       : localVersion;
 
     // Release notes for the latest version, falling back to a generic message.
@@ -1037,7 +1043,7 @@ app.get('/api/system/update-status', wrap(async (_req, res) => {
     });
   } catch (e) {
     console.error('[update-status] version check failed:', e.message);
-    res.json({ up_to_date: true, error: 'Could not check for updates' });
+    res.json({ up_to_date: true, current_version: localVersion, error: 'Could not check for updates' });
   }
 }));
 
@@ -1048,10 +1054,10 @@ let updateAvailable = null; // { current, latest } when an update exists, else n
 async function checkForUpdates() {
   try {
     const localHash = localCommitHash();
-    const remoteHash = remoteCommitHash();
+    const remoteHash = await remoteCommitHash();
     const changed = !!(localHash && remoteHash && remoteHash !== localHash);
     updateAvailable = changed
-      ? { current: version, latest: remotePackageVersion(version) }
+      ? { current: version, latest: await remotePackageVersion(version) }
       : null;
   } catch {
     // never block on failure — keep the last known state
