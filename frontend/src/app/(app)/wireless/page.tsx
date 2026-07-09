@@ -1398,31 +1398,39 @@ type ApSort = { key: string; dir: 'asc' | 'desc' };
 
 // Value extractor per sortable column. Strings sort case-insensitively; numeric
 // columns push missing values to the bottom (ascending) so blanks don't lead.
-const AP_SORT_ACCESSORS: Record<string, (a: AccessPoint) => string | number> = {
-  name: (a) => (a.name || '').toLowerCase(),
-  site: (a) => (a.site_name || '').toLowerCase(),
-  status: (a) => a.status || '',
+// Missing values return null so the comparator can pin them LAST in BOTH sort
+// directions (see sortAps) — instead of a low sentinel that a plain reverse()
+// would flip to the top. clients/util keep 0 for "none" (a real value, not blank).
+const AP_SORT_ACCESSORS: Record<string, (a: AccessPoint) => string | number | null> = {
+  name: (a) => (a.name || '').toLowerCase() || null,
+  site: (a) => (a.site_name || '').toLowerCase() || null,
+  status: (a) => a.status || null,
   clients: (a) => a.clients_total || 0,
-  ch2g: (a) => a.radio_2g_channel ?? -1,
-  ch5g: (a) => a.radio_5g_channel ?? -1,
+  ch2g: (a) => a.radio_2g_channel ?? null,
+  ch5g: (a) => a.radio_5g_channel ?? null,
   util: (a) => Math.max(a.radio_2g_util_pct || 0, a.radio_5g_util_pct || 0),
-  uptime: (a) => a.uptime_seconds ?? -1,
-  lastseen: (a) => (a.last_seen_at ? Date.parse(a.last_seen_at) : -1),
+  uptime: (a) => a.uptime_seconds ?? null,
+  lastseen: (a) => (a.last_seen_at ? Date.parse(a.last_seen_at) : null),
 };
 
 function sortAps(aps: AccessPoint[], sort: ApSort | null): AccessPoint[] {
   if (!sort) return aps;
   const get = AP_SORT_ACCESSORS[sort.key];
   if (!get) return aps;
-  const out = [...aps].sort((a, b) => {
+  const dir = sort.dir === 'asc' ? 1 : -1;
+  // Real comparator with a direction multiplier — blank/missing (null) rows are
+  // pinned last regardless of direction, mirroring the ClientsTab comparator.
+  return [...aps].sort((a, b) => {
     const va = get(a);
     const vb = get(b);
-    if (va < vb) return -1;
-    if (va > vb) return 1;
-    return 0;
+    const aNull = va == null;
+    const bNull = vb == null;
+    if (aNull && bNull) return 0;
+    if (aNull) return 1;
+    if (bNull) return -1;
+    if (typeof va === 'number' && typeof vb === 'number') return (va - vb) * dir;
+    return String(va).localeCompare(String(vb)) * dir;
   });
-  if (sort.dir === 'desc') out.reverse();
-  return out;
 }
 
 // Clickable, sort-aware table header cell (top-level per the no-nested-components rule).
@@ -2014,14 +2022,14 @@ function RadioBandStats({
         padding: '3px 0', fontSize: 'var(--text-base)',
       }}>
         <span style={{ color: 'var(--text-muted)' }}>Channel Utilization</span>
-        <span>{utilPct ?? '—'}%</span>
+        <span>{utilPct != null ? `${utilPct}%` : '—'}</span>
       </div>
       <div style={{
         display: 'flex', justifyContent: 'space-between',
         padding: '3px 0', fontSize: 'var(--text-base)',
       }}>
         <span style={{ color: 'var(--text-muted)' }}>Retry Rate</span>
-        <span>{retryRate ?? '—'}%</span>
+        <span>{retryRate != null ? `${retryRate}%` : '—'}</span>
       </div>
       <div style={{
         display: 'flex', justifyContent: 'space-between',
@@ -2029,7 +2037,7 @@ function RadioBandStats({
       }}>
         <span style={{ color: 'var(--text-muted)' }}>Interference</span>
         <span style={{ color: Number(interference) >= 25 ? 'var(--tint-danger-fg)' : undefined }}>
-          {interference ?? '—'}%
+          {interference != null ? `${interference}%` : '—'}
         </span>
       </div>
       <div style={{
@@ -2873,6 +2881,14 @@ function ClientsTab({
   setProblemOnly: (v: boolean) => void;
 }) {
   const [search, setSearch] = useState('');
+  // Debounced copy of `search` — only this feeds the fetch querystring, so the
+  // Clients table doesn't refetch on every keystroke (the input stays controlled
+  // on `search` for responsiveness). Mirrors the GlobalSearch debounce pattern.
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search), 300);
+    return () => clearTimeout(t);
+  }, [search]);
   const [controllerFilter, setControllerFilter] = useState('');
   const [ssidFilter, setSsidFilter] = useState('');
   const [bandFilter, setBandFilter] = useState('');
@@ -2898,7 +2914,7 @@ function ClientsTab({
 
   const qs = useMemo(() => {
     const params: string[] = [];
-    if (search.trim()) params.push(`search=${encodeURIComponent(search.trim())}`);
+    if (debouncedSearch.trim()) params.push(`search=${encodeURIComponent(debouncedSearch.trim())}`);
     if (apFilter != null) params.push(`ap_id=${apFilter}`);
     if (problemOnly) params.push('problem=true');
     if (stickyOnly) params.push('sticky=true');
@@ -2907,7 +2923,7 @@ function ClientsTab({
     // cap, the summary total + note steer users to search/filters.
     params.push('limit=500');
     return `?${params.join('&')}`;
-  }, [search, apFilter, problemOnly, stickyOnly]);
+  }, [debouncedSearch, apFilter, problemOnly, stickyOnly]);
 
   const clientsApi = useApi<WirelessClient[]>(`/api/wireless/clients${qs}`, 30000);
   const allClients = useMemo(() => clientsApi.data || [], [clientsApi.data]);
@@ -2992,6 +3008,16 @@ function ClientsTab({
       m.set(c.controller_id, { client_count: c.client_count, problem_count: c.problem_count }));
     return m;
   }, [summary.data]);
+
+  // When ANY filter narrows the shown rows (server-side search/ap/problem/sticky
+  // OR client-side controller/ssid/band), the unfiltered summary counts no longer
+  // match the table — so we fall back to counting the filtered rows per group
+  // (pass null → ClientControllerGroup counts its own rows). With no filter active
+  // we keep the authoritative summary counts (they match the Total Clients card).
+  const filterActive = !!(
+    debouncedSearch.trim() || controllerFilter || ssidFilter || bandFilter
+    || apFilter != null || problemOnly || stickyOnly
+  );
 
   return (
     <div>
@@ -3109,8 +3135,8 @@ function ClientsTab({
               key={controller.id}
               controller={controller}
               clients={rows}
-              totalClients={counts ? counts.client_count : null}
-              problemClients={counts ? counts.problem_count : null}
+              totalClients={filterActive ? null : (counts ? counts.client_count : null)}
+              problemClients={filterActive ? null : (counts ? counts.problem_count : null)}
               onSelectMac={setSelectedMac}
               sortKey={sortKey}
               sortDir={sortDir}

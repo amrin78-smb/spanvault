@@ -452,32 +452,40 @@ function parseApTable(walked) {
       const band = bandForChannel(ch);
       if (!band) continue; // can't place this radio without a channel → skip
 
+      // Per-radio SCALAR metrics are first-radio-wins (guarded with === null):
+      // a second same-band radio must not clobber the first. Mirrors the
+      // cisco.js load-table handling (channel/util/retry/noise all guarded).
       if (ch !== null) {
-        if (band === '2g') ap.radio_2g_channel = ch;
-        else if (band === '5g') ap.radio_5g_channel = ch;
-        else if (band === '6g') ap.radio_6g_channel = ch;
+        if (band === '2g' && ap.radio_2g_channel === null) ap.radio_2g_channel = ch;
+        else if (band === '5g' && ap.radio_5g_channel === null) ap.radio_5g_channel = ch;
+        else if (band === '6g' && ap.radio_6g_channel === null) ap.radio_6g_channel = ch;
       }
       const util = num(radioUtil[ridx]);
       if (util !== null) {
-        if (band === '2g') ap.radio_2g_util_pct = util;
-        else if (band === '5g') ap.radio_5g_util_pct = util;
+        if (band === '2g' && ap.radio_2g_util_pct === null) ap.radio_2g_util_pct = util;
+        else if (band === '5g' && ap.radio_5g_util_pct === null) ap.radio_5g_util_pct = util;
       }
+      // Per-radio client counts ACCUMULATE (+=) so a multi-radio AP sums its
+      // radios instead of the last radio overwriting the first — mirrors the
+      // cisco.js load-table handling. clients_2g/5g/6g are 0-initialized by
+      // emptyAp(), so += is safe. 6 GHz is included (was missing before).
       const cl = num(radioClients[ridx]);
       if (cl !== null) {
-        if (band === '2g') ap.clients_2g = cl;
-        else if (band === '5g') ap.clients_5g = cl;
+        if (band === '2g') ap.clients_2g += cl;
+        else if (band === '5g') ap.clients_5g += cl;
+        else if (band === '6g') ap.clients_6g += cl;
       }
       // Noise floor: positive-encoded dBm (92 → −92 dBm); 0 = not reported.
       const nf = num(chNoise[ridx]);
       if (nf !== null && nf !== 0) {
         const dbm = nf > 0 ? -nf : nf;
-        if (band === '2g') ap.noise_floor_2g = dbm;
-        else if (band === '5g') ap.noise_floor_5g = dbm;
+        if (band === '2g' && ap.noise_floor_2g === null) ap.noise_floor_2g = dbm;
+        else if (band === '5g' && ap.noise_floor_5g === null) ap.noise_floor_5g = dbm;
       }
       const rr = num(chRetry[ridx]);
       if (rr !== null && rr >= 0 && rr <= 100) {
-        if (band === '2g') ap.retry_rate_2g = rr;
-        else if (band === '5g') ap.retry_rate_5g = rr;
+        if (band === '2g' && ap.retry_rate_2g === null) ap.retry_rate_2g = rr;
+        else if (band === '5g' && ap.retry_rate_5g === null) ap.retry_rate_5g = rr;
       }
       // Transmit power: wlanAPRadioTransmitPower10x is dBm x10 (live-verified,
       // see the OID comment above) — divide by 10. A real 0 dBm reading is kept
@@ -485,8 +493,8 @@ function parseApTable(walked) {
       const txp10 = num(radioTxPower10x[ridx]);
       if (txp10 !== null) {
         const dbm = txp10 / 10;
-        if (band === '2g') ap.tx_power_2g = dbm;
-        else if (band === '5g') ap.tx_power_5g = dbm;
+        if (band === '2g' && ap.tx_power_2g === null) ap.tx_power_2g = dbm;
+        else if (band === '5g' && ap.tx_power_5g === null) ap.tx_power_5g = dbm;
       }
       // rx_errors_* from wlanAPChFCSErrorCount (channel-stats table, RX-side
       // decode failures); tx_errors_* from wlanAPRadioTxErrorPkts (radio-stats
@@ -494,13 +502,13 @@ function parseApTable(walked) {
       // verification and the aliasing this firmware exhibits.
       const fcs = num(chFcsErrors[ridx]);
       if (fcs !== null && fcs >= 0) {
-        if (band === '2g') ap.rx_errors_2g = fcs;
-        else if (band === '5g') ap.rx_errors_5g = fcs;
+        if (band === '2g' && ap.rx_errors_2g === null) ap.rx_errors_2g = fcs;
+        else if (band === '5g' && ap.rx_errors_5g === null) ap.rx_errors_5g = fcs;
       }
       const txErr = num(radioTxErrors[ridx]);
       if (txErr !== null && txErr >= 0) {
-        if (band === '2g') ap.tx_errors_2g = txErr;
-        else if (band === '5g') ap.tx_errors_5g = txErr;
+        if (band === '2g' && ap.tx_errors_2g === null) ap.tx_errors_2g = txErr;
+        else if (band === '5g' && ap.tx_errors_5g === null) ap.tx_errors_5g = txErr;
       }
       // Interference = channel busy time minus this AP's own rx/tx airtime.
       // Only derived when all three columns answered; clamped — the three
@@ -510,8 +518,8 @@ function parseApTable(walked) {
       const txU = num(chTxUtil[ridx]);
       if (busy !== null && rxU !== null && txU !== null) {
         const intf = Math.max(0, Math.min(100, busy - rxU - txU));
-        if (band === '2g') ap.interference_pct_2g = intf;
-        else if (band === '5g') ap.interference_pct_5g = intf;
+        if (band === '2g' && ap.interference_pct_2g === null) ap.interference_pct_2g = intf;
+        else if (band === '5g' && ap.interference_pct_5g === null) ap.interference_pct_5g = intf;
       }
     }
 

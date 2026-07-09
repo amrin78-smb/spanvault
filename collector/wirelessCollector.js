@@ -347,12 +347,27 @@ async function pollControllerMetadata(session, controller) {
 // thousands of varbinds every poll cycle.
 const PARSER_WALK_ROW_CAP = 5000;
 
+// Wall-clock budget for a single real per-controller SNMP poll. Generous — well
+// under the STALE_AP_MINUTES (15 min) age-out window so it never fires in normal
+// operation. It only trips a slow-but-alive controller, so a truncated poll can't
+// overrun the stale window and mass-age-out APs it simply hadn't reached yet.
+const POLL_DEADLINE_MS = 8 * 60 * 1000; // 480000 ms
+
 // Walk every OID a parser declares and group varbinds by the parser's logical
 // key → { key: [ { oid, value } ... ] }, exactly what parseApTable() expects.
-async function walkParserOids(session, parser) {
+// pastDeadline (optional) is checked BETWEEN sequential column walks (same
+// granularity as debugWalk): if it trips, we stop and return the partial walk
+// gathered so far, logging how far we got. Un-reached APs are simply absent from
+// the result — they are never marked fresh or downed by a truncated poll.
+async function walkParserOids(session, parser, controller, pastDeadline) {
   const walked = {};
-  for (const key of Object.keys(parser.snmpOids)) {
-    walked[key] = await walk(session, parser.snmpOids[key], PARSER_WALK_ROW_CAP);
+  const keys = Object.keys(parser.snmpOids);
+  for (let i = 0; i < keys.length; i++) {
+    if (pastDeadline && pastDeadline()) {
+      console.warn(`[wireless] poll deadline reached on ${controller ? controller.name : '?'} (id=${controller ? controller.id : '?'}) after ${i}/${keys.length} OID columns — returning partial walk; un-reached APs left untouched (not aged out / downed)`);
+      break;
+    }
+    walked[keys[i]] = await walk(session, parser.snmpOids[keys[i]], PARSER_WALK_ROW_CAP);
   }
   return walked;
 }
@@ -385,6 +400,11 @@ async function pollSnmpController(pool, controller) {
   if (!parser) throw new Error(`no wireless SNMP parser for vendor "${controller.vendor}"`);
 
   const session = createSession(device, 10000);
+  // Wall-clock deadline for this poll — a slow-but-alive controller must not
+  // overrun the stale-AP window (see POLL_DEADLINE_MS). Checked inside
+  // walkParserOids between OID-column walks, mirroring debugWalk's pastDeadline.
+  const pollStartedAt = Date.now();
+  const pastDeadline = () => (Date.now() - pollStartedAt) >= POLL_DEADLINE_MS;
   try {
     // Fail-fast reachability pre-flight: walk()/get() never reject, so a dead
     // controller would otherwise burn one timeout per parser walk (~22 walks ×
@@ -396,7 +416,7 @@ async function pollSnmpController(pool, controller) {
       throw new Error('SNMP unreachable (no response to sysUpTime)');
     }
 
-    const walked = await walkParserOids(session, parser);
+    const walked = await walkParserOids(session, parser, controller, pastDeadline);
     const aps = parser.parseApTable(walked) || [];
     // Per-SSID stats are optional — only some vendor parsers implement parseSsids.
     let ssids = [];
@@ -1328,6 +1348,7 @@ async function pollClients(pool, controller, apList) {
     // failure mode from excessive roaming, so it's tracked separately.
     const isSticky = hasRssi && client.rssi_dbm <= -72 && roamCount <= 1;
 
+    try {
     await pool.query(`
       INSERT INTO wireless_clients
         (mac_address, ip_address, hostname, controller_id, ap_id, ap_name, ssid_name, band, channel,
@@ -1361,10 +1382,17 @@ async function pollClients(pool, controller, apList) {
       now, client.auth_type || null, isProblem, roamCount, controller.vendor, isSticky,
       client.phy_mode || null, intOrNull(client.vlan_id),
     ]);
+    } catch (e) {
+      // Isolate per-row failures so one bad client doesn't skip the rest of the
+      // controller's clients / all events / the prune.
+      console.error(`[wireless] client upsert failed on ${controller.name} (${client.mac_address}):`, e.message);
+      continue;
+    }
   }
 
   // Insert detected events.
   for (const e of events) {
+    try {
     await pool.query(`
       INSERT INTO wireless_client_events
         (mac_address, controller_id, event_type, from_ap_id, from_ap_name, to_ap_id, to_ap_name,
@@ -1374,6 +1402,11 @@ async function pollClients(pool, controller, apList) {
       e.mac_address, e.controller_id, e.event_type, e.from_ap_id || null, e.from_ap_name || null,
       e.to_ap_id || null, e.to_ap_name || null, intOrNull(e.rssi_dbm), e.ssid_name || null, e.ts,
     ]);
+    } catch (err) {
+      // Isolate per-row failures so one bad event doesn't skip the rest / the prune.
+      console.error(`[wireless] client event insert failed on ${controller.name} (${e.mac_address}):`, err.message);
+      continue;
+    }
   }
 
   // Prune clients not seen in 15 minutes; purge events older than 7 days.
@@ -1381,10 +1414,15 @@ async function pollClients(pool, controller, apList) {
   // the controller re-reports aged-out stations every poll, so they never go stale on
   // our side. The Clients-tab counts are instead sourced from the live per-AP
   // associated gauge in the API.)
-  await pool.query(
-    `DELETE FROM wireless_clients WHERE controller_id = $1 AND last_seen_at < NOW() - INTERVAL '15 minutes'`,
-    [controller.id]);
-  await pool.query(`DELETE FROM wireless_client_events WHERE ts < NOW() - INTERVAL '7 days'`);
+  try {
+    await pool.query(
+      `DELETE FROM wireless_clients WHERE controller_id = $1 AND last_seen_at < NOW() - INTERVAL '15 minutes'`,
+      [controller.id]);
+    await pool.query(`DELETE FROM wireless_client_events WHERE ts < NOW() - INTERVAL '7 days'`);
+  } catch (e) {
+    // A prune failure must not abort the poll.
+    console.error(`[wireless] client prune failed on ${controller.name}:`, e.message);
+  }
 
   log(`[clients] ${controller.name}: ${clients.length} client(s), ${events.length} event(s)`);
 }

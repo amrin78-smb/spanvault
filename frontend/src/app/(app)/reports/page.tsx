@@ -31,6 +31,9 @@ type SavedReport = {
   id: number; name: string; template: string; scope_type: string;
   scope_id: number | null; scope_name: string | null; date_range: string;
   sla_target: number | null;
+  // Multi-entity detail reports (AP/Device Detail) persist their selected entity
+  // ids here so the selection survives a save/reload (backend scope_ids column).
+  scope_ids: number[] | null;
 };
 // Scope modes a template supports.
 // 'apMulti'/'deviceMulti' = Phase-1 granular detail reports: pick one or many
@@ -490,6 +493,10 @@ export default function ReportsPage() {
         scope_name: applied.scopeMode === 'site' ? applied.siteLabel
           : applied.scopeMode === 'device' ? applied.deviceLabel : null,
         date_range: applied.range,
+        // Persist the selected entity ids for multi-entity detail reports so the
+        // selection is restored on reload (otherwise the reloaded report renders
+        // only the header and Export sends empty entity_ids).
+        scope_ids: applied.entities.length ? applied.entities.map((e) => e.id) : null,
         sla_target: applied.template === 'sla-compliance' ? Number(applied.slaTarget) || 99.5 : null,
         created_by: email || null,
       });
@@ -516,8 +523,24 @@ export default function ReportsPage() {
     if (s.sla_target != null) setSlaTarget(String(s.sla_target));
     const siteLabel = s.scope_type === 'site' ? (s.scope_name || '') : '';
     const deviceLabel = s.scope_type === 'device' ? (s.scope_name || '') : '';
+    // Rehydrate the multi-entity selection (AP/Device Detail) from scope_ids so
+    // the reloaded report renders its per-entity sections and Export carries the
+    // ids. Labels are resolved from the loaded AP/device lists (id fallback,
+    // same as runReport, if a list hasn't loaded yet).
+    const savedEntityIds = Array.isArray(s.scope_ids) ? s.scope_ids.map((n) => String(n)) : [];
+    const savedEntities: EntityRef[] = savedEntityIds.map((id) => {
+      if (s.template === 'ap-detail') {
+        const ap = aps.data?.find((x) => String(x.id) === id);
+        return { id, label: ap ? `${ap.name}${ap.ip_address ? ` (${ap.ip_address})` : ''}` : id };
+      }
+      if (s.template === 'device-detail') {
+        const d = devices.data?.find((x) => String(x.id) === id);
+        return { id, label: d ? `${d.name}${d.ip_address ? ` (${d.ip_address})` : ''}` : id };
+      }
+      return { id, label: id };
+    });
     setBucket('auto');
-    setEntityIds([]);
+    setEntityIds(savedEntityIds);
     setSelectedMetrics(defaultMetrics(s.template));
     setApplied({
       template: s.template, range: s.date_range && s.date_range !== 'custom' ? s.date_range : '30d',
@@ -527,7 +550,7 @@ export default function ReportsPage() {
       deviceLabel, controllerId: '', controllerLabel: '',
       slaTarget: s.sla_target != null ? String(s.sla_target) : '99.5',
       metric: 'uptime',
-      entities: [], selectedMetrics: defaultMetrics(s.template),
+      entities: savedEntities, selectedMetrics: defaultMetrics(s.template),
     });
     setShowSave(false);
     setTab('view'); // surface the loaded report in the workspace

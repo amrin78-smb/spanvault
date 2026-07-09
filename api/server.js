@@ -35,6 +35,13 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.65.2': [
+    'Fixed Aruba access points with two same-band radios (dual-5 GHz or Wi-Fi 6E) undercounting clients and mixing two radios’ channel/noise/retry readings into one row: per-band client counts now add up correctly, 6 GHz clients are counted, and the first radio’s readings are kept — matching how Cisco APs already behave.',
+    'Wireless polling now has a safety time limit per controller, so a slow-but-responsive controller can no longer run so long that access points it hasn’t reached yet get flagged stale; if the limit is hit it logs how far it got and keeps the data it gathered.',
+    'A single bad client or roam/join/leave record no longer aborts the rest of that controller’s client update for the cycle — each row is now isolated so the remaining clients and events still save.',
+    'Wireless Clients table: fast typing in search or switching the AP/controller filter can no longer let an older result overwrite a newer one, group header counts now match the filtered rows shown, and sorting access points by uptime/last-seen/channel keeps blank rows at the bottom in both directions.',
+    'Saved AP Detail and Device Detail reports now remember which access points/devices you selected, so reloading a saved report shows the full breakdown and PDF export works instead of coming back empty.',
+  ],
   '1.65.1': [
     'Fixed several wireless data-accuracy bugs found in an internal audit: Cisco APs with certain radio configurations could show a client count that didn\'t match the per-band breakdown, and could mix noise-floor/retry-rate readings from two different radios into a single row.',
     'The weakest-signal client on HPE and Aruba controllers (one sitting right at the noise floor) was being shown with a deceptively strong signal reading instead of correctly triggering low-signal detection.',
