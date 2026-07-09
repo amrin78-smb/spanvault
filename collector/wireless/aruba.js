@@ -12,13 +12,18 @@
 //     band, so band is derived from the reported channel number.
 //   • wlsxWlanESSIDTable  ...5.2.1.8.1  — one row per SSID, indexed by the
 //     (string-encoded) SSID name. Holds the SSID name + station count.
+//   • wlsxWlanAPChStatsTable    ...5.3.1.6.1 — per AP+radio channel stats
+//     (noise floor, frame retry rate). Same AP MAC + radioNumber index as the
+//     radio table. Live-verified on Aruba 7205 / AOS 8.10.0.8 and 9106 / 8.13.2.2.
+//   • wlsxWlanAPRadioStatsTable ...5.3.1.9.1 — per AP+radio cumulative rx/tx
+//     byte counters (Counter64), summed per AP for throughput derivation.
 //
 // NOT available on a mobility controller (left null, never faked):
-//   • per-radio noise floor / frame-retry rate (no such columns here)
 //   • per-SSID byte counters and auth success/failure counters
+//   • per-radio rx/tx ERROR counters
 
 const {
-  num, str, columnMap, bandForChannel, emptyAp, splitRadioIndex,
+  num, counterNum, str, columnMap, bandForChannel, emptyAp, splitRadioIndex,
 } = require('./_util');
 
 // ── AP table (wlsxWlanAPTable) — base ...5.2.1.4.1, index = AP MAC (6 octets) ─
@@ -35,6 +40,23 @@ const RADIO_BASE = '1.3.6.1.4.1.14823.2.2.1.5.2.1.5.1';
 const wlanAPRadioChannel = RADIO_BASE + '.3';               // wlanAPRadioChannel
 const wlanAPRadioUtilization = RADIO_BASE + '.6';           // wlanAPRadioUtilization (%)
 const wlanAPRadioNumAssociatedClients = RADIO_BASE + '.7';  // wlanAPRadioNumAssociatedClients
+
+// ── Channel stats table (wlsxWlanAPChStatsTable) — base ...5.3.1.6.1 ─────────
+// Same AP MAC + radioNumber index as the radio table, so rows join 1:1.
+// wlanAPChNoise is positive-encoded dBm: a value of 92 means −92 dBm (0 = not
+// reported → null). wlanAPChFrameRetryRate is retry frames as a % (0–100) of
+// the channel's total tx+rx. Both live-verified on AOS 8.10 and 8.13.
+const CHSTATS_BASE = '1.3.6.1.4.1.14823.2.2.1.5.3.1.6.1';
+const wlanAPChNoise = CHSTATS_BASE + '.9';           // wlanAPChNoise
+const wlanAPChFrameRetryRate = CHSTATS_BASE + '.12'; // wlanAPChFrameRetryRate
+
+// ── Radio stats table (wlsxWlanAPRadioStatsTable) — base ...5.3.1.9.1 ────────
+// Same AP MAC + radioNumber index. Cumulative Counter64 byte counters (net-snmp
+// delivers them as 8-byte BE Buffers → counterNum). Summed across an AP's radios
+// into ap.rx_bytes / ap.tx_bytes; the collector turns those into throughput bps.
+const RADIOSTATS_BASE = '1.3.6.1.4.1.14823.2.2.1.5.3.1.9.1';
+const wlanAPRadioRxBytes = RADIOSTATS_BASE + '.2';   // wlanAPRadioRxBytes (Counter64)
+const wlanAPRadioTxBytes = RADIOSTATS_BASE + '.4';   // wlanAPRadioTxBytes (Counter64)
 
 // ── ESSID summary table (wlsxWlanESSIDTable) — base ...5.2.1.8.1 ─────────────
 // Index = the (length-prefixed) SSID name. wlanESSID's value is the name string.
@@ -179,6 +201,8 @@ function parseApTable(walked) {
     const radioChan = columnMap(walked.radioChannel, wlanAPRadioChannel);
     const radioUtil = columnMap(walked.radioUtil, wlanAPRadioUtilization);
     const radioClients = columnMap(walked.radioClients, wlanAPRadioNumAssociatedClients);
+    const chNoise = columnMap(walked.chNoise, wlanAPChNoise);
+    const chRetry = columnMap(walked.chRetry, wlanAPChFrameRetryRate);
 
     const radioIdxs = new Set([
       ...Object.keys(radioChan), ...Object.keys(radioUtil), ...Object.keys(radioClients),
@@ -207,6 +231,33 @@ function parseApTable(walked) {
         if (band === '2g') ap.clients_2g = cl;
         else if (band === '5g') ap.clients_5g = cl;
       }
+      // Noise floor: positive-encoded dBm (92 → −92 dBm); 0 = not reported.
+      const nf = num(chNoise[ridx]);
+      if (nf !== null && nf !== 0) {
+        const dbm = nf > 0 ? -nf : nf;
+        if (band === '2g') ap.noise_floor_2g = dbm;
+        else if (band === '5g') ap.noise_floor_5g = dbm;
+      }
+      const rr = num(chRetry[ridx]);
+      if (rr !== null && rr >= 0 && rr <= 100) {
+        if (band === '2g') ap.retry_rate_2g = rr;
+        else if (band === '5g') ap.retry_rate_5g = rr;
+      }
+    }
+
+    // ── Cumulative rx/tx byte counters: sum across the AP's radios (band does
+    //    not matter for totals, so this runs on the stats-table index directly).
+    const radioRx = columnMap(walked.radioRxBytes, wlanAPRadioRxBytes);
+    const radioTx = columnMap(walked.radioTxBytes, wlanAPRadioTxBytes);
+    const statIdxs = new Set([...Object.keys(radioRx), ...Object.keys(radioTx)]);
+    for (const ridx of statIdxs) {
+      const { apKey } = splitRadioIndex(ridx);
+      const ap = byIndex.get(apKey);
+      if (!ap) continue;
+      const rx = counterNum(radioRx[ridx]);
+      if (rx !== null) ap.rx_bytes = (ap.rx_bytes === null ? 0 : ap.rx_bytes) + rx;
+      const tx = counterNum(radioTx[ridx]);
+      if (tx !== null) ap.tx_bytes = (ap.tx_bytes === null ? 0 : ap.tx_bytes) + tx;
     }
 
     // No per-AP total-clients OID on the controller → sum the radios.
@@ -357,6 +408,12 @@ module.exports = {
     radioChannel: wlanAPRadioChannel,
     radioUtil: wlanAPRadioUtilization,
     radioClients: wlanAPRadioNumAssociatedClients,
+    // Channel stats table (index = AP MAC + radioNumber)
+    chNoise: wlanAPChNoise,
+    chRetry: wlanAPChFrameRetryRate,
+    // Radio stats table (index = AP MAC + radioNumber, Counter64 byte counters)
+    radioRxBytes: wlanAPRadioRxBytes,
+    radioTxBytes: wlanAPRadioTxBytes,
     // ESSID summary table (index = SSID name)
     essidName: wlanESSID,
     essidStations: wlanESSIDNumStations,

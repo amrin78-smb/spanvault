@@ -34,6 +34,11 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.60.0': [
+    'Aruba controllers now report per-AP noise floor, frame retry rate, and real AP throughput. These showed "No data" before because the collector never asked the controller for them — the WLSX-WLAN-MIB stats tables that carry them were assumed not to exist on mobility controllers.',
+    'The exact OIDs were verified live against both an Aruba 7205 (AOS 8.10) and a 9106 (AOS 8.13): noise floor and retry rate from wlsxWlanAPChStatsTable, and 64-bit rx/tx byte counters from wlsxWlanAPRadioStatsTable (converted to in/out bps per AP).',
+    'RF history charts and AP detail panels fill in automatically as new polls arrive (one poll for noise/retry, two polls for the first throughput sample).',
+  ],
   '1.59.7': [
     'Fixed the controller "Diagnostics" button returning a 500 error on large/busy controllers. The SNMP walk behind it was unbounded (~14 sequential full-table walks that could run for minutes), so the browser-side proxy timed out before any response was sent.',
     'The diagnostics walk is now time-bounded: a 25-second overall deadline, a snappier 3-second SNMP timeout, and a 300-row cap per table walk. Huge station/user tables can no longer stall the request.',

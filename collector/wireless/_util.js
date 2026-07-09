@@ -11,6 +11,20 @@ function num(v) {
   return Number.isFinite(n) ? n : null;
 }
 
+// counterNum(v): decode an SNMP counter to a Number, or null. Counter64 values
+// arrive from net-snmp as an 8-byte big-endian Buffer — num() would stringify
+// that to NaN — so decode buffers as BE unsigned integers (same approach as
+// discovery.js). Counter32/Gauge values arrive as plain numbers and pass through.
+function counterNum(v) {
+  if (Buffer.isBuffer(v)) {
+    if (v.length === 0 || v.length > 8) return null;
+    let n = 0;
+    for (const b of v) n = n * 256 + b;
+    return Number.isFinite(n) ? n : null;
+  }
+  return num(v);
+}
+
 // str(v): decode to a trimmed string, or null when empty / absent.
 function str(v) {
   if (v === null || v === undefined) return null;
@@ -123,6 +137,6 @@ function emptyAp() {
 }
 
 module.exports = {
-  num, str, indexAfter, columnMap, bandForChannel, emptyAp,
+  num, counterNum, str, indexAfter, columnMap, bandForChannel, emptyAp,
   splitRadioIndex, bandForRadioIndex,
 };

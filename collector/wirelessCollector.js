@@ -20,8 +20,9 @@ const { getClientParser } = require('./wireless/clients');
 const { runWirelessIntelligence } = require('./wirelessIntelligence');
 
 // Vendor SNMP metric support matrix (what each parser actually returns):
-//   Aruba:        radio channel/util/clients/noise/retry + per-SSID stats
-//                 (no byte/error counters, so throughput & rx/tx errors stay NULL)
+//   Aruba:        radio channel/util/clients/noise/retry + per-radio byte
+//                 counters (throughput) + per-SSID clients
+//                 (no per-SSID byte/auth counters, no rx/tx error counters)
 //   Cisco:        partial (per-SSID clients + traffic, noise floor; retry approx)
 //   Ruckus:       full radio metrics (noise, util, throughput) + per-SSID clients
 //   MikroTik/HPE/Grandstream: basic only (no radio/SSID stats) — fields stay NULL
