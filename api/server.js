@@ -34,6 +34,11 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.62.1': [
+    'Fixed Aruba rogue/neighboring AP detection: it was reading an SNMP OID that doesn\'t exist in the controller\'s MIB, so it silently found nothing. It now reads the correct table (live-verified: thousands of rows on both controllers) with a corrected threat classification mapping.',
+    'Fixed the Ruckus, MikroTik and HPE wireless client tables, which were reading the wrong SNMP table or badly misnumbered columns (MikroTik was even corrupting the client MAC address on every row, breaking device identity). All three are rebuilt against their official MIBs; Ruckus and HPE are unvalidated on real hardware pending access to that gear, but every OID is now confirmed correct against the vendor\'s own specification.',
+    'Added 92 new automated checks (175 total) covering every wireless SNMP parser, so a bad OID can\'t silently ship again.',
+  ],
   '1.62.0': [
     'Wireless → Clients now has a "Filter by AP" dropdown, alongside the existing controller/SSID/band filters, so you can narrow the client list to a single access point.',
     'Every column in the wireless clients table (MAC, IP, AP, SSID, Band, Signal, Rate, Connected, Status) is now sortable — click a header to sort ascending, click again for descending. Clients missing a value for the sorted column always sort to the bottom, in both directions.',

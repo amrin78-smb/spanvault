@@ -112,18 +112,22 @@ function mapStatus(v) {
   return 'unknown';
 }
 
-// ── Rogue / unsecure AP table (WLSX-WLAN-MIB wlsxWlanAPRogueTable) ───────────
-// Aruba publishes detected rogue/unsecure APs under the wlsxWlanMonRadioInfo /
-// rogue AP tree. The reliable, documented table is wlsxWlanAPRogueTable at
-// ...5.2.1.10.1, indexed by the rogue BSSID (6-octet MAC). Best-effort column
-// suffixes from the MIB — validate against real hardware.
-const ROGUE_BASE = '1.3.6.1.4.1.14823.2.2.1.5.2.1.10.1';
-const wlanAPRogueBSSID = ROGUE_BASE + '.1';     // rogue BSSID (also the index)
-const wlanAPRogueSSID = ROGUE_BASE + '.2';      // rogue SSID name
-const wlanAPRogueChannel = ROGUE_BASE + '.3';   // channel
-const wlanAPRogueRSSI = ROGUE_BASE + '.4';      // RSSI (dBm)
-const wlanAPRogueType = ROGUE_BASE + '.5';      // classification (rogue/interfering/known)
-const wlanAPRogueDetectingAP = ROGUE_BASE + '.6'; // detecting AP MAC (best-effort)
+// ── Rogue / neighboring AP table (WLSX-MON-MIB wlsxMonAPInfoTable) ───────────
+// NOTE: this table is NOT in WLSX-WLAN-MIB (unlike the AP/radio/ESSID tables
+// above) — it lives in the separate WLSX-MON-MIB module. Base ...6.7.1.1.1,
+// INDEX = { monPhyAddress (detecting AP MAC, 6 octets), monRadioNumber (1
+// component), monitoredApBSSID (the monitored/rogue AP's own BSSID, 6 octets)
+// } — 13 dotted components total per row, NOT a simple 6-octet MAC index.
+// Live-verified on SMT_WLC (Aruba 7205 / AOS 8.10) and TUFS-OKF-WLC-1 (Aruba
+// 9106 / AOS 8.13): thousands of rows on both controllers, every documented
+// column populated, and monAPInfoClassification values of 1/2/3/7 observed —
+// an exact match for the ArubaRogueApType enum with no discrepancy from the
+// MIB text (see classifyRogue below).
+const ROGUE_BASE = '1.3.6.1.4.1.14823.2.2.1.6.7.1.1.1';
+const monAPInfoChannel = ROGUE_BASE + '.2';        // monAPInfoCurrentChannel
+const monAPInfoClassification = ROGUE_BASE + '.3'; // monAPInfoClassification (ArubaRogueApType)
+const monAPInfoESSID = ROGUE_BASE + '.4';          // monAPInfoESSID (SSID)
+const monAPInfoRSSI = ROGUE_BASE + '.5';           // monAPInfoRSSI — actually SNR, see parseRogueAps
 
 // Format a 6-octet MAC (Buffer) / dotted-decimal index / bare-hex string as colon-hex.
 function fmtMac(v) {
@@ -142,17 +146,31 @@ function fmtMac(v) {
   return s;
 }
 
-// Normalise an Aruba rogue type to the shared classification set.
-// WLSX-WLAN-MIB rogue type INTEGER (best-effort): 1 valid, 2 interfering,
-// 3 dos, 4 rogue, 5 known-interfering, 6 unsecure, 7 suspect-rogue.
+// Normalise monAPInfoClassification (the ArubaRogueApType TC, confirmed from
+// ARUBA-TC.txt and live-verified on SMT_WLC/TUFS-OKF-WLC-1 — values 1/2/3/7
+// all observed live) to the classification set already rendered by the
+// frontend (frontend/src/app/(app)/wireless/page.tsx): friendly / interfering
+// / malicious / unclassified / rogue. The confirmed enum never itself maps to
+// 'rogue' (every one of its 7 values has a more specific target below) — that
+// string stays reserved for a future manual/operator classification, and the
+// string-fallback path below still recognises it for forward compatibility.
+//   valid(1)             -> friendly       (known-good neighbor, e.g. same org's other SSIDs)
+//   interfering(2)       -> interfering
+//   unsecure(3)          -> malicious
+//   dos(4)                -> malicious
+//   unknown(5)            -> unclassified
+//   knownInterfering(6)   -> interfering
+//   suspectedUnsecure(7)  -> malicious
 function classifyRogue(v) {
   const n = num(v);
   if (n !== null) {
-    if (n === 1) return 'friendly';                 // valid / known-good
-    if (n === 2 || n === 5) return 'interfering';   // interfering
-    if (n === 3 || n === 6) return 'malicious';     // dos / unsecure
-    if (n === 4 || n === 7) return 'rogue';         // rogue / suspect-rogue
+    if (n === 1) return 'friendly';
+    if (n === 2 || n === 6) return 'interfering';
+    if (n === 3 || n === 4 || n === 7) return 'malicious';
+    if (n === 5) return 'unclassified';
   }
+  // Never-throw fallback for a firmware variant that returns text instead of
+  // the documented INTEGER enum.
   const s = (str(v) || '').toLowerCase();
   if (s) {
     if (s.includes('valid') || s.includes('known') || s.includes('friend')) return 'friendly';
@@ -161,6 +179,28 @@ function classifyRogue(v) {
     if (s.includes('rogue') || s.includes('suspect')) return 'rogue';
   }
   return 'unclassified';
+}
+
+// Split a 13-component wlsxMonAPInfoTable row index into its three INDEX
+// fields: monPhyAddress (detecting AP MAC, octets 0-5), monRadioNumber
+// (component 6), monitoredApBSSID (the monitored/rogue AP's own BSSID,
+// octets 7-12). Deliberately NOT splitRadioIndex (that helper assumes a
+// single trailing scalar component; this index has 6 trailing components
+// making up the BSSID). Field order confirmed live: the leading 6 octets
+// decode to plausible/known AP MACs (e.g. 1c:28:af:c1:a3:d6 on SMT_WLC — the
+// same MAC used as the AP fixture in tests/test-aruba-parser.js, captured
+// from this controller's real AP table), while the trailing 6 octets decode
+// to distinct, varied neighboring BSSIDs — confirming detector-then-rogue
+// index order, not the reverse.
+function splitMonIndex(idx) {
+  if (idx === null || idx === undefined) return null;
+  const parts = String(idx).split('.');
+  if (parts.length !== 13) return null;
+  const detectingApMac = fmtMac(parts.slice(0, 6).join('.'));
+  const radioNum = parts[6];
+  const rogueBssid = fmtMac(parts.slice(7, 13).join('.'));
+  if (!detectingApMac || !rogueBssid) return null;
+  return { detectingApMac, radioNum, rogueBssid };
 }
 
 function parseApTable(walked) {
@@ -362,58 +402,70 @@ function parseSsids(walked) {
   }
 }
 
-// Parse the rogue/unsecure AP table (wlsxWlanAPRogueTable). Indexed by the rogue
-// BSSID; when the BSSID value column is empty the table index is the BSSID.
-// Never throws.
+// Parse the rogue/neighboring AP table (WLSX-MON-MIB wlsxMonAPInfoTable).
+// bssid and detecting_ap both come from the row INDEX (see splitMonIndex),
+// not from a value column. Never throws.
+//
+// De-dup: wireless_rogue_aps is UNIQUE(controller_id, bssid), but the SAME
+// rogue/neighbor BSSID is commonly heard by multiple detecting APs (many
+// live rows share a rogueBssid with a different detectingApMac). We keep the
+// FIRST row encountered per rogueBssid and drop later duplicates for that
+// BSSID — simplest option that can never collide on the unique constraint.
+// This is stable poll-to-poll (not flapping which detecting AP "wins") because
+// net-snmp walks return rows in a fixed lexicographic-index order. A
+// confidence/monitor-time tie-break was considered, but in the live sample
+// confidence was ~always 100 across rows, so it would not have changed the
+// outcome — not worth the extra OID walk for a field upsertRogueAp() doesn't
+// even store.
 function parseRogueAps(walked) {
-  const out = [];
+  const out = new Map(); // rogueBssid -> row
   try {
     walked = walked || {};
 
-    const bssids = columnMap(walked.rogueBssid, wlanAPRogueBSSID);
-    const ssids = columnMap(walked.rogueSsid, wlanAPRogueSSID);
-    const channels = columnMap(walked.rogueChannel, wlanAPRogueChannel);
-    const rssis = columnMap(walked.rogueRssi, wlanAPRogueRSSI);
-    const types = columnMap(walked.rogueType, wlanAPRogueType);
-    const detectors = columnMap(walked.rogueDetector, wlanAPRogueDetectingAP);
+    const channels = columnMap(walked.rogueChannel, monAPInfoChannel);
+    const classes = columnMap(walked.rogueClassification, monAPInfoClassification);
+    const ssids = columnMap(walked.rogueSsid, monAPInfoESSID);
+    const rssis = columnMap(walked.rogueRssi, monAPInfoRSSI);
 
     const indexes = new Set();
-    [bssids, ssids, channels, rssis, types].forEach((m) => {
+    [channels, classes, ssids, rssis].forEach((m) => {
       Object.keys(m).forEach((k) => indexes.add(k));
     });
 
     for (const idx of indexes) {
-      const bssid = fmtMac(bssids[idx]) || fmtMac(idx);
-      if (!bssid) continue;
+      const split = splitMonIndex(idx);
+      if (!split) continue;
+      const { detectingApMac, rogueBssid } = split;
+      if (out.has(rogueBssid)) continue; // first-seen wins — see comment above
 
-      const ssid = str(ssids[idx]);
       const channel = num(channels[idx]);
-      const rssi = num(rssis[idx]);
-      const detecting_ap = fmtMac(detectors[idx]);
+      // monAPInfoRSSI is documented as RSSI but is actually a signal-to-noise
+      // RATIO (positive dB) on the wire — same caveat as wlanStaRSSI in
+      // clients/aruba.js. Convert with the same -95dBm typical noise floor.
+      const sig = num(rssis[idx]);
+      const rssi_dbm = sig === null ? null : (sig > 0 ? sig - 95 : sig);
 
-      out.push({
-        bssid,
-        ssid: ssid || null,
-        rssi_dbm: rssi === null ? null : rssi,
+      out.set(rogueBssid, {
+        bssid: rogueBssid,
+        ssid: str(ssids[idx]) || null,
+        rssi_dbm,
         channel: channel === null ? null : channel,
-        classification: classifyRogue(types[idx]),
-        detecting_ap: detecting_ap || null,
+        classification: classifyRogue(classes[idx]),
+        detecting_ap: detectingApMac,
       });
     }
   } catch (e) {
     // never throw
     return [];
   }
-  return out;
+  return Array.from(out.values());
 }
 
 const snmpRogueOids = {
-  rogueBssid: wlanAPRogueBSSID,
-  rogueSsid: wlanAPRogueSSID,
-  rogueChannel: wlanAPRogueChannel,
-  rogueRssi: wlanAPRogueRSSI,
-  rogueType: wlanAPRogueType,
-  rogueDetector: wlanAPRogueDetectingAP,
+  rogueChannel: monAPInfoChannel,
+  rogueClassification: monAPInfoClassification,
+  rogueSsid: monAPInfoESSID,
+  rogueRssi: monAPInfoRSSI,
 };
 
 module.exports = {

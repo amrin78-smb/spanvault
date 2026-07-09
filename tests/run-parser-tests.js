@@ -15,8 +15,12 @@ const path = require('path');
 
 const SUITES = [
   'test-aruba-parser.js',   // live-verified OIDs (Aruba 7205 / 9106, AOS 8.10 / 8.13)
+  'test-aruba-rogue-parser.js', // live-verified WLSX-MON-MIB wlsxMonAPInfoTable (SMT_WLC / TUFS-OKF-WLC-1)
   'test-cisco-parser.js',   // MIB-verified (AIRESPACE-WIRELESS-MIB + CISCO-LWAPP-AP-MIB)
   'test-ruckus-parser.js',  // MIB-verified (RUCKUS-ZD-WLAN-MIB) + fortinet/mikrotik checks
+  'test-mikrotik-client-parser.js', // MIB-verified (MIKROTIK-MIB mtxrWlRtabTable client parser)
+  'test-ruckus-client-parser.js', // MIB-verified client table (RUCKUS-ZD-WLAN-MIB ruckusZDWLANStaTable)
+  'test-hpe-client-parser.js', // MIB-verified (AI-AP-MIB aiClientTable) — no HPE hardware in lab
 ];
 
 let failed = 0;
