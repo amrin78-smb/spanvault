@@ -34,6 +34,10 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.62.0': [
+    'Wireless → Clients now has a "Filter by AP" dropdown, alongside the existing controller/SSID/band filters, so you can narrow the client list to a single access point.',
+    'Every column in the wireless clients table (MAC, IP, AP, SSID, Band, Signal, Rate, Connected, Status) is now sortable — click a header to sort ascending, click again for descending. Clients missing a value for the sorted column always sort to the bottom, in both directions.',
+  ],
   '1.61.2': [
     'Fixed Aruba wireless client rates only ever showing "255 Mbps" or "12 Mbps" regardless of the client\'s real speed. The collector was reading a dead/legacy SNMP column (wlanStaTransmitRate) that caps out at 255 and doesn\'t track modern 802.11n/ac/ax clients; it now reads wlanStaTransmitRateCode, the column the MIB actually documents as carrying the rate in Mbps. Verified live against real clients on both an Aruba 7205 and a 9106 — confirmed rates from 6 to 1201 Mbps now match the controller\'s own admin GUI.',
   ],

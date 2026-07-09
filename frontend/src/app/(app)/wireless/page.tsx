@@ -332,6 +332,43 @@ interface WirelessClient {
   site_name: string | null;
 }
 
+// ── Clients table sorting (top-level — not nested inside a component) ──────
+type ClientSortKey =
+  | 'mac_address' | 'ip_address' | 'ap_name' | 'ssid_name' | 'band'
+  | 'rssi_dbm' | 'tx_rate_mbps' | 'connected_since' | 'status';
+
+// Numeric status rank mirroring ClientStatusBadge's exact precedence (worst
+// first): 0=Sticky, 1=Low Signal, 2=Frequent Roamer, 3=Normal. Ascending sort
+// on 'status' therefore shows the worst clients first, matching the API's
+// existing default problem-first ordering.
+function clientStatusRank(c: WirelessClient): number {
+  if (c.is_sticky) return 0;
+  if (c.rssi_dbm != null && c.rssi_dbm < -75) return 1;
+  if (Number(c.roaming_count) > 5) return 2;
+  return 3;
+}
+
+// Returns the comparable value for a given column. Numeric columns return a
+// number (or null when unknown); string columns return a lowercased string
+// (or null when empty/missing). Returning null — rather than an empty string
+// — for missing values lets the sort comparator pin those rows to the bottom
+// of the list for EVERY column, in both sort directions (see the `sorted`
+// useMemo in ClientsTab).
+function clientSortValue(c: WirelessClient, key: ClientSortKey): number | string | null {
+  switch (key) {
+    case 'mac_address': return c.mac_address.toLowerCase();
+    case 'ip_address': return c.ip_address ? c.ip_address.toLowerCase() : null;
+    case 'ap_name': return c.ap_name ? c.ap_name.toLowerCase() : null;
+    case 'ssid_name': return c.ssid_name ? c.ssid_name.toLowerCase() : null;
+    case 'band': return c.band ? c.band.toLowerCase() : null;
+    case 'rssi_dbm': return c.rssi_dbm;
+    case 'tx_rate_mbps': return c.tx_rate_mbps;
+    case 'connected_since': return c.connected_since;
+    case 'status': return clientStatusRank(c);
+    default: return null;
+  }
+}
+
 interface ClientEvent {
   event_type: string;
   from_ap_name: string | null;
@@ -2660,16 +2697,22 @@ function SignalCell({ rssi }: { rssi: number | null }) {
 const CLIENTS_PER_PAGE = 50;
 function ClientControllerGroup({
   controller, clients, totalClients, problemClients, onSelectMac,
+  sortKey, sortDir, onSort,
 }: {
   controller: Controller;
   clients: WirelessClient[];
   totalClients: number | null;
   problemClients: number | null;
   onSelectMac: (mac: string) => void;
+  sortKey: ClientSortKey | null;
+  sortDir: 'asc' | 'desc';
+  onSort: (key: ClientSortKey) => void;
 }) {
   const online = controllerOnline(controller);
   const [collapsed, setCollapsed] = useState<boolean>(false);
-  const pg = useClientPagination(clients, CLIENTS_PER_PAGE);
+  // resetKey: jump back to page 1 when the sort changes, so a user parked on
+  // a deep page can't land on an out-of-range/empty page after re-sorting.
+  const pg = useClientPagination(clients, CLIENTS_PER_PAGE, `${sortKey}:${sortDir}`);
 
   useEffect(() => { setCollapsed(readCollapsed(controller.id, false)); }, [controller.id]);
 
@@ -2698,8 +2741,33 @@ function ClientControllerGroup({
           <table className="sv-table">
             <thead>
               <tr>
-                <th>MAC</th><th>IP</th><th>AP</th><th>SSID</th><th>Band</th>
-                <th>Signal</th><th>Rate</th><th>Connected</th><th>Status</th>
+                <th onClick={() => onSort('mac_address')} style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }} title="Click to sort">
+                  MAC{sortKey === 'mac_address' ? (sortDir === 'asc' ? ' ▲' : ' ▼') : ''}
+                </th>
+                <th onClick={() => onSort('ip_address')} style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }} title="Click to sort">
+                  IP{sortKey === 'ip_address' ? (sortDir === 'asc' ? ' ▲' : ' ▼') : ''}
+                </th>
+                <th onClick={() => onSort('ap_name')} style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }} title="Click to sort">
+                  AP{sortKey === 'ap_name' ? (sortDir === 'asc' ? ' ▲' : ' ▼') : ''}
+                </th>
+                <th onClick={() => onSort('ssid_name')} style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }} title="Click to sort">
+                  SSID{sortKey === 'ssid_name' ? (sortDir === 'asc' ? ' ▲' : ' ▼') : ''}
+                </th>
+                <th onClick={() => onSort('band')} style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }} title="Click to sort">
+                  Band{sortKey === 'band' ? (sortDir === 'asc' ? ' ▲' : ' ▼') : ''}
+                </th>
+                <th onClick={() => onSort('rssi_dbm')} style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }} title="Click to sort">
+                  Signal{sortKey === 'rssi_dbm' ? (sortDir === 'asc' ? ' ▲' : ' ▼') : ''}
+                </th>
+                <th onClick={() => onSort('tx_rate_mbps')} style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }} title="Click to sort">
+                  Rate{sortKey === 'tx_rate_mbps' ? (sortDir === 'asc' ? ' ▲' : ' ▼') : ''}
+                </th>
+                <th onClick={() => onSort('connected_since')} style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }} title="Click to sort">
+                  Connected{sortKey === 'connected_since' ? (sortDir === 'asc' ? ' ▲' : ' ▼') : ''}
+                </th>
+                <th onClick={() => onSort('status')} style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }} title="Click to sort">
+                  Status{sortKey === 'status' ? (sortDir === 'asc' ? ' ▲' : ' ▼') : ''}
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -2751,9 +2819,23 @@ function ClientsTab({
   const [bandFilter, setBandFilter] = useState('');
   const [stickyOnly, setStickyOnly] = useState(false);
   const [selectedMac, setSelectedMac] = useState<string | null>(null);
+  // null = no explicit sort — preserves the API's default problem-first /
+  // weakest-signal ordering exactly as before, until a user clicks a header.
+  const [sortKey, setSortKey] = useState<ClientSortKey | null>(null);
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
+
+  function toggleSort(key: ClientSortKey) {
+    if (key === sortKey) {
+      setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortKey(key);
+      setSortDir('asc');
+    }
+  }
 
   const summary = useApi<ClientSummary>('/api/wireless/clients/summary', 30000);
   const controllers = useApi<Controller[]>('/api/wireless/controllers', 30000);
+  const apsApi = useApi<AccessPoint[]>('/api/wireless/aps', 30000);
 
   const qs = useMemo(() => {
     const params: string[] = [];
@@ -2784,6 +2866,25 @@ function ClientsTab({
     return Array.from(set).sort();
   }, [controllers.data, allClients]);
 
+  // Built from the independently-fetched full AP list (not allClients) so the
+  // full set of APs stays selectable even after apFilter narrows allClients
+  // down to a single AP's clients. Disambiguate same-named APs across
+  // controllers by appending the controller name.
+  const apOptions = useMemo(() => {
+    const aps = apsApi.data || [];
+    const scoped = controllerFilter ? aps.filter((a) => a.controller_name === controllerFilter) : aps;
+    const nameCounts = new Map<string, number>();
+    scoped.forEach((a) => nameCounts.set(a.name, (nameCounts.get(a.name) || 0) + 1));
+    return scoped
+      .map((a) => ({
+        id: a.id,
+        label: (nameCounts.get(a.name) || 0) > 1 && a.controller_name
+          ? `${a.name} (${a.controller_name})`
+          : a.name,
+      }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [apsApi.data, controllerFilter]);
+
   const shown = useMemo(() => {
     return allClients.filter((c) => {
       if (controllerFilter && c.controller_name !== controllerFilter) return false;
@@ -2793,11 +2894,34 @@ function ClientsTab({
     });
   }, [allClients, controllerFilter, ssidFilter, bandFilter]);
 
-  // Group the (filtered) clients into collapsible per-controller sections,
-  // preserving the API's problem-first / weakest-signal ordering within each.
+  // Apply the (optional) column sort before grouping. When no column has
+  // been clicked (sortKey === null), this is a no-op that preserves the
+  // API's default problem-first / weakest-signal ordering exactly as before.
+  const sorted = useMemo(() => {
+    if (!sortKey) return shown;
+    const dir = sortDir === 'asc' ? 1 : -1;
+    const copy = [...shown];
+    copy.sort((a, b) => {
+      const av = clientSortValue(a, sortKey);
+      const bv = clientSortValue(b, sortKey);
+      const aNull = av == null;
+      const bNull = bv == null;
+      // Nulls always sort last, regardless of sort direction — only the
+      // ordering among non-null values flips with `dir`.
+      if (aNull && bNull) return 0;
+      if (aNull) return 1;
+      if (bNull) return -1;
+      if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * dir;
+      return String(av).localeCompare(String(bv)) * dir;
+    });
+    return copy;
+  }, [shown, sortKey, sortDir]);
+
+  // Group the (sorted, filtered) clients into collapsible per-controller
+  // sections, preserving the row order established above within each group.
   const clientGroups = useMemo(
-    () => groupByController(shown, controllers.data || []),
-    [shown, controllers.data],
+    () => groupByController(sorted, controllers.data || []),
+    [sorted, controllers.data],
   );
 
   // Authoritative per-controller client/problem counts from wireless_clients
@@ -2877,6 +3001,15 @@ function ClientsTab({
         </select>
         <select
           className="sv-select"
+          style={{ maxWidth: 200 }}
+          value={apFilter != null ? String(apFilter) : ''}
+          onChange={(e) => setApFilter(e.target.value ? Number(e.target.value) : null)}
+        >
+          <option value="">All APs</option>
+          {apOptions.map((a) => <option key={a.id} value={a.id}>{a.label}</option>)}
+        </select>
+        <select
+          className="sv-select"
           style={{ maxWidth: 140 }}
           value={bandFilter}
           onChange={(e) => setBandFilter(e.target.value)}
@@ -2896,13 +3029,6 @@ function ClientsTab({
           style={{ display: 'inline-flex', alignItems: 'center', gap: 4, ...(stickyOnly ? { color: 'var(--red)', borderColor: 'var(--red)' } : {}) }}
           onClick={() => setStickyOnly(!stickyOnly)}
         ><IconPin width={12} height={12} /> Sticky only</button>
-        {apFilter != null && (
-          <span
-            className="sv-badge"
-            style={{ cursor: 'pointer', color: 'var(--primary)', borderColor: 'var(--primary)' }}
-            onClick={() => setApFilter(null)}
-          >AP filter active ✕</span>
-        )}
       </div>
 
       {clientsApi.error && <ErrorBox message={clientsApi.error} />}
@@ -2910,7 +3036,7 @@ function ClientsTab({
       {allClients.length >= 500 && summary.data && Number(summary.data.total_clients) > allClients.length && (
         <div className="sv-muted" style={{ fontSize: 'var(--text-sm)', margin: '4px 0 12px' }}>
           Showing the first {allClients.length.toLocaleString()} of {Number(summary.data.total_clients).toLocaleString()} clients.
-          Use the search box or the controller / SSID / band filters to narrow to specific clients.
+          Use the search box or the controller / SSID / AP / band filters to narrow to specific clients.
         </div>
       )}
 
@@ -2927,6 +3053,9 @@ function ClientsTab({
               totalClients={counts ? counts.client_count : null}
               problemClients={counts ? counts.problem_count : null}
               onSelectMac={setSelectedMac}
+              sortKey={sortKey}
+              sortDir={sortDir}
+              onSort={toggleSort}
             />
           );
         })
