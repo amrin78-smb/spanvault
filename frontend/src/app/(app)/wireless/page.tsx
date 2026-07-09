@@ -217,6 +217,13 @@ interface OverviewController {
   last_reboot_reason: string | null;
   reported_ap_count: number | null;
   reported_client_count: number | null;
+  ha_active_aps: number | null;
+  ha_standby_aps: number | null;
+  ha_total_aps: number | null;
+  ha_active_vap_tunnels: number | null;
+  ha_standby_vap_tunnels: number | null;
+  ha_total_vap_tunnels: number | null;
+  ha_ap_hbt_tunnels: number | null;
 }
 
 interface ControllerOverview {
@@ -3540,7 +3547,7 @@ function HaStatusTable({ controllers }: { controllers: OverviewController[] }) {
       <table className="sv-table">
         <thead><tr>
           <th style={STICKY_TH}>Controller</th><th style={STICKY_TH}>Peer</th>
-          <th style={STICKY_TH}>Role</th><th style={STICKY_TH}>Sync</th>
+          <th style={STICKY_TH}>Role</th><th style={STICKY_TH}>Sync</th><th style={STICKY_TH}>HA APs</th>
         </tr></thead>
         <tbody>
           {haCtls.map((c) => {
@@ -3549,6 +3556,11 @@ function HaStatusTable({ controllers }: { controllers: OverviewController[] }) {
             const role = manual
               ? { text: c.ha_manual_role || 'Paired', color: c.ha_manual_role === 'Active' ? 'var(--green)' : 'var(--text-muted)', dot: true }
               : haCellLabel(c.ha_mode, c.ha_sync_status);
+            // WLSX-HA-MIB AP/tunnel counts (Aruba only, live-verified) — the active
+            // member of a real pair reports nonzero counts, the standby reports 0.
+            const haApsTitle = c.ha_total_vap_tunnels != null
+              ? `VAP tunnels: ${c.ha_active_vap_tunnels ?? 0} active / ${c.ha_standby_vap_tunnels ?? 0} standby (${c.ha_total_vap_tunnels ?? 0} total) · AP heartbeat tunnels: ${c.ha_ap_hbt_tunnels ?? '—'}`
+              : undefined;
             return (
               <tr key={c.id}>
                 <td style={{ fontWeight: 600 }}>{c.name}</td>
@@ -3563,6 +3575,16 @@ function HaStatusTable({ controllers }: { controllers: OverviewController[] }) {
                       {synced ? 'Synced' : (c.ha_sync_status || 'Not Synced')}
                     </span>
                   )}
+                </td>
+                <td title={haApsTitle}>
+                  {c.ha_total_aps != null ? (
+                    <span style={{ color: 'var(--text-secondary)' }}>
+                      {c.ha_active_aps ?? 0} active
+                      {(c.ha_standby_aps ?? 0) > 0 && (
+                        <span style={{ color: 'var(--text-muted)' }}> / {c.ha_standby_aps} standby</span>
+                      )}
+                    </span>
+                  ) : '—'}
                 </td>
               </tr>
             );

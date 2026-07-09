@@ -34,6 +34,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.65.0': [
+    'HA-paired Aruba controllers now show active vs. standby AP and tunnel counts — an early-warning signal beyond the existing sync-status indicator. On the live pair this was tested against, the standby member correctly reads 0 while the active member shows real counts, so a stuck failover shows up before it becomes an outage.',
+  ],
   '1.64.0': [
     'Wireless clients now show their VLAN (new sortable column) and 802.11 PHY mode (e.g. "802.11ax (80MHz)", shown next to Band) — real Wi-Fi 6/6E capability data that was never being read before.',
     'SSIDs now show a Security badge (WPA2/WPA3/Open/etc). Along the way, discovered the SSID name itself was never actually returned by the SSID summary table on real hardware (a firmware quirk) — the name is now recovered from the encryption row\'s own identifier, so this also makes SSID names load more reliably.',
@@ -3711,7 +3714,10 @@ app.get('/api/wireless/controllers', wrap(async (_req, res) => {
            c.model, c.firmware_version, c.licensed_aps, c.ha_mode, c.ha_peer_ip,
            c.ha_sync_status, c.ap_disconnects_24h, c.capabilities_probed_at,
            c.chassis_temp_c, c.chassis_temp_status, c.last_reboot_reason,
-           c.reported_ap_count, c.reported_client_count, ${hp},
+           c.reported_ap_count, c.reported_client_count,
+           c.ha_active_aps, c.ha_standby_aps, c.ha_total_aps,
+           c.ha_active_vap_tunnels, c.ha_standby_vap_tunnels, c.ha_total_vap_tunnels, c.ha_ap_hbt_tunnels,
+           ${hp},
            (c.capabilities IS NOT NULL AND c.capabilities <> '{}') AS has_capabilities,
            d.snmp_community AS snmp_community,
            d.snmp_version AS snmp_version,
@@ -3751,7 +3757,10 @@ app.get('/api/wireless/controllers/overview', wrap(async (_req, res) => {
            c.status, c.licensed_aps, c.ha_mode, c.ha_peer_ip, c.ha_sync_status,
            c.ap_disconnects_24h, c.last_polled_at,
            c.chassis_temp_c, c.chassis_temp_status, c.last_reboot_reason,
-           c.reported_ap_count, c.reported_client_count, ${hp},
+           c.reported_ap_count, c.reported_client_count,
+           c.ha_active_aps, c.ha_standby_aps, c.ha_total_aps,
+           c.ha_active_vap_tunnels, c.ha_standby_vap_tunnels, c.ha_total_vap_tunnels, c.ha_ap_hbt_tunnels,
+           ${hp},
            (SELECT COUNT(*)::int FROM wireless_aps a WHERE a.controller_id = c.id) AS ap_count,
            (SELECT COALESCE(SUM(a.clients_total), 0)::int FROM wireless_aps a WHERE a.controller_id = c.id) AS client_count,
            cpu.value AS cpu_pct, mem.value AS mem_pct, up.value AS uptime_seconds
@@ -3844,6 +3853,13 @@ app.get('/api/wireless/controllers/overview', wrap(async (_req, res) => {
       last_reboot_reason: row.last_reboot_reason ?? null,
       reported_ap_count: row.reported_ap_count == null ? null : Number(row.reported_ap_count),
       reported_client_count: row.reported_client_count == null ? null : Number(row.reported_client_count),
+      ha_active_aps: row.ha_active_aps == null ? null : Number(row.ha_active_aps),
+      ha_standby_aps: row.ha_standby_aps == null ? null : Number(row.ha_standby_aps),
+      ha_total_aps: row.ha_total_aps == null ? null : Number(row.ha_total_aps),
+      ha_active_vap_tunnels: row.ha_active_vap_tunnels == null ? null : Number(row.ha_active_vap_tunnels),
+      ha_standby_vap_tunnels: row.ha_standby_vap_tunnels == null ? null : Number(row.ha_standby_vap_tunnels),
+      ha_total_vap_tunnels: row.ha_total_vap_tunnels == null ? null : Number(row.ha_total_vap_tunnels),
+      ha_ap_hbt_tunnels: row.ha_ap_hbt_tunnels == null ? null : Number(row.ha_ap_hbt_tunnels),
     };
   });
 

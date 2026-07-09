@@ -762,6 +762,20 @@ ALTER TABLE wireless_controllers ADD COLUMN IF NOT EXISTS last_reboot_reason TEX
 -- SpanVault's own summed counts from polling APs individually).
 ALTER TABLE wireless_controllers ADD COLUMN IF NOT EXISTS reported_ap_count INTEGER;
 ALTER TABLE wireless_controllers ADD COLUMN IF NOT EXISTS reported_client_count INTEGER;
+-- WLSX-HA-MIB (Aruba, 1.3.6.1.4.1.14823.2.2.1.20) — live-verified real,
+-- differentiated data: on a live Active/Standby pair (TUFS-OKF-WLC-1 /
+-- TUFS-OKF-WLC-2) the active member reports nonzero AP/tunnel counts and the
+-- standby member reports 0, an early-warning signal beyond ha_mode/ha_sync_status.
+-- A standalone controller still reports its own AP count as "active" with 0
+-- standby (the MIB always exposes one default HA profile row) — the frontend
+-- only surfaces this detail for controllers already flagged in HA (controllerInHa).
+ALTER TABLE wireless_controllers ADD COLUMN IF NOT EXISTS ha_active_aps INTEGER;
+ALTER TABLE wireless_controllers ADD COLUMN IF NOT EXISTS ha_standby_aps INTEGER;
+ALTER TABLE wireless_controllers ADD COLUMN IF NOT EXISTS ha_total_aps INTEGER;
+ALTER TABLE wireless_controllers ADD COLUMN IF NOT EXISTS ha_active_vap_tunnels INTEGER;
+ALTER TABLE wireless_controllers ADD COLUMN IF NOT EXISTS ha_standby_vap_tunnels INTEGER;
+ALTER TABLE wireless_controllers ADD COLUMN IF NOT EXISTS ha_total_vap_tunnels INTEGER;
+ALTER TABLE wireless_controllers ADD COLUMN IF NOT EXISTS ha_ap_hbt_tunnels INTEGER;
 -- Auto-created SNMP controllers are keyed on their device so they aren't dup'd.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_wctl_snmp_device
   ON wireless_controllers(snmp_device_id) WHERE snmp_device_id IS NOT NULL;

@@ -92,6 +92,16 @@ const VENDOR_OID_CANDIDATES = {
     last_reboot_reason:    ['1.3.6.1.4.1.14823.2.2.1.2.1.25.0'],
     reported_ap_count:     ['1.3.6.1.4.1.14823.2.2.1.5.2.1.1.0'],
     reported_client_count: ['1.3.6.1.4.1.14823.2.2.1.5.2.1.2.0'],
+    // WLSX-HA-MIB (wlsxHaMIB = wlsxEnterpriseMibModules.20) — live-verified real
+    // on both an Active/Standby pair (nonzero on the active member, 0 on standby)
+    // and a standalone controller (nonzero, mirroring its own AP count).
+    ha_active_aps:          ['1.3.6.1.4.1.14823.2.2.1.20.1.2.1.1.0'],
+    ha_standby_aps:         ['1.3.6.1.4.1.14823.2.2.1.20.1.2.1.2.0'],
+    ha_total_aps:           ['1.3.6.1.4.1.14823.2.2.1.20.1.2.1.3.0'],
+    ha_active_vap_tunnels:  ['1.3.6.1.4.1.14823.2.2.1.20.1.5.1.1.0'],
+    ha_standby_vap_tunnels: ['1.3.6.1.4.1.14823.2.2.1.20.1.5.1.2.0'],
+    ha_total_vap_tunnels:   ['1.3.6.1.4.1.14823.2.2.1.20.1.5.1.3.0'],
+    ha_ap_hbt_tunnels:      ['1.3.6.1.4.1.14823.2.2.1.20.1.5.1.4.0'],
   },
   cisco: {
     model:        ['1.3.6.1.2.1.1.1.0'],
@@ -234,6 +244,13 @@ async function pollControllerMetadata(session, controller) {
     last_reboot_reason: null,
     reported_ap_count: null,
     reported_client_count: null,
+    ha_active_aps: null,
+    ha_standby_aps: null,
+    ha_total_aps: null,
+    ha_active_vap_tunnels: null,
+    ha_standby_vap_tunnels: null,
+    ha_total_vap_tunnels: null,
+    ha_ap_hbt_tunnels: null,
   };
   const caps = controller.capabilities || {};
   const vendor = controller.vendor;
@@ -290,6 +307,34 @@ async function pollControllerMetadata(session, controller) {
       const parsed = Number(n);
       md.reported_client_count = Number.isFinite(parsed) ? parsed : null;
     }
+  }
+  if (caps.ha_active_aps) {
+    const n = await getOid(session, caps.ha_active_aps);
+    if (n != null) { const parsed = Number(n); md.ha_active_aps = Number.isFinite(parsed) ? parsed : null; }
+  }
+  if (caps.ha_standby_aps) {
+    const n = await getOid(session, caps.ha_standby_aps);
+    if (n != null) { const parsed = Number(n); md.ha_standby_aps = Number.isFinite(parsed) ? parsed : null; }
+  }
+  if (caps.ha_total_aps) {
+    const n = await getOid(session, caps.ha_total_aps);
+    if (n != null) { const parsed = Number(n); md.ha_total_aps = Number.isFinite(parsed) ? parsed : null; }
+  }
+  if (caps.ha_active_vap_tunnels) {
+    const n = await getOid(session, caps.ha_active_vap_tunnels);
+    if (n != null) { const parsed = Number(n); md.ha_active_vap_tunnels = Number.isFinite(parsed) ? parsed : null; }
+  }
+  if (caps.ha_standby_vap_tunnels) {
+    const n = await getOid(session, caps.ha_standby_vap_tunnels);
+    if (n != null) { const parsed = Number(n); md.ha_standby_vap_tunnels = Number.isFinite(parsed) ? parsed : null; }
+  }
+  if (caps.ha_total_vap_tunnels) {
+    const n = await getOid(session, caps.ha_total_vap_tunnels);
+    if (n != null) { const parsed = Number(n); md.ha_total_vap_tunnels = Number.isFinite(parsed) ? parsed : null; }
+  }
+  if (caps.ha_ap_hbt_tunnels) {
+    const n = await getOid(session, caps.ha_ap_hbt_tunnels);
+    if (n != null) { const parsed = Number(n); md.ha_ap_hbt_tunnels = Number.isFinite(parsed) ? parsed : null; }
   }
 
   return md;
@@ -889,7 +934,14 @@ async function pollController(pool, controller) {
          chassis_temp_status   = COALESCE($10, chassis_temp_status),
          last_reboot_reason    = COALESCE($11, last_reboot_reason),
          reported_ap_count     = COALESCE($12, reported_ap_count),
-         reported_client_count = COALESCE($13, reported_client_count)
+         reported_client_count = COALESCE($13, reported_client_count),
+         ha_active_aps          = COALESCE($14, ha_active_aps),
+         ha_standby_aps         = COALESCE($15, ha_standby_aps),
+         ha_total_aps           = COALESCE($16, ha_total_aps),
+         ha_active_vap_tunnels  = COALESCE($17, ha_active_vap_tunnels),
+         ha_standby_vap_tunnels = COALESCE($18, ha_standby_vap_tunnels),
+         ha_total_vap_tunnels   = COALESCE($19, ha_total_vap_tunnels),
+         ha_ap_hbt_tunnels      = COALESCE($20, ha_ap_hbt_tunnels)
        WHERE id = $1`,
       [
         controller.id,
@@ -905,6 +957,13 @@ async function pollController(pool, controller) {
         md.last_reboot_reason ?? null,
         md.reported_ap_count ?? null,
         md.reported_client_count ?? null,
+        md.ha_active_aps ?? null,
+        md.ha_standby_aps ?? null,
+        md.ha_total_aps ?? null,
+        md.ha_active_vap_tunnels ?? null,
+        md.ha_standby_vap_tunnels ?? null,
+        md.ha_total_vap_tunnels ?? null,
+        md.ha_ap_hbt_tunnels ?? null,
       ]);
     const s0 = aps[0];
     const sample = s0
