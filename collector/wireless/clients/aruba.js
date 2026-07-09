@@ -23,7 +23,16 @@ const {
 const STA_BASE = '1.3.6.1.4.1.14823.2.2.1.5.2.2.1.1';
 const staApBssid = STA_BASE + '.2';   // wlanStaApBssid (AP radio BSSID)
 const staChannel = STA_BASE + '.6';   // wlanStaChannel
-const staTxRate = STA_BASE + '.10';   // wlanStaTransmitRate (Mbps)
+// wlanStaTransmitRate (.10) is a dead/legacy field on AOS 8.10/8.13 — live SNMP
+// walks show it only ever returns {0, 7, 10, 12, 255} across ~1150 real
+// stations regardless of actual PHY rate (255 = 0xFF cap/sentinel). Its MIB
+// DESCRIPTION doesn't even state a unit. wlanStaTransmitRateCode (.17) is the
+// only column in this table whose DESCRIPTION explicitly says "unit is mbps",
+// and live data confirms it: the same stations show a realistic, wide spread
+// (6-1201 Mbps) matching real 802.11n/ac/ax rate tables, verified against
+// ArubaOS 8.10 (7205) and 8.13 (9106) hardware. No scaling needed — raw value
+// is already Mbps.
+const staTxRate = STA_BASE + '.17';   // wlanStaTransmitRateCode (mbps)
 const staEssid = STA_BASE + '.12';    // wlanStaAccessPointESSID (SSID)
 const staRssi = STA_BASE + '.14';     // wlanStaRSSI (signal-to-noise ratio, dB)
 const staUpTime = STA_BASE + '.15';   // wlanStaUpTime (TimeTicks, 1/100 s)

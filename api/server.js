@@ -34,6 +34,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.61.2': [
+    'Fixed Aruba wireless client rates only ever showing "255 Mbps" or "12 Mbps" regardless of the client\'s real speed. The collector was reading a dead/legacy SNMP column (wlanStaTransmitRate) that caps out at 255 and doesn\'t track modern 802.11n/ac/ax clients; it now reads wlanStaTransmitRateCode, the column the MIB actually documents as carrying the rate in Mbps. Verified live against real clients on both an Aruba 7205 and a 9106 — confirmed rates from 6 to 1201 Mbps now match the controller\'s own admin GUI.',
+  ],
   '1.61.1': [
     'Vendor wireless audit: every SNMP parser was adversarially verified against its official MIB. The Cisco and Ruckus parsers had substantially wrong OIDs (Ruckus AP/radio tables were swapped and its "rogue AP" walk was actually reading the client table; Cisco SSID names/status, radio metrics and rogue classification were reading the wrong columns) — all rewired to the MIB-verified objects. Fortinet status was inverted (online APs showed offline), and the MikroTik/HPE/Grandstream parsers had wrong tables or columns — all corrected. These parsers remain unvalidated on real hardware (none available) but now match the published MIBs exactly.',
     'Collector hardening: a dead controller now fails fast and is marked in error instead of being reported "ok" with zero APs and wiped metadata; controller metadata is never overwritten with NULLs by a partial poll; a failed capability probe now retries instead of freezing empty; 32-bit counter wraps no longer blank throughput on busy APs; per-poll table walks are row-capped; and every poll logs walked-varbinds vs parsed-APs so a dead OID set is visible in the log.',
