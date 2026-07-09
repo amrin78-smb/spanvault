@@ -90,6 +90,10 @@ function emptyClient() {
     rx_rate_mbps: null,
     connected_since: null,
     auth_type: null,
+    // PHY/HT capability (e.g. "802.11ac (80MHz)") — distinct from tx_rate_mbps
+    // (the negotiated rate). VLAN is the client's assigned VLAN ID.
+    phy_mode: null,
+    vlan_id: null,
   };
 }
 

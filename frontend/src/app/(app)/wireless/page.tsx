@@ -86,6 +86,7 @@ interface Ssid {
   bytes_out: number | null;
   auth_successes: number;
   auth_failures: number;
+  encryption_type: string | null;
   updated_at: string;
 }
 
@@ -136,6 +137,8 @@ interface AccessPoint {
   throughput_out_bps: number | null;
   serial_number: string | null;
   auth_failures: number | null;
+  reboot_count: number | null;
+  bootstrap_count: number | null;
 }
 
 interface ApHistoryRow {
@@ -335,12 +338,14 @@ interface WirelessClient {
   signal_quality: string;
   controller_name: string | null;
   site_name: string | null;
+  phy_mode: string | null;
+  vlan_id: number | null;
 }
 
 // ── Clients table sorting (top-level — not nested inside a component) ──────
 type ClientSortKey =
   | 'mac_address' | 'ip_address' | 'ap_name' | 'ssid_name' | 'band'
-  | 'rssi_dbm' | 'tx_rate_mbps' | 'connected_since' | 'status';
+  | 'vlan_id' | 'rssi_dbm' | 'tx_rate_mbps' | 'connected_since' | 'status';
 
 // Numeric status rank mirroring ClientStatusBadge's exact precedence (worst
 // first): 0=Sticky, 1=Low Signal, 2=Frequent Roamer, 3=Normal. Ascending sort
@@ -366,6 +371,7 @@ function clientSortValue(c: WirelessClient, key: ClientSortKey): number | string
     case 'ap_name': return c.ap_name ? c.ap_name.toLowerCase() : null;
     case 'ssid_name': return c.ssid_name ? c.ssid_name.toLowerCase() : null;
     case 'band': return c.band ? c.band.toLowerCase() : null;
+    case 'vlan_id': return c.vlan_id;
     case 'rssi_dbm': return c.rssi_dbm;
     case 'tx_rate_mbps': return c.tx_rate_mbps;
     case 'connected_since': return c.connected_since;
@@ -1752,6 +1758,8 @@ function ApDetailDrawer({
             <tr><td style={{ color: 'var(--text-muted)' }}>Firmware</td><td>{ap.firmware_version || '—'}</td></tr>
             <tr><td style={{ color: 'var(--text-muted)' }}>Serial Number</td><td>{ap.serial_number || '—'}</td></tr>
             <tr><td style={{ color: 'var(--text-muted)' }}>Uptime</td><td>{ap.uptime_formatted || '—'}</td></tr>
+            <tr><td style={{ color: 'var(--text-muted)' }}>Reboots</td><td>{ap.reboot_count ?? '—'}</td></tr>
+            <tr><td style={{ color: 'var(--text-muted)' }}>Bootstraps</td><td>{ap.bootstrap_count ?? '—'}</td></tr>
             <tr><td style={{ color: 'var(--text-muted)' }}>Auth Failures</td><td>{ap.auth_failures ?? '—'}</td></tr>
             <tr><td style={{ color: 'var(--text-muted)' }}>Last seen</td><td>{fmtTime(ap.last_seen_at)}</td></tr>
             <tr>
@@ -2038,6 +2046,37 @@ function fmtBucket(ts: string): string {
 // TAB 3 — SSIDs
 // ════════════════════════════════════════════════════════════
 
+// Pick a tint-token pair for an SSID's encryption_type label. WEP and Open
+// (no encryption at all) are flagged amber as weak security; everything else
+// recognised (WPA/WPA2/WPA3/xSec/bSec/MPSK) reads as reasonably strong and is
+// green. A comma-joined mixed-mode label (e.g. "Open, WPA2-PSK (AES)") is
+// still flagged amber if any weak method appears — the badge should never
+// hide that a weaker option is still being offered alongside a stronger one.
+function encryptionBadgeColor(type: string | null): { bg: string; fg: string } | null {
+  if (!type) return null;
+  const t = type.toLowerCase();
+  if (t.includes('open') || t.includes('wep')) {
+    return { bg: 'var(--tint-warn)', fg: 'var(--tint-warn-fg)' };
+  }
+  return { bg: 'var(--tint-success)', fg: 'var(--tint-success-fg)' };
+}
+
+function EncryptionBadge({ type }: { type: string | null }) {
+  if (!type) {
+    return <span className="sv-muted" style={{ fontSize: 'var(--text-sm)' }}>—</span>;
+  }
+  const colors = encryptionBadgeColor(type);
+  return (
+    <span
+      className="sv-badge"
+      style={{ color: colors?.fg, background: colors?.bg, borderColor: colors?.bg }}
+      title={type}
+    >
+      {type}
+    </span>
+  );
+}
+
 // ── One controller's collapsible SSID group (own search + collapse state) ─────
 function SsidControllerGroup({
   controller, ssids,
@@ -2086,7 +2125,7 @@ function SsidControllerGroup({
             <table className="sv-table">
               <thead>
                 <tr>
-                  <th>SSID Name</th><th>Site</th><th>Status</th><th>Clients</th>
+                  <th>SSID Name</th><th>Site</th><th>Status</th><th>Security</th><th>Clients</th>
                 </tr>
               </thead>
               <tbody>
@@ -2100,6 +2139,7 @@ function SsidControllerGroup({
                         {r.status}
                       </span>
                     </td>
+                    <td><EncryptionBadge type={r.encryption_type} /></td>
                     <td>{r.clients_total}</td>
                   </tr>
                 ))}
@@ -2761,6 +2801,9 @@ function ClientControllerGroup({
                 <th onClick={() => onSort('band')} style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }} title="Click to sort">
                   Band{sortKey === 'band' ? (sortDir === 'asc' ? ' ▲' : ' ▼') : ''}
                 </th>
+                <th onClick={() => onSort('vlan_id')} style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }} title="Click to sort">
+                  VLAN{sortKey === 'vlan_id' ? (sortDir === 'asc' ? ' ▲' : ' ▼') : ''}
+                </th>
                 <th onClick={() => onSort('rssi_dbm')} style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }} title="Click to sort">
                   Signal{sortKey === 'rssi_dbm' ? (sortDir === 'asc' ? ' ▲' : ' ▼') : ''}
                 </th>
@@ -2782,7 +2825,11 @@ function ClientControllerGroup({
                   <td>{c.ip_address || '—'}</td>
                   <td>{c.ap_name || '—'}</td>
                   <td>{c.ssid_name || '—'}</td>
-                  <td>{c.band || '—'}</td>
+                  <td>
+                    {c.band || '—'}
+                    {c.phy_mode ? <span style={{ color: 'var(--text-muted)', fontSize: 'var(--text-sm)' }}> · {c.phy_mode}</span> : null}
+                  </td>
+                  <td>{c.vlan_id ?? '—'}</td>
                   <td><SignalCell rssi={c.rssi_dbm} /></td>
                   <td title={c.rx_rate_mbps != null ? `↓ ${fmtRate(c.rx_rate_mbps)}` : undefined}>
                     {fmtRate(c.tx_rate_mbps)}

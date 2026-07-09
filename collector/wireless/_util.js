@@ -145,6 +145,9 @@ function emptyAp() {
     tx_bytes: null,          // bytes sent by the AP    (→ throughput_out_bps)
     serial_number: null,
     auth_failures: null,
+    // Cumulative lifetime counts — a stability/flapping signal, not alerted on.
+    reboot_count: null,
+    bootstrap_count: null,
     _index: null,
   };
 }

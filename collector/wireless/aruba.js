@@ -49,6 +49,18 @@ const wlanAPStatus = AP_BASE + '.19';     // wlanAPStatus: up(1) / down(2)
 // no schema column for it, so it is not wired in.
 const wlanAPSerialNumber = AP_BASE + '.6';  // wlanAPSerialNumber
 const wlanAPSwVersion = AP_BASE + '.34';    // wlanAPSwVersion
+// wlanAPNumBootstraps (.20) / wlanAPNumReboots (.21) — cumulative lifetime
+// counters (Integer32, per WLSX-WLAN-MIB: "Number of times the AP has
+// bootstrapped with the controller" / "...has rebooted"), NOT deltas. Live-
+// verified on SMT_WLC (AOS 8.10.0.8): reboots ranged 0-28822 across 111 APs
+// (one outlier AP at 28822 with a normal ~2212h uptime — plausible as a
+// long-lived historical total, not a current flapping signal) and on
+// TUFS-OKF-WLC-1 (AOS 8.13.2.2): reboots ranged 0-66 across 98 APs, a fully
+// plausible range. Surfaced as an informational AP-stability signal only —
+// not wired into any alert threshold, since a "high" absolute value's
+// plausibility varies a lot by AP age/history.
+const wlanAPNumBootstraps = AP_BASE + '.20'; // wlanAPNumBootstraps
+const wlanAPNumReboots = AP_BASE + '.21';    // wlanAPNumReboots
 
 // ── Radio table (wlsxWlanRadioTable) — base ...5.2.1.5.1 ─────────────────────
 // Index = AP MAC (6 octets) + radioNumber. Band is derived from the channel.
@@ -119,9 +131,119 @@ const wlanAPRadioTxErrorPkts = RADIOSTATS_BASE + '.6'; // wlanAPRadioTxErrorPkts
 // Index = the (length-prefixed) SSID name. wlanESSID's value is the name string.
 // On some ArubaOS builds this controller-level summary is empty even when SSIDs
 // are active, so parseSsids() falls back to the per-BSSID table below.
+//
+// wlanESSIDEncryptionType (column .5) — confirmed against the primary MIB
+// source (WLSX-WLAN-MIB, wlsxWlanESSIDEntry ::= { wlsxWlanESSIDTable 1 },
+// wlanESSIDEncryptionType ::= { wlsxWlanESSIDEntry 5 }) and its SYNTAX
+// ArubaEncryptionMethods, defined in ARUBA-TC as a BITS textual convention:
+//   disabled(0) static-wep(1) dynamic-wep(2) static-wpa(3) dynamic-wpa(4)
+//   wpa2-psk-aes(5) wpa2-8021x-aes(6) wpa2PreAuth(7) xsec(8) wpa-psk-aes(9)
+//   wpa-aes(10) wpa2-psk-tkip(11) wpa2-8021x-tkip(12) bSec-128(13)
+//   bSec-256(14) owe-aes(16) wpa3-sae-aes(17) wpa3-cnsa(18)
+//   wpa3-aes-ccm-128(19) mpsk-aes(21) wpa3-aes-gcm-256(22)
+// Live-verified 2026-07-09 on SMT_WLC and TUFS-OKF-WLC-1: the column IS
+// populated (12 and 9 rows respectively) even though wlanESSID's own VALUE
+// walk (column .1) returns ZERO rows on both controllers — column .1 is
+// declared MAX-ACCESS not-accessible in the MIB (it exists purely as the
+// table INDEX), so this firmware never returns a walkable value for it,
+// which is also why parseEssidSummary() below has always fallen through to
+// the BSSID-aggregated table in production. wlanESSIDEncryptionType (.5) IS
+// read-only/accessible and DOES return values, with the SSID name recoverable
+// from its own OID index (standard SMI length-prefixed DisplayString index
+// encoding) — see ssidNameFromIndex(). Live samples decoded per the BITS
+// encoding (RFC 2578 §7.1.4: bit 0 = MSB of octet 0): hex 04 00 00 -> bit 5
+// set -> wpa2-psk-aes (seen on e.g. "VIP", "TGIF", "TU-WiFi"); hex 80 00 00
+// -> bit 0 set -> disabled (seen on the "TU-Guest" SSID, i.e. an open guest
+// network) — both decodes are semantically sane for their SSID names.
 const ESSID_BASE = '1.3.6.1.4.1.14823.2.2.1.5.2.1.8.1';
 const wlanESSID = ESSID_BASE + '.1';            // wlanESSID (name; also the index)
 const wlanESSIDNumStations = ESSID_BASE + '.2'; // wlanESSIDNumStations (client count)
+const wlanESSIDEncryptionType = ESSID_BASE + '.5'; // wlanESSIDEncryptionType (ArubaEncryptionMethods BITS)
+
+// Bit position -> human label for the ArubaEncryptionMethods BITS value
+// (ARUBA-TC.txt, confirmed against the primary MIB source — see the OID
+// comment above). Bits 15 and 20 are gaps in the TC (not assigned) and are
+// intentionally absent here.
+const ENCRYPTION_BIT_LABELS = {
+  0: 'Open',
+  1: 'WEP (Static)',
+  2: 'WEP (Dynamic)',
+  3: 'WPA (Static)',
+  4: 'WPA (Dynamic)',
+  5: 'WPA2-PSK (AES)',
+  6: 'WPA2-Enterprise (AES)',
+  7: 'WPA2 (Pre-Auth)',
+  8: 'xSec',
+  9: 'WPA-PSK (AES)',
+  10: 'WPA (AES)',
+  11: 'WPA2-PSK (TKIP)',
+  12: 'WPA2-Enterprise (TKIP)',
+  13: 'bSec-128',
+  14: 'bSec-256',
+  16: 'WPA3-OWE (AES)',
+  17: 'WPA3-SAE (AES)',
+  18: 'WPA3-CNSA',
+  19: 'WPA3-Enterprise (AES-CCM-128)',
+  21: 'MPSK (AES)',
+  22: 'WPA3-Enterprise (AES-GCM-256)',
+};
+
+// Decode an ArubaEncryptionMethods BITS value (arrives from net-snmp as an
+// OCTET STRING Buffer — the wire encoding for SNMPv2 BITS) into a
+// human-readable summary label. Per RFC 2578 §7.1.4, bit 0 is the MSB of the
+// first octet, bit 1 the next, etc. When more than one bit is set (a
+// mixed-mode SSID, e.g. transitioning WPA2 -> WPA3) every matching label is
+// joined with ", " rather than picking just one, so the label never hides a
+// weaker method the SSID is still offering. Never throws — an unrecognised
+// shape (missing OID, unexpected type) just yields null, matching this file's
+// established defensive style.
+function decodeEncryptionType(v) {
+  try {
+    if (v === null || v === undefined) return null;
+    let buf;
+    if (Buffer.isBuffer(v)) buf = v;
+    else if (typeof v === 'string') buf = Buffer.from(v, 'latin1');
+    else return null; // BITS should arrive as an OCTET STRING/Buffer — never guess at a bare number
+    if (buf.length === 0) return null;
+    const labels = [];
+    for (let i = 0; i < buf.length; i++) {
+      const byte = buf[i];
+      if (byte === 0) continue;
+      for (let bitInByte = 0; bitInByte < 8; bitInByte++) {
+        if ((byte & (0x80 >> bitInByte)) !== 0) {
+          const label = ENCRYPTION_BIT_LABELS[i * 8 + bitInByte];
+          if (label) labels.push(label);
+        }
+      }
+    }
+    return labels.length ? labels.join(', ') : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+// Recover an SSID name directly from a wlsxWlanESSIDTable row's OID index.
+// The table is INDEX {wlanESSID}, and wlanESSID is a DisplayString index, so
+// per standard SMI string-index encoding the index itself is
+// "<length>.<octet>.<octet>...". This is needed because wlanESSID's own VALUE
+// column (.1) is not-accessible and returns nothing on live firmware (see the
+// OID comment above) — the index is the only place the name is available.
+// Never throws; returns null on any malformed index.
+function ssidNameFromIndex(idx) {
+  try {
+    if (!idx) return null;
+    const parts = String(idx).split('.').map(Number);
+    if (parts.length < 2) return null;
+    const len = parts[0];
+    if (!Number.isFinite(len) || len <= 0 || parts.length !== len + 1) return null;
+    const bytes = parts.slice(1);
+    if (bytes.some((b) => !Number.isFinite(b) || b < 0 || b > 255)) return null;
+    const s = Buffer.from(bytes).toString('latin1').trim();
+    return s.length ? s : null;
+  } catch (e) {
+    return null;
+  }
+}
 
 // ── Per-BSSID table (wlsxWlanAPBssidTable) — base ...5.2.1.7.1 ───────────────
 // One row per broadcast BSSID (AP MAC + radio + BSSID). Each row carries its
@@ -264,6 +386,8 @@ function parseApTable(walked) {
     const statuses = columnMap(walked.apStatus, wlanAPStatus);
     const serials = columnMap(walked.apSerial, wlanAPSerialNumber);
     const swVersions = columnMap(walked.apFirmware, wlanAPSwVersion);
+    const reboots = columnMap(walked.apReboots, wlanAPNumReboots);
+    const bootstraps = columnMap(walked.apBootstraps, wlanAPNumBootstraps);
 
     const indexes = new Set();
     [ips, names, uptimes, models, statuses].forEach((m) => {
@@ -291,6 +415,10 @@ function parseApTable(walked) {
       // like the other vendor parsers. (Storing it raw inflated uptime ~100×.)
       const up = num(uptimes[idx]);
       if (up !== null) ap.uptime_seconds = Math.floor(up / 100);
+      // Cumulative lifetime counters — see the wlanAPNumReboots/wlanAPNumBootstraps
+      // OID comment above. Stored as-is (not deltas).
+      ap.reboot_count = num(reboots[idx]);
+      ap.bootstrap_count = num(bootstraps[idx]);
       out.push(ap);
       byIndex.set(idx, ap);
     }
@@ -421,7 +549,10 @@ function parseClientCounts(walked) {
 }
 
 // Build an SSID row with the controller-unavailable counters nulled out.
-function ssidRow(ssid_name, clients_total) {
+// encryption_type defaults to null — only the ESSID-summary path (below) has
+// a confirmed live source for it; the BSSID-fallback table was not verified
+// to carry an equivalent column, so it stays null rather than guessing.
+function ssidRow(ssid_name, clients_total, encryption_type) {
   return {
     ssid_name,
     status: 'up',
@@ -430,6 +561,7 @@ function ssidRow(ssid_name, clients_total) {
     bytes_out: null,
     auth_successes: 0,
     auth_failures: 0,
+    encryption_type: encryption_type || null,
   };
 }
 
@@ -438,19 +570,26 @@ function parseEssidSummary(walked) {
   const out = [];
   const names = columnMap(walked.essidName, wlanESSID);
   const stations = columnMap(walked.essidStations, wlanESSIDNumStations);
+  const encryption = columnMap(walked.essidEncryption, wlanESSIDEncryptionType);
   console.log('[Aruba] ESSID walk:', Object.keys(names).length, 'raw OIDs (wlsxWlanESSIDTable ...5.2.1.8)');
-  const indexes = new Set([...Object.keys(names), ...Object.keys(stations)]);
+  const indexes = new Set([...Object.keys(names), ...Object.keys(stations), ...Object.keys(encryption)]);
   for (const idx of indexes) {
-    const ssid_name = str(names[idx]);
+    // wlanESSID (.1) is MAX-ACCESS not-accessible and returns no value on some
+    // ArubaOS builds (live-verified — see the OID comment above); when that
+    // happens, recover the name from the row's own OID index instead (the
+    // index IS the SSID name, standard SMI string-index encoding).
+    const ssid_name = str(names[idx]) || ssidNameFromIndex(idx);
     if (!ssid_name) continue;
-    out.push(ssidRow(ssid_name, num(stations[idx])));
+    out.push(ssidRow(ssid_name, num(stations[idx]), decodeEncryptionType(encryption[idx])));
   }
   return out;
 }
 
 // SSIDs aggregated from the per-BSSID table (...5.2.1.7): every AP radio
 // broadcasts a BSSID per SSID, so sum the station counts across all BSSIDs that
-// share an SSID name to get the per-SSID client total.
+// share an SSID name to get the per-SSID client total. No encryption-type
+// column was confirmed on this table, so encryption_type stays null here
+// (see ssidRow's default) — only the ESSID-summary path above sets it.
 function parseBssidAggregated(walked) {
   const names = columnMap(walked.bssidEssid, wlanAPESSID);
   const stations = columnMap(walked.bssidStations, wlanAPBssidNumAssociatedStations);
@@ -559,6 +698,8 @@ module.exports = {
     apStatus: wlanAPStatus,
     apSerial: wlanAPSerialNumber,
     apFirmware: wlanAPSwVersion,
+    apReboots: wlanAPNumReboots,
+    apBootstraps: wlanAPNumBootstraps,
     // Radio table (index = AP MAC + radioNumber)
     radioChannel: wlanAPRadioChannel,
     radioUtil: wlanAPRadioUtilization,
@@ -578,6 +719,7 @@ module.exports = {
     // ESSID summary table (index = SSID name)
     essidName: wlanESSID,
     essidStations: wlanESSIDNumStations,
+    essidEncryption: wlanESSIDEncryptionType,
     // Per-BSSID table fallback (index = AP MAC + radio + BSSID)
     bssidEssid: wlanAPESSID,
     bssidStations: wlanAPBssidNumAssociatedStations,

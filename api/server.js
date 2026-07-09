@@ -34,6 +34,11 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.64.0': [
+    'Wireless clients now show their VLAN (new sortable column) and 802.11 PHY mode (e.g. "802.11ax (80MHz)", shown next to Band) — real Wi-Fi 6/6E capability data that was never being read before.',
+    'SSIDs now show a Security badge (WPA2/WPA3/Open/etc). Along the way, discovered the SSID name itself was never actually returned by the SSID summary table on real hardware (a firmware quirk) — the name is now recovered from the encryption row\'s own identifier, so this also makes SSID names load more reliably.',
+    'Access points now track lifetime reboot and bootstrap counts, shown on the AP detail page as a stability signal.',
+  ],
   '1.63.0': [
     'Aruba access points now report transmit power, serial number, firmware version, and per-band error counts — all fields that already existed on the AP detail page but were empty for Aruba. No UI change needed; they just fill in.',
     'New controller health data: chassis temperature (flagged red if the controller itself reports anything other than "normal"), the last reboot reason (shown as a tooltip), and a sanity warning when a controller\'s own reported AP/client counts drift more than 10% from what SpanVault has actually polled.',
@@ -4254,7 +4259,8 @@ app.get('/api/wireless/aps', wrap(async (req, res) => {
            a.noise_floor_2g, a.noise_floor_5g, a.retry_rate_2g, a.retry_rate_5g,
            a.rx_errors_2g, a.tx_errors_2g, a.rx_errors_5g, a.tx_errors_5g,
            a.throughput_in_bps, a.throughput_out_bps, a.serial_number, a.auth_failures,
-           a.interference_pct_2g, a.interference_pct_5g
+           a.interference_pct_2g, a.interference_pct_5g,
+           a.reboot_count, a.bootstrap_count
     FROM wireless_aps a
     LEFT JOIN wireless_controllers c ON c.id = a.controller_id
     ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
@@ -4444,7 +4450,7 @@ app.get('/api/wireless/ssids', wrap(async (req, res) => {
     SELECT s.id, s.controller_id, c.name AS controller_name, c.vendor,
            s.ssid_name, s.site_id, s.site_name, s.status,
            s.clients_total, s.bytes_in, s.bytes_out,
-           s.auth_successes, s.auth_failures, s.updated_at
+           s.auth_successes, s.auth_failures, s.encryption_type, s.updated_at
     FROM wireless_ssids s
     LEFT JOIN wireless_controllers c ON c.id = s.controller_id
     ${where.length ? 'WHERE ' + where.join(' AND ') : ''}

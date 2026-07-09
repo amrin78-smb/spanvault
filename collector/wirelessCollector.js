@@ -516,7 +516,7 @@ async function upsertAp(pool, controller, ap) {
   const noise5g = intOrNull(ap.noise_floor_5g);
   const authFailures = intOrNull(ap.auth_failures);
 
-  // $1..$36 — the full ordered column value set, written identically by the
+  // $1..$38 — the full ordered column value set, written identically by the
   // INSERT and by the (site_id, name) in-place UPDATE below. Keep this array and
   // both column lists in lock-step so no field is ever dropped from a write.
   const vals = [
@@ -532,6 +532,7 @@ async function upsertAp(pool, controller, ap) {
     intOrNull(ap.rx_errors_5g), intOrNull(ap.tx_errors_5g),
     inBps, outBps, ap.serial_number || null, authFailures,
     numOrNull(ap.interference_pct_2g), numOrNull(ap.interference_pct_5g),
+    intOrNull(ap.reboot_count), intOrNull(ap.bootstrap_count),
   ];
 
   let apId = null;
@@ -586,9 +587,11 @@ async function upsertAp(pool, controller, ap) {
           auth_failures       = $34,
           interference_pct_2g = $35,
           interference_pct_5g = $36,
+          reboot_count        = $37,
+          bootstrap_count     = $38,
           last_seen_at        = NOW(),
           updated_at          = NOW()
-        WHERE id = $37
+        WHERE id = $39
         RETURNING id
       `, [...vals, existing.rows[0].id]);
       apId = u.rows[0].id;
@@ -608,10 +611,10 @@ async function upsertAp(pool, controller, ap) {
          noise_floor_2g, noise_floor_5g, retry_rate_2g, retry_rate_5g,
          rx_errors_2g, tx_errors_2g, rx_errors_5g, tx_errors_5g,
          throughput_in_bps, throughput_out_bps, serial_number, auth_failures,
-         interference_pct_2g, interference_pct_5g,
+         interference_pct_2g, interference_pct_5g, reboot_count, bootstrap_count,
          last_seen_at, updated_at)
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,
-              $23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,NOW(),NOW())
+              $23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,NOW(),NOW())
       ON CONFLICT (controller_id, name) DO UPDATE SET
         monitored_device_id = EXCLUDED.monitored_device_id,
         mac_address      = EXCLUDED.mac_address,
@@ -647,6 +650,8 @@ async function upsertAp(pool, controller, ap) {
         auth_failures    = EXCLUDED.auth_failures,
         interference_pct_2g = EXCLUDED.interference_pct_2g,
         interference_pct_5g = EXCLUDED.interference_pct_5g,
+        reboot_count     = EXCLUDED.reboot_count,
+        bootstrap_count  = EXCLUDED.bootstrap_count,
         last_seen_at     = NOW(),
         updated_at       = NOW()
       RETURNING id
@@ -674,8 +679,8 @@ async function upsertSsid(pool, controller, ssid) {
   await pool.query(`
     INSERT INTO wireless_ssids
       (controller_id, ssid_name, site_id, site_name, status,
-       clients_total, bytes_in, bytes_out, auth_successes, auth_failures, updated_at)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW())
+       clients_total, bytes_in, bytes_out, auth_successes, auth_failures, encryption_type, updated_at)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW())
     ON CONFLICT (controller_id, ssid_name) DO UPDATE SET
       site_id        = EXCLUDED.site_id,
       site_name      = EXCLUDED.site_name,
@@ -685,12 +690,14 @@ async function upsertSsid(pool, controller, ssid) {
       bytes_out      = EXCLUDED.bytes_out,
       auth_successes = EXCLUDED.auth_successes,
       auth_failures  = EXCLUDED.auth_failures,
+      encryption_type = EXCLUDED.encryption_type,
       updated_at     = NOW()
   `, [
     controller.id, name, controller.site_id || null, controller.site_name || null,
     ssid.status || 'up', intOrNull(ssid.clients_total) || 0,
     intOrNull(ssid.bytes_in), intOrNull(ssid.bytes_out),
     intOrNull(ssid.auth_successes) || 0, intOrNull(ssid.auth_failures) || 0,
+    ssid.encryption_type || null,
   ]);
 }
 
@@ -1266,8 +1273,8 @@ async function pollClients(pool, controller, apList) {
       INSERT INTO wireless_clients
         (mac_address, ip_address, hostname, controller_id, ap_id, ap_name, ssid_name, band, channel,
          rssi_dbm, tx_rate_mbps, rx_rate_mbps, connected_since, last_seen_at, auth_type,
-         is_problem, roaming_count, vendor, is_sticky)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+         is_problem, roaming_count, vendor, is_sticky, phy_mode, vlan_id)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
       ON CONFLICT (controller_id, mac_address) DO UPDATE SET
         ip_address    = EXCLUDED.ip_address,
         hostname      = COALESCE(EXCLUDED.hostname, wireless_clients.hostname),
@@ -1284,13 +1291,16 @@ async function pollClients(pool, controller, apList) {
         auth_type     = EXCLUDED.auth_type,
         is_problem    = EXCLUDED.is_problem,
         roaming_count = EXCLUDED.roaming_count,
-        is_sticky     = EXCLUDED.is_sticky
+        is_sticky     = EXCLUDED.is_sticky,
+        phy_mode      = EXCLUDED.phy_mode,
+        vlan_id       = EXCLUDED.vlan_id
     `, [
       client.mac_address, client.ip_address || null, client.hostname || null, controller.id,
       client.ap_id || null, client.ap_name || null, client.ssid_name || null, client.band || null,
       intOrNull(client.channel), intOrNull(client.rssi_dbm),
       numOrNull(client.tx_rate_mbps), numOrNull(client.rx_rate_mbps), client.connected_since || null,
       now, client.auth_type || null, isProblem, roamCount, controller.vendor, isSticky,
+      client.phy_mode || null, intOrNull(client.vlan_id),
     ]);
   }
 

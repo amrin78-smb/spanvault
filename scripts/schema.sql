@@ -881,6 +881,20 @@ ALTER TABLE wireless_aps     ADD COLUMN IF NOT EXISTS interference_pct_5g NUMERI
 ALTER TABLE wireless_history ADD COLUMN IF NOT EXISTS interference_pct_2g NUMERIC;
 ALTER TABLE wireless_history ADD COLUMN IF NOT EXISTS interference_pct_5g NUMERIC;
 
+-- AP reboot/bootstrap counters (wlanAPNumReboots/wlanAPNumBootstraps) — cumulative
+-- lifetime counts, a stability/flapping signal. Informational only, not alerted on.
+ALTER TABLE wireless_aps ADD COLUMN IF NOT EXISTS reboot_count    INTEGER;
+ALTER TABLE wireless_aps ADD COLUMN IF NOT EXISTS bootstrap_count INTEGER;
+
+-- Per-SSID security/encryption type (e.g. "WPA2-PSK (AES)", "Open"), from the
+-- vendor's ESSID table where available.
+ALTER TABLE wireless_ssids ADD COLUMN IF NOT EXISTS encryption_type TEXT;
+
+-- Per-client PHY/HT capability (e.g. "802.11ac (80MHz)") and VLAN assignment.
+-- phy_mode is a capability indicator, distinct from the negotiated tx_rate_mbps.
+ALTER TABLE wireless_clients ADD COLUMN IF NOT EXISTS phy_mode TEXT;
+ALTER TABLE wireless_clients ADD COLUMN IF NOT EXISTS vlan_id  INTEGER;
+
 -- ══ Wireless intelligence (computed analytics per poll cycle) ═════════════════
 CREATE TABLE IF NOT EXISTS wireless_intelligence (
   id              SERIAL PRIMARY KEY,

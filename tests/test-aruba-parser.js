@@ -27,6 +27,11 @@ const walked = {
   apModel:  [{ oid: `${AP_BASE}.13.${MAC}`, value: 'AP-535' }],
   apSerial:   [{ oid: `${AP_BASE}.6.${MAC}`, value: 'CNLBKPPCL7' }],
   apFirmware: [{ oid: `${AP_BASE}.34.${MAC}`, value: '8.10.0.8' }],
+  // wlanAPNumBootstraps (.20) / wlanAPNumReboots (.21) — cumulative lifetime
+  // counters, live-verified 2026-07-09 (SMT_WLC reboots ranged 0-28822,
+  // TUFS-OKF-WLC-1 0-66).
+  apBootstraps: [{ oid: `${AP_BASE}.20.${MAC}`, value: 12 }],
+  apReboots:    [{ oid: `${AP_BASE}.21.${MAC}`, value: 8 }],
   // radio 1 = ch 36 (5g), radio 2 = ch 6 (2g)
   radioChannel: [
     { oid: `${RADIO_BASE}.3.${MAC}.1`, value: 36 },
@@ -85,6 +90,27 @@ const walked = {
   ],
 };
 
+// ── ESSID summary table — wlsxWlanESSIDTable, base ...5.2.1.8.1 ──
+// Live SNMP evidence (SMT_WLC / TUFS-OKF-WLC-1, 2026-07-09): wlanESSID (.1) —
+// the SSID-name VALUE column — returns ZERO rows on both controllers (it is
+// MAX-ACCESS not-accessible in WLSX-WLAN-MIB, so this firmware never walks a
+// value for it), while wlanESSIDEncryptionType (.5) DOES return rows, keyed
+// by an OID index that is itself the length-prefixed SSID name. This fixture
+// omits essidName entirely (matching live reality) to exercise the
+// index-decode fallback, and uses the exact raw hex observed live:
+//   "VIP"      -> 04 00 00 -> bit 5 set  -> wpa2-psk-aes -> "WPA2-PSK (AES)"
+//   "TU-Guest" -> 80 00 00 -> bit 0 set  -> disabled     -> "Open"
+const ESSID_BASE = '1.3.6.1.4.1.14823.2.2.1.5.2.1.8.1';
+const essidWalked = {
+  essidStations: [
+    { oid: `${ESSID_BASE}.2.3.86.73.80`, value: 4 }, // "VIP" -> 4 stations
+  ],
+  essidEncryption: [
+    { oid: `${ESSID_BASE}.5.3.86.73.80`, value: Buffer.from([0x04, 0x00, 0x00]) }, // "VIP"
+    { oid: `${ESSID_BASE}.5.8.84.85.45.71.117.101.115.116`, value: Buffer.from([0x80, 0x00, 0x00]) }, // "TU-Guest"
+  ],
+};
+
 // ── Client (station) table — wlsxWlanStationTable, base ...5.2.2.1.1 ──
 // Live SNMP evidence (both an Aruba 7205/AOS 8.10 and a 9106/AOS 8.13): column
 // .10 (wlanStaTransmitRate) is a dead/legacy field that only ever returned
@@ -104,6 +130,8 @@ const staWalked = [
   { oid: `${STA_BASE}.12.${CMAC}`, value: 'Corp-WiFi' },
   { oid: `${STA_BASE}.14.${CMAC}`, value: 30 },     // SNR 30dB → rssi ≈ 30-95 = -65 dBm
   { oid: `${STA_BASE}.15.${CMAC}`, value: 360000 }, // TimeTicks → 3600s
+  { oid: `${STA_BASE}.7.${CMAC}`, value: 214 },     // wlanStaVlanId — live-observed VLAN
+  { oid: `${STA_BASE}.16.${CMAC}`, value: 6 },      // wlanStaHTMode — 6 = vht80 (802.11ac 80MHz), live-verified 2026-07-09
 ];
 const userWalked = [
   { oid: `${USER_BASE}.10.${CMAC}.10.20.30.40`, value: 'AP-TEST-01' },
@@ -130,6 +158,11 @@ const apMap = {
   const cl = clients[0] || {};
   console.log(JSON.stringify(clients, null, 2));
 
+  const ssids = aruba.parseSsids(essidWalked);
+  console.log(JSON.stringify(ssids, null, 2));
+  const vip = ssids.find((s) => s.ssid_name === 'VIP') || {};
+  const guest = ssids.find((s) => s.ssid_name === 'TU-Guest') || {};
+
   const checks = [
     ['one AP parsed', aps.length === 1],
     ['noise_floor_5g = -92', ap.noise_floor_5g === -92],
@@ -150,6 +183,9 @@ const apMap = {
     ['rx_errors_2g null (OID absent, never fake a 0)', ap.rx_errors_2g === null],
     ['tx_errors_5g from TxErrorPkts', ap.tx_errors_5g === 1840360],
     ['tx_errors_2g from TxErrorPkts', ap.tx_errors_2g === 29911],
+    // AP stability counters (reboot/bootstrap) — live-verified 2026-07-09.
+    ['reboot_count = 8', ap.reboot_count === 8],
+    ['bootstrap_count = 12', ap.bootstrap_count === 12],
     // Client rate regression: must read .17 (455), NEVER .10 (255)
     ['one client parsed', clients.length === 1],
     ['tx_rate_mbps = 455 from .17, not 255 from .10', cl.tx_rate_mbps === 455],
@@ -157,6 +193,19 @@ const apMap = {
     ['client ssid', cl.ssid_name === 'Corp-WiFi'],
     ['client band 5GHz (channel 36)', cl.band === '5GHz'],
     ['client ap resolved via bssid', cl.ap_name === 'AP-TEST-01'],
+    ['client vlan_id = 214 from .7', cl.vlan_id === 214],
+    ['client phy_mode = "802.11ac (80MHz)" from HTMode 6 (vht80)', cl.phy_mode === '802.11ac (80MHz)'],
+    // ESSID encryption_type (wlanESSIDEncryptionType, wlsxWlanESSIDEntry.5) —
+    // live-verified 2026-07-09. wlanESSID's own value column returns nothing
+    // on this firmware, so ssid_name must come from the encryption row's own
+    // OID index (length-prefixed DisplayString) — see ssidNameFromIndex().
+    ['two SSIDs parsed from encryption-column index (no essidName rows)', ssids.length === 2],
+    ['VIP name recovered from index', vip.ssid_name === 'VIP'],
+    ['VIP clients from essidStations', vip.clients_total === 4],
+    ['VIP encryption 04 00 00 -> bit5 -> WPA2-PSK (AES)', vip.encryption_type === 'WPA2-PSK (AES)'],
+    ['TU-Guest name recovered from index', guest.ssid_name === 'TU-Guest'],
+    ['TU-Guest encryption 80 00 00 -> bit0 -> Open', guest.encryption_type === 'Open'],
+    ['TU-Guest clients default 0 (no essidStations row)', guest.clients_total === 0],
   ];
   let fail = 0;
   for (const [name, ok] of checks) {

@@ -36,6 +36,29 @@ const staTxRate = STA_BASE + '.17';   // wlanStaTransmitRateCode (mbps)
 const staEssid = STA_BASE + '.12';    // wlanStaAccessPointESSID (SSID)
 const staRssi = STA_BASE + '.14';     // wlanStaRSSI (signal-to-noise ratio, dB)
 const staUpTime = STA_BASE + '.15';   // wlanStaUpTime (TimeTicks, 1/100 s)
+const staVlanId = STA_BASE + '.7';    // wlanStaVlanId (ArubaVlanValidRange, plain integer)
+const staHTMode = STA_BASE + '.16';   // wlanStaHTMode (ArubaHTMode enum) — HT/VHT/HE capability
+
+// ArubaHTMode enum (ARUBA-TC textual convention), verified against the raw MIB
+// text: none(1), ht20(2), ht40(3), vht20(4), vht40(5), vht80(6), vht160(7),
+// vht80plus80(8), he20(9), he40(10), he80(11), he160(12), he80plus80(13).
+// Mapped to a human-readable "802.11<gen> (<width>)" label. none(1) -> null
+// (no HT capability negotiated, nothing meaningful to show).
+const HT_MODE_LABELS = {
+  1: null,
+  2: '802.11n (20MHz)',
+  3: '802.11n (40MHz)',
+  4: '802.11ac (20MHz)',
+  5: '802.11ac (40MHz)',
+  6: '802.11ac (80MHz)',
+  7: '802.11ac (160MHz)',
+  8: '802.11ac (80+80MHz)',
+  9: '802.11ax (20MHz)',
+  10: '802.11ax (40MHz)',
+  11: '802.11ax (80MHz)',
+  12: '802.11ax (160MHz)',
+  13: '802.11ax (80+80MHz)',
+};
 
 // wlsxUserTable / nUserEntry — base ...4.1.2.1, INDEX = station MAC(6) + IPv4(4).
 const USER_BASE = '1.3.6.1.4.1.14823.2.2.1.4.1.2.1';
@@ -64,9 +87,11 @@ async function parseClients(session, apMap) {
     const essid = columnMap(await walk(session, staEssid), staEssid);
     const rssi = columnMap(await walk(session, staRssi), staRssi);
     const up = columnMap(await walk(session, staUpTime), staUpTime);
+    const vlan = columnMap(await walk(session, staVlanId), staVlanId);
+    const htMode = columnMap(await walk(session, staHTMode), staHTMode);
 
     const idxs = new Set();
-    [bssid, chan, tx, essid, rssi, up].forEach((m) => Object.keys(m).forEach((k) => idxs.add(k)));
+    [bssid, chan, tx, essid, rssi, up, vlan, htMode].forEach((m) => Object.keys(m).forEach((k) => idxs.add(k)));
 
     for (const idx of idxs) {
       const mac = macFromTail(idx, 6); // station-table index IS the 6-octet MAC
@@ -92,6 +117,10 @@ async function parseClients(session, apMap) {
       // wlanStaUpTime is TimeTicks (hundredths of a second).
       const ticks = num(up[idx]);
       c.connected_since = connectedSinceFromSeconds(ticks === null ? null : Math.floor(ticks / 100));
+
+      c.vlan_id = num(vlan[idx]);
+      const htCode = num(htMode[idx]);
+      c.phy_mode = htCode !== null ? (HT_MODE_LABELS[htCode] || null) : null;
 
       // AP correlation: prefer the AP name from the user table; fall back to the
       // BSSID matched against known AP MACs.
