@@ -34,6 +34,11 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.61.0': [
+    'Access points now report real measured interference — the share of channel airtime consumed by traffic that is NOT the AP\'s own (channel busy minus own receive/transmit airtime), from the controller\'s channel-stats table. Live-verified on Aruba AOS 8.10 and 8.13.',
+    'The AP detail panel\'s Radio Performance card shows Interference per band (highlighted red at 25%+), and a new 24h Interference trend chart joins the noise-floor and retry-rate charts.',
+    'This is measured RF interference, complementing the existing Intelligence "interference score" which is a computed co-channel/channel-plan metric.',
+  ],
   '1.60.0': [
     'Aruba controllers now report per-AP noise floor, frame retry rate, and real AP throughput. These showed "No data" before because the collector never asked the controller for them — the WLSX-WLAN-MIB stats tables that carry them were assumed not to exist on mobility controllers.',
     'The exact OIDs were verified live against both an Aruba 7205 (AOS 8.10) and a 9106 (AOS 8.13): noise floor and retry rate from wlsxWlanAPChStatsTable, and 64-bit rx/tx byte counters from wlsxWlanAPRadioStatsTable (converted to in/out bps per AP).',
@@ -4217,7 +4222,8 @@ app.get('/api/wireless/aps', wrap(async (req, res) => {
            a.tx_power_2g, a.tx_power_5g, a.uptime_seconds, a.last_seen_at,
            a.noise_floor_2g, a.noise_floor_5g, a.retry_rate_2g, a.retry_rate_5g,
            a.rx_errors_2g, a.tx_errors_2g, a.rx_errors_5g, a.tx_errors_5g,
-           a.throughput_in_bps, a.throughput_out_bps, a.serial_number, a.auth_failures
+           a.throughput_in_bps, a.throughput_out_bps, a.serial_number, a.auth_failures,
+           a.interference_pct_2g, a.interference_pct_5g
     FROM wireless_aps a
     LEFT JOIN wireless_controllers c ON c.id = a.controller_id
     ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
@@ -4265,6 +4271,17 @@ app.get('/api/wireless/history/:ap_id', wrap(async (req, res) => {
                   ROUND(AVG(retry_rate_5g)::numeric, 1) AS retry_rate_5g`;
     }
   } catch (_e) { /* keep NULL fallback */ }
+  // interference_pct columns are a later migration too — same degrade pattern.
+  let intfSel = `NULL::numeric AS interference_pct_2g, NULL::numeric AS interference_pct_5g`;
+  try {
+    const ic = await sv.query(
+      `SELECT EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_name='wireless_history' AND column_name='interference_pct_2g') AS x`);
+    if (ic.rows[0] && ic.rows[0].x) {
+      intfSel = `ROUND(AVG(interference_pct_2g)::numeric, 1) AS interference_pct_2g,
+                 ROUND(AVG(interference_pct_5g)::numeric, 1) AS interference_pct_5g`;
+    }
+  } catch (_e) { /* keep NULL fallback */ }
   const r = await sv.query(`
     SELECT date_bin($1::interval, ts, TIMESTAMPTZ '2000-01-01') AS bucket,
            ROUND(AVG(clients_total))::int AS clients_total,
@@ -4274,7 +4291,8 @@ app.get('/api/wireless/history/:ap_id', wrap(async (req, res) => {
            ROUND(AVG(radio_5g_util)::numeric, 1) AS radio_5g_util,
            ROUND(AVG(noise_floor_2g)::numeric, 0) AS noise_floor_2g,
            ROUND(AVG(noise_floor_5g)::numeric, 0) AS noise_floor_5g,
-           ${retrySel}
+           ${retrySel},
+           ${intfSel}
     FROM wireless_history
     WHERE ap_id = $2 AND ts >= NOW() - $3::interval
     GROUP BY bucket ORDER BY bucket

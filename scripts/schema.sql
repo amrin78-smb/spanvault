@@ -860,6 +860,15 @@ ALTER TABLE wireless_history ADD COLUMN IF NOT EXISTS auth_failures     INTEGER;
 ALTER TABLE wireless_history ADD COLUMN IF NOT EXISTS retry_rate_2g     NUMERIC;
 ALTER TABLE wireless_history ADD COLUMN IF NOT EXISTS retry_rate_5g     NUMERIC;
 
+-- Measured channel interference (% of airtime consumed by traffic that is NOT
+-- this AP's own rx/tx). Derived by the collector as channelBusy − rxUtil − txUtil
+-- from the vendor channel-stats table (Aruba wlsxWlanAPChStatsTable cols 35/36/37,
+-- live-verified on AOS 8.10/8.13). Nullable — NULL when the vendor lacks the OIDs.
+ALTER TABLE wireless_aps     ADD COLUMN IF NOT EXISTS interference_pct_2g NUMERIC;
+ALTER TABLE wireless_aps     ADD COLUMN IF NOT EXISTS interference_pct_5g NUMERIC;
+ALTER TABLE wireless_history ADD COLUMN IF NOT EXISTS interference_pct_2g NUMERIC;
+ALTER TABLE wireless_history ADD COLUMN IF NOT EXISTS interference_pct_5g NUMERIC;
+
 -- ══ Wireless intelligence (computed analytics per poll cycle) ═════════════════
 CREATE TABLE IF NOT EXISTS wireless_intelligence (
   id              SERIAL PRIMARY KEY,

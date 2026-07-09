@@ -122,6 +122,10 @@ function emptyAp() {
     noise_floor_5g: null,    // dBm, negative
     retry_rate_2g: null,     // percent
     retry_rate_5g: null,     // percent
+    // Measured channel interference: % of airtime consumed by traffic that is
+    // NOT this AP's own rx/tx (channelBusy − rxUtil − txUtil, clamped 0..100).
+    interference_pct_2g: null,
+    interference_pct_5g: null,
     rx_errors_2g: null,
     tx_errors_2g: null,
     rx_errors_5g: null,

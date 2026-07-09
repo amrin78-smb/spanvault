@@ -380,7 +380,7 @@ async function upsertAp(pool, controller, ap) {
   const noise5g = intOrNull(ap.noise_floor_5g);
   const authFailures = intOrNull(ap.auth_failures);
 
-  // $1..$34 — the full ordered column value set, written identically by the
+  // $1..$36 — the full ordered column value set, written identically by the
   // INSERT and by the (site_id, name) in-place UPDATE below. Keep this array and
   // both column lists in lock-step so no field is ever dropped from a write.
   const vals = [
@@ -395,6 +395,7 @@ async function upsertAp(pool, controller, ap) {
     intOrNull(ap.rx_errors_2g), intOrNull(ap.tx_errors_2g),
     intOrNull(ap.rx_errors_5g), intOrNull(ap.tx_errors_5g),
     inBps, outBps, ap.serial_number || null, authFailures,
+    numOrNull(ap.interference_pct_2g), numOrNull(ap.interference_pct_5g),
   ];
 
   let apId = null;
@@ -447,9 +448,11 @@ async function upsertAp(pool, controller, ap) {
           throughput_out_bps  = $32,
           serial_number       = $33,
           auth_failures       = $34,
+          interference_pct_2g = $35,
+          interference_pct_5g = $36,
           last_seen_at        = NOW(),
           updated_at          = NOW()
-        WHERE id = $35
+        WHERE id = $37
         RETURNING id
       `, [...vals, existing.rows[0].id]);
       apId = u.rows[0].id;
@@ -469,9 +472,10 @@ async function upsertAp(pool, controller, ap) {
          noise_floor_2g, noise_floor_5g, retry_rate_2g, retry_rate_5g,
          rx_errors_2g, tx_errors_2g, rx_errors_5g, tx_errors_5g,
          throughput_in_bps, throughput_out_bps, serial_number, auth_failures,
+         interference_pct_2g, interference_pct_5g,
          last_seen_at, updated_at)
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,
-              $23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,NOW(),NOW())
+              $23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,NOW(),NOW())
       ON CONFLICT (controller_id, name) DO UPDATE SET
         monitored_device_id = EXCLUDED.monitored_device_id,
         mac_address      = EXCLUDED.mac_address,
@@ -505,6 +509,8 @@ async function upsertAp(pool, controller, ap) {
         throughput_out_bps = EXCLUDED.throughput_out_bps,
         serial_number    = EXCLUDED.serial_number,
         auth_failures    = EXCLUDED.auth_failures,
+        interference_pct_2g = EXCLUDED.interference_pct_2g,
+        interference_pct_5g = EXCLUDED.interference_pct_5g,
         last_seen_at     = NOW(),
         updated_at       = NOW()
       RETURNING id
@@ -515,11 +521,12 @@ async function upsertAp(pool, controller, ap) {
     INSERT INTO wireless_history
       (ap_id, clients_total, clients_2g, clients_5g, radio_2g_util, radio_5g_util,
        noise_floor_2g, noise_floor_5g, throughput_in_bps, throughput_out_bps, auth_failures,
-       retry_rate_2g, retry_rate_5g)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+       retry_rate_2g, retry_rate_5g, interference_pct_2g, interference_pct_5g)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
   `, [apId, clientsTotal, clients2g, clients5g, numOrNull(ap.radio_2g_util_pct), numOrNull(ap.radio_5g_util_pct),
       noise2g, noise5g, inBps, outBps, authFailures,
-      numOrNull(ap.retry_rate_2g), numOrNull(ap.retry_rate_5g)]);
+      numOrNull(ap.retry_rate_2g), numOrNull(ap.retry_rate_5g),
+      numOrNull(ap.interference_pct_2g), numOrNull(ap.interference_pct_5g)]);
 
   return apId;
 }

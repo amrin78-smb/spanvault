@@ -49,6 +49,13 @@ const wlanAPRadioNumAssociatedClients = RADIO_BASE + '.7';  // wlanAPRadioNumAss
 const CHSTATS_BASE = '1.3.6.1.4.1.14823.2.2.1.5.3.1.6.1';
 const wlanAPChNoise = CHSTATS_BASE + '.9';           // wlanAPChNoise
 const wlanAPChFrameRetryRate = CHSTATS_BASE + '.12'; // wlanAPChFrameRetryRate
+// Channel airtime split (all INTEGER 0..100, % of time): .35 receiving, .36
+// transmitting, .37 total busy. busy − rx − tx ≈ airtime consumed by OTHER
+// devices on the channel = measured interference. (wlanAPChBusyRate .18 reads 0
+// on AOS 8.x — do not use it.)
+const wlanAPChRxUtilization = CHSTATS_BASE + '.35';  // wlanAPChRxUtilization
+const wlanAPChTxUtilization = CHSTATS_BASE + '.36';  // wlanAPChTxUtilization
+const wlanAPChUtilization = CHSTATS_BASE + '.37';    // wlanAPChUtilization (busy %)
 
 // ── Radio stats table (wlsxWlanAPRadioStatsTable) — base ...5.3.1.9.1 ────────
 // Same AP MAC + radioNumber index. Cumulative Counter64 byte counters (net-snmp
@@ -203,6 +210,9 @@ function parseApTable(walked) {
     const radioClients = columnMap(walked.radioClients, wlanAPRadioNumAssociatedClients);
     const chNoise = columnMap(walked.chNoise, wlanAPChNoise);
     const chRetry = columnMap(walked.chRetry, wlanAPChFrameRetryRate);
+    const chBusy = columnMap(walked.chBusy, wlanAPChUtilization);
+    const chRxUtil = columnMap(walked.chRxUtil, wlanAPChRxUtilization);
+    const chTxUtil = columnMap(walked.chTxUtil, wlanAPChTxUtilization);
 
     const radioIdxs = new Set([
       ...Object.keys(radioChan), ...Object.keys(radioUtil), ...Object.keys(radioClients),
@@ -242,6 +252,17 @@ function parseApTable(walked) {
       if (rr !== null && rr >= 0 && rr <= 100) {
         if (band === '2g') ap.retry_rate_2g = rr;
         else if (band === '5g') ap.retry_rate_5g = rr;
+      }
+      // Interference = channel busy time minus this AP's own rx/tx airtime.
+      // Only derived when all three columns answered; clamped — the three
+      // gauges are sampled independently so the difference can dip below 0.
+      const busy = num(chBusy[ridx]);
+      const rxU = num(chRxUtil[ridx]);
+      const txU = num(chTxUtil[ridx]);
+      if (busy !== null && rxU !== null && txU !== null) {
+        const intf = Math.max(0, Math.min(100, busy - rxU - txU));
+        if (band === '2g') ap.interference_pct_2g = intf;
+        else if (band === '5g') ap.interference_pct_5g = intf;
       }
     }
 
@@ -411,6 +432,9 @@ module.exports = {
     // Channel stats table (index = AP MAC + radioNumber)
     chNoise: wlanAPChNoise,
     chRetry: wlanAPChFrameRetryRate,
+    chBusy: wlanAPChUtilization,
+    chRxUtil: wlanAPChRxUtilization,
+    chTxUtil: wlanAPChTxUtilization,
     // Radio stats table (index = AP MAC + radioNumber, Counter64 byte counters)
     radioRxBytes: wlanAPRadioRxBytes,
     radioTxBytes: wlanAPRadioTxBytes,

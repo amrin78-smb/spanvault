@@ -126,6 +126,8 @@ interface AccessPoint {
   noise_floor_5g: number | null;
   retry_rate_2g: number | null;
   retry_rate_5g: number | null;
+  interference_pct_2g: number | null;
+  interference_pct_5g: number | null;
   rx_errors_2g: number | null;
   tx_errors_2g: number | null;
   rx_errors_5g: number | null;
@@ -147,6 +149,8 @@ interface ApHistoryRow {
   noise_floor_5g: number | null;
   retry_rate_2g: number | null;
   retry_rate_5g: number | null;
+  interference_pct_2g: number | null;
+  interference_pct_5g: number | null;
 }
 
 interface Controller {
@@ -1768,6 +1772,7 @@ function ApDetailDrawer({
             noiseFloor={ap.noise_floor_2g}
             utilPct={ap.radio_2g_util_pct}
             retryRate={ap.retry_rate_2g}
+            interference={ap.interference_pct_2g}
             rxErrors={ap.rx_errors_2g}
             txErrors={ap.tx_errors_2g}
           />
@@ -1776,6 +1781,7 @@ function ApDetailDrawer({
             noiseFloor={ap.noise_floor_5g}
             utilPct={ap.radio_5g_util_pct}
             retryRate={ap.retry_rate_5g}
+            interference={ap.interference_pct_5g}
             rxErrors={ap.rx_errors_5g}
             txErrors={ap.tx_errors_5g}
           />
@@ -1895,6 +1901,19 @@ function ApDetailDrawer({
                 <Line type="monotone" dataKey="retry_rate_5g" name="5GHz %" stroke={CHART_COLORS.g5} dot={false} connectNulls />
               </LineChart>
             </ResponsiveContainer>
+
+            <h3 style={{ marginBottom: 6 }}>24h Interference (%)</h3>
+            <ResponsiveContainer width="100%" height={200}>
+              <LineChart data={history}>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                <XAxis dataKey="bucket" tickFormatter={fmtBucket} fontSize={11} />
+                <YAxis fontSize={11} domain={[0, 100]} />
+                <Tooltip {...CHART_TOOLTIP} />
+                <Legend />
+                <Line type="monotone" dataKey="interference_pct_2g" name="2.4GHz %" stroke={CHART_COLORS.g2} dot={false} connectNulls />
+                <Line type="monotone" dataKey="interference_pct_5g" name="5GHz %" stroke={CHART_COLORS.g5} dot={false} connectNulls />
+              </LineChart>
+            </ResponsiveContainer>
           </>
         )}
       </div>
@@ -1904,12 +1923,13 @@ function ApDetailDrawer({
 
 // ── Radio band stats block (top-level component) ──────────────
 function RadioBandStats({
-  band, noiseFloor, utilPct, retryRate, rxErrors, txErrors,
+  band, noiseFloor, utilPct, retryRate, interference, rxErrors, txErrors,
 }: {
   band: string;
   noiseFloor: number | null;
   utilPct: number | null;
   retryRate: number | null;
+  interference: number | null;
   rxErrors: number | null;
   txErrors: number | null;
 }) {
@@ -1945,6 +1965,15 @@ function RadioBandStats({
       }}>
         <span style={{ color: 'var(--text-muted)' }}>Retry Rate</span>
         <span>{retryRate ?? '—'}%</span>
+      </div>
+      <div style={{
+        display: 'flex', justifyContent: 'space-between',
+        padding: '3px 0', fontSize: 'var(--text-base)',
+      }}>
+        <span style={{ color: 'var(--text-muted)' }}>Interference</span>
+        <span style={{ color: Number(interference) >= 25 ? 'var(--tint-danger-fg)' : undefined }}>
+          {interference ?? '—'}%
+        </span>
       </div>
       <div style={{
         display: 'flex', justifyContent: 'space-between',
