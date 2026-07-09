@@ -21,6 +21,7 @@ const { Pool } = require('pg');
 const { discoverDevice, snmpTest } = require('../collector/discovery');
 const topology = require('../collector/topology');
 const wireless = require('../collector/wirelessCollector');
+const { wirelessVendorFor } = require('../collector/wireless');
 const { startWsServer, connectedAgents, agentLogs, pushConfigToAgent, pushConfigToAgentId, disconnectAgent, sendToAgentId } = require('./ws-server');
 const intelligence = require('./intelligence');
 const { getLicense, getLicenseState } = require('./licenseCheck');
@@ -34,6 +35,13 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.65.1': [
+    'Fixed several wireless data-accuracy bugs found in an internal audit: Cisco APs with certain radio configurations could show a client count that didn\'t match the per-band breakdown, and could mix noise-floor/retry-rate readings from two different radios into a single row.',
+    'The weakest-signal client on HPE and Aruba controllers (one sitting right at the noise floor) was being shown with a deceptively strong signal reading instead of correctly triggering low-signal detection.',
+    'Ruckus wireless clients now show their VLAN — the column always showed nothing due to a parser gap that skipped a field the ZoneDirector already exposes.',
+    'A low-traffic Ruckus or Aruba access point rebooting could show a fabricated throughput spike on its next poll instead of a clean reset.',
+    'Dual-band MikroTik APs broadcasting the same SSID on both radios (a common setup) no longer overwrite each other\'s client/noise data every poll; a stale vendor mapping that could make the on-demand rescan button silently poll a Meraki device with the wrong parser was also removed.',
+  ],
   '1.65.0': [
     'HA-paired Aruba controllers now show active vs. standby AP and tunnel counts — an early-warning signal beyond the existing sync-status indicator. On the live pair this was tested against, the standby member correctly reads 0 while the active member shows real counts, so a stuck failover shows up before it becomes an outage.',
   ],
@@ -4188,30 +4196,7 @@ app.post('/api/wireless/controllers/:id/ha-peer', wrap(async (req, res) => {
 // On-demand auto-detection of SNMP wireless controllers. Replicates the
 // collector's autoDetectControllers() (collector/wirelessCollector.js) so the UI
 // can trigger a rescan without waiting for the next collector cycle.
-//
-// NOTE: the vendor map below mirrors wirelessVendorFor() in
-// collector/wireless/index.js — keep the two in sync.
 app.post('/api/wireless/controllers/rescan', wrap(async (_req, res) => {
-  const wirelessVendorFor = (deviceVendor) => {
-    if (!deviceVendor) return null;
-    const v = String(deviceVendor).toLowerCase().trim();
-    const map = {
-      aruba: 'aruba',
-      cisco: 'cisco',
-      meraki: 'cisco',        // Meraki is Cisco; closest SNMP fit
-      fortinet: 'fortinet',
-      ruckus: 'ruckus',
-      mikrotik: 'mikrotik',
-      grandstream: 'grandstream',
-      'hpe-procurve': 'hpe',
-      'hpe-comware': 'hpe',
-      hpe: 'hpe',
-    };
-    if (map[v]) return map[v];
-    if (v.startsWith('hpe')) return 'hpe';   // prefix fallback
-    return null;
-  };
-
   // device_type predicate identifying genuine wireless gear (mirror of
   // wirelessTypeClause() in collector/wirelessCollector.js). Vendor alone is not
   // sufficient — a Cisco/Aruba router/switch is not a wireless controller.

@@ -122,6 +122,7 @@ const essidWalked = {
 const STA_BASE = '1.3.6.1.4.1.14823.2.2.1.5.2.2.1.1';
 const USER_BASE = '1.3.6.1.4.1.14823.2.2.1.4.1.2.1';
 const CMAC = '80.42.34.128.16.32'; // 50:2a:22:80:10:20
+const CMAC2 = '80.42.34.128.16.33'; // 50:2a:22:80:10:21 — SNR=0 boundary case
 const staWalked = [
   { oid: `${STA_BASE}.2.${CMAC}`, value: Buffer.from([0x1c, 0x28, 0xaf, 0xc1, 0xa3, 0xd6]) }, // AP BSSID
   { oid: `${STA_BASE}.6.${CMAC}`, value: 36 },      // channel (5g)
@@ -132,6 +133,10 @@ const staWalked = [
   { oid: `${STA_BASE}.15.${CMAC}`, value: 360000 }, // TimeTicks → 3600s
   { oid: `${STA_BASE}.7.${CMAC}`, value: 214 },     // wlanStaVlanId — live-observed VLAN
   { oid: `${STA_BASE}.16.${CMAC}`, value: 6 },      // wlanStaHTMode — 6 = vht80 (802.11ac 80MHz), live-verified 2026-07-09
+  // Boundary case: SNR exactly 0 (weakest legitimate signal) -> must still
+  // convert to rssi_dbm = 0 - 95 = -95, not be kept as 0.
+  { oid: `${STA_BASE}.2.${CMAC2}`, value: Buffer.from([0x1c, 0x28, 0xaf, 0xc1, 0xa3, 0xd6]) },
+  { oid: `${STA_BASE}.14.${CMAC2}`, value: 0 },
 ];
 const userWalked = [
   { oid: `${USER_BASE}.10.${CMAC}.10.20.30.40`, value: 'AP-TEST-01' },
@@ -155,7 +160,8 @@ const apMap = {
 
   const ap = aps[0] || {};
   const clients = await arubaClients.parseClients(fakeSession, apMap);
-  const cl = clients[0] || {};
+  const cl = clients.find((c) => c.mac_address === '50:2a:22:80:10:20') || {};
+  const cl2 = clients.find((c) => c.mac_address === '50:2a:22:80:10:21') || {};
   console.log(JSON.stringify(clients, null, 2));
 
   const ssids = aruba.parseSsids(essidWalked);
@@ -187,7 +193,7 @@ const apMap = {
     ['reboot_count = 8', ap.reboot_count === 8],
     ['bootstrap_count = 12', ap.bootstrap_count === 12],
     // Client rate regression: must read .17 (455), NEVER .10 (255)
-    ['one client parsed', clients.length === 1],
+    ['two clients parsed', clients.length === 2],
     ['tx_rate_mbps = 455 from .17, not 255 from .10', cl.tx_rate_mbps === 455],
     ['client mac from station index', cl.mac_address === '50:2a:22:80:10:20'],
     ['client ssid', cl.ssid_name === 'Corp-WiFi'],
@@ -195,6 +201,7 @@ const apMap = {
     ['client ap resolved via bssid', cl.ap_name === 'AP-TEST-01'],
     ['client vlan_id = 214 from .7', cl.vlan_id === 214],
     ['client phy_mode = "802.11ac (80MHz)" from HTMode 6 (vht80)', cl.phy_mode === '802.11ac (80MHz)'],
+    ['client2 rssi_dbm = 0 - 95 = -95 (SNR=0 boundary converted)', cl2.rssi_dbm === -95],
     // ESSID encryption_type (wlanESSIDEncryptionType, wlsxWlanESSIDEntry.5) —
     // live-verified 2026-07-09. wlanESSID's own value column returns nothing
     // on this firmware, so ssid_name must come from the encryption row's own

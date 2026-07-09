@@ -206,7 +206,7 @@ const mtAps = mikrotik.parseApTable({
 console.log(JSON.stringify(mtAps, null, 2));
 const mt = mtAps[0] || {};
 check('mikrotik: one AP (interface) parsed', mtAps.length === 1);
-check('mikrotik: ssid from .4 in name', mt.name === 'MikroTik HomeNet');
+check('mikrotik: ssid from .4 in name', mt.name === 'MikroTik HomeNet (2)');
 check('mikrotik: clients from .6 (5g band via freq)', mt.clients_5g === 9 && mt.clients_total === 9);
 check('mikrotik: noise floor from .9 on 5g', mt.noise_floor_5g === -110);
 check('mikrotik: channel left null (freq not misused)', mt.radio_5g_channel === null && mt.radio_2g_channel === null);

@@ -105,9 +105,9 @@ async function parseClients(session, apMap) {
       if (info && info.ssid) {
         c.ssid_name = info.ssid;
         c.band = info.band;
-        // The AP-level parser names each AP `MikroTik ${ssid}` — reuse that
-        // exact naming convention to resolve the AP record for this client.
-        ap = apMap.byName.get(`MikroTik ${info.ssid}`);
+        // The AP-level parser names each AP `MikroTik ${ssid} (${idx})` —
+        // reuse that exact naming convention to resolve the AP record.
+        ap = apMap.byName.get(`MikroTik ${info.ssid} (${iface})`);
       }
       if (!ap) ap = soleAp;
       if (ap) { c.ap_id = ap.id; c.ap_name = ap.name; }

@@ -150,6 +150,7 @@ function parseApTable(walked) {
     for (const idx of indexes) {
       const ap = emptyAp();
       ap._index = idx;
+      ap.byte_counter_bits = 64;
       // MacAddress arrives as a 6-byte Buffer — str() would produce mojibake.
       // The table index IS the MAC (6 dotted decimals), so it is the fallback.
       ap.mac_address = fmtMac(macs[idx]) || fmtMac(idx);

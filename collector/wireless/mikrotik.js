@@ -74,9 +74,14 @@ function parseApTable(walked) {
       const ap = emptyAp();
       ap._index = idx;
       // Prefix the device vendor so two MikroTik devices at the same site do
-      // not collide on a bare interface label in the site-merge.
+      // not collide on a bare interface label in the site-merge. When an SSID
+      // is present, also suffix the interface index — dual-band radios are
+      // routinely configured with the same SSID for band steering, and
+      // without the suffix both radios would upsert to the same AP row.
       const ssid = str(ssids[idx]);
-      ap.name = `MikroTik ${ssid || str(ifNames[idx]) || 'wlan' + idx}`;
+      ap.name = ssid
+        ? `MikroTik ${ssid} (${idx})`
+        : `MikroTik ${str(ifNames[idx]) || 'wlan' + idx}`;
       ap.status = 'online'; // a present radio interface is treated as online
 
       // Band from the frequency (MHz). Channel number is not derivable here —

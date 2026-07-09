@@ -112,7 +112,7 @@ async function parseClients(session, apMap) {
       // dBm-based signal-quality buckets stay meaningful. If a firmware returns
       // a negative dBm value directly, keep it as-is.
       const sig = num(rssi[idx]);
-      if (sig !== null) c.rssi_dbm = sig > 0 ? sig - 95 : sig;
+      if (sig !== null) c.rssi_dbm = sig >= 0 ? sig - 95 : sig;
 
       // wlanStaUpTime is TimeTicks (hundredths of a second).
       const ticks = num(up[idx]);

@@ -44,7 +44,7 @@ const staAssocTime = TABLE + '.15'; // ruckusZDWLANStaAssocTime (TimeTicks, 1/10
 // are deliberately not walked in this pass (same call as the Cisco client
 // parser's per-client byte counters) — future work if per-client throughput
 // is ever needed.
-// '.30' StaVlanID exists but emptyClient() has no vlan field — not walked.
+const staVlanId = TABLE + '.30';  // ruckusZDWLANStaVlanID (Unsigned32) -> vlan_id
 const staAuthMode = TABLE + '.80'; // ruckusZDWLANStaAuthMode (DisplayString) — ready-made auth label
 const staSignalStrength = TABLE + '.81'; // ruckusZDWLANStaSignalStrength (Integer32, UNITS dBm) → rssi_dbm
 
@@ -76,9 +76,10 @@ async function parseClients(session, apMap) {
     const assocTime = columnMap(await walk(session, staAssocTime), staAssocTime);
     const authMode = columnMap(await walk(session, staAuthMode), staAuthMode);
     const signal = columnMap(await walk(session, staSignalStrength), staSignalStrength);
+    const vlan = columnMap(await walk(session, staVlanId), staVlanId);
 
     const idxs = new Set();
-    [apMacCol, bssidCol, ssid, radio, chan, ip, assocTime, authMode, signal].forEach((m) =>
+    [apMacCol, bssidCol, ssid, radio, chan, ip, assocTime, authMode, signal, vlan].forEach((m) =>
       Object.keys(m).forEach((k) => idxs.add(k))
     );
 
@@ -92,6 +93,7 @@ async function parseClients(session, apMap) {
       c.ssid_name = str(ssid[idx]);
       c.channel = num(chan[idx]);
       c.auth_type = str(authMode[idx]); // ready-made label, no enum mapping needed
+      c.vlan_id = num(vlan[idx]);
 
       // Prefer the explicitly dBm-labelled SignalStrength (.81) over the
       // unit-less AvgRSSI (.9) / SNR (.21).

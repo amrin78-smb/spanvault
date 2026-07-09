@@ -23,6 +23,11 @@ const CMAC1 = '170.187.204.17.34.51';
 // reports raw dBm directly -> must be kept as-is (not double-converted).
 const CMAC2 = '17.34.51.68.85.102';
 
+// Client 3: 22:33:44:55:66:77 -> decimal index 34.51.68.85.102.119.
+// SNR exactly 0 (boundary: weakest legitimate signal, right at noise floor)
+// -> must still convert to rssi_dbm = 0 - 95 = -95, not be kept as 0.
+const CMAC3 = '34.51.68.85.102.119';
+
 const AP_MAC = '1c:28:af:c1:a3:d6';
 const AP_IP = '10.50.60.70';
 
@@ -46,6 +51,16 @@ const clientWalked = [
   { oid: `${TABLE}.15.${CMAC2}`, value: 24 },
   { oid: `${TABLE}.16.${CMAC2}`, value: 100 },           // 100 ticks -> 1s
   { oid: `${TABLE}.17.${CMAC2}`, value: 2 },             // aiClientPhyType: dot11b -> 2.4GHz
+
+  // ── Client 3 ──
+  { oid: `${TABLE}.2.${CMAC3}`, value: Buffer.from([0x1c, 0x28, 0xaf, 0xc1, 0xa3, 0xd6]) },
+  { oid: `${TABLE}.3.${CMAC3}`, value: '10.10.10.33' },
+  { oid: `${TABLE}.4.${CMAC3}`, value: AP_IP },
+  { oid: `${TABLE}.7.${CMAC3}`, value: 0 },              // aiClientSNR (boundary: 0 -> must convert)
+  { oid: `${TABLE}.11.${CMAC3}`, value: 6 },
+  { oid: `${TABLE}.15.${CMAC3}`, value: 6 },
+  { oid: `${TABLE}.16.${CMAC3}`, value: 100 },
+  { oid: `${TABLE}.17.${CMAC3}`, value: 2 },
 ];
 
 // Fake SNMP session: subtree(base, maxReps, feed, done) filtered from the flat
@@ -70,11 +85,12 @@ const apMap = {
 
   const cl1 = clients.find((c) => c.mac_address === 'aa:bb:cc:11:22:33') || {};
   const cl2 = clients.find((c) => c.mac_address === '11:22:33:44:55:66') || {};
+  const cl3 = clients.find((c) => c.mac_address === '22:33:44:55:66:77') || {};
 
   const now = Date.now();
 
   const checks = [
-    ['two clients parsed', clients.length === 2],
+    ['three clients parsed', clients.length === 3],
     // Client 1: MAC from index, IP, tx/rx mbps, connected_since, BSSID correlation
     ['client1 mac from index (not a column)', cl1.mac_address === 'aa:bb:cc:11:22:33'],
     ['client1 ip_address', cl1.ip_address === '10.10.10.11'],
@@ -95,6 +111,9 @@ const apMap = {
     ['client2 connected_since ~1s ago',
       cl2.connected_since instanceof Date &&
       Math.abs((now - cl2.connected_since.getTime()) / 1000 - 1) < 5],
+    // Client 3: SNR = 0 boundary -> must convert (not be kept as 0)
+    ['client3 mac from index', cl3.mac_address === '22:33:44:55:66:77'],
+    ['client3 rssi_dbm = 0 - 95 = -95 (SNR=0 boundary converted)', cl3.rssi_dbm === -95],
   ];
 
   let fail = 0;

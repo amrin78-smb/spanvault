@@ -80,7 +80,7 @@ function parseApTable(walked) {
       ap._index = idx; // full index (vdom + length-prefixed WTP id)
       // No readable name column — decode the WTP id from the index; fall back
       // to the raw index so the AP is still uniquely identified.
-      ap.name = wtpNameFromIndex(idx) || idx;
+      ap.name = wtpNameFromIndex(idx) || `wtp-${idx}`;
       ap.ip_address = str(ips[idx]);
       ap.status = mapStatus(states[idx]);
 

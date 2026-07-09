@@ -259,22 +259,22 @@ function parseApTable(walked) {
     // does NOT exist in the MIB — the load table is the real client source).
     // Bands accumulate (+=) so dual-5G APs sum instead of overwriting.
     const loadClients = columnMap(walked.bsnApLoadClients, bsnAPIfLoadNumOfClients);
-    const clientTotals = new Map();
     for (const ridx of Object.keys(loadClients)) {
       const { apKey } = splitRadioIndex(ridx);
       const ap = byIndex.get(apKey);
       if (!ap) continue;
       const v = num(loadClients[ridx]);
       if (v === null || v < 0) continue;
-      clientTotals.set(apKey, (clientTotals.get(apKey) || 0) + v);
       const band = bandForRadio(ridx);
       if (band === '2g') ap.clients_2g += v;
       else if (band === '5g') ap.clients_5g += v;
       else if (band === '6g') ap.clients_6g += v;
     }
-    for (const [apKey, total] of clientTotals) {
-      const ap = byIndex.get(apKey);
-      if (ap) ap.clients_total = total;
+    // clients_total is derived from the per-band buckets (not tallied
+    // independently) so it can never exceed clients_2g+5g+6g when a radio's
+    // band can't be resolved.
+    for (const ap of out) {
+      ap.clients_total = ap.clients_2g + ap.clients_5g + ap.clients_6g;
     }
 
     // Channel utilization % (bsnAPIfLoadChannelUtilization) → radio_*_util_pct.
@@ -310,8 +310,8 @@ function parseApTable(walked) {
       const approx = Math.max(rx === null ? -Infinity : rx, tx === null ? -Infinity : tx);
       if (!Number.isFinite(approx)) continue;
       const band = bandForRadio(ridx);
-      if (band === '2g') ap.retry_rate_2g = approx;
-      else if (band === '5g') ap.retry_rate_5g = approx;
+      if (band === '2g' && ap.retry_rate_2g === null) ap.retry_rate_2g = approx;
+      else if (band === '5g' && ap.retry_rate_5g === null) ap.retry_rate_5g = approx;
     }
 
     // Noise floor (bsnAPIfDBNoisePower): the noise table reports one row per
@@ -331,8 +331,8 @@ function parseApTable(walked) {
       const v = num(noiseCol[nidx]);
       if (v === null || v >= 0) continue;
       const band = bandForRadio(parts.radioIdx);
-      if (band === '2g') ap.noise_floor_2g = v;
-      else if (band === '5g') ap.noise_floor_5g = v;
+      if (band === '2g' && ap.noise_floor_2g === null) ap.noise_floor_2g = v;
+      else if (band === '5g' && ap.noise_floor_5g === null) ap.noise_floor_5g = v;
     }
 
     // rx_errors_*, tx_errors_*, rx_bytes, tx_bytes are NOT available per-AP in

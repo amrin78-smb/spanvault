@@ -121,7 +121,7 @@ async function parseClients(session, apMap) {
       // noise floor); a firmware that already returns a negative dBm value is
       // kept as-is.
       const sig = num(snrCol[idx]);
-      if (sig !== null) c.rssi_dbm = sig > 0 ? sig - 95 : sig;
+      if (sig !== null) c.rssi_dbm = sig >= 0 ? sig - 95 : sig;
 
       // aiClientTxRate / aiClientRxRate are documented "in mbps" — used directly.
       c.tx_rate_mbps = num(txCol[idx]);

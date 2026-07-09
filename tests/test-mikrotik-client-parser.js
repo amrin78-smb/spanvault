@@ -65,7 +65,7 @@ const fakeSession = {
 
 const apMap = {
   byName: new Map([
-    ['MikroTik TestNet', { id: 42, name: 'MikroTik TestNet' }],
+    ['MikroTik TestNet (2)', { id: 42, name: 'MikroTik TestNet (2)' }],
     ['MikroTik OtherNet', { id: 99, name: 'MikroTik OtherNet' }], // unrelated 2nd AP
   ]),
   byMac: new Map(),
@@ -109,7 +109,7 @@ const apMap = {
     // ── Bug 3: SSID/band cross-reference via sibling mtxrWlApTable ──────
     ['client 1 ssid resolved via mtxrWlApTable iface lookup', c1.ssid_name === 'TestNet'],
     ['client 1 band resolved from freq 5180 MHz -> 5GHz', c1.band === '5GHz'],
-    ['client 1 ap resolved via "MikroTik <ssid>" name join', c1.ap_id === 42 && c1.ap_name === 'MikroTik TestNet'],
+    ['client 1 ap resolved via "MikroTik <ssid> (<iface>)" name join', c1.ap_id === 42 && c1.ap_name === 'MikroTik TestNet (2)'],
     ['client 2 (no AP-table row for its iface) has null ssid/band', c2.ssid_name === null && c2.band === null],
     ['client 2 not force-matched to the unrelated 2nd AP', c2.ap_id !== 99],
   ];

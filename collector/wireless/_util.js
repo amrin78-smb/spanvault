@@ -143,6 +143,7 @@ function emptyAp() {
     // these to throughput_in_bps / throughput_out_bps via a per-poll delta.
     rx_bytes: null,          // bytes received by the AP (→ throughput_in_bps)
     tx_bytes: null,          // bytes sent by the AP    (→ throughput_out_bps)
+    byte_counter_bits: null, // width of the rx_bytes/tx_bytes source counter (32 | 64), when known
     serial_number: null,
     auth_failures: null,
     // Cumulative lifetime counts — a stability/flapping signal, not alerted on.

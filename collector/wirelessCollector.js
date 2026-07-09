@@ -485,10 +485,10 @@ const prevCounters = new Map();
 // counter reset (null delta, sample skipped).
 const COUNTER32_WRAP = 2 ** 32;
 const MAX_SANE_BPS = 2e9;
-function counterDeltaBps(cur, prev, elapsed) {
+function counterDeltaBps(cur, prev, elapsed, counterBits) {
   if (cur === null || prev === null) return null;
   if (cur >= prev) return Math.round(((cur - prev) * 8) / elapsed);
-  if (prev < COUNTER32_WRAP) {
+  if (counterBits !== 64 && prev < COUNTER32_WRAP) {
     const bps = Math.round(((cur + COUNTER32_WRAP - prev) * 8) / elapsed);
     if (bps < MAX_SANE_BPS) return bps;
   }
@@ -498,15 +498,15 @@ function counterDeltaBps(cur, prev, elapsed) {
 // Derive throughput in BITS per second from cumulative byte counters.
 // Returns { inBps, outBps } (either may be null when there is no usable delta,
 // e.g. first poll, counter reset/wrap, or the vendor did not expose the counter).
-function deriveThroughput(key, curRx, curTx, nowMs) {
+function deriveThroughput(key, curRx, curTx, nowMs, counterBits) {
   let inBps = null;
   let outBps = null;
   const prev = prevCounters.get(key);
   if (prev) {
     const elapsed = (nowMs - prev.t) / 1000;
     if (elapsed > 0) {
-      inBps = counterDeltaBps(curRx, prev.rx, elapsed);
-      outBps = counterDeltaBps(curTx, prev.tx, elapsed);
+      inBps = counterDeltaBps(curRx, prev.rx, elapsed, counterBits);
+      outBps = counterDeltaBps(curTx, prev.tx, elapsed, counterBits);
     }
   }
   // Only remember a reading when at least one counter is present.
@@ -555,7 +555,7 @@ async function upsertAp(pool, controller, ap) {
   // AP names on one controller can't interleave counters into bogus deltas.
   const { inBps, outBps } = deriveThroughput(
     `${controller.id}::${ap._index != null ? ap._index : name}`,
-    numOrNull(ap.rx_bytes), numOrNull(ap.tx_bytes), Date.now());
+    numOrNull(ap.rx_bytes), numOrNull(ap.tx_bytes), Date.now(), ap.byte_counter_bits);
 
   const noise2g = intOrNull(ap.noise_floor_2g);
   const noise5g = intOrNull(ap.noise_floor_5g);

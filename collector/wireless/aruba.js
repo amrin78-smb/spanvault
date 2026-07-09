@@ -405,6 +405,7 @@ function parseApTable(walked) {
 
       const ap = emptyAp();
       ap._index = idx;
+      ap.byte_counter_bits = 64;
       ap.name = apName;
       ap.ip_address = str(ips[idx]);
       ap.model = str(models[idx]);

@@ -46,6 +46,7 @@ const staWalked = [
   { oid: `${TABLE}.21.${MAC1}`, value: -888 },    // SNR decoy — must NOT be used for rssi_dbm
   { oid: `${TABLE}.80.${MAC1}`, value: 'wpa2-psk' },
   { oid: `${TABLE}.81.${MAC1}`, value: -58 },     // StaSignalStrength, UNITS dBm — the real rssi_dbm source
+  { oid: `${TABLE}.30.${MAC1}`, value: 20 },      // StaVlanID -> vlan_id
 
   // ── Client 2 ──────────────────────────────────────────────────────────
   { oid: `${TABLE}.2.${MAC2}`, value: UNKNOWN_AP_MAC_BUF },
@@ -87,6 +88,7 @@ const apMap = {
   check('client1: channel from .7 (corrected column)', c1.channel === 6);
   check('client1: ip_address from .8 (corrected column)', c1.ip_address === '10.1.2.3');
   check('client1: rssi_dbm from .81 SignalStrength, NOT .9 AvgRSSI or .21 SNR', c1.rssi_dbm === -58);
+  check('client1: vlan_id from .30 StaVlanID', c1.vlan_id === 20);
   check('client1: auth_type straight from .80 string (no enum lookup)', c1.auth_type === 'wpa2-psk');
   check('client1: band 2.4GHz via RadioType radio11b(1)', c1.band === '2.4GHz');
   check('client1: tx_rate_mbps null (no PHY-rate column in this table)', c1.tx_rate_mbps === null);
@@ -102,6 +104,7 @@ const apMap = {
   check('client2: MAC decoded from index tail (colon-hex)', c2.mac_address === '12:34:56:78:9a:bc');
   check('client2: ssid_name', c2.ssid_name === 'Guest-WiFi');
   check('client2: band derived from channel 149 (5GHz) when RadioType absent', c2.band === '5GHz');
+  check('client2: vlan_id null when .30 row absent', c2.vlan_id === null);
   check('client2: tx_rate_mbps null', c2.tx_rate_mbps === null);
   check('client2: rx_rate_mbps null', c2.rx_rate_mbps === null);
   check('client2: AP correlation falls back to .3 BSSID when .2 does not resolve', c2.ap_id === 5 && c2.ap_name === 'RuckusAP-Lobby');
