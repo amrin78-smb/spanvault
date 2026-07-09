@@ -34,6 +34,11 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.59.7': [
+    'Fixed the controller "Diagnostics" button returning a 500 error on large/busy controllers. The SNMP walk behind it was unbounded (~14 sequential full-table walks that could run for minutes), so the browser-side proxy timed out before any response was sent.',
+    'The diagnostics walk is now time-bounded: a 25-second overall deadline, a snappier 3-second SNMP timeout, and a 300-row cap per table walk. Huge station/user tables can no longer stall the request.',
+    'When the deadline is hit, the modal now shows partial results with an amber notice listing which SNMP trees were skipped, and row-capped tables are marked "(truncated)".',
+  ],
   '1.59.6': [
     'Updater hardening: the update script now pins the build directory to its true on-disk casing, so a build can no longer fail with a duplicate-React "useContext" error when the updater is invoked with a different path casing than a previous run (Next.js caches absolute paths, so a casing change between runs collided).',
   ],

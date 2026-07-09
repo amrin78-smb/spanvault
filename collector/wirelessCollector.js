@@ -844,7 +844,12 @@ async function debugWalk(pool, controller) {
   const device = dq.rows[0];
   if (!device) return { ok: false, message: 'Linked SNMP device not found' };
 
-  const PER_TREE_CAP = 60;
+  const PER_TREE_CAP = 60;          // rows shown per tree in the response
+  const WALK_ROW_CAP = 300;         // rows actually walked per tree (bounds SNMP time on huge tables)
+  const DEBUG_WALK_DEADLINE_MS = 25000; // overall wall-clock budget — must beat the frontend proxy timeout
+  const startedAt = Date.now();
+  const skipped = [];
+  const pastDeadline = () => (Date.now() - startedAt) >= DEBUG_WALK_DEADLINE_MS;
   const parser = getWirelessParser(controller.vendor)
     || (device.device_vendor ? getWirelessParser(wirelessVendorFor(device.device_vendor)) : null);
 
@@ -893,9 +898,10 @@ async function debugWalk(pool, controller) {
   try {
     // createSession can throw synchronously (e.g. net-snmp v3 with malformed
     // credentials), so build it INSIDE the try — a throw becomes ok:false here.
-    session = createSession(device, 12000);
+    session = createSession(device, 3000); // snappy: a dead OID costs ~6s (1 retry), not 24s
     // 0) Controller-metadata scalar probes (best-effort; capped to the small map).
     for (const [label, oid] of Object.entries(metadataOids)) {
+      if (pastDeadline()) { skipped.push(`metadata:${label}`); continue; }
       try {
         const rows = await get(session, [oid]);
         const v = rows[0] ? rows[0].value : null;
@@ -907,17 +913,20 @@ async function debugWalk(pool, controller) {
     // 1) What the current parser's declared OIDs return right now.
     if (parser && parser.snmpOids) {
       for (const [key, oid] of Object.entries(parser.snmpOids)) {
-        const rows = await walk(session, oid);
+        if (pastDeadline()) { skipped.push(`parser:${key}`); continue; }
+        const rows = await walk(session, oid, WALK_ROW_CAP);
         out.parser_oids[key] = {
           oid,
           count: rows.length,
+          truncated: rows.length >= WALK_ROW_CAP,
           sample: rows.slice(0, 5).map((r) => ({ oid: r.oid, value: decodeSnmpVal(r.value) })),
         };
       }
     }
     // 2) Ground-truth discovery walks of the broad parent subtrees.
     for (const [key, base] of Object.entries(subtrees)) {
-      const rows = await walk(session, base);
+      if (pastDeadline()) { skipped.push(key); continue; }
+      const rows = await walk(session, base, WALK_ROW_CAP);
       out.subtrees[key] = {
         base,
         count: rows.length,
@@ -927,10 +936,12 @@ async function debugWalk(pool, controller) {
     }
     // 3) Per-OID ESSID candidate comparison — raw row count from each attempt.
     for (const [label, base] of Object.entries(essidCandidates)) {
-      const rows = await walk(session, base);
+      if (pastDeadline()) { skipped.push(`essid:${label}`); continue; }
+      const rows = await walk(session, base, WALK_ROW_CAP);
       out.essid_table[label] = {
         base,
         count: rows.length,
+        truncated: rows.length >= WALK_ROW_CAP,
         sample: rows.slice(0, 12).map((r) => ({ oid: r.oid, value: decodeSnmpVal(r.value) })),
       };
     }
@@ -940,6 +951,9 @@ async function debugWalk(pool, controller) {
   } finally {
     try { if (session) session.close(); } catch (_e) { /* ignore */ }
   }
+  out.timed_out = skipped.length > 0;
+  out.skipped = skipped;
+  out.duration_ms = Date.now() - startedAt;
   return out;
 }
 

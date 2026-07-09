@@ -54,13 +54,19 @@ function createSession(device, timeoutMs) {
 }
 
 // Promisified subtree walk → array of { oid, value } (best-effort, never rejects).
-function walk(session, baseOid) {
+// Optional maxRows caps the walk: once reached, the feed callback returns true,
+// which tells net-snmp to cancel the rest of the subtree walk.
+function walk(session, baseOid, maxRows) {
   return new Promise((resolve) => {
     const out = [];
     try {
       session.subtree(baseOid, 20, (varbinds) => {
         for (const vb of varbinds) {
           if (!snmp.isVarbindError(vb)) out.push({ oid: vb.oid, value: vb.value });
+        }
+        if (maxRows && out.length >= maxRows) {
+          out.length = maxRows;
+          return true; // cancel the walk
         }
       }, () => resolve(out));
     } catch (_e) {

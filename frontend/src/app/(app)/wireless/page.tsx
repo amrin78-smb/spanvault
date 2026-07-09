@@ -3456,6 +3456,17 @@ function ControllerDiagnosticsModal({ controller, onClose }: { controller: Contr
           <ErrorBox message={data.message || data.error || 'Diagnostics failed'} />
         ) : data ? (
           <>
+            {data.timed_out && (
+              <div style={{
+                background: 'var(--tint-warn)', color: 'var(--tint-warn-fg)',
+                fontSize: 'var(--text-sm)', borderRadius: 8, padding: '8px 10px', marginBottom: 12,
+              }}>
+                The walk hit its time limit — results are partial.
+                {Array.isArray(data.skipped) && data.skipped.length > 0 && (
+                  <> Skipped: <span style={{ fontFamily: 'var(--font-mono)' }}>{data.skipped.join(', ')}</span></>
+                )}
+              </div>
+            )}
             {meta.length > 0 && (
               <>
                 <h3 style={{ marginBottom: 6 }}>Metadata probes</h3>
@@ -3485,7 +3496,12 @@ function ControllerDiagnosticsModal({ controller, onClose }: { controller: Contr
                       <tr key={k}>
                         <td>{k}</td>
                         <td><code style={{ fontSize: 'var(--text-xs)' }}>{v.base}</code></td>
-                        <td>{v.count}{v.truncated ? '+' : ''}</td>
+                        <td>
+                          {v.count}{v.truncated ? '+' : ''}
+                          {v.truncated && (
+                            <span className="sv-muted" style={{ fontSize: 'var(--text-xs)', marginLeft: 4 }}>(truncated)</span>
+                          )}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
