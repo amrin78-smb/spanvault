@@ -57,6 +57,23 @@ function asIp(val) {
   return String(val);
 }
 
+// Parse an Aruba chassis-temperature DisplayString into a numeric Celsius
+// reading + the device's own qualitative status word, e.g.
+// "Ambient Temperature 34.00 degrees Celsius (NORMAL)" -> { c: 34, status: "NORMAL" }
+// "26.50 degrees Celsius (Normal)" -> { c: 26.5, status: "Normal" } (live-verified
+// on both Aruba7205 and Aruba9106 hardware — the leading label is not always present).
+function parseChassisTemp(raw) {
+  if (raw == null) return { c: null, status: null };
+  const s = String(raw);
+  const numMatch = s.match(/(-?\d+(\.\d+)?)/);
+  const n = numMatch ? Number(numMatch[1]) : null;
+  const statusMatch = s.match(/\(([^()]+)\)\s*$/);
+  return {
+    c: Number.isFinite(n) ? n : null,
+    status: statusMatch ? statusMatch[1].trim() : null,
+  };
+}
+
 // ── Capability probe (one-time OID discovery) ─────────────────
 // Per-vendor candidate OIDs for each controller-metadata capability. Probed ONCE
 // per controller; the first OID that returns a real value is stored in the
@@ -71,6 +88,10 @@ const VENDOR_OID_CANDIDATES = {
     ha_role:      ['1.3.6.1.4.1.14823.2.2.1.2.1.4.0'],
     ha_peer_name: ['1.3.6.1.4.1.14823.2.2.1.2.1.2.0'],
     ha_sync:      ['1.3.6.1.4.1.14823.2.2.1.2.1.21.0'],
+    chassis_temp:          ['1.3.6.1.4.1.14823.2.2.1.2.1.10.0'],
+    last_reboot_reason:    ['1.3.6.1.4.1.14823.2.2.1.2.1.25.0'],
+    reported_ap_count:     ['1.3.6.1.4.1.14823.2.2.1.5.2.1.1.0'],
+    reported_client_count: ['1.3.6.1.4.1.14823.2.2.1.5.2.1.2.0'],
   },
   cisco: {
     model:        ['1.3.6.1.2.1.1.1.0'],
@@ -208,6 +229,11 @@ async function pollControllerMetadata(session, controller) {
     ha_mode: null,
     ha_peer_ip: null,
     ha_sync_status: null,
+    chassis_temp_c: null,
+    chassis_temp_status: null,
+    last_reboot_reason: null,
+    reported_ap_count: null,
+    reported_client_count: null,
   };
   const caps = controller.capabilities || {};
   const vendor = controller.vendor;
@@ -239,6 +265,31 @@ async function pollControllerMetadata(session, controller) {
   if (caps.ha_sync) {
     const sync = await getOid(session, caps.ha_sync);
     if (sync != null) md.ha_sync_status = HA_SYNC_MAP[String(sync)] || 'unknown';
+  }
+  if (caps.chassis_temp) {
+    const raw = asStr(await getOid(session, caps.chassis_temp));
+    if (raw != null) {
+      const { c, status } = parseChassisTemp(raw);
+      md.chassis_temp_c = c;
+      md.chassis_temp_status = status;
+    }
+  }
+  if (caps.last_reboot_reason) {
+    md.last_reboot_reason = asStr(await getOid(session, caps.last_reboot_reason));
+  }
+  if (caps.reported_ap_count) {
+    const n = await getOid(session, caps.reported_ap_count);
+    if (n != null) {
+      const parsed = Number(n);
+      md.reported_ap_count = Number.isFinite(parsed) ? parsed : null;
+    }
+  }
+  if (caps.reported_client_count) {
+    const n = await getOid(session, caps.reported_client_count);
+    if (n != null) {
+      const parsed = Number(n);
+      md.reported_client_count = Number.isFinite(parsed) ? parsed : null;
+    }
   }
 
   return md;
@@ -820,13 +871,18 @@ async function pollController(pool, controller) {
     // known-good model/firmware/license/HA info.
     await pool.query(
       `UPDATE wireless_controllers SET last_polled_at = NOW(), status = 'ok', last_error = NULL,
-         model            = COALESCE($2, model),
-         firmware_version = COALESCE($3, firmware_version),
-         licensed_aps     = COALESCE($4, licensed_aps),
-         ha_mode          = COALESCE($5, ha_mode),
-         ha_peer_ip       = COALESCE($6, ha_peer_ip),
-         ha_sync_status   = COALESCE($7, ha_sync_status),
-         ap_disconnects_24h = $8
+         model                 = COALESCE($2, model),
+         firmware_version      = COALESCE($3, firmware_version),
+         licensed_aps          = COALESCE($4, licensed_aps),
+         ha_mode               = COALESCE($5, ha_mode),
+         ha_peer_ip            = COALESCE($6, ha_peer_ip),
+         ha_sync_status        = COALESCE($7, ha_sync_status),
+         ap_disconnects_24h    = $8,
+         chassis_temp_c        = COALESCE($9, chassis_temp_c),
+         chassis_temp_status   = COALESCE($10, chassis_temp_status),
+         last_reboot_reason    = COALESCE($11, last_reboot_reason),
+         reported_ap_count     = COALESCE($12, reported_ap_count),
+         reported_client_count = COALESCE($13, reported_client_count)
        WHERE id = $1`,
       [
         controller.id,
@@ -837,6 +893,11 @@ async function pollController(pool, controller) {
         md.ha_peer_ip ?? null,
         md.ha_sync_status ?? null,
         apDisc,
+        md.chassis_temp_c ?? null,
+        md.chassis_temp_status ?? null,
+        md.last_reboot_reason ?? null,
+        md.reported_ap_count ?? null,
+        md.reported_client_count ?? null,
       ]);
     const s0 = aps[0];
     const sample = s0

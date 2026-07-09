@@ -20,7 +20,14 @@
 //
 // NOT available on a mobility controller (left null, never faked):
 //   • per-SSID byte counters and auth success/failure counters
-//   • per-radio rx/tx ERROR counters
+//
+// Live-verified 2026-07-09 against SMT_WLC (Aruba 7205 / AOS 8.10.0.8) and
+// TUFS-OKF-WLC-1 (Aruba 9106 / AOS 8.13.2.2) via a direct SNMP walk (net-snmp,
+// timeout 4000ms/retries 1) + a full-row dump per table to confirm exact
+// column numbering. This newly wires up tx_power_2g/5g, serial_number,
+// firmware_version, and rx_errors_2g/5g / tx_errors_2g/5g — see the OID
+// comments below (radio, AP, channel-stats, radio-stats tables) for the
+// live values and scaling that were confirmed for each.
 
 const {
   num, counterNum, str, columnMap, bandForChannel, emptyAp, splitRadioIndex,
@@ -33,6 +40,15 @@ const wlanAPName = AP_BASE + '.3';        // wlanAPName
 const wlanAPUpTime = AP_BASE + '.12';     // wlanAPUpTime (TimeTicks, 1/100 s)
 const wlanAPModelName = AP_BASE + '.13';  // wlanAPModelName (readable model string)
 const wlanAPStatus = AP_BASE + '.19';     // wlanAPStatus: up(1) / down(2)
+// wlanAPSerialNumber / wlanAPSwVersion — live-verified on both controllers:
+// serials are short alphanumeric strings (e.g. "CNLBKPPCL7", "CNPWLBMF0S",
+// matching Aruba's real serial format) and sw versions read "8.10.0.8" /
+// "8.13.2.2", matching this same controller's own firmware_version column
+// (wireless_controllers.firmware_version, minus the " LSR" build suffix).
+// wlanAPHwVersion (.33, e.g. "A1.0") was also checked for context but there is
+// no schema column for it, so it is not wired in.
+const wlanAPSerialNumber = AP_BASE + '.6';  // wlanAPSerialNumber
+const wlanAPSwVersion = AP_BASE + '.34';    // wlanAPSwVersion
 
 // ── Radio table (wlsxWlanRadioTable) — base ...5.2.1.5.1 ─────────────────────
 // Index = AP MAC (6 octets) + radioNumber. Band is derived from the channel.
@@ -40,6 +56,16 @@ const RADIO_BASE = '1.3.6.1.4.1.14823.2.2.1.5.2.1.5.1';
 const wlanAPRadioChannel = RADIO_BASE + '.3';               // wlanAPRadioChannel
 const wlanAPRadioUtilization = RADIO_BASE + '.6';           // wlanAPRadioUtilization (%)
 const wlanAPRadioNumAssociatedClients = RADIO_BASE + '.7';  // wlanAPRadioNumAssociatedClients
+// wlanAPRadioTransmitPower10x (.17) — live-verified on both controllers as
+// dBm x10 (e.g. raw 180/60/90/150/120 -> 18.0/6.0/9.0/15.0/12.0 dBm, all in a
+// sane 0-30 dBm range and landing on the 3dB steps Aruba ARM uses). The plain
+// ".4" column (wlanAPRadioTransmitPower) was ALSO checked and is real data,
+// but a simultaneous cross-poll showed ".4" is exactly HALF of ".17"/10 on
+// every row (e.g. .4=36 vs .17/10=18) — i.e. ".4" needs its own undocumented
+// x0.5 scaling that its name doesn't advertise, whereas ".17"'s "10x" suffix
+// documents its scaling directly and checks out. Use ".17" / 10 as the source
+// of truth; do not use ".4".
+const wlanAPRadioTransmitPower10x = RADIO_BASE + '.17'; // wlanAPRadioTransmitPower10x (dBm x10)
 
 // ── Channel stats table (wlsxWlanAPChStatsTable) — base ...5.3.1.6.1 ─────────
 // Same AP MAC + radioNumber index as the radio table, so rows join 1:1.
@@ -56,6 +82,23 @@ const wlanAPChFrameRetryRate = CHSTATS_BASE + '.12'; // wlanAPChFrameRetryRate
 const wlanAPChRxUtilization = CHSTATS_BASE + '.35';  // wlanAPChRxUtilization
 const wlanAPChTxUtilization = CHSTATS_BASE + '.36';  // wlanAPChTxUtilization
 const wlanAPChUtilization = CHSTATS_BASE + '.37';    // wlanAPChUtilization (busy %)
+// wlanAPChFCSErrorCount (.32) — used as the schema's rx_errors_2g/5g source.
+// FCS decode failures are inherently RX-side (frames the AP receives but
+// cannot validate), which is the standard/universal "receive errors" metric.
+// Live-verified populated with large-but-in-range Counter32 values (< 2^32,
+// non-negative) on both controllers; a simultaneous full-row dump confirmed
+// it is byte-for-byte IDENTICAL to wlanAPChTotMacErrPkts (.8) on every row —
+// this firmware evidently implements FCS-error tracking as the same counter
+// as its MAC-error counter (semantically consistent: FCS failures are a
+// MAC-layer decode failure). wlanAPChTotPhyErrPkts (.7) was also checked and
+// is a genuinely distinct, populated counter, but .32/FCSErrorCount is kept
+// as the single rx-error source per the "most standard receive-errors metric,
+// don't sum multiple" rule — summing .7 in as well would double-count against
+// .8-equivalent data with no clearer semantics. wlanAPChFailedCount (.23) was
+// also checked and returns exactly 0 on every one of ~400 rows across both
+// controllers with zero exceptions — not used, looks unimplemented on this
+// firmware rather than a legitimately all-clear counter.
+const wlanAPChFCSErrorCount = CHSTATS_BASE + '.32'; // wlanAPChFCSErrorCount
 
 // ── Radio stats table (wlsxWlanAPRadioStatsTable) — base ...5.3.1.9.1 ────────
 // Same AP MAC + radioNumber index. Cumulative Counter64 byte counters (net-snmp
@@ -64,6 +107,13 @@ const wlanAPChUtilization = CHSTATS_BASE + '.37';    // wlanAPChUtilization (bus
 const RADIOSTATS_BASE = '1.3.6.1.4.1.14823.2.2.1.5.3.1.9.1';
 const wlanAPRadioRxBytes = RADIOSTATS_BASE + '.2';   // wlanAPRadioRxBytes (Counter64)
 const wlanAPRadioTxBytes = RADIOSTATS_BASE + '.4';   // wlanAPRadioTxBytes (Counter64)
+// wlanAPRadioTxErrorPkts (.6) — unambiguously TX-side, used as the schema's
+// tx_errors_2g/5g source. Live-verified populated with sane, moderate
+// (non-Counter64-scale) integer values on both controllers. A simultaneous
+// full-row dump showed it is byte-for-byte identical to wlanAPRadioTxDroppedPkts
+// (.5) on every row — this firmware tracks tx-dropped and tx-error as the same
+// counter — so only .6 (the more precisely-named column) is wired in.
+const wlanAPRadioTxErrorPkts = RADIOSTATS_BASE + '.6'; // wlanAPRadioTxErrorPkts
 
 // ── ESSID summary table (wlsxWlanESSIDTable) — base ...5.2.1.8.1 ─────────────
 // Index = the (length-prefixed) SSID name. wlanESSID's value is the name string.
@@ -212,6 +262,8 @@ function parseApTable(walked) {
     const uptimes = columnMap(walked.apUptime, wlanAPUpTime);
     const models = columnMap(walked.apModel, wlanAPModelName);
     const statuses = columnMap(walked.apStatus, wlanAPStatus);
+    const serials = columnMap(walked.apSerial, wlanAPSerialNumber);
+    const swVersions = columnMap(walked.apFirmware, wlanAPSwVersion);
 
     const indexes = new Set();
     [ips, names, uptimes, models, statuses].forEach((m) => {
@@ -233,6 +285,8 @@ function parseApTable(walked) {
       ap.ip_address = str(ips[idx]);
       ap.model = str(models[idx]);
       ap.status = mapStatus(statuses[idx]);
+      ap.serial_number = str(serials[idx]);
+      ap.firmware_version = str(swVersions[idx]);
       // wlanAPUpTime is TimeTicks (hundredths of a second) — convert to seconds,
       // like the other vendor parsers. (Storing it raw inflated uptime ~100×.)
       const up = num(uptimes[idx]);
@@ -253,6 +307,9 @@ function parseApTable(walked) {
     const chBusy = columnMap(walked.chBusy, wlanAPChUtilization);
     const chRxUtil = columnMap(walked.chRxUtil, wlanAPChRxUtilization);
     const chTxUtil = columnMap(walked.chTxUtil, wlanAPChTxUtilization);
+    const radioTxPower10x = columnMap(walked.radioTxPower10x, wlanAPRadioTransmitPower10x);
+    const chFcsErrors = columnMap(walked.chFcsErrors, wlanAPChFCSErrorCount);
+    const radioTxErrors = columnMap(walked.radioTxErrors, wlanAPRadioTxErrorPkts);
 
     const radioIdxs = new Set([
       ...Object.keys(radioChan), ...Object.keys(radioUtil), ...Object.keys(radioClients),
@@ -292,6 +349,29 @@ function parseApTable(walked) {
       if (rr !== null && rr >= 0 && rr <= 100) {
         if (band === '2g') ap.retry_rate_2g = rr;
         else if (band === '5g') ap.retry_rate_5g = rr;
+      }
+      // Transmit power: wlanAPRadioTransmitPower10x is dBm x10 (live-verified,
+      // see the OID comment above) — divide by 10. A real 0 dBm reading is kept
+      // (not treated as "not reported"); only an absent OID stays null.
+      const txp10 = num(radioTxPower10x[ridx]);
+      if (txp10 !== null) {
+        const dbm = txp10 / 10;
+        if (band === '2g') ap.tx_power_2g = dbm;
+        else if (band === '5g') ap.tx_power_5g = dbm;
+      }
+      // rx_errors_* from wlanAPChFCSErrorCount (channel-stats table, RX-side
+      // decode failures); tx_errors_* from wlanAPRadioTxErrorPkts (radio-stats
+      // table, explicitly TX-side). See the OID comments above for the live
+      // verification and the aliasing this firmware exhibits.
+      const fcs = num(chFcsErrors[ridx]);
+      if (fcs !== null && fcs >= 0) {
+        if (band === '2g') ap.rx_errors_2g = fcs;
+        else if (band === '5g') ap.rx_errors_5g = fcs;
+      }
+      const txErr = num(radioTxErrors[ridx]);
+      if (txErr !== null && txErr >= 0) {
+        if (band === '2g') ap.tx_errors_2g = txErr;
+        else if (band === '5g') ap.tx_errors_5g = txErr;
       }
       // Interference = channel busy time minus this AP's own rx/tx airtime.
       // Only derived when all three columns answered; clamped — the three
@@ -477,19 +557,24 @@ module.exports = {
     apUptime: wlanAPUpTime,
     apModel: wlanAPModelName,
     apStatus: wlanAPStatus,
+    apSerial: wlanAPSerialNumber,
+    apFirmware: wlanAPSwVersion,
     // Radio table (index = AP MAC + radioNumber)
     radioChannel: wlanAPRadioChannel,
     radioUtil: wlanAPRadioUtilization,
     radioClients: wlanAPRadioNumAssociatedClients,
+    radioTxPower10x: wlanAPRadioTransmitPower10x,
     // Channel stats table (index = AP MAC + radioNumber)
     chNoise: wlanAPChNoise,
     chRetry: wlanAPChFrameRetryRate,
     chBusy: wlanAPChUtilization,
     chRxUtil: wlanAPChRxUtilization,
     chTxUtil: wlanAPChTxUtilization,
+    chFcsErrors: wlanAPChFCSErrorCount,
     // Radio stats table (index = AP MAC + radioNumber, Counter64 byte counters)
     radioRxBytes: wlanAPRadioRxBytes,
     radioTxBytes: wlanAPRadioTxBytes,
+    radioTxErrors: wlanAPRadioTxErrorPkts,
     // ESSID summary table (index = SSID name)
     essidName: wlanESSID,
     essidStations: wlanESSIDNumStations,

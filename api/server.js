@@ -34,6 +34,10 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.63.0': [
+    'Aruba access points now report transmit power, serial number, firmware version, and per-band error counts — all fields that already existed on the AP detail page but were empty for Aruba. No UI change needed; they just fill in.',
+    'New controller health data: chassis temperature (flagged red if the controller itself reports anything other than "normal"), the last reboot reason (shown as a tooltip), and a sanity warning when a controller\'s own reported AP/client counts drift more than 10% from what SpanVault has actually polled.',
+  ],
   '1.62.1': [
     'Fixed Aruba rogue/neighboring AP detection: it was reading an SNMP OID that doesn\'t exist in the controller\'s MIB, so it silently found nothing. It now reads the correct table (live-verified: thousands of rows on both controllers) with a corrected threat classification mapping.',
     'Fixed the Ruckus, MikroTik and HPE wireless client tables, which were reading the wrong SNMP table or badly misnumbered columns (MikroTik was even corrupting the client MAC address on every row, breaking device identity). All three are rebuilt against their official MIBs; Ruckus and HPE are unvalidated on real hardware pending access to that gear, but every OID is now confirmed correct against the vendor\'s own specification.',
@@ -3700,7 +3704,9 @@ app.get('/api/wireless/controllers', wrap(async (_req, res) => {
     SELECT c.id, c.name, c.vendor, c.controller_url, c.api_username, c.snmp_device_id,
            c.site_id, c.site_name, c.active, c.last_polled_at, c.status,
            c.model, c.firmware_version, c.licensed_aps, c.ha_mode, c.ha_peer_ip,
-           c.ha_sync_status, c.ap_disconnects_24h, c.capabilities_probed_at, ${hp},
+           c.ha_sync_status, c.ap_disconnects_24h, c.capabilities_probed_at,
+           c.chassis_temp_c, c.chassis_temp_status, c.last_reboot_reason,
+           c.reported_ap_count, c.reported_client_count, ${hp},
            (c.capabilities IS NOT NULL AND c.capabilities <> '{}') AS has_capabilities,
            d.snmp_community AS snmp_community,
            d.snmp_version AS snmp_version,
@@ -3738,7 +3744,9 @@ app.get('/api/wireless/controllers/overview', wrap(async (_req, res) => {
   const r = await sv.query(`
     SELECT c.id, c.name, c.vendor, c.site_name, c.model, c.firmware_version,
            c.status, c.licensed_aps, c.ha_mode, c.ha_peer_ip, c.ha_sync_status,
-           c.ap_disconnects_24h, c.last_polled_at, ${hp},
+           c.ap_disconnects_24h, c.last_polled_at,
+           c.chassis_temp_c, c.chassis_temp_status, c.last_reboot_reason,
+           c.reported_ap_count, c.reported_client_count, ${hp},
            (SELECT COUNT(*)::int FROM wireless_aps a WHERE a.controller_id = c.id) AS ap_count,
            (SELECT COALESCE(SUM(a.clients_total), 0)::int FROM wireless_aps a WHERE a.controller_id = c.id) AS client_count,
            cpu.value AS cpu_pct, mem.value AS mem_pct, up.value AS uptime_seconds
@@ -3826,6 +3834,11 @@ app.get('/api/wireless/controllers/overview', wrap(async (_req, res) => {
       ha_peer_name: row.ha_peer_name ?? null,
       ap_disconnects_24h: row.ap_disconnects_24h == null ? null : Number(row.ap_disconnects_24h),
       last_polled_at: row.last_polled_at,
+      chassis_temp_c: row.chassis_temp_c == null ? null : Number(row.chassis_temp_c),
+      chassis_temp_status: row.chassis_temp_status ?? null,
+      last_reboot_reason: row.last_reboot_reason ?? null,
+      reported_ap_count: row.reported_ap_count == null ? null : Number(row.reported_ap_count),
+      reported_client_count: row.reported_client_count == null ? null : Number(row.reported_client_count),
     };
   });
 

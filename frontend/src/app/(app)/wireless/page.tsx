@@ -209,6 +209,11 @@ interface OverviewController {
   ha_peer_name: string | null;
   ap_disconnects_24h: number | null;
   last_polled_at: string | null;
+  chassis_temp_c: number | null;
+  chassis_temp_status: string | null;
+  last_reboot_reason: string | null;
+  reported_ap_count: number | null;
+  reported_client_count: number | null;
 }
 
 interface ControllerOverview {
@@ -3281,6 +3286,15 @@ const EVENT_META: Record<string, { icon: string | JSX.Element; color: string }> 
   alert: { icon: '●', color: 'var(--red)' },
 };
 
+// Flags a controller-reported AP/client count that disagrees with SpanVault's
+// own polled count by more than ~10% — a sign the local AP inventory is stale
+// or incomplete (some APs aren't being polled/parsed).
+function reportedCountMismatch(reported: number | null, local: number): boolean {
+  if (reported == null) return false;
+  if (local <= 0) return reported > 0;
+  return Math.abs(reported - local) / local > 0.1;
+}
+
 // ── Controller inventory table (top-level) ────────────────────
 function ControllerInventoryTable({ controllers, capsById }: {
   controllers: OverviewController[];
@@ -3330,7 +3344,17 @@ function ControllerInventoryTable({ controllers, capsById }: {
                     <span style={{ color: 'var(--text-muted)' }}>{fmtInt(c.ap_count)} APs</span>
                   )}
                 </td>
-                <td>{fmtInt(c.client_count)}</td>
+                <td>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                    {fmtInt(c.client_count)}
+                    {reportedCountMismatch(c.reported_client_count, c.client_count) && (
+                      <span
+                        title={`Controller reports ${fmtInt(c.reported_client_count)} clients, SpanVault has polled ${fmtInt(c.client_count)}`}
+                        style={{ display: 'inline-flex', alignItems: 'center', color: 'var(--orange)' }}
+                      ><IconWarning width={12} height={12} /></span>
+                    )}
+                  </span>
+                </td>
                 <td>{c.cpu_pct != null ? `${Math.round(Number(c.cpu_pct))}%` : '—'}</td>
                 <td>{c.mem_pct != null ? `${Math.round(Number(c.mem_pct))}%` : '—'}</td>
                 <td style={{ color: ha.color, fontWeight: 600 }}>
@@ -3406,15 +3430,19 @@ function ControllerHealthTable({ controllers }: { controllers: OverviewControlle
       <table className="sv-table">
         <thead><tr>
           <th style={STICKY_TH}>Name</th><th style={STICKY_TH}>Uptime</th><th style={STICKY_TH}>CPU</th>
-          <th style={STICKY_TH}>Mem</th><th style={STICKY_TH}>Disc (24h)</th><th style={STICKY_TH}>Polled</th>
+          <th style={STICKY_TH}>Mem</th><th style={STICKY_TH}>Temp</th><th style={STICKY_TH}>Disc (24h)</th><th style={STICKY_TH}>Polled</th>
         </tr></thead>
         <tbody>
           {controllers.map((c) => {
             const disc = Number(c.ap_disconnects_24h || 0);
+            const tempAbnormal = c.chassis_temp_status != null && c.chassis_temp_status.toUpperCase() !== 'NORMAL';
             return (
               <tr key={c.id}>
                 <td style={{ fontWeight: 600 }}>
-                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                  <span
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                    title={c.last_reboot_reason || undefined}
+                  >
                     <StatusDot status={c.status === 'ok' ? 'up' : c.status === 'error' ? 'down' : 'unknown'} />
                     {c.name}
                   </span>
@@ -3433,6 +3461,12 @@ function ControllerHealthTable({ controllers }: { controllers: OverviewControlle
                       <ProgressBar pct={c.mem_pct} /> {Math.round(Number(c.mem_pct))}%
                     </span>
                   ) : '—'}
+                </td>
+                <td
+                  style={{ color: tempAbnormal ? 'var(--red)' : undefined, fontWeight: tempAbnormal ? 700 : 400 }}
+                  title={c.chassis_temp_status || undefined}
+                >
+                  {c.chassis_temp_c != null ? `${Math.round(Number(c.chassis_temp_c))}°C` : '—'}
                 </td>
                 <td style={{ color: disc > 10 ? 'var(--red)' : undefined, fontWeight: disc > 10 ? 700 : 400 }}>
                   {c.ap_disconnects_24h != null ? disc : '—'}

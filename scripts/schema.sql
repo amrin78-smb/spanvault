@@ -750,6 +750,18 @@ ALTER TABLE wireless_controllers ADD COLUMN IF NOT EXISTS ha_manual_role TEXT;  
 -- One-time OID capability discovery: { capabilityKey: workingOid, probe_done: true }.
 ALTER TABLE wireless_controllers ADD COLUMN IF NOT EXISTS capabilities JSONB DEFAULT '{}';
 ALTER TABLE wireless_controllers ADD COLUMN IF NOT EXISTS capabilities_probed_at TIMESTAMPTZ;
+-- Chassis temperature (Aruba-verified live: "Ambient Temperature 34.00 degrees
+-- Celsius (NORMAL)") — chassis_temp_c is the parsed numeric Celsius reading,
+-- chassis_temp_status is the device's own qualitative word (e.g. "NORMAL").
+ALTER TABLE wireless_controllers ADD COLUMN IF NOT EXISTS chassis_temp_c NUMERIC;
+ALTER TABLE wireless_controllers ADD COLUMN IF NOT EXISTS chassis_temp_status TEXT;
+-- Last controller reboot reason, stored raw (e.g. "User reboot (Intent:cause:
+-- register 78:86:0:2c)") — no parsing needed.
+ALTER TABLE wireless_controllers ADD COLUMN IF NOT EXISTS last_reboot_reason TEXT;
+-- Controller's own authoritative AP/client counts (sanity cross-check against
+-- SpanVault's own summed counts from polling APs individually).
+ALTER TABLE wireless_controllers ADD COLUMN IF NOT EXISTS reported_ap_count INTEGER;
+ALTER TABLE wireless_controllers ADD COLUMN IF NOT EXISTS reported_client_count INTEGER;
 -- Auto-created SNMP controllers are keyed on their device so they aren't dup'd.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_wctl_snmp_device
   ON wireless_controllers(snmp_device_id) WHERE snmp_device_id IS NOT NULL;

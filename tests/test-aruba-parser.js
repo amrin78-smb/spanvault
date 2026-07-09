@@ -25,10 +25,17 @@ const walked = {
   apStatus: [{ oid: `${AP_BASE}.19.${MAC}`, value: 1 }],
   apUptime: [{ oid: `${AP_BASE}.12.${MAC}`, value: 360000 }],
   apModel:  [{ oid: `${AP_BASE}.13.${MAC}`, value: 'AP-535' }],
+  apSerial:   [{ oid: `${AP_BASE}.6.${MAC}`, value: 'CNLBKPPCL7' }],
+  apFirmware: [{ oid: `${AP_BASE}.34.${MAC}`, value: '8.10.0.8' }],
   // radio 1 = ch 36 (5g), radio 2 = ch 6 (2g)
   radioChannel: [
     { oid: `${RADIO_BASE}.3.${MAC}.1`, value: 36 },
     { oid: `${RADIO_BASE}.3.${MAC}.2`, value: 6 },
+  ],
+  // wlanAPRadioTransmitPower10x is dBm x10 — 180/60 → 18.0/6.0 dBm.
+  radioTxPower10x: [
+    { oid: `${RADIO_BASE}.17.${MAC}.1`, value: 180 },
+    { oid: `${RADIO_BASE}.17.${MAC}.2`, value: 60 },
   ],
   radioUtil: [
     { oid: `${RADIO_BASE}.6.${MAC}.1`, value: 17 },
@@ -58,6 +65,11 @@ const walked = {
   chTxUtil: [
     { oid: `${CH_BASE}.36.${MAC}.1`, value: 19 },
   ],
+  // wlanAPChFCSErrorCount → rx_errors_*. 2g deliberately omitted to exercise
+  // the null-when-absent case (never fake a 0 for an unreported metric).
+  chFcsErrors: [
+    { oid: `${CH_BASE}.32.${MAC}.1`, value: 1380799423 },
+  ],
   radioRxBytes: [
     { oid: `${RS_BASE}.2.${MAC}.1`, value: c64(607531766574) },
     { oid: `${RS_BASE}.2.${MAC}.2`, value: c64(1000) },
@@ -65,6 +77,11 @@ const walked = {
   radioTxBytes: [
     { oid: `${RS_BASE}.4.${MAC}.1`, value: c64(1681273835390) },
     { oid: `${RS_BASE}.4.${MAC}.2`, value: c64(2000) },
+  ],
+  // wlanAPRadioTxErrorPkts → tx_errors_*.
+  radioTxErrors: [
+    { oid: `${RS_BASE}.6.${MAC}.1`, value: 1840360 },
+    { oid: `${RS_BASE}.6.${MAC}.2`, value: 29911 },
   ],
 };
 
@@ -124,6 +141,15 @@ const apMap = {
     ['channels/util/clients unchanged', ap.radio_5g_channel === 36 && ap.radio_2g_util_pct === 62 && ap.clients_total === 17],
     ['interference_pct_5g = 45-12-19 = 14', ap.interference_pct_5g === 14],
     ['interference_pct_2g null (txUtil missing)', ap.interference_pct_2g === null],
+    // Newly-wired fields (tx_power, serial, firmware, rx/tx errors) — live-verified 2026-07-09.
+    ['serial_number', ap.serial_number === 'CNLBKPPCL7'],
+    ['firmware_version', ap.firmware_version === '8.10.0.8'],
+    ['tx_power_5g = 180/10 = 18 dBm', ap.tx_power_5g === 18],
+    ['tx_power_2g = 60/10 = 6 dBm', ap.tx_power_2g === 6],
+    ['rx_errors_5g from FCS count', ap.rx_errors_5g === 1380799423],
+    ['rx_errors_2g null (OID absent, never fake a 0)', ap.rx_errors_2g === null],
+    ['tx_errors_5g from TxErrorPkts', ap.tx_errors_5g === 1840360],
+    ['tx_errors_2g from TxErrorPkts', ap.tx_errors_2g === 29911],
     // Client rate regression: must read .17 (455), NEVER .10 (255)
     ['one client parsed', clients.length === 1],
     ['tx_rate_mbps = 455 from .17, not 255 from .10', cl.tx_rate_mbps === 455],
