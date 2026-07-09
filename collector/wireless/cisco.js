@@ -1,80 +1,101 @@
 'use strict';
 
-// Cisco wireless parser.
-// OIDs from CISCO-LWAPP-AP-MIB and AIRESPACE-WIRELESS-MIB (legacy WLC).
-// NOTE: column suffixes are best-effort / approximate from the MIBs and will
-// be validated against real hardware later.
+// Cisco WLC (AireOS) wireless parser.
+// OIDs verified against AIRESPACE-WIRELESS-MIB (+ CISCO-LWAPP-AP-MIB) in the
+// 2026-07 MIB audit. No Cisco hardware in the lab — items flagged
+// "validate against real hardware" are MIB-verified but not live-verified.
+//
+// Tables used (all under 1.3.6.1.4.1.14179):
+//   • bsnAPTable                   ...2.2.1.1  — one row per AP. INDEX =
+//     bsnAPDot3MacAddress (the AP's ETHERNET MAC → 6 dotted sub-identifiers).
+//   • bsnAPIfTable                 ...2.2.2.1  — per radio. INDEX = {Dot3 MAC,
+//     bsnAPIfSlotId}. Radio type (band) + current channel.
+//   • bsnAPIfLoadParametersTable   ...2.2.13.1 — per radio. INDEX = {Dot3 MAC,
+//     slot}. Rx/Tx/channel utilization (0..100) + per-radio client count.
+//   • bsnAPIfChannelNoiseInfoTable ...2.2.15.1 — per radio PER SCANNED CHANNEL.
+//     INDEX = {Dot3 MAC (6), slot, channel} — 8 sub-identifiers.
+//   • bsnDot11EssTable             ...2.1.1.1  — per WLAN/SSID. INDEX = ESS index.
+//   • bsnRogueAPTable              ...2.1.7.1  — per rogue. INDEX = rogue MAC.
+//
+// The CISCO-LWAPP-AP-MIB cLApTable (1.3.6.1.4.1.9.9.513.1.1.1) is deliberately
+// NOT walked any more:
+//   – ...513.1.1.1.1.19 is cLApFailoverPriority (enum 1..4), NOT an IP address;
+//   – ...513.1.1.1.1.16 is cLApLastRebootReason (enum), NOT a model string;
+//   – cLApTable is indexed by the AP's RADIO-base MAC while bsnAPTable is
+//     indexed by the ETHERNET (Dot3) MAC, so "merging" the two tables by
+//     identical index materialized a duplicate ghost AP (status unknown,
+//     clients 0) for every physical AP and made its DB row flap.
+// After dropping the two mis-mapped columns only cLApName remained, and
+// bsnAPName carries the same value — so AP rows are built from bsnAPTable only.
+//
+// NOT available in AIRESPACE-WIRELESS-MIB (left null, never faked):
+//   • per-WLAN byte counters — "...2.1.6.1" is the PER-CLIENT
+//     bsnMobileStationStatsTable (indexed by client MAC), not a per-ESS table;
+//   • per-SSID auth-failure counters — ...2.1.13 is a per-client, by-username
+//     table, not per-WLAN;
+//   • AP tx power in dBm — bsnAPIfPhyTxPowerLevel is a discrete power LEVEL
+//     (1..8), not dBm, so tx_power_2g/5g stay null;
+//   • per-AP rx/tx error and byte counters.
 
 const {
   num,
+  counterNum,
   str,
   columnMap,
   emptyAp,
   splitRadioIndex,
   bandForRadioIndex,
+  bandForChannel,
 } = require('./_util');
 
-// cLApTable (CISCO-LWAPP-AP-MIB): 1.3.6.1.4.1.9.9.513.1.1.1
-const CLAP_BASE = '1.3.6.1.4.1.9.9.513.1.1.1.1';
-const cLApName = CLAP_BASE + '.5'; // best-effort
-const cLApIpAddress = CLAP_BASE + '.19'; // best-effort
-const cLApModel = CLAP_BASE + '.16'; // best-effort
-
-// bsnAPTable (AIRESPACE-WIRELESS-MIB, legacy WLC): 1.3.6.1.4.1.14179.2.2.1.1
+// ── bsnAPTable (AIRESPACE-WIRELESS-MIB): 1.3.6.1.4.1.14179.2.2.1.1 ───────────
+// INDEX = bsnAPDot3MacAddress (Ethernet MAC, 6 dotted-decimal sub-identifiers).
 const BSN_BASE = '1.3.6.1.4.1.14179.2.2.1.1';
-const bsnAPName = BSN_BASE + '.3';
-const bsnApIpAddress = BSN_BASE + '.19'; // best-effort
-const bsnAPModel = BSN_BASE + '.16';
-const bsnAPOperationStatus = BSN_BASE + '.6';
-const bsnApAssociatedClientCount = BSN_BASE + '.38'; // best-effort
+const bsnAPName = BSN_BASE + '.3';            // bsnAPName (DisplayString)
+const bsnAPOperationStatus = BSN_BASE + '.6'; // associated(1)/disassociating(2)/downloading(3)
+const bsnAPSoftwareVersion = BSN_BASE + '.8'; // bsnAPSoftwareVersion → firmware_version
+const bsnAPModel = BSN_BASE + '.16';          // bsnAPModel (DisplayString)
+const bsnAPSerialNumber = BSN_BASE + '.17';   // bsnAPSerialNumber → serial_number
+const bsnApIpAddress = BSN_BASE + '.19';      // bsnApIpAddress (IpAddress)
 
-// bsnAPIfTable radio stats base (best-effort): channel column.
-// index = apIndex.radioIndex (0 = 2.4GHz, 1 = 5GHz).
+// ── bsnAPIfTable: 1.3.6.1.4.1.14179.2.2.2.1 — INDEX = {Dot3 MAC, slot} ───────
 const BSN_IF_BASE = '1.3.6.1.4.1.14179.2.2.2.1';
-const bsnAPIfPhyChannelNumber = BSN_IF_BASE + '.4'; // best-effort
-// Per-radio Rx/Tx load utilization (used to approximate a retry_rate per band).
-const bsnAPIfLoadRxUtilization = BSN_IF_BASE + '.31'; // bsnAPIfLoadRxUtilization (AIRESPACE-WIRELESS-MIB)
-const bsnAPIfLoadTxUtilization = BSN_IF_BASE + '.32'; // bsnAPIfLoadTxUtilization (AIRESPACE-WIRELESS-MIB)
+// bsnAPIfType INTEGER { dot11b(1), dot11a(2), uwb(4), dot116ghz(6),
+// dot11xor56ghz(7) } — the authoritative band source (slot number is NOT a
+// reliable band on XOR / dual-5G / 6 GHz APs).
+const bsnAPIfType = BSN_IF_BASE + '.2';
+const bsnAPIfPhyChannelNumber = BSN_IF_BASE + '.4'; // current operating channel
 
-// bsnApDot11Table (AIRESPACE-WIRELESS-MIB): 1.3.6.1.4.1.14179.2.2.13.1
-// index = apIndex.radioIndex (0 = 2.4GHz, 1 = 5GHz).
-const BSN_DOT11_BASE = '1.3.6.1.4.1.14179.2.2.13.1';
-const bsnApDot11LoadChannelUtilization = BSN_DOT11_BASE + '.22'; // bsnApDot11LoadChannelUtilization (channel util %)
-const bsnApDot11LoadNumAssociations = BSN_DOT11_BASE + '.19'; // bsnApDot11LoadNumAssociations (clients on the radio)
-const bsnApDot11QosNoiseFloor = BSN_DOT11_BASE + '.18'; // bsnApDot11QosNoiseFloor (noise floor dBm, negative)
+// ── bsnAPIfLoadParametersTable: 1.3.6.1.4.1.14179.2.2.13.1 ───────────────────
+// INDEX = {Dot3 MAC, slot}. All INTEGER 0..100 except NumOfClients (Integer32).
+const BSN_LOAD_BASE = '1.3.6.1.4.1.14179.2.2.13.1';
+const bsnAPIfLoadRxUtilization = BSN_LOAD_BASE + '.1';      // bsnAPIfLoadRxUtilization
+const bsnAPIfLoadTxUtilization = BSN_LOAD_BASE + '.2';      // bsnAPIfLoadTxUtilization
+const bsnAPIfLoadChannelUtilization = BSN_LOAD_BASE + '.3'; // bsnAPIfLoadChannelUtilization
+const bsnAPIfLoadNumOfClients = BSN_LOAD_BASE + '.4';       // bsnAPIfLoadNumOfClients
 
-// bsnDot11EssTable (AIRESPACE-WIRELESS-MIB): 1.3.6.1.4.1.14179.2.1.1.1
-// index = ess index (WLAN id).
+// ── bsnAPIfChannelNoiseInfoTable: 1.3.6.1.4.1.14179.2.2.15.1 ─────────────────
+// INDEX = {Dot3 MAC (6), slot, channel} — 8 sub-identifiers, one row per
+// SCANNED channel. bsnAPIfDBNoisePower is Integer32 dBm (already negative).
+const bsnAPIfDBNoisePower = '1.3.6.1.4.1.14179.2.2.15.1.21';
+
+// ── bsnDot11EssTable: 1.3.6.1.4.1.14179.2.1.1.1 — INDEX = ESS (WLAN) index ───
 const BSN_ESS_BASE = '1.3.6.1.4.1.14179.2.1.1.1';
-const bsnDot11EsSsid = BSN_ESS_BASE + '.1'; // bsnDot11EsSsid (SSID name)
-const bsnDot11EssTotalAssociations = BSN_ESS_BASE + '.38'; // bsnDot11EssTotalAssociations (client count)
-const bsnDot11EssAdminStatus = BSN_ESS_BASE + '.8'; // bsnDot11EssAdminStatus (1 = up, 0 = down)
+const bsnDot11EssSsid = BSN_ESS_BASE + '.2';        // bsnDot11EssSsid (DisplayString)
+const bsnDot11EssAdminStatus = BSN_ESS_BASE + '.6'; // INTEGER { disable(0), enable(1) }
+// Counter32 count of stations on the WLAN (was mislabelled "TotalAssociations").
+const bsnDot11EssNumberOfMobileStations = BSN_ESS_BASE + '.38';
 
-// bsnDot11EssWlanStatTable (AIRESPACE-WIRELESS-MIB): 1.3.6.1.4.1.14179.2.1.6.1
-// index = ess index (correlates to bsnDot11EssTable).
-const BSN_ESS_STAT_BASE = '1.3.6.1.4.1.14179.2.1.6.1';
-const bsnDot11EssWlanIfInOctets = BSN_ESS_STAT_BASE + '.1'; // bsnDot11EssWlanIfInOctets (→ bytes_in)
-const bsnDot11EssWlanIfOutOctets = BSN_ESS_STAT_BASE + '.2'; // bsnDot11EssWlanIfOutOctets (→ bytes_out)
-
-// bsnAuthFailureCount (AIRESPACE-WIRELESS-MIB): best-effort per-SSID auth failures.
-const bsnAuthFailureCount = '1.3.6.1.4.1.14179.2.1.13.1.1.7'; // bsnAuthFailureCount
-
-// ── Rogue AP table (bsnRogueAPTable, AIRESPACE-WIRELESS-MIB) ─────────────────
-// Base 1.3.6.1.4.1.14179.2.1.7 ; the table itself is ...2.1.7.1, columns ...2.1.7.1.1.x
-// Index = bsnRogueAPDot11MacAddress (6-octet MAC). Best-effort column suffixes
-// from the MIB — validate against real hardware.
-const BSN_ROGUE_BASE = '1.3.6.1.4.1.14179.2.1.7.1.1';
-const bsnRogueAPDot11MacAddress = BSN_ROGUE_BASE + '.1'; // rogue radio MAC (BSSID)
-const bsnRogueAPSsid = BSN_ROGUE_BASE + '.2';            // bsnRogueAPSsid
-const bsnRogueAPState = BSN_ROGUE_BASE + '.5';           // bsnRogueAPState (class/state)
-const bsnRogueAPClassType = BSN_ROGUE_BASE + '.24';      // bsnRogueAPClassType (best-effort)
-// First / detecting AP reporting this rogue, plus the rogue's RSSI and channel as
-// seen by that AP. These live on the per-detecting-AP entry (bsnRogueAPAirespaceAPTable
-// / bsnRogueAPFirstReportedBy). Index there is rogueMAC.detectingApMAC; we read the
-// best-of column values keyed by the rogue MAC prefix.
-const bsnRogueAPChannel = BSN_ROGUE_BASE + '.14';        // best-effort channel
-const bsnRogueAPRssi = BSN_ROGUE_BASE + '.13';           // best-effort RSSI (dBm)
-const bsnRogueAPFirstReportedApMac = BSN_ROGUE_BASE + '.20'; // best-effort detecting AP MAC
+// ── bsnRogueAPTable: entry = 1.3.6.1.4.1.14179.2.1.7.1, columns ...2.1.7.1.N ─
+// INDEX = bsnRogueAPDot11MacAddress (6-octet rogue MAC).
+const BSN_ROGUE_BASE = '1.3.6.1.4.1.14179.2.1.7.1';
+const bsnRogueAPDot11MacAddress = BSN_ROGUE_BASE + '.1';  // MacAddress (also the INDEX)
+const bsnRogueAPMaxDetectedRSSI = BSN_ROGUE_BASE + '.10'; // Integer32, best RSSI seen
+const bsnRogueAPSSID = BSN_ROGUE_BASE + '.11';            // DisplayString
+const bsnRogueAPMaxRssiApMacAddress = BSN_ROGUE_BASE + '.13'; // detecting AP MAC
+const bsnRogueAPState = BSN_ROGUE_BASE + '.24';           // bsnRogueAPState (enum below)
+const bsnRogueAPClassType = BSN_ROGUE_BASE + '.25';       // bsnRogueAPClassType (enum below)
+const bsnRogueAPChannel = BSN_ROGUE_BASE + '.26';         // Integer32
 
 // Format a 6-octet MAC (Buffer) or dotted-decimal index as colon-hex.
 function fmtMac(v) {
@@ -96,24 +117,32 @@ function fmtMac(v) {
   return s;
 }
 
-// Normalise a Cisco bsnRogueAPState / class to the shared classification set.
-// AIRESPACE-WIRELESS-MIB bsnRogueAPState INTEGER:
-//   1 initializing, 2 pending, 3 alert/lrad, 4 detected-lrad,
-//   5 known, 6 acknowledged, 7 contained, 8 threat, 9 unknown-contained,
-//   10 contained-pending. bsnRogueAPClassType (when present): 1 friendly,
-//   2 malicious, 3 unclassified, 4 custom.
+// Normalise Cisco rogue class/state to the shared classification set.
+//
+// bsnRogueAPClassType (preferred when present):
+//   pending(0), friendly(1), malicious(2), unclassified(3)
+//   → 1 = 'friendly', 2 = 'malicious', 0/3 = 'unclassified'.
+//
+// bsnRogueAPState fallback (MIB enum):
+//   initializing(0), pending(1), alert(2), detectedLrad(3), known(4),
+//   acknowledge(5), contained(6), threat(7), containedPending(8),
+//   knownContained(9), trustedMissing(10)
+//   → 4/5 = 'friendly' (known/acknowledged);
+//     6/7/8/9 = 'malicious' (contained/threat/contained-pending/known-contained);
+//     2/3 = 'rogue' (alert/detected);
+//     0/1/10 = 'unclassified' (initializing/pending/trusted-missing).
 function classifyRogue(stateV, classV) {
   const cls = num(classV);
   if (cls === 1) return 'friendly';
   if (cls === 2) return 'malicious';
-  if (cls === 3) return 'unclassified';
+  if (cls === 3 || cls === 0) return 'unclassified';
 
   const st = num(stateV);
   if (st !== null) {
-    if (st === 5 || st === 6) return 'friendly';        // known / acknowledged
-    if (st === 7 || st === 8 || st === 9 || st === 10) return 'malicious'; // contained / threat
-    if (st === 3 || st === 4) return 'rogue';           // alert / detected
-    if (st === 1 || st === 2) return 'unclassified';    // initializing / pending
+    if (st === 4 || st === 5) return 'friendly';
+    if (st === 6 || st === 7 || st === 8 || st === 9) return 'malicious';
+    if (st === 2 || st === 3) return 'rogue';
+    if (st === 0 || st === 1 || st === 10) return 'unclassified';
   }
 
   const s = (str(stateV) || str(classV) || '').toLowerCase();
@@ -128,7 +157,7 @@ function classifyRogue(stateV, classV) {
 
 function mapStatus(v) {
   const n = num(v);
-  // bsnAPOperationStatus: 1 = associated/up, 2 = disassociating, 3 = downloading
+  // bsnAPOperationStatus INTEGER { associated(1), disassociating(2), downloading(3) }
   if (n === 1) return 'online';
   if (n === 2 || n === 3) return 'offline';
   const s = str(v);
@@ -140,27 +169,36 @@ function mapStatus(v) {
   return 'unknown';
 }
 
+// Split a bsnAPIfChannelNoiseInfoTable index ("m1.m2.m3.m4.m5.m6.slot.channel",
+// 8 sub-identifiers) into the AP key (the 6-octet Dot3 MAC — the bsnAPTable
+// index), the radio key ("MAC.slot" — the same key the bsnAPIfTable / load
+// tables use) and the scanned channel number. Returns null on a malformed index.
+function splitNoiseIndex(idx) {
+  if (idx === null || idx === undefined) return null;
+  const parts = String(idx).split('.');
+  if (parts.length !== 8) return null;
+  const apKey = parts.slice(0, 6).join('.');
+  const channel = Number(parts[7]);
+  if (!Number.isFinite(channel)) return null;
+  return { apKey, radioIdx: apKey + '.' + parts[6], channel };
+}
+
 function parseApTable(walked) {
   const out = [];
   try {
     walked = walked || {};
 
-    // Prefer modern cLApTable; merge legacy bsnAPTable by index when present.
-    const cnames = columnMap(walked.cLApName, cLApName);
-    const cips = columnMap(walked.cLApIp, cLApIpAddress);
-    const cmodels = columnMap(walked.cLApModel, cLApModel);
+    // AP rows materialize ONLY from bsnAPTable (index = Ethernet/Dot3 MAC).
+    // See the header comment for why cLApTable is not merged in.
+    const names = columnMap(walked.bsnAPName, bsnAPName);
+    const ips = columnMap(walked.bsnApIp, bsnApIpAddress);
+    const models = columnMap(walked.bsnAPModel, bsnAPModel);
+    const statuses = columnMap(walked.bsnAPStatus, bsnAPOperationStatus);
+    const serials = columnMap(walked.bsnApSerial, bsnAPSerialNumber);
+    const swVersions = columnMap(walked.bsnApSwVersion, bsnAPSoftwareVersion);
 
-    const bnames = columnMap(walked.bsnAPName, bsnAPName);
-    const bips = columnMap(walked.bsnApIp, bsnApIpAddress);
-    const bmodels = columnMap(walked.bsnAPModel, bsnAPModel);
-    const bstatus = columnMap(walked.bsnAPStatus, bsnAPOperationStatus);
-    const bclients = columnMap(walked.bsnApClients, bsnApAssociatedClientCount);
-
-    // NOTE: bsnAPIfPhyChannelNumber is a PER-RADIO column (index apIndex.radioIndex)
-    // and is correlated below — NOT merged into the AP-index set, which would both
-    // create phantom AP rows and never map a channel back to its band.
     const indexes = new Set();
-    [cnames, cips, cmodels, bnames, bips, bmodels, bstatus, bclients].forEach((m) => {
+    [names, ips, models, statuses, serials, swVersions].forEach((m) => {
       Object.keys(m).forEach((k) => indexes.add(k));
     });
 
@@ -168,106 +206,137 @@ function parseApTable(walked) {
     for (const idx of indexes) {
       const ap = emptyAp();
       ap._index = idx;
-      ap.name = str(cnames[idx]) || str(bnames[idx]) || idx;
-      ap.ip_address = str(cips[idx]) || str(bips[idx]);
-      ap.model = str(cmodels[idx]) || str(bmodels[idx]);
-      ap.status = mapStatus(bstatus[idx]);
-      // Total clients from the AP table; kept nullable for a per-radio fallback.
-      ap.clients_total = num(bclients[idx]);
+      ap.name = str(names[idx]) || idx;
+      // The bsnAPTable index IS the AP's Ethernet (Dot3) MAC as 6 dotted
+      // decimal octets → colon-hex.
+      ap.mac_address = fmtMac(idx);
+      ap.ip_address = str(ips[idx]);
+      ap.model = str(models[idx]);
+      ap.serial_number = str(serials[idx]);
+      ap.firmware_version = str(swVersions[idx]);
+      ap.status = mapStatus(statuses[idx]);
+      // tx_power_2g/5g stay null: bsnAPIfPhyTxPowerLevel is a discrete power
+      // LEVEL (1..8), not dBm — storing it in a dBm column would be wrong.
       out.push(ap);
       byIndex.set(idx, ap);
     }
 
-    // ── Correlate per-radio metrics onto the constructed APs. Radio tables are
-    //    indexed apIndex.radioIndex; split the index, resolve the band (0=2.4G,
-    //    1=5G), and find the matching AP by _index.
+    // ── Per-radio band resolution (bsnAPIfTable, INDEX = {Dot3 MAC, slot}) ──
+    // Prefer bsnAPIfType (authoritative), then the current channel, then the
+    // legacy slot heuristic (0 = 2.4G, 1 = 5G) as the last resort. Slot alone
+    // is wrong on XOR / dual-5G / 6 GHz APs.
+    const ifTypes = columnMap(walked.bsnApIfType, bsnAPIfType);
+    const chans = columnMap(walked.bsnApChannel, bsnAPIfPhyChannelNumber);
 
-    // Channel (bsnAPIfPhyChannelNumber) → radio_2g_channel / radio_5g_channel.
-    const chanCol = columnMap(walked.bsnApChannel, bsnAPIfPhyChannelNumber);
-    for (const idx of Object.keys(chanCol)) {
-      const { apKey, radioKey } = splitRadioIndex(idx);
-      const band = bandForRadioIndex(radioKey);
-      if (!band) continue;
-      const ap = byIndex.get(apKey);
-      if (!ap) continue;
-      const v = num(chanCol[idx]);
-      if (v === null) continue;
-      if (band === '2g') ap.radio_2g_channel = v;
-      else if (band === '5g') ap.radio_5g_channel = v;
+    function bandForRadio(ridx) {
+      const t = num(ifTypes[ridx]);
+      if (t === 1) return '2g'; // dot11b (2.4 GHz radio)
+      if (t === 2) return '5g'; // dot11a (5 GHz radio)
+      if (t === 6) return '6g'; // dot116ghz
+      if (t === 7) return bandForChannel(chans[ridx]); // dot11xor56ghz — channel decides
+      // uwb(4) / unknown / missing type → derive from the current channel,
+      // then fall back to the old slot heuristic.
+      const byChan = bandForChannel(chans[ridx]);
+      if (byChan) return byChan;
+      return bandForRadioIndex(splitRadioIndex(ridx).radioKey);
     }
 
-    // Noise floor (dBm, negative) → noise_floor_2g / noise_floor_5g.
-    const noiseCol = columnMap(walked.bsnApNoiseFloor, bsnApDot11QosNoiseFloor);
-    for (const idx of Object.keys(noiseCol)) {
-      const { apKey, radioKey } = splitRadioIndex(idx);
-      const band = bandForRadioIndex(radioKey);
-      if (!band) continue;
+    // Channel (bsnAPIfPhyChannelNumber) → radio_*_channel per band.
+    for (const ridx of Object.keys(chans)) {
+      const { apKey } = splitRadioIndex(ridx);
       const ap = byIndex.get(apKey);
       if (!ap) continue;
-      const v = num(noiseCol[idx]);
-      if (v === null) continue;
-      if (band === '2g') ap.noise_floor_2g = v;
-      else if (band === '5g') ap.noise_floor_5g = v;
+      const v = num(chans[ridx]);
+      if (v === null || v <= 0) continue;
+      const band = bandForRadio(ridx);
+      if (band === '2g' && ap.radio_2g_channel === null) ap.radio_2g_channel = v;
+      else if (band === '5g' && ap.radio_5g_channel === null) ap.radio_5g_channel = v;
+      else if (band === '6g' && ap.radio_6g_channel === null) ap.radio_6g_channel = v;
     }
 
-    // Channel utilization (%) → radio_2g_util_pct / radio_5g_util_pct.
+    // Per-radio clients (bsnAPIfLoadNumOfClients) → clients_2g/5g/6g, and the
+    // per-AP SUM → clients_total (bsnApAssociatedClientCount ...2.2.1.1.38
+    // does NOT exist in the MIB — the load table is the real client source).
+    // Bands accumulate (+=) so dual-5G APs sum instead of overwriting.
+    const loadClients = columnMap(walked.bsnApLoadClients, bsnAPIfLoadNumOfClients);
+    const clientTotals = new Map();
+    for (const ridx of Object.keys(loadClients)) {
+      const { apKey } = splitRadioIndex(ridx);
+      const ap = byIndex.get(apKey);
+      if (!ap) continue;
+      const v = num(loadClients[ridx]);
+      if (v === null || v < 0) continue;
+      clientTotals.set(apKey, (clientTotals.get(apKey) || 0) + v);
+      const band = bandForRadio(ridx);
+      if (band === '2g') ap.clients_2g += v;
+      else if (band === '5g') ap.clients_5g += v;
+      else if (band === '6g') ap.clients_6g += v;
+    }
+    for (const [apKey, total] of clientTotals) {
+      const ap = byIndex.get(apKey);
+      if (ap) ap.clients_total = total;
+    }
+
+    // Channel utilization % (bsnAPIfLoadChannelUtilization) → radio_*_util_pct.
     // Only set when not already populated (never overwrite / default to 0).
-    const utilCol = columnMap(walked.bsnApChannelUtil, bsnApDot11LoadChannelUtilization);
-    for (const idx of Object.keys(utilCol)) {
-      const { apKey, radioKey } = splitRadioIndex(idx);
-      const band = bandForRadioIndex(radioKey);
-      if (!band) continue;
+    // The shared AP shape has no radio_6g_util_pct — 6 GHz util is dropped.
+    const utilCol = columnMap(walked.bsnApChannelUtil, bsnAPIfLoadChannelUtilization);
+    for (const ridx of Object.keys(utilCol)) {
+      const { apKey } = splitRadioIndex(ridx);
       const ap = byIndex.get(apKey);
       if (!ap) continue;
-      const v = num(utilCol[idx]);
+      const v = num(utilCol[ridx]);
       if (v === null) continue;
+      const band = bandForRadio(ridx);
       if (band === '2g' && ap.radio_2g_util_pct === null) ap.radio_2g_util_pct = v;
       else if (band === '5g' && ap.radio_5g_util_pct === null) ap.radio_5g_util_pct = v;
     }
 
     // Retry rate approximation: Cisco does not expose a true per-radio retry %
     // here, so we approximate it as the GREATER of the per-radio Rx/Tx load
-    // utilization (best-effort — flagged as an approximation).
+    // utilization (bsnAPIfLoadRxUtilization/.TxUtilization, 0..100) —
+    // best-effort, flagged as an approximation; validate against real hardware.
     const rxUtilCol = columnMap(walked.bsnApIfRxUtil, bsnAPIfLoadRxUtilization);
     const txUtilCol = columnMap(walked.bsnApIfTxUtil, bsnAPIfLoadTxUtilization);
     const retryIdxs = new Set([...Object.keys(rxUtilCol), ...Object.keys(txUtilCol)]);
-    for (const idx of retryIdxs) {
-      const { apKey, radioKey } = splitRadioIndex(idx);
-      const band = bandForRadioIndex(radioKey);
-      if (!band) continue;
+    for (const ridx of retryIdxs) {
+      const { apKey } = splitRadioIndex(ridx);
       const ap = byIndex.get(apKey);
       if (!ap) continue;
-      const rx = num(rxUtilCol[idx]);
-      const tx = num(txUtilCol[idx]);
+      const rx = num(rxUtilCol[ridx]);
+      const tx = num(txUtilCol[ridx]);
       if (rx === null && tx === null) continue;
       // best-effort approximation of retry_rate per band: max(Rx util, Tx util).
       const approx = Math.max(rx === null ? -Infinity : rx, tx === null ? -Infinity : tx);
       if (!Number.isFinite(approx)) continue;
+      const band = bandForRadio(ridx);
       if (band === '2g') ap.retry_rate_2g = approx;
       else if (band === '5g') ap.retry_rate_5g = approx;
     }
 
-    // Per-radio clients (bsnApDot11LoadNumAssociations) → clients_2g / clients_5g.
-    const radioClientsCol = columnMap(walked.bsnApDot11Clients, bsnApDot11LoadNumAssociations);
-    for (const idx of Object.keys(radioClientsCol)) {
-      const { apKey, radioKey } = splitRadioIndex(idx);
-      const band = bandForRadioIndex(radioKey);
-      if (!band) continue;
-      const ap = byIndex.get(apKey);
+    // Noise floor (bsnAPIfDBNoisePower): the noise table reports one row per
+    // SCANNED channel (INDEX = MAC.slot.channel), so pick the row whose channel
+    // equals the radio's CURRENT operating channel (bsnAPIfPhyChannelNumber).
+    // Values are Integer32 dBm and already negative — store as-is; 0 and
+    // positive readings are not plausible noise floors → null.
+    // The shared AP shape has no noise_floor_6g — 6 GHz noise is dropped.
+    const noiseCol = columnMap(walked.bsnApNoise, bsnAPIfDBNoisePower);
+    for (const nidx of Object.keys(noiseCol)) {
+      const parts = splitNoiseIndex(nidx);
+      if (!parts) continue;
+      const ap = byIndex.get(parts.apKey);
       if (!ap) continue;
-      const v = num(radioClientsCol[idx]);
-      if (v === null) continue;
-      if (band === '2g') ap.clients_2g = v;
-      else if (band === '5g') ap.clients_5g = v;
+      const curChan = num(chans[parts.radioIdx]);
+      if (curChan === null || parts.channel !== curChan) continue;
+      const v = num(noiseCol[nidx]);
+      if (v === null || v >= 0) continue;
+      const band = bandForRadio(parts.radioIdx);
+      if (band === '2g') ap.noise_floor_2g = v;
+      else if (band === '5g') ap.noise_floor_5g = v;
     }
 
-    // Total clients: fall back to the per-radio sum when the AP table omitted it.
-    for (const ap of out) {
-      if (ap.clients_total === null) ap.clients_total = (ap.clients_2g || 0) + (ap.clients_5g || 0) + (ap.clients_6g || 0);
-    }
-
-    // rx_errors_*, tx_errors_*, rx_bytes, tx_bytes are NOT available per-AP on
-    // Cisco here — they remain null (defaulted by emptyAp()).
+    // rx_errors_*, tx_errors_*, rx_bytes, tx_bytes are NOT available per-AP in
+    // this MIB — they remain null (defaulted by emptyAp()).
   } catch (e) {
     // never throw
   }
@@ -275,36 +344,28 @@ function parseApTable(walked) {
 }
 
 function parseClientCounts(walked) {
-  const out = [];
+  // Derived from the parsed AP table (per-radio load-table client sum), keyed
+  // by the bsnAPTable index. (The old standalone OID ...2.2.1.1.38 does not
+  // exist in the MIB.)
   try {
-    walked = walked || {};
-    const clients = columnMap(walked.bsnApClients, bsnApAssociatedClientCount);
-    for (const idx of Object.keys(clients)) {
-      const c = num(clients[idx]);
-      out.push({ apKey: idx, clients: c === null ? 0 : c });
-    }
+    return parseApTable(walked).map((ap) => ({ apKey: ap._index, clients: ap.clients_total }));
   } catch (e) {
-    // never throw
+    return [];
   }
-  return out;
 }
 
-// Parse per-SSID (WLAN) stats from bsnDot11EssTable + bsnDot11EssWlanStatTable.
-// Correlates the two tables by ess index (WLAN id). Never throws.
+// Parse per-SSID (WLAN) stats from bsnDot11EssTable. Never throws.
 function parseSsids(walked) {
   const out = [];
   try {
     walked = walked || {};
 
-    const ssids = columnMap(walked.bsnEssSsid, bsnDot11EsSsid);
-    const assocs = columnMap(walked.bsnEssAssoc, bsnDot11EssTotalAssociations);
+    const ssids = columnMap(walked.bsnEssSsid, bsnDot11EssSsid);
     const admins = columnMap(walked.bsnEssAdmin, bsnDot11EssAdminStatus);
-    const inOctets = columnMap(walked.bsnEssInOctets, bsnDot11EssWlanIfInOctets);
-    const outOctets = columnMap(walked.bsnEssOutOctets, bsnDot11EssWlanIfOutOctets);
-    const authFails = columnMap(walked.bsnAuthFailures, bsnAuthFailureCount);
+    const stations = columnMap(walked.bsnEssClients, bsnDot11EssNumberOfMobileStations);
 
     const indexes = new Set();
-    [ssids, assocs, admins, inOctets, outOctets].forEach((m) => {
+    [ssids, admins, stations].forEach((m) => {
       Object.keys(m).forEach((k) => indexes.add(k));
     });
 
@@ -312,26 +373,28 @@ function parseSsids(walked) {
       const ssidName = str(ssids[idx]);
       if (!ssidName) continue; // skip rows with no SSID name
 
-      // adminStatus: 1 → 'up', else 'down'; default 'up' when absent.
+      // bsnDot11EssAdminStatus INTEGER { disable(0), enable(1) }:
+      // 1 → 'up', 0 → 'down'; default 'up' when absent.
       let status = 'up';
       if (admins[idx] !== undefined) {
         status = num(admins[idx]) === 1 ? 'up' : 'down';
       }
 
-      const clients = num(assocs[idx]);
-      const bytesIn = num(inOctets[idx]);
-      const bytesOut = num(outOctets[idx]);
-      // best-effort: map bsnAuthFailureCount onto this SSID row by matching index.
-      const fails = num(authFails[idx]);
+      // bsnDot11EssNumberOfMobileStations is a Counter32 → counterNum.
+      const clients = counterNum(stations[idx]);
 
       out.push({
         ssid_name: ssidName,
         status: status,
         clients_total: clients === null ? 0 : clients,
-        bytes_in: bytesIn,
-        bytes_out: bytesOut,
+        // No per-WLAN octet counters exist in AIRESPACE-WIRELESS-MIB (the
+        // "...2.1.6.1 stats table" is per-CLIENT, indexed by client MAC) → null.
+        bytes_in: null,
+        bytes_out: null,
         auth_successes: 0, // no OID available — leave 0
-        auth_failures: fails === null ? 0 : fails,
+        // No per-SSID auth-failure OID either (...2.1.13 is a per-client,
+        // by-username table) → null, never a fake 0.
+        auth_failures: null,
       });
     }
   } catch (e) {
@@ -341,36 +404,22 @@ function parseSsids(walked) {
   return out;
 }
 
-// Parse the rogue/unmanaged AP table (bsnRogueAPTable). The main columns are
-// indexed by the rogue MAC; RSSI/channel/detecting-AP may be on a per-detecting-AP
-// sub-table indexed "<rogueMAC>.<detectingApMAC>", so we correlate those back to
-// the rogue MAC by longest matching index prefix. Never throws.
+// Parse the rogue AP table (bsnRogueAPTable, entry ...2.1.7.1). Every column
+// lives on the same entry and shares the same INDEX (the 6-octet rogue MAC),
+// so rows correlate directly by index. Never throws.
 function parseRogueAps(walked) {
   const out = [];
   try {
     walked = walked || {};
 
     const macs = columnMap(walked.rogueMac, bsnRogueAPDot11MacAddress);
-    const ssids = columnMap(walked.rogueSsid, bsnRogueAPSsid);
+    const ssids = columnMap(walked.rogueSsid, bsnRogueAPSSID);
     const states = columnMap(walked.rogueState, bsnRogueAPState);
     const classes = columnMap(walked.rogueClass, bsnRogueAPClassType);
     const channels = columnMap(walked.rogueChannel, bsnRogueAPChannel);
-    const rssis = columnMap(walked.rogueRssi, bsnRogueAPRssi);
-    const detectors = columnMap(walked.rogueDetector, bsnRogueAPFirstReportedApMac);
+    const rssis = columnMap(walked.rogueRssi, bsnRogueAPMaxDetectedRSSI);
+    const detectors = columnMap(walked.rogueDetector, bsnRogueAPMaxRssiApMacAddress);
 
-    // Helper: given a per-rogue column keyed by either "<rogueIdx>" or
-    // "<rogueIdx>.<extra>", find the value whose index equals or starts with idx.
-    function pick(col, idx) {
-      if (col[idx] !== undefined) return col[idx];
-      const prefix = idx + '.';
-      for (const k of Object.keys(col)) {
-        if (k === idx || k.startsWith(prefix)) return col[k];
-      }
-      return undefined;
-    }
-
-    // The set of rogue rows: primary index source is the MAC column; fall back to
-    // SSID/state index keys when the MAC column came back empty.
     const indexes = new Set();
     [macs, ssids, states, classes].forEach((m) => {
       Object.keys(m).forEach((k) => indexes.add(k));
@@ -381,11 +430,11 @@ function parseRogueAps(walked) {
       const bssid = fmtMac(macs[idx]) || fmtMac(idx);
       if (!bssid) continue;
 
-      const ssid = str(pick(ssids, idx));
-      const rssi = num(pick(rssis, idx));
-      const channel = num(pick(channels, idx));
-      const classification = classifyRogue(pick(states, idx), pick(classes, idx));
-      const detecting_ap = fmtMac(pick(detectors, idx));
+      const ssid = str(ssids[idx]);
+      const rssi = num(rssis[idx]);
+      const channel = num(channels[idx]);
+      const classification = classifyRogue(states[idx], classes[idx]);
+      const detecting_ap = fmtMac(detectors[idx]);
 
       out.push({
         bssid,
@@ -405,39 +454,38 @@ function parseRogueAps(walked) {
 
 const snmpRogueOids = {
   rogueMac: bsnRogueAPDot11MacAddress,
-  rogueSsid: bsnRogueAPSsid,
+  rogueSsid: bsnRogueAPSSID,
   rogueState: bsnRogueAPState,
   rogueClass: bsnRogueAPClassType,
   rogueChannel: bsnRogueAPChannel,
-  rogueRssi: bsnRogueAPRssi,
-  rogueDetector: bsnRogueAPFirstReportedApMac,
+  rogueRssi: bsnRogueAPMaxDetectedRSSI,
+  rogueDetector: bsnRogueAPMaxRssiApMacAddress,
 };
 
 module.exports = {
   name: 'cisco',
   snmpOids: {
-    cLApName: cLApName,
-    cLApIp: cLApIpAddress,
-    cLApModel: cLApModel,
+    // bsnAPTable (index = Ethernet/Dot3 MAC)
     bsnAPName: bsnAPName,
     bsnApIp: bsnApIpAddress,
     bsnAPModel: bsnAPModel,
     bsnAPStatus: bsnAPOperationStatus,
-    bsnApClients: bsnApAssociatedClientCount,
+    bsnApSerial: bsnAPSerialNumber,
+    bsnApSwVersion: bsnAPSoftwareVersion,
+    // bsnAPIfTable per-radio (index = MAC.slot)
+    bsnApIfType: bsnAPIfType,
     bsnApChannel: bsnAPIfPhyChannelNumber,
-    // Per-radio metrics (bsnApDot11Table / bsnAPIfTable, index apIndex.radioIndex).
-    bsnApNoiseFloor: bsnApDot11QosNoiseFloor,
-    bsnApChannelUtil: bsnApDot11LoadChannelUtilization,
-    bsnApDot11Clients: bsnApDot11LoadNumAssociations,
+    // bsnAPIfLoadParametersTable per-radio (index = MAC.slot)
     bsnApIfRxUtil: bsnAPIfLoadRxUtilization,
     bsnApIfTxUtil: bsnAPIfLoadTxUtilization,
-    // Per-SSID (bsnDot11EssTable / bsnDot11EssWlanStatTable, index = ess index).
-    bsnEssSsid: bsnDot11EsSsid,
-    bsnEssAssoc: bsnDot11EssTotalAssociations,
+    bsnApChannelUtil: bsnAPIfLoadChannelUtilization,
+    bsnApLoadClients: bsnAPIfLoadNumOfClients,
+    // bsnAPIfChannelNoiseInfoTable per-radio-per-channel (index = MAC.slot.channel)
+    bsnApNoise: bsnAPIfDBNoisePower,
+    // bsnDot11EssTable per-SSID (index = ESS index)
+    bsnEssSsid: bsnDot11EssSsid,
     bsnEssAdmin: bsnDot11EssAdminStatus,
-    bsnEssInOctets: bsnDot11EssWlanIfInOctets,
-    bsnEssOutOctets: bsnDot11EssWlanIfOutOctets,
-    bsnAuthFailures: bsnAuthFailureCount,
+    bsnEssClients: bsnDot11EssNumberOfMobileStations,
   },
   snmpRogueOids,
   parseApTable,

@@ -1,12 +1,13 @@
 {
   "name": "spanvault",
-  "version": "1.61.0",
+  "version": "1.61.1",
   "private": true,
   "description": "SpanVault - Network Monitoring System (NocVault suite)",
   "scripts": {
     "install:all": "npm install && cd frontend && npm install",
     "api": "node api/server.js",
-    "collector": "node collector/collector.js"
+    "collector": "node collector/collector.js",
+    "test:parsers": "node tests/run-parser-tests.js"
   },
   "dependencies": {
     "cors": "^2.8.5",

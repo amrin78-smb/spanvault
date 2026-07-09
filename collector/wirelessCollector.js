@@ -14,18 +14,24 @@
  * Credentials (snmp_community, api_*) are never logged.
  */
 
-const { createSession, walk, get } = require('./snmp-session');
+const { createSession, walk, get, OID } = require('./snmp-session');
 const { getWirelessParser, wirelessVendorFor } = require('./wireless');
 const { getClientParser } = require('./wireless/clients');
 const { runWirelessIntelligence } = require('./wirelessIntelligence');
 
 // Vendor SNMP metric support matrix (what each parser actually returns):
-//   Aruba:        radio channel/util/clients/noise/retry + per-radio byte
-//                 counters (throughput) + per-SSID clients
+//   Aruba:        radio channel/util/clients/noise/retry/interference + per-radio
+//                 byte counters (throughput) + per-SSID clients — live-verified
 //                 (no per-SSID byte/auth counters, no rx/tx error counters)
-//   Cisco:        partial (per-SSID clients + traffic, noise floor; retry approx)
-//   Ruckus:       full radio metrics (noise, util, throughput) + per-SSID clients
-//   MikroTik/HPE/Grandstream: basic only (no radio/SSID stats) — fields stay NULL
+//   Cisco:        radio channel/util/clients/noise + retry approx + per-SSID
+//                 clients/status — MIB-verified, unvalidated on hardware
+//                 (no per-WLAN traffic counters exist in AIRESPACE-WIRELESS-MIB)
+//   Ruckus (ZD):  radio channel/util/clients + throughput + per-SSID
+//                 clients/bytes/auth — MIB-verified, unvalidated on hardware
+//                 (no noise-floor object in RUCKUS-ZD-WLAN-MIB; SmartZone uses a
+//                 different subtree and is NOT supported by this parser)
+//   MikroTik:     per-interface SSID/clients/noise via mtxrWlApTable (basic)
+//   HPE/Fortinet/Grandstream: basic presence/status only — other fields NULL
 
 // Vendor HTTP API clients (controller_url based).
 const apiClients = {
@@ -120,12 +126,21 @@ async function probeControllerCapabilities(pool, controller) {
       try { session.close(); } catch (_e) { /* ignore */ }
     }
 
+    const found = capKeys.filter((k) => capabilities[k]).length;
+    // Only persist probe_done when at least one capability OID resolved (or the
+    // vendor has none to probe). A device that answered NOTHING was most likely
+    // unreachable during the probe — writing probe_done=true then would freeze
+    // the controller with permanently-empty capabilities, so leave it unprobed
+    // and let the next cycle retry.
+    if (capKeys.length > 0 && found === 0) {
+      log(`[WirelessProbe] ${controller.name}: 0/${capKeys.length} capabilities resolved (unreachable?) — will retry next cycle`);
+      return {};
+    }
     capabilities.probe_done = true;
     await pool.query(
       'UPDATE wireless_controllers SET capabilities = $2, capabilities_probed_at = NOW() WHERE id = $1',
       [controller.id, capabilities]);
 
-    const found = capKeys.filter((k) => capabilities[k]).length;
     log(`[WirelessProbe] ${controller.name}: found ${found}/${capKeys.length} capabilities`);
     return capabilities;
   } catch (e) {
@@ -164,6 +179,12 @@ async function probeControllerCapabilitiesDetailed(pool, controller) {
       }
     } finally {
       try { session.close(); } catch (_e) { /* ignore */ }
+    }
+    // Same rule as probeControllerCapabilities: a device that resolved ZERO
+    // capabilities was likely unreachable — don't persist probe_done, so the
+    // next cycle retries instead of freezing empty capabilities.
+    if (details.every((d) => !d.found)) {
+      return { capabilities: {}, details, message: 'No capability OIDs answered (device unreachable?) — probe not persisted; it will retry.' };
     }
     capabilities.probe_done = true;
     await pool.query(
@@ -224,12 +245,18 @@ async function pollControllerMetadata(session, controller) {
 }
 
 // ── SNMP polling ──────────────────────────────────────────────
+// Ceiling on rows per parser-column walk. Generous — the biggest legitimate
+// tables are one row per AP radio (a few hundred rows on a large controller) —
+// but it stops a mispointed OID (e.g. a per-client table) from walking tens of
+// thousands of varbinds every poll cycle.
+const PARSER_WALK_ROW_CAP = 5000;
+
 // Walk every OID a parser declares and group varbinds by the parser's logical
 // key → { key: [ { oid, value } ... ] }, exactly what parseApTable() expects.
 async function walkParserOids(session, parser) {
   const walked = {};
   for (const key of Object.keys(parser.snmpOids)) {
-    walked[key] = await walk(session, parser.snmpOids[key]);
+    walked[key] = await walk(session, parser.snmpOids[key], PARSER_WALK_ROW_CAP);
   }
   return walked;
 }
@@ -241,7 +268,7 @@ async function walkRogueOids(session, parser) {
   const walked = {};
   try {
     for (const key of Object.keys(parser.snmpRogueOids)) {
-      try { walked[key] = await walk(session, parser.snmpRogueOids[key]); }
+      try { walked[key] = await walk(session, parser.snmpRogueOids[key], PARSER_WALK_ROW_CAP); }
       catch (_e) { walked[key] = []; }
     }
   } catch (_e) { return {}; }
@@ -263,12 +290,37 @@ async function pollSnmpController(pool, controller) {
 
   const session = createSession(device, 10000);
   try {
+    // Fail-fast reachability pre-flight: walk()/get() never reject, so a dead
+    // controller would otherwise burn one timeout per parser walk (~22 walks ×
+    // up to 20s ≈ minutes, risking poll-cycle overrun of the 15-min stale-AP
+    // age-out) and then look like a healthy "0 AP" poll. One scalar GET bounds
+    // the cost of a dead controller to a single timeout.
+    const preflight = await get(session, [OID.sysUpTime]);
+    if (!preflight || preflight.length === 0) {
+      throw new Error('SNMP unreachable (no response to sysUpTime)');
+    }
+
     const walked = await walkParserOids(session, parser);
     const aps = parser.parseApTable(walked) || [];
     // Per-SSID stats are optional — only some vendor parsers implement parseSsids.
     let ssids = [];
     if (typeof parser.parseSsids === 'function') {
       try { ssids = parser.parseSsids(walked) || []; } catch (_e) { ssids = []; }
+    }
+    // Visibility: parsers swallow all errors and walks return [] on failure, so
+    // a wrong OID set otherwise fails SILENTLY (plausible-but-empty data). One
+    // line per poll makes a dead vendor OID set obvious in the collector log.
+    const walkedRows = Object.values(walked).reduce((s, rows) => s + (rows ? rows.length : 0), 0);
+    log(`${controller.name}: walked ${walkedRows} varbinds → parsed ${aps.length} APs, ${ssids.length} SSIDs`);
+    // Defense-in-depth behind the pre-flight: the controller answered at first
+    // but every parser walk still came back empty — re-probe before reporting
+    // an "ok, 0 AP / 0 SSID" poll (a controller that died mid-poll would
+    // otherwise be marked status='ok' and have its metadata wiped with NULLs).
+    if (aps.length === 0 && ssids.length === 0) {
+      const probe = await get(session, [OID.sysUpTime]);
+      if (!probe || probe.length === 0) {
+        throw new Error('SNMP unreachable (no response to sysUpTime)');
+      }
     }
     // Rogue/unmanaged APs are optional — only some vendor parsers declare the
     // rogue OID set + parseRogueAps. Failures here never affect AP/SSID polling.
@@ -325,9 +377,27 @@ async function matchMonitoredDevice(pool, ap) {
 }
 
 // Throughput counters are cumulative bytes; we keep the previous reading per AP
-// (keyed by controller_id::name) in memory so each poll can derive a rate.
-// { key -> { rx, tx, t(ms) } }
+// (keyed by controller_id::<parser _index or name> — the parser index is the AP
+// MAC where available, so two APs sharing a duplicate name can't corrupt each
+// other's deltas). { key -> { rx, tx, t(ms) } }
 const prevCounters = new Map();
+
+// Delta between two cumulative counter readings, wrap-aware. A decrease from a
+// value still inside 32-bit range is most likely a Counter32 wrap (4.3 GB —
+// minutes on a busy AP), so compute the wrapped delta and accept it only when
+// the implied rate is sane (< 2 Gbps for one AP); anything else is treated as a
+// counter reset (null delta, sample skipped).
+const COUNTER32_WRAP = 2 ** 32;
+const MAX_SANE_BPS = 2e9;
+function counterDeltaBps(cur, prev, elapsed) {
+  if (cur === null || prev === null) return null;
+  if (cur >= prev) return Math.round(((cur - prev) * 8) / elapsed);
+  if (prev < COUNTER32_WRAP) {
+    const bps = Math.round(((cur + COUNTER32_WRAP - prev) * 8) / elapsed);
+    if (bps < MAX_SANE_BPS) return bps;
+  }
+  return null;
+}
 
 // Derive throughput in BITS per second from cumulative byte counters.
 // Returns { inBps, outBps } (either may be null when there is no usable delta,
@@ -339,12 +409,8 @@ function deriveThroughput(key, curRx, curTx, nowMs) {
   if (prev) {
     const elapsed = (nowMs - prev.t) / 1000;
     if (elapsed > 0) {
-      if (curRx !== null && prev.rx !== null && curRx >= prev.rx) {
-        inBps = Math.round(((curRx - prev.rx) * 8) / elapsed);
-      }
-      if (curTx !== null && prev.tx !== null && curTx >= prev.tx) {
-        outBps = Math.round(((curTx - prev.tx) * 8) / elapsed);
-      }
+      inBps = counterDeltaBps(curRx, prev.rx, elapsed);
+      outBps = counterDeltaBps(curTx, prev.tx, elapsed);
     }
   }
   // Only remember a reading when at least one counter is present.
@@ -354,18 +420,34 @@ function deriveThroughput(key, curRx, curTx, nowMs) {
   return { inBps, outBps };
 }
 
+// Evict prevCounters entries not refreshed for 3+ poll cycles (APs that were
+// renamed, removed, or whose controller was deleted) so the Map can't grow
+// without bound over months of AP churn.
+function prunePrevCounters(nowMs, intervalMs) {
+  const cutoff = nowMs - 3 * intervalMs;
+  for (const [key, entry] of prevCounters) {
+    if (entry.t < cutoff) prevCounters.delete(key);
+  }
+}
+
 // Upsert one AP (keyed by controller_id + name) and append a history sample.
 // Decimal-MAC AP name guard (e.g. "108.196.159.202.125.210"). Aruba's parser
 // already rejects these, but this protects the shared write path for ALL vendors.
 const DECIMAL_MAC_RE = /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/;
 
 async function upsertAp(pool, controller, ap) {
-  // Skip before any DB write: unnamed APs and decimal-MAC names are bad parses.
-  if (!ap.name || DECIMAL_MAC_RE.test(ap.name)) {
-    console.log('[wireless] skipped decimal-MAC AP:', ap.name);
+  // Resolve the row name FIRST (mac/ip fallback for API vendors that report
+  // nameless APs), THEN validate — an all-null identity or a decimal-MAC name
+  // (a bad SNMP parse) is skipped before any DB write.
+  const name = ap.name || ap.mac_address || ap.ip_address || null;
+  if (!name) {
+    console.log('[wireless] skipped AP with no name/mac/ip from controller', controller.id);
     return;
   }
-  const name = ap.name || ap.mac_address || ap.ip_address || 'AP';
+  if (DECIMAL_MAC_RE.test(name)) {
+    console.log('[wireless] skipped decimal-MAC AP:', name);
+    return;
+  }
   const monitoredId = await matchMonitoredDevice(pool, ap);
   const clientsTotal = intOrNull(ap.clients_total) || 0;
   const clients2g = intOrNull(ap.clients_2g) || 0;
@@ -373,8 +455,11 @@ async function upsertAp(pool, controller, ap) {
   const clients6g = intOrNull(ap.clients_6g) || 0;
 
   // Convert cumulative rx/tx byte counters into a per-poll bits/sec rate.
+  // Keyed by the parser's stable _index (the AP MAC) when present, so duplicate
+  // AP names on one controller can't interleave counters into bogus deltas.
   const { inBps, outBps } = deriveThroughput(
-    `${controller.id}::${name}`, numOrNull(ap.rx_bytes), numOrNull(ap.tx_bytes), Date.now());
+    `${controller.id}::${ap._index != null ? ap._index : name}`,
+    numOrNull(ap.rx_bytes), numOrNull(ap.tx_bytes), Date.now());
 
   const noise2g = intOrNull(ap.noise_floor_2g);
   const noise5g = intOrNull(ap.noise_floor_5g);
@@ -730,10 +815,18 @@ async function pollController(pool, controller) {
     } catch (_e) { apDisc = 0; }
 
     const md = metadata || {};
+    // COALESCE keeps the stored value when this poll's metadata field is NULL —
+    // a partial poll (capability OID timed out / not exposed) must never wipe
+    // known-good model/firmware/license/HA info.
     await pool.query(
       `UPDATE wireless_controllers SET last_polled_at = NOW(), status = 'ok', last_error = NULL,
-         model = $2, firmware_version = $3, licensed_aps = $4,
-         ha_mode = $5, ha_peer_ip = $6, ha_sync_status = $7, ap_disconnects_24h = $8
+         model            = COALESCE($2, model),
+         firmware_version = COALESCE($3, firmware_version),
+         licensed_aps     = COALESCE($4, licensed_aps),
+         ha_mode          = COALESCE($5, ha_mode),
+         ha_peer_ip       = COALESCE($6, ha_peer_ip),
+         ha_sync_status   = COALESCE($7, ha_sync_status),
+         ap_disconnects_24h = $8
        WHERE id = $1`,
       [
         controller.id,
@@ -800,6 +893,7 @@ async function pollAll(pool) {
     // Flip no-longer-reported APs to offline so a failed-over-away / down-controller
     // AP doesn't stay a false "online".
     await ageOutStaleAps(pool);
+    prunePrevCounters(Date.now(), WIRELESS_POLL_INTERVAL);
     await runWirelessIntelligence(pool);
   } catch (err) {
     console.error('[wireless] poll cycle failed:', err.message);

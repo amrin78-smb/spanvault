@@ -26,7 +26,11 @@ exports.wirelessVendorFor = function (deviceVendor) {
   const map = {
     aruba: 'aruba',
     cisco: 'cisco',
-    meraki: 'cisco', // Meraki is Cisco; closest SNMP fit
+    // NOTE: 'meraki' is deliberately NOT mapped. Meraki cloud APs do not
+    // implement the AIRESPACE / CISCO-LWAPP MIBs the cisco parser walks, so
+    // the old meraki→cisco mapping made every poll silently return 0 APs
+    // forever. Returning null makes wirelessCollector fail loudly instead
+    // ('no wireless SNMP parser for vendor …'), which is visible and honest.
     fortinet: 'fortinet',
     ruckus: 'ruckus',
     mikrotik: 'mikrotik',

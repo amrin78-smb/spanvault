@@ -34,7 +34,8 @@ function str(v) {
 }
 
 // indexAfter(oid, base): return the trailing portion of `oid` after `base`
-// (the table index used to correlate columns across OID walks).
+// (the table index used to correlate columns across OID walks), or null when
+// `oid` is not under `base`.
 // Tolerates a leading dot on either side and a base that is/ isn't dot-terminated.
 function indexAfter(oid, base) {
   if (!oid) return null;
@@ -44,12 +45,16 @@ function indexAfter(oid, base) {
   if (b[0] === '.') b = b.slice(1);
   if (b && o.startsWith(b)) {
     let rest = o.slice(b.length);
-    if (rest[0] === '.') rest = rest.slice(1);
-    return rest.length ? rest : null;
+    // The match must end on a component boundary: the remainder is either empty
+    // or starts with '.' — otherwise '1.2.3' would wrongly match '1.2.34.5'.
+    if (rest === '' || rest[0] === '.') {
+      if (rest[0] === '.') rest = rest.slice(1);
+      return rest.length ? rest : null;
+    }
   }
-  // Fallback: last numeric component.
-  const parts = o.split('.');
-  return parts.length ? parts[parts.length - 1] : null;
+  // Base doesn't match at all: return null. (Guessing the last OID component
+  // here would silently mis-key rows across unrelated columns.)
+  return null;
 }
 
 // Build a map { index -> value } from a walked column array given its base OID.
@@ -66,10 +71,14 @@ function columnMap(rows, base) {
 }
 
 // Map a single reported channel number onto a band: '2g' | '5g' | '6g'.
-// channel<=14 -> 2g, 15..177 -> 5g, else 6g.
+// channel<=14 -> 2g, 15..177 -> 5g, else 6g. Channel 0 / negative (a disabled
+// or unreported radio) maps to null, not '2g'.
+// NOTE: 6 GHz channel numbers (1..233) overlap the 2.4/5 GHz numbering — a
+// parser that has a radio-type/band OID must prefer it over this heuristic.
 function bandForChannel(ch) {
   const c = num(ch);
   if (c === null) return null;
+  if (c <= 0) return null;
   if (c <= 14) return '2g';
   if (c <= 177) return '5g';
   return '6g';

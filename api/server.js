@@ -34,6 +34,12 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.61.1': [
+    'Vendor wireless audit: every SNMP parser was adversarially verified against its official MIB. The Cisco and Ruckus parsers had substantially wrong OIDs (Ruckus AP/radio tables were swapped and its "rogue AP" walk was actually reading the client table; Cisco SSID names/status, radio metrics and rogue classification were reading the wrong columns) — all rewired to the MIB-verified objects. Fortinet status was inverted (online APs showed offline), and the MikroTik/HPE/Grandstream parsers had wrong tables or columns — all corrected. These parsers remain unvalidated on real hardware (none available) but now match the published MIBs exactly.',
+    'Collector hardening: a dead controller now fails fast and is marked in error instead of being reported "ok" with zero APs and wiped metadata; controller metadata is never overwritten with NULLs by a partial poll; a failed capability probe now retries instead of freezing empty; 32-bit counter wraps no longer blank throughput on busy APs; per-poll table walks are row-capped; and every poll logs walked-varbinds vs parsed-APs so a dead OID set is visible in the log.',
+    'Intelligence fixes: APs without channel data no longer count each other as co-channel neighbors (which was silently dragging down health scores) and no longer get spurious channel-change recommendations.',
+    'New offline parser test suite (npm run test:parsers): 96 synthetic-SNMP checks across Aruba/Cisco/Ruckus/Fortinet/MikroTik that run without hardware, so parser regressions are caught before deploy.',
+  ],
   '1.61.0': [
     'Access points now report real measured interference — the share of channel airtime consumed by traffic that is NOT the AP\'s own (channel busy minus own receive/transmit airtime), from the controller\'s channel-stats table. Live-verified on Aruba AOS 8.10 and 8.13.',
     'The AP detail panel\'s Radio Performance card shows Interference per band (highlighted red at 25%+), and a new 24h Interference trend chart joins the noise-floor and retry-rate charts.',

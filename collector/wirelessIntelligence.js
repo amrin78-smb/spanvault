@@ -194,10 +194,13 @@ async function computeWirelessIntelligence(pool, controllerId) {
       apRecs.push(`Change 2.4GHz to channel 1, 6, or 11`);
     }
 
-    const coNeighbors2g = apList.filter(b =>
+    // An AP with no reported channel on a band has no co-channel neighbors on
+    // that band — without the null guard, null === null would make every
+    // channel-less AP count all the other channel-less APs as neighbors.
+    const coNeighbors2g = ch2g == null ? 0 : apList.filter(b =>
       b.id !== ap.id && b.radio_2g_channel === ch2g
     ).length;
-    const coNeighbors5g = apList.filter(b =>
+    const coNeighbors5g = ch5g == null ? 0 : apList.filter(b =>
       b.id !== ap.id && b.radio_5g_channel === ch5g
     ).length;
 
@@ -265,7 +268,9 @@ async function computeWirelessIntelligence(pool, controllerId) {
     const freeCh5g = preferred5g.find(c =>
       !used5gChannels.has(c) || c === ch5g
     );
-    const channelRec = freeCh5g && freeCh5g !== ch5g ?
+    // Only recommend a 5GHz channel change when the AP actually reports a 5GHz
+    // channel — an AP with a null channel has nothing to move away from.
+    const channelRec = ch5g != null && freeCh5g && freeCh5g !== ch5g ?
       `Consider channel ${freeCh5g}` : null;
 
     // Isolate per-AP failures so one bad row can't abort the whole controller's

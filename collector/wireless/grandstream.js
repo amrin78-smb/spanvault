@@ -10,9 +10,11 @@
 
 const { num, str, columnMap, emptyAp } = require('./_util');
 
-// Standard RFC OIDs
-const sysName = '1.3.6.1.2.1.1.5.0';
-const sysUpTime = '1.3.6.1.2.1.1.3.0'; // TimeTicks (1/100s)
+// Standard RFC OIDs. These feed subtree WALKS, so they must be the object
+// base (no trailing '.0' scalar instance — walking '…1.5.0' returns nothing;
+// walking '…1.5' returns the '.0' instance).
+const sysName = '1.3.6.1.2.1.1.5';
+const sysUpTime = '1.3.6.1.2.1.1.3'; // TimeTicks (1/100s)
 
 // IF-MIB ifTable columns (coarse interface count)
 const ifDescr = '1.3.6.1.2.1.2.2.1.2';
