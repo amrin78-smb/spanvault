@@ -241,7 +241,7 @@ async function pingDevice(device) {
   `, [device.id, newStatus, consecutive, timeMs, alive]);
 
   // Alert evaluation for reachability + latency.
-  const inMaint = await inMaintenance(device.id);
+  const inMaint = await inMaintenance({ deviceId: device.id });
   if (newStatus === 'down' && !inMaint) {
     await raiseAlert(device, 'device_down', 'critical',
       await buildDeviceDownMessage(device), null);
@@ -428,7 +428,7 @@ function compare(value, operator, threshold) {
 }
 
 async function evaluateSnmpAlerts(device, samples) {
-  if (await inMaintenance(device.id)) return;
+  if (await inMaintenance({ deviceId: device.id })) return;
 
   // Latest non-interface metric values (cpu_pct, mem_pct).
   const latest = {};
@@ -530,14 +530,26 @@ async function evaluateSnmpAlerts(device, samples) {
 }
 
 // ── Maintenance suppression ───────────────────────────────────
-async function inMaintenance(deviceId) {
+// Three-way scope match against maintenance_windows:
+//  - A row with device_id IS NULL AND service_check_id IS NULL is a GLOBAL window
+//    and always matches (first OR clause) — this preserves the original
+//    "device_id IS NULL = global" semantics for both devices and services.
+//  - A row with device_id set only matches when deviceId equals it.
+//  - A row with service_check_id set only matches when serviceCheckId equals it.
+// Passing null for the arg you're not using is safe: `device_id = NULL` (or
+// `service_check_id = NULL`) is never TRUE in SQL, so a null param cannot
+// accidentally match a NULL-scoped column — ordinary `=` is NULL-safe here,
+// we deliberately avoid `IS NOT DISTINCT FROM` which WOULD match nulls.
+async function inMaintenance({ deviceId = null, serviceCheckId = null } = {}) {
   try {
     const r = await sv.query(`
       SELECT 1 FROM maintenance_windows
-       WHERE (device_id = $1 OR device_id IS NULL)
+       WHERE ((device_id IS NULL AND service_check_id IS NULL)
+              OR device_id = $1
+              OR service_check_id = $2)
          AND starts_at <= NOW() AND ends_at >= NOW()
        LIMIT 1
-    `, [deviceId]);
+    `, [deviceId, serviceCheckId]);
     return r.rowCount > 0;
   } catch (_err) {
     return false;
@@ -627,7 +639,7 @@ async function evaluateStoredDevice(device) {
   // No usable data — agent-offline suppression is handled by evaluateAgentDevices.
   if (newStatus === 'agent_offline' || newStatus === 'unknown' || newStatus == null) return;
 
-  const inMaint = await inMaintenance(device.id);
+  const inMaint = await inMaintenance({ deviceId: device.id });
 
   // Reachability.
   if (newStatus === 'down' && !inMaint) {
@@ -1022,7 +1034,7 @@ async function recoveryEvent(device, rule) {
 // this context. Metrics absent from `metrics` are left untouched (a different
 // poll path owns them); null/undefined values are skipped (no data yet).
 async function evaluateEffectiveRules(device, metrics) {
-  if (await inMaintenance(device.id)) return;
+  if (await inMaintenance({ deviceId: device.id })) return;
   let rules;
   try { rules = await getEffectiveRules(device); }
   catch (err) { console.error('[alerts] effective rule fetch failed:', err.message); return; }
@@ -1166,10 +1178,11 @@ async function escalationTick() {
     const sevClause = minSev === 'warning' ? '' : `AND a.severity = 'critical'`;
     const alerts = (await sv.query(`
       SELECT a.id, a.severity, a.message, a.triggered_at,
-             COALESCE(d.name, ag.name) AS subject_name
+             COALESCE(d.name, ag.name, sc.name) AS subject_name
         FROM alerts a
         LEFT JOIN monitored_devices d ON d.id = a.device_id
         LEFT JOIN agents ag ON ag.id = a.agent_id
+        LEFT JOIN service_checks sc ON sc.id = a.service_check_id
        WHERE a.status = 'active' AND a.acknowledged_at IS NULL ${sevClause}`)).rows;
     if (!alerts.length) return;
     let oncall = null; // resolved lazily, reused across alerts this tick
@@ -1488,6 +1501,7 @@ async function runAndStoreServiceCheck(check) {
 // rule, so a deployment with zero service rules configured behaves identically
 // to before this function grew rule support.
 async function evaluateServiceCheckAlerts(check) {
+  if (await inMaintenance({ serviceCheckId: check.id })) return;
   let rules = [];
   try { rules = await getEffectiveServiceRules(check); }
   catch (err) {

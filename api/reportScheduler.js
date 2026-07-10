@@ -115,12 +115,13 @@ async function runAndEmailReport(pool, report, getSmtpSettings) {
     html,
   };
 
-  // device-detail / ap-detail are multi-entity reports whose selected entity ids
-  // are NOT persisted in saved_reports, so a scheduled run has no entity to render
-  // and the PDF would come out as an empty "No entity selected" page. Until entity
-  // ids are persisted, skip the PDF for these and send the HTML-only email instead
-  // of attaching a misleading empty PDF.
-  const isDetailTemplate = report.template === 'device-detail' || report.template === 'ap-detail';
+  // device-detail / ap-detail / service-detail are multi-entity reports whose
+  // selected entity ids are NOT persisted in saved_reports, so a scheduled run
+  // has no entity to render and the PDF would come out as an empty "No entity
+  // selected" page. Until entity ids are persisted, skip the PDF for these and
+  // send the HTML-only email instead of attaching a misleading empty PDF.
+  const isDetailTemplate = report.template === 'device-detail' || report.template === 'ap-detail'
+    || report.template === 'service-detail';
 
   // If a pdfkit renderer exists for this template, attach the rich PDF alongside
   // the HTML body. A PDF failure must NEVER break the email — on any error we log
@@ -181,6 +182,14 @@ function buildReportUrl(report) {
     case 'device-detail':
       if (scopeId) p.set('device_id', String(scopeId));
       return `/api/reports/device-detail?${p}`;
+    case 'service-detail':
+      if (scopeId) p.set('service_check_id', String(scopeId));
+      return `/api/reports/service-detail?${p}`;
+    // Unlike device-detail/service-detail, ap-detail takes its id as a path
+    // segment, not a query param — this case was missing entirely, so a
+    // scheduled AP Detail report silently fell through to network-summary.
+    case 'ap-detail':
+      return `/api/reports/ap-detail/${scopeId != null ? scopeId : ''}?${p}`;
     case 'sla-compliance':
       if (report.scope_type === 'site' && scopeId) p.set('site_id', String(scopeId));
       if (report.scope_type === 'device' && scopeId) p.set('device_id', String(scopeId));
@@ -237,6 +246,12 @@ function buildReportParams(report) {
       break;
     case 'device-detail':
       if (scopeId) params.device_id = scopeId;
+      break;
+    case 'service-detail':
+      if (scopeId) params.service_check_id = scopeId;
+      break;
+    case 'ap-detail':
+      if (scopeId) params.ap_id = scopeId;
       break;
     case 'sla-compliance':
       if (report.scope_type === 'site' && scopeId) params.site_id = scopeId;

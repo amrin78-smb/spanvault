@@ -343,6 +343,16 @@ async function gatherExecutive(db, params) {
       COUNT(*) FILTER (WHERE a.triggered_at >= $3::timestamptz AND a.triggered_at < $1::timestamptz)::int AS prev
     FROM alerts a JOIN monitored_devices d ON d.id = a.device_id
     WHERE a.alert_type <> 'recovery' AND a.triggered_at >= $3::timestamptz${scPrevAnd}`, pPrev, [{ cur: 0, prev: 0 }]);
+  // Service-check uptime — a bounded parallel summary to the device overview
+  // above (mirrors GET /api/reports/executive's svcOv query). Reuses the SAME
+  // site-filter parameter scWin already pushed onto pWin, applied to
+  // sc.site_id (service_checks' own site column) instead of d.site_id.
+  const scWinSvcAnd = scWin ? ` AND sc.site_id = ANY($${pWin.length}::int[])` : '';
+  const svcOv = await runQ('service-overview', `
+    SELECT COUNT(*)::int AS tc, SUM(CASE WHEN r.status <> 'up' THEN 1 ELSE 0 END)::int AS bad,
+           COUNT(DISTINCT r.check_id)::int AS services
+    FROM service_check_results r JOIN service_checks sc ON sc.id = r.check_id
+    WHERE r.ts BETWEEN $1::timestamptz AND $2::timestamptz${scWinSvcAnd}`, pWin, [{ tc: 0, bad: 0, services: 0 }]);
   const siteRows = await runQ('site-rows', `
     WITH site_alerts AS (
       SELECT COALESCE(d.site_name, 'Unassigned') AS site_name, COUNT(*)::int AS incidents
@@ -462,10 +472,19 @@ async function gatherExecutive(db, params) {
     biggest_incident: biggest,
     recommendations: recommendations.slice(0, 3),
     trendPoints,
+    // Service-check uptime — parallel summary to overall_uptime_pct above (see
+    // svcOv query). A bounded addition: one rollup, not a restructure of the
+    // device-shaped executive report. Mirrors GET /api/reports/executive.
+    service_summary: {
+      uptime_pct: pct2(svcOv.rows[0].bad, svcOv.rows[0].tc),
+      total_checks: svcOv.rows[0].tc,
+      total_services: svcOv.rows[0].services,
+    },
     summary: [
       { label: 'Overall Uptime', value: pctStr(curUptime), color: GREEN },
       { label: 'Total Incidents', value: String(totalIncidents), color: RED },
       { label: 'Downtime (min)', value: String(downtimeMinutes), color: YELLOW },
+      { label: 'Service Uptime', value: pctStr(pct2(svcOv.rows[0].bad, svcOv.rows[0].tc)), color: NAVY },
     ],
   };
 }
@@ -493,10 +512,12 @@ function renderExecutive(doc, data, layout) {
 
   // KPI tiles.
   const k = data.kpis || {};
+  const svcSummary = data.service_summary || {};
   y = drawKpiTiles(doc, layout, y, [
     { value: pctStr(k.uptime), label: 'Overall Uptime', color: GREEN },
     { value: k.incidents != null ? String(k.incidents) : '—', label: 'Total Incidents', color: RED },
     { value: `${k.downtime != null ? k.downtime : 0} min`, label: 'Downtime', color: YELLOW },
+    { value: pctStr(svcSummary.uptime_pct), label: 'Service Uptime', color: NAVY },
   ]);
   y += 22;
 
@@ -1045,6 +1066,52 @@ async function slaComplianceRows(runQ, q, siteFilter) {
   return { rows, slaTarget, win };
 }
 
+// Parallel service-check uptime rollup — mirrors serviceSlaSummary in server.js.
+// A single bounded summary line (total/meeting/failing/overall uptime/downtime),
+// not a second full per-service table (the device table is this report's whole
+// structure; services get a summary line, not a restructure).
+async function gatherServiceSlaSummary(db, q, siteFilter, slaTarget) {
+  const win = getDateRange(q);
+  const params = [win.start, win.end];
+  const filters = ['sc.active = TRUE'];
+  if (q.site_id) { params.push(parseInt(q.site_id, 10)); filters.push(`sc.site_id = $${params.length}`); }
+  const scc = siteClause(siteFilter, params, 'sc.site_id');
+  if (scc) filters.push(scc);
+  try {
+    const r = await db.query(`
+      WITH res AS (
+        SELECT check_id, COUNT(*)::int AS total_checks,
+               SUM(CASE WHEN status = 'up' THEN 0 ELSE 1 END)::int AS failed_checks
+        FROM service_check_results WHERE ts BETWEEN $1 AND $2 GROUP BY check_id
+      )
+      SELECT sc.id,
+             COALESCE(r.total_checks, 0) AS total_checks,
+             COALESCE(r.failed_checks, 0) AS failed_checks,
+             ROUND(sc.interval_seconds * COALESCE(r.failed_checks, 0) / 60.0, 1) AS downtime_minutes,
+             CASE WHEN r.total_checks > 0
+                  THEN ROUND((1 - r.failed_checks::numeric / r.total_checks) * 100, 3)
+                  ELSE NULL END AS uptime_pct
+      FROM service_checks sc
+      LEFT JOIN res r ON r.check_id = sc.id
+      WHERE ${filters.join(' AND ')}
+    `, params);
+    const rows = r.rows;
+    const withData = rows.filter((x) => x.total_checks > 0);
+    const tChecks = withData.reduce((a, x) => a + x.total_checks, 0);
+    const tFailed = withData.reduce((a, x) => a + x.failed_checks, 0);
+    return {
+      total: rows.length,
+      meeting: rows.filter((x) => x.uptime_pct != null && Number(x.uptime_pct) >= slaTarget).length,
+      failing: rows.filter((x) => x.uptime_pct != null && Number(x.uptime_pct) < slaTarget).length,
+      overall_uptime_pct: tChecks ? Math.round((1 - tFailed / tChecks) * 100000) / 1000 : null,
+      total_downtime_minutes: Math.round(rows.reduce((a, x) => a + (Number(x.downtime_minutes) || 0), 0) * 10) / 10,
+    };
+  } catch (e) {
+    console.error('[reportsPdf/sla-compliance] service summary failed:', e.message);
+    return null;
+  }
+}
+
 async function gatherSla(db, params) {
   const q = params || {};
   const siteFilter = resolveSiteFilter(q);
@@ -1107,12 +1174,13 @@ async function gatherSla(db, params) {
     total_downtime_minutes: Math.round(rows.reduce((a, r) => a + (Number(r.downtime_minutes) || 0), 0) * 10) / 10,
   };
   const trendPoints = await uptimeTrendPoints(runQ, win, siteFilter, q.site_id ? parseInt(q.site_id, 10) : null);
+  const service_summary = await gatherServiceSlaSummary(db, q, siteFilter, slaTarget);
 
   return {
     title: 'SLA Compliance',
     dateRange: win.label,
     rangeLabel: `Availability - ${win.label}`,
-    slaTarget, stats, devices: sorted, risk: { at_risk, trends }, trendPoints,
+    slaTarget, stats, devices: sorted, risk: { at_risk, trends }, trendPoints, service_summary,
     summary: [
       { label: 'Meeting SLA', value: `${stats.meeting}/${stats.total}`, color: GREEN },
       { label: 'Failing', value: String(stats.failing), color: RED },
@@ -1134,12 +1202,14 @@ function renderSla(doc, data, layout) {
   y += 14;
 
   const s = data.stats || {};
+  const svcSummary = data.service_summary || {};
   y = drawKpiTiles(doc, layout, y, [
     { value: `${data.slaTarget}%`, label: 'SLA Target', color: RED },
     { value: `${s.meeting || 0}/${s.total || 0}`, label: 'Meeting SLA', color: GREEN },
     { value: String(s.failing || 0), label: 'Failing', color: RED },
     { value: s.overall_uptime_pct == null ? '—' : `${s.overall_uptime_pct}%`, label: 'Overall Uptime', color: NAVY },
     { value: `${s.total_downtime_minutes || 0} min`, label: 'Total Downtime', color: YELLOW },
+    { value: svcSummary.overall_uptime_pct == null ? '—' : `${svcSummary.overall_uptime_pct}%`, label: 'Service Uptime', color: NAVY },
   ]);
   y += 22;
   doc.y = y;
@@ -2427,24 +2497,37 @@ async function gatherAlertAnalysis(db, params) {
   const siteFilter = resolveSiteFilter(q);
   const runQ = mkRunQ(db, 'alert-analysis');
 
+  // Estate-wide: device alerts (alerts.device_id) AND service-check alerts
+  // (alerts.service_check_id) both feed this report — mirrors the on-screen
+  // GET /api/reports/alert-analysis endpoint (LEFT JOIN both sources, never
+  // INNER JOIN either alone).
   const p = [win.start, win.end];
-  const sc = siteClause(siteFilter, p, 'd.site_id');
-  let extra = sc ? ` AND ${sc}` : '';
+  let extra = '';
+  if (siteFilter && siteFilter.length) {
+    p.push(siteFilter);
+    extra += ` AND (d.site_id = ANY($${p.length}::int[]) OR sc2.site_id = ANY($${p.length}::int[]))`;
+  }
   const siteId = parseInt(q.site_id, 10);
-  if (!isNaN(siteId)) { p.push(siteId); extra += ` AND d.site_id = $${p.length}`; }
-  const base = `FROM alerts a JOIN monitored_devices d ON d.id = a.device_id
+  if (!isNaN(siteId)) { p.push(siteId); extra += ` AND (d.site_id = $${p.length} OR sc2.site_id = $${p.length})`; }
+  const base = `FROM alerts a
+    LEFT JOIN monitored_devices d ON d.id = a.device_id
+    LEFT JOIN service_checks sc2 ON sc2.id = a.service_check_id
     WHERE a.alert_type <> 'recovery' AND a.triggered_at BETWEEN $1 AND $2${extra}`;
 
   const tot = await runQ('tot', `SELECT COUNT(*)::int AS c ${base}`, p, [{ c: 0 }]);
   const byType = await runQ('byType', `SELECT a.alert_type AS key, COUNT(*)::int AS count ${base} GROUP BY a.alert_type ORDER BY count DESC`, p, []);
   const bySev = await runQ('bySev', `SELECT a.severity AS key, COUNT(*)::int AS count ${base} GROUP BY a.severity ORDER BY count DESC`, p, []);
-  const bySite = await runQ('bySite', `SELECT COALESCE(d.site_name, 'Unassigned') AS key, COUNT(*)::int AS count ${base} GROUP BY 1 ORDER BY count DESC`, p, []);
+  const bySite = await runQ('bySite', `SELECT COALESCE(d.site_name, sc2.site_name, 'Unassigned') AS key, COUNT(*)::int AS count ${base} GROUP BY 1 ORDER BY count DESC`, p, []);
   const byDevice = await runQ('byDevice', `
-    SELECT d.id AS device_id, d.name AS device_name, COALESCE(d.site_name, 'Unassigned') AS site_name,
+    SELECT d.id AS device_id, sc2.id AS service_check_id,
+           COALESCE(d.name, sc2.name) AS device_name,
+           COALESCE(d.site_name, sc2.site_name, 'Unassigned') AS site_name,
+           CASE WHEN a.device_id IS NOT NULL THEN 'device' ELSE 'service' END AS source,
            COUNT(*)::int AS count,
            ROUND(AVG(EXTRACT(EPOCH FROM (a.resolved_at - a.triggered_at)) / 60.0)
              FILTER (WHERE a.resolved_at IS NOT NULL)::numeric, 1) AS mttr_minutes
-    ${base} GROUP BY d.id, d.name, site_name ORDER BY count DESC LIMIT 10`, p, []);
+    ${base} AND (a.device_id IS NOT NULL OR a.service_check_id IS NOT NULL)
+    GROUP BY d.id, sc2.id, device_name, site_name, source ORDER BY count DESC LIMIT 10`, p, []);
   const mttr = await runQ('mttr', `
     SELECT ROUND(AVG(EXTRACT(EPOCH FROM (a.resolved_at - a.triggered_at)) / 60.0)::numeric, 1) AS mttr
     ${base} AND a.resolved_at IS NOT NULL`, p, [{ mttr: null }]);
@@ -2508,16 +2591,18 @@ function renderAlertAnalysis(doc, data, layout) {
     left, doc.y + 6, { width: contentW });
   doc.y += 14;
 
-  sectionTitle(doc, layout, 'Top Alerted Devices');
+  sectionTitle(doc, layout, 'Top Alerted');
   drawTable(doc, {
     columns: [
-      { key: 'device_name', label: 'Device', width: 180 },
-      { key: 'site_name', label: 'Site', width: 140 },
+      { key: 'device_name', label: 'Name', width: 150 },
+      { key: 'source', label: 'Type', width: 70 },
+      { key: 'site_name', label: 'Site', width: 110 },
       { key: 'count', label: 'Alerts', width: 70, align: 'right' },
       { key: 'mttr', label: 'MTTR (min)', width: 90, align: 'right' },
     ],
     rows: (data.top_alerted || []).map((d) => ({
       device_name: d.device_name || '—', site_name: d.site_name || '—',
+      source: d.source === 'service' ? 'Service' : 'Device',
       count: d.count == null ? 0 : d.count,
       mttr: d.mttr_minutes == null ? '—' : String(Math.round(d.mttr_minutes)),
     })),
@@ -2934,6 +3019,89 @@ async function gatherApDetail(db, params) {
 
 function renderApDetail(doc, data, layout) { renderEntityReport(doc, data, layout, 'access point'); }
 
+// ── Service Detail — mirror of GET /api/reports/service-detail ──
+// Metric keys (frontend DETAIL_METRICS['service-detail']): response_time.
+const SD_COLORS = { response: RED };
+
+async function gatherServiceDetail(db, params) {
+  const q = params || {};
+  const siteFilter = resolveSiteFilter(q);
+  const runQ = mkRunQ(db, 'service-detail');
+  const range = pdfResolveSeriesRange(q);
+  const ids = parseIdList(q.service_check_id, q.service_check_ids, q.entity_ids, q.ids);
+  const metrics = parseMetricList(q.metrics, q.selected_metrics, q._metrics);
+  const want = (kk) => !metrics || metrics.includes(kk);
+  const dateRange = `${fmtDay(range.from)} to ${fmtDay(range.to)}`;
+  const rangeLabel = `Series - ${dateRange}`;
+
+  const entities = [];
+  for (const id of ids) {
+    const svcQ = await runQ('service', `
+      SELECT sc.id, sc.name, sc.type, sc.target, sc.site_id, sc.site_name,
+             sc.agent_id, ag.name AS agent_name, sc.interval_seconds, sc.current_status
+      FROM service_checks sc LEFT JOIN agents ag ON ag.id = sc.agent_id
+      WHERE sc.id = $1`, [id], []);
+    const svc = svcQ.rows[0];
+    if (!svc) continue;
+    if (siteFilter && siteFilter.length && !siteFilter.includes(svc.site_id)) continue; // RBAC
+
+    const avail = await runQ('avail', `
+      SELECT COUNT(*)::int AS total_checks,
+             SUM(CASE WHEN status = 'up' THEN 0 ELSE 1 END)::int AS failed_checks
+      FROM service_check_results WHERE check_id = $1 AND ts BETWEEN $2 AND $3`, [id, range.from, range.to], [{ total_checks: 0, failed_checks: 0 }]);
+    const resp = await runQ('resp', `
+      SELECT ROUND(AVG(response_ms)::numeric, 1) AS avg_ms
+      FROM service_check_results WHERE check_id = $1 AND status = 'up' AND ts BETWEEN $2 AND $3`, [id, range.from, range.to], [{ avg_ms: null }]);
+    const alertsCnt = await runQ('alerts', `
+      SELECT COUNT(*)::int AS c FROM alerts
+      WHERE service_check_id = $1 AND alert_type <> 'recovery' AND triggered_at BETWEEN $2 AND $3`, [id, range.from, range.to], [{ c: 0 }]);
+
+    const scalar = await runQ('scalar', `
+      SELECT date_bin($2::interval, ts, TIMESTAMPTZ '2000-01-01') AS ts,
+             ROUND(AVG(response_ms) FILTER (WHERE status = 'up')::numeric, 1) AS response_ms
+      FROM service_check_results WHERE check_id = $1 AND ts BETWEEN $3 AND $4
+      GROUP BY 1 ORDER BY 1`, [id, range.intervalSql, range.from, range.to], []);
+
+    const a0 = avail.rows[0] || { total_checks: 0, failed_checks: 0 };
+    const poll = svc.interval_seconds || 60;
+    const uptime = pct2(a0.failed_checks, a0.total_checks);
+    const avgMs = resp.rows[0] && resp.rows[0].avg_ms != null ? Number(resp.rows[0].avg_ms) : null;
+    const downtime = round1(a0.failed_checks * poll / 60);
+
+    const charts = [];
+    if (want('response_time')) {
+      const pts = seriesPointsCol(scalar.rows, 'response_ms');
+      if (pts.length) charts.push({ title: 'Response time (ms)', points: pts, yMax: autoYMax(pts), ySuffix: ' ms', color: SD_COLORS.response, rangeLabel });
+    }
+
+    const subline = [svc.type ? svc.type.toUpperCase() : null, svc.target, svc.site_name, svc.agent_name ? `Agent: ${svc.agent_name}` : null]
+      .filter((x) => x != null && x !== '').join(' · ');
+    entities.push({
+      header: { name: svc.name, subline },
+      stats: [
+        { value: uptime == null ? '—' : `${uptime}%`, label: 'Uptime', color: GREEN },
+        { value: avgMs == null ? '—' : `${avgMs} ms`, label: 'Avg Response', color: NAVY },
+        { value: `${downtime} min`, label: 'Downtime', color: RED },
+        { value: String(alertsCnt.rows[0] ? alertsCnt.rows[0].c : 0), label: 'Alerts', color: YELLOW },
+      ],
+      charts,
+    });
+  }
+
+  return {
+    title: 'Service Detail',
+    dateRange,
+    entities,
+    summary: [
+      { label: 'Services', value: String(entities.length), color: NAVY },
+      { label: 'Metrics', value: metrics ? String(metrics.length) : 'All', color: YELLOW },
+      { label: 'Bucket', value: range.bucket, color: GREEN },
+    ],
+  };
+}
+
+function renderServiceDetail(doc, data, layout) { renderEntityReport(doc, data, layout, 'service'); }
+
 // ── Renderer registry ─────────────────────────────────────────
 // Canonical template keys → { title, gather, render }. `hasPdfRenderer` and
 // `generateReportPdf` both resolve through normalizeTemplate() so an alias like
@@ -2954,6 +3122,7 @@ const RENDERERS = {
   'alert-analysis': { title: 'Alerts & Anomalies', gather: gatherAlertAnalysis, render: renderAlertAnalysis },
   'device-detail': { title: 'Device Detail', gather: gatherDeviceDetail, render: renderDeviceDetail },
   'ap-detail': { title: 'AP Detail', gather: gatherApDetail, render: renderApDetail },
+  'service-detail': { title: 'Service Detail', gather: gatherServiceDetail, render: renderServiceDetail },
 };
 const ALIASES = {
   'executive-summary': 'executive',
@@ -2993,6 +3162,10 @@ const ALIASES = {
   'ap-details': 'ap-detail',
   'access-point-detail': 'ap-detail',
   'wireless-ap-detail': 'ap-detail',
+  'service': 'service-detail',
+  'services-detail': 'service-detail',
+  'service-details': 'service-detail',
+  'service-check-detail': 'service-detail',
 };
 
 function normalizeTemplate(template) {

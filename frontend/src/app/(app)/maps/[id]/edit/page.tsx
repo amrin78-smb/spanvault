@@ -11,7 +11,7 @@ import {
   statusFill, deviceCenter, normalizeMap, connLive, fmtBps, utilColor, elbowPoints, nodeAnchorBox, edgePoint,
 } from '@/lib/mapTypes';
 import {
-  MapGlyph, GlyphSwatch, DEVICE_GLYPHS, deviceGlyphFor, BASIC_SHAPES, SHAPE_GLYPHS,
+  MapGlyph, GlyphSwatch, DEVICE_GLYPHS, deviceGlyphFor, serviceGlyphFor, BASIC_SHAPES, SHAPE_GLYPHS,
 } from '@/lib/mapIcons';
 import { ShapeEl } from '@/components/SVGMapView';
 
@@ -23,10 +23,14 @@ const CANVAS_PRESETS = [
 ];
 
 type Tool = 'select' | 'line' | 'label';
-// A connection endpoint: a device node or a decorative shape.
-type EndRef = { kind: 'device' | 'shape'; id: number };
+// A connection endpoint: a device node, a decorative shape, or a service-check node.
+type EndRef = { kind: 'device' | 'shape' | 'service'; id: number };
 type PaletteDevice = {
   id: number; name: string; ip_address: string;
+  current_status: string; site_name: string | null;
+};
+type PaletteService = {
+  id: number; name: string; type: string; target: string;
   current_status: string; site_name: string | null;
 };
 type Selection =
@@ -64,6 +68,11 @@ export default function MapEditorPage() {
   const { id } = useParams<{ id: string }>();
   const loaded = useApi<FullMap>(`/api/maps/${id}`, 0);
   const palette = useApi<PaletteDevice[]>('/api/devices', 20000);
+  // active=true mirrors /api/devices, which always excludes inactive devices —
+  // a paused service check shouldn't be draggable onto the map either, since
+  // its status would just go stale (no longer polled).
+  const servicePalette = useApi<PaletteService[]>('/api/service-checks?active=true', 20000);
+  const [paletteTab, setPaletteTab] = useState<'device' | 'service'>('device');
 
   // ── Editable map state ───────────────────────────────────────
   const [name, setName] = useState('');
@@ -269,6 +278,7 @@ export default function MapEditorPage() {
   }
 
   const usedDeviceIds = new Set(devices.map((d) => d.device_id).filter((v): v is number => v != null));
+  const usedServiceIds = new Set(devices.map((d) => d.service_check_id).filter((v): v is number => v != null));
 
   // Nudge every selected element by (dx,dy) user units (arrow keys).
   function nudgeSelected(dx: number, dy: number) {
@@ -332,9 +342,13 @@ export default function MapEditorPage() {
       else if (kind === 'label') labelIds.add(id);
     });
     setDevices((prev) => prev.filter((d) => !devIds.has(d.id)));
+    // devIds holds map-node ids from the editor's 'device:' selection namespace,
+    // which covers BOTH device- and service-backed nodes (they share one array/
+    // table); their connections may be recorded under from_kind/to_kind 'device'
+    // or 'service', so match on "not shape" rather than the literal 'device'.
     setConnections((prev) => prev.filter((c) =>
-      !(c.from_kind === 'device' && devIds.has(c.from_item_id)) &&
-      !(c.to_kind === 'device' && devIds.has(c.to_item_id)) &&
+      !(c.from_kind !== 'shape' && devIds.has(c.from_item_id)) &&
+      !(c.to_kind !== 'shape' && devIds.has(c.to_item_id)) &&
       !(c.from_kind === 'shape' && shapeIds.has(c.from_item_id)) &&
       !(c.to_kind === 'shape' && shapeIds.has(c.to_item_id))));
     setShapes((prev) => prev.filter((s) => !shapeIds.has(s.id)));
@@ -553,7 +567,7 @@ export default function MapEditorPage() {
       selectElement('device', d.id, false);
       setDrag({ kind: 'device', id: d.id, dx: p.x - Number(d.x), dy: p.y - Number(d.y), moved: false });
     } else if (tool === 'line') {
-      startOrFinishLine({ kind: 'device', id: d.id });
+      startOrFinishLine({ kind: d.service_check_id != null ? 'service' : 'device', id: d.id });
     }
   }
 
@@ -594,11 +608,27 @@ export default function MapEditorPage() {
     pushSnapshot();
   }
 
+  function addServiceAt(svc: PaletteService, x: number, y: number) {
+    if (usedServiceIds.has(svc.id)) return;
+    const w = 120, h = 60;
+    const d: MapDevice = {
+      id: nextTemp(), device_id: null, service_check_id: svc.id, x: x - w / 2, y: y - h / 2,
+      label: null, icon_type: 'auto', node_style: 'box', z_index: 0, width: w, height: h,
+      service_name: svc.name, service_type: svc.type, service_target: svc.target,
+      service_status: svc.current_status,
+    };
+    setDevices((prev) => [...prev, d]);
+    pushSnapshot();
+  }
+
   function removeDevice(deviceId: number) {
     setDevices((prev) => prev.filter((d) => d.id !== deviceId));
+    // A node's connections are recorded under kind 'device' or 'service'
+    // depending on what it referenced — either way, never 'shape', so this
+    // covers both without needing to know which one deviceId was.
     setConnections((prev) => prev.filter((c) =>
-      !(c.from_kind === 'device' && c.from_item_id === deviceId) &&
-      !(c.to_kind === 'device' && c.to_item_id === deviceId)));
+      !(c.from_kind !== 'shape' && c.from_item_id === deviceId) &&
+      !(c.to_kind !== 'shape' && c.to_item_id === deviceId)));
     setSelection(null);
     setSelectedIds((prev) => { const n = new Set(prev); n.delete(`device:${deviceId}`); return n; });
     pushSnapshot();
@@ -935,7 +965,7 @@ export default function MapEditorPage() {
       });
       const full = await apiSend<FullMap>(`/api/maps/${id}/layout`, 'PUT', {
         devices: devices.map((d) => ({
-          id: d.id, device_id: d.device_id, x: d.x, y: d.y,
+          id: d.id, device_id: d.device_id, service_check_id: d.service_check_id ?? null, x: d.x, y: d.y,
           label: d.label, icon_type: d.icon_type, node_style: d.node_style,
           z_index: d.z_index, width: d.width, height: d.height, locked: d.locked, group_id: d.group_id,
           drill_map_id: d.drill_map_id,
@@ -1011,6 +1041,11 @@ export default function MapEditorPage() {
     const s = search.toLowerCase();
     return d.name.toLowerCase().includes(s) || (d.ip_address || '').toLowerCase().includes(s);
   });
+  const filteredServicePalette = (servicePalette.data || []).filter((sv) => {
+    if (!search) return true;
+    const s = search.toLowerCase();
+    return sv.name.toLowerCase().includes(s) || (sv.target || '').toLowerCase().includes(s);
+  });
 
   return (
     <div className="sv-editor">
@@ -1032,8 +1067,10 @@ export default function MapEditorPage() {
 
       <div className="sv-editor-body">
         <DevicePalette
-          devices={filteredPalette} loading={palette.loading && !palette.data}
-          search={search} setSearch={setSearch} usedDeviceIds={usedDeviceIds}
+          devices={filteredPalette} loading={palette.loading && !palette.data} usedDeviceIds={usedDeviceIds}
+          services={filteredServicePalette} servicesLoading={servicePalette.loading && !servicePalette.data}
+          usedServiceIds={usedServiceIds}
+          search={search} setSearch={setSearch} tab={paletteTab} setTab={setPaletteTab}
         />
 
         <div
@@ -1042,12 +1079,12 @@ export default function MapEditorPage() {
           onDragOver={(e) => e.preventDefault()}
           onDrop={(e) => {
             e.preventDefault();
-            const raw = e.dataTransfer.getData('application/sv-device');
-            if (!raw) return;
+            const p = toSvg(e.clientX, e.clientY);
+            const rawDevice = e.dataTransfer.getData('application/sv-device');
+            const rawService = e.dataTransfer.getData('application/sv-service');
             try {
-              const pd: PaletteDevice = JSON.parse(raw);
-              const p = toSvg(e.clientX, e.clientY);
-              addDeviceAt(pd, p.x, p.y);
+              if (rawDevice) addDeviceAt(JSON.parse(rawDevice) as PaletteDevice, p.x, p.y);
+              else if (rawService) addServiceAt(JSON.parse(rawService) as PaletteService, p.x, p.y);
             } catch { /* ignore */ }
           }}
         >
@@ -1111,7 +1148,7 @@ export default function MapEditorPage() {
               <EditorDeviceNode
                 key={d.id} device={d}
                 selected={selectedIds.has(`device:${d.id}`) || (selection?.kind === 'device' && selection.id === d.id)}
-                isLineStart={lineStart?.kind === 'device' && lineStart.id === d.id}
+                isLineStart={lineStart != null && lineStart.kind !== 'shape' && lineStart.id === d.id}
                 onMouseDown={(e) => onDeviceMouseDown(e, d)}
                 onContext={(x, y) => setCtx({ x, y, kind: 'device', id: d.id })}
               />
@@ -1371,34 +1408,41 @@ function EditorToolbar({
   );
 }
 
-// ── Device palette (top-level component) ───────────────────────
-// Devices are grouped into collapsible per-site trees so the list stays
-// manageable as the inventory grows. While searching, every matching group is
-// forced open so results are never hidden behind a collapsed header.
-function DevicePalette({
-  devices, loading, search, setSearch, usedDeviceIds,
-}: {
-  devices: PaletteDevice[]; loading: boolean;
-  search: string; setSearch: (v: string) => void; usedDeviceIds: Set<number>;
-}) {
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
-
-  // Group the (already search-filtered) devices by site name, alphabetically;
-  // devices with no site fall into an "Unassigned" group sorted last.
-  const groupMap = new Map<string, PaletteDevice[]>();
-  for (const d of devices) {
-    const key = d.site_name || 'Unassigned';
+// Group a search-filtered palette list by site name, alphabetically; items with
+// no site fall into an "Unassigned" group sorted last. Shared by the device and
+// service palette tabs.
+function groupBySite<T extends { name: string; site_name: string | null }>(items: T[]) {
+  const groupMap = new Map<string, T[]>();
+  for (const it of items) {
+    const key = it.site_name || 'Unassigned';
     const arr = groupMap.get(key);
-    if (arr) arr.push(d); else groupMap.set(key, [d]);
+    if (arr) arr.push(it); else groupMap.set(key, [it]);
   }
-  const groups = Array.from(groupMap.entries())
-    .map(([site, items]) => ({ site, items: [...items].sort((a, b) => a.name.localeCompare(b.name)) }))
+  return Array.from(groupMap.entries())
+    .map(([site, groupItems]) => ({ site, items: [...groupItems].sort((a, b) => a.name.localeCompare(b.name)) }))
     .sort((a, b) => {
       if (a.site === 'Unassigned') return 1;
       if (b.site === 'Unassigned') return -1;
       return a.site.localeCompare(b.site);
     });
+}
 
+// ── Device / service palette (top-level component) ─────────────
+// A tabbed panel: "Devices" and "Services" share one search box (its meaning
+// switches with the active tab) and the same collapsible per-site grouping.
+// While searching, every matching group is forced open so results are never
+// hidden behind a collapsed header.
+function DevicePalette({
+  devices, loading, usedDeviceIds,
+  services, servicesLoading, usedServiceIds,
+  search, setSearch, tab, setTab,
+}: {
+  devices: PaletteDevice[]; loading: boolean; usedDeviceIds: Set<number>;
+  services: PaletteService[]; servicesLoading: boolean; usedServiceIds: Set<number>;
+  search: string; setSearch: (v: string) => void;
+  tab: 'device' | 'service'; setTab: (v: 'device' | 'service') => void;
+}) {
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const searching = search.trim().length > 0;
 
   function toggle(site: string) {
@@ -1409,18 +1453,85 @@ function DevicePalette({
     });
   }
 
+  const deviceGroups = groupBySite(devices);
+  const serviceGroups = groupBySite(services);
+  const isDeviceTab = tab === 'device';
+
   return (
     <div className="sv-editor-palette">
-      <input className="sv-input sm" placeholder="Search devices…" value={search} onChange={(e) => setSearch(e.target.value)} />
+      <div style={{ display: 'flex', gap: 6 }}>
+        <button type="button" className={`sv-btn ghost sm ${isDeviceTab ? 'active' : ''}`}
+          style={{ flex: 1, justifyContent: 'center' }} onClick={() => setTab('device')}>
+          Devices
+        </button>
+        <button type="button" className={`sv-btn ghost sm ${!isDeviceTab ? 'active' : ''}`}
+          style={{ flex: 1, justifyContent: 'center' }} onClick={() => setTab('service')}>
+          Services
+        </button>
+      </div>
+      <input
+        className="sv-input sm"
+        placeholder={isDeviceTab ? 'Search devices…' : 'Search services…'}
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+      />
       <div className="list">
-        {loading ? (
+        {isDeviceTab ? (
+          loading ? (
+            <Loading />
+          ) : deviceGroups.length === 0 ? (
+            <p className="sv-muted" style={{ fontSize: 'var(--text-base)', padding: '8px 4px' }}>No devices.</p>
+          ) : (
+            deviceGroups.map((g) => {
+              const open = searching || !collapsed.has(g.site);
+              const usedCount = g.items.filter((d) => usedDeviceIds.has(d.id)).length;
+              return (
+                <div className="pal-group" key={g.site}>
+                  <button
+                    type="button"
+                    className={`pal-group-head ${open ? 'open' : ''}`}
+                    onClick={() => toggle(g.site)}
+                    title={open ? 'Collapse' : 'Expand'}
+                  >
+                    <span className="chev" aria-hidden>▸</span>
+                    <span className="site">{g.site}</span>
+                    <span className="count">{usedCount > 0 ? `${usedCount}/${g.items.length}` : g.items.length}</span>
+                  </button>
+                  {open && (
+                    <div className="pal-group-body">
+                      {g.items.map((d) => {
+                        const used = usedDeviceIds.has(d.id);
+                        return (
+                          <div
+                            key={d.id}
+                            className={`pal-item ${used ? 'used' : ''}`}
+                            draggable={!used}
+                            onDragStart={(e) => {
+                              e.dataTransfer.setData('application/sv-device', JSON.stringify(d));
+                              e.dataTransfer.effectAllowed = 'copy';
+                            }}
+                            title={used ? 'Already on this map' : 'Drag onto the canvas to add'}
+                          >
+                            <StatusDot status={d.current_status} size={9} />
+                            <span className="nm">{d.name}</span>
+                            <span className="ip">{d.ip_address}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          )
+        ) : servicesLoading ? (
           <Loading />
-        ) : groups.length === 0 ? (
-          <p className="sv-muted" style={{ fontSize: 'var(--text-base)', padding: '8px 4px' }}>No devices.</p>
+        ) : serviceGroups.length === 0 ? (
+          <p className="sv-muted" style={{ fontSize: 'var(--text-base)', padding: '8px 4px' }}>No service checks.</p>
         ) : (
-          groups.map((g) => {
+          serviceGroups.map((g) => {
             const open = searching || !collapsed.has(g.site);
-            const usedCount = g.items.filter((d) => usedDeviceIds.has(d.id)).length;
+            const usedCount = g.items.filter((sv) => usedServiceIds.has(sv.id)).length;
             return (
               <div className="pal-group" key={g.site}>
                 <button
@@ -1435,22 +1546,22 @@ function DevicePalette({
                 </button>
                 {open && (
                   <div className="pal-group-body">
-                    {g.items.map((d) => {
-                      const used = usedDeviceIds.has(d.id);
+                    {g.items.map((sv) => {
+                      const used = usedServiceIds.has(sv.id);
                       return (
                         <div
-                          key={d.id}
+                          key={sv.id}
                           className={`pal-item ${used ? 'used' : ''}`}
                           draggable={!used}
                           onDragStart={(e) => {
-                            e.dataTransfer.setData('application/sv-device', JSON.stringify(d));
+                            e.dataTransfer.setData('application/sv-service', JSON.stringify(sv));
                             e.dataTransfer.effectAllowed = 'copy';
                           }}
                           title={used ? 'Already on this map' : 'Drag onto the canvas to add'}
                         >
-                          <StatusDot status={d.current_status} size={9} />
-                          <span className="nm">{d.name}</span>
-                          <span className="ip">{d.ip_address}</span>
+                          <StatusDot status={sv.current_status} size={9} />
+                          <span className="nm">{sv.name}</span>
+                          <span className="ip">{sv.type.toUpperCase()} · {sv.target}</span>
                         </div>
                       );
                     })}
@@ -1587,10 +1698,11 @@ function EditorDeviceNode({
   device: MapDevice; selected: boolean; isLineStart: boolean;
   onMouseDown: (e: React.MouseEvent) => void; onContext: (x: number, y: number) => void;
 }) {
-  const status = (device.current_status || 'unknown').toLowerCase();
-  const suppressed = !!device.alert_suppressed;
-  const name = device.label || device.device_name || 'Device';
-  const ip = device.ip_address || '';
+  const isService = device.service_check_id != null;
+  const status = ((isService ? device.service_status : device.current_status) || 'unknown').toLowerCase();
+  const suppressed = !isService && !!device.alert_suppressed;
+  const name = device.label || (isService ? device.service_name : device.device_name) || (isService ? 'Service' : 'Device');
+  const ip = (isService ? device.service_target : device.ip_address) || '';
   const x = Number(device.x);
   const y = Number(device.y);
   const w = Number(device.width);
@@ -1602,7 +1714,8 @@ function EditorDeviceNode({
   // ── Icon style: a device glyph with the label beneath it (never overflows) ──
   if (device.node_style === 'icon') {
     const glyphKind = device.icon_type && device.icon_type !== 'auto'
-      ? device.icon_type : deviceGlyphFor(device.device_name);
+      ? device.icon_type
+      : isService ? serviceGlyphFor(device.service_type) : deviceGlyphFor(device.device_name);
     const gs = Math.max(24, Math.min(w, h));
     const gx = cx - gs / 2;
     const gy = y + Math.max(0, (h - gs) / 2);
@@ -1937,11 +2050,13 @@ function SelectionPanel({
     );
   }
   if (selection?.kind === 'device' && device) {
+    const isService = device.service_check_id != null;
     const effectiveGlyph = device.icon_type && device.icon_type !== 'auto'
-      ? device.icon_type : deviceGlyphFor(device.device_name);
+      ? device.icon_type
+      : isService ? serviceGlyphFor(device.service_type) : deviceGlyphFor(device.device_name);
     return (
       <div className="sv-editor-props">
-        <h3>{device.device_name || 'Device'}</h3>
+        <h3>{(isService ? device.service_name : device.device_name) || (isService ? 'Service' : 'Device')}</h3>
         <label className="sv-field">Style
           <select className="sv-select" value={device.node_style || 'box'}
             onChange={(e) => onDeviceChange(device.id, { node_style: e.target.value })}>

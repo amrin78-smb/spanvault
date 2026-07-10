@@ -150,6 +150,10 @@ CREATE TABLE IF NOT EXISTS availability_summary (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_avail_device_date ON availability_summary(device_id, date);
 
+-- Scope semantics (3-way, mutually exclusive):
+--   device_id IS NULL AND service_check_id IS NULL  → global (suppresses everything — existing behavior)
+--   device_id IS NOT NULL                            → suppresses alerts for that one device only
+--   service_check_id IS NOT NULL                     → suppresses alerts for that one service check only
 CREATE TABLE IF NOT EXISTS maintenance_windows (
   id         SERIAL PRIMARY KEY,
   device_id  INTEGER REFERENCES monitored_devices(id) ON DELETE CASCADE,
@@ -425,6 +429,20 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_alerts_active_service_unique
 ALTER TABLE alert_rules ADD COLUMN IF NOT EXISTS service_check_id INTEGER REFERENCES service_checks(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS idx_alert_rules_service ON alert_rules(service_check_id);
 
+-- Service-scoped maintenance windows (added alongside the existing global/device
+-- scoping). Placed here (after service_checks) so the forward FK target exists,
+-- matching the agent_id/service_check_id pattern used above. Scope semantics
+-- (3-way, mutually exclusive — see also the comment on maintenance_windows above):
+--   device_id IS NULL AND service_check_id IS NULL  → global (suppresses everything — existing behavior)
+--   device_id IS NOT NULL                            → suppresses alerts for that one device only
+--   service_check_id IS NOT NULL                     → suppresses alerts for that one service check only
+ALTER TABLE maintenance_windows ADD COLUMN IF NOT EXISTS service_check_id INTEGER REFERENCES service_checks(id) ON DELETE CASCADE;
+DO $$ BEGIN
+  ALTER TABLE maintenance_windows ADD CONSTRAINT maint_single_scope
+    CHECK (device_id IS NULL OR service_check_id IS NULL);
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO spanvault_user;
 GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO spanvault_user;
 
@@ -560,6 +578,24 @@ ALTER TABLE map_labels  ADD COLUMN IF NOT EXISTS group_id INTEGER;
 -- another sv_maps row; cleared if that map is deleted.
 ALTER TABLE map_devices ADD COLUMN IF NOT EXISTS drill_map_id INTEGER REFERENCES sv_maps(id) ON DELETE SET NULL;
 
+-- Service-check nodes: a map_devices row can represent a monitored service_check
+-- (HTTP/TCP/SSL/DNS) instead of a device — device_id and service_check_id are
+-- mutually exclusive (a node may also have neither, for a label-only/empty node,
+-- which was already legal before this column existed). map_connections needs no
+-- schema change: it already discriminates endpoints via from_kind/to_kind, so a
+-- service node is referenced there with kind = 'service' pointing at this same
+-- map_devices.id. Placed after service_checks is defined (further up this file)
+-- so the forward FK target exists. Idempotent: ADD COLUMN IF NOT EXISTS is
+-- natively safe; ADD CONSTRAINT has no IF NOT EXISTS in Postgres, so the CHECK
+-- is wrapped in a DO block that swallows a duplicate_object re-run.
+ALTER TABLE map_devices ADD COLUMN IF NOT EXISTS service_check_id INTEGER REFERENCES service_checks(id) ON DELETE CASCADE;
+DO $$
+BEGIN
+  ALTER TABLE map_devices ADD CONSTRAINT map_devices_one_entity
+    CHECK (NOT (device_id IS NOT NULL AND service_check_id IS NOT NULL));
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO spanvault_user;
 GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO spanvault_user;
 
@@ -603,6 +639,49 @@ CREATE TABLE IF NOT EXISTS device_health_scores (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_health_device
   ON device_health_scores(device_id);
+
+-- Service checks get a health score row too, reusing this table — the
+-- uptime/response-trend/alert-count formula shape is the same (see
+-- computeServiceHealthScores in api/intelligence.js; deliberately scoped down,
+-- no anomaly component — a service check is a binary up/down/warning signal,
+-- not a continuous metric stream, so device-style baseline-deviation anomaly
+-- scoring doesn't fit it and would need a much larger per-service-baseline
+-- migration that is out of scope here). device_id was NOT NULL when this table
+-- only tracked devices; DROP it so a row can instead be owned by
+-- service_check_id. Safe for existing behaviour: every current consumer of
+-- this table either does `WHERE device_id = $1` or joins via
+-- `... ON h.device_id = d.id` (INNER/LEFT), and a NULL device_id never
+-- satisfies either, so service rows are already invisible to every existing
+-- device-scoped query without any extra "device_id IS NOT NULL" filter
+-- (verified by grepping every device_health_scores reference in api/server.js).
+ALTER TABLE device_health_scores ALTER COLUMN device_id DROP NOT NULL;
+ALTER TABLE device_health_scores ADD COLUMN IF NOT EXISTS service_check_id INTEGER REFERENCES service_checks(id) ON DELETE CASCADE;
+
+-- Exactly one of device_id/service_check_id must be set (never both, never
+-- neither) — unlike alerts/alert_rules (where both-NULL is valid, e.g. a
+-- global alert rule), a health-score row always belongs to exactly one
+-- entity. Plain ALTER TABLE ... ADD CONSTRAINT has no IF NOT EXISTS clause in
+-- Postgres, so guard it explicitly for idempotent re-runs of this script.
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'chk_health_scores_owner'
+  ) THEN
+    ALTER TABLE device_health_scores
+      ADD CONSTRAINT chk_health_scores_owner CHECK (
+        (device_id IS NOT NULL AND service_check_id IS NULL) OR
+        (device_id IS NULL AND service_check_id IS NOT NULL)
+      );
+  END IF;
+END $$;
+
+-- idx_health_device (above) does NOT need a `WHERE device_id IS NOT NULL`
+-- guard: Postgres UNIQUE indexes treat every NULL as distinct from every other
+-- NULL, so any number of service rows (device_id NULL) already coexist under
+-- that index without a uniqueness violation — it only ever enforced "at most
+-- one row per non-null device_id", which DROP NOT NULL does not change.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_health_service
+  ON device_health_scores(service_check_id) WHERE service_check_id IS NOT NULL;
 
 -- Detected anomalies.
 CREATE TABLE IF NOT EXISTS device_anomalies (

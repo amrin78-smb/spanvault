@@ -449,11 +449,21 @@ type NotifRoute = {
   match_site_id: number | null; match_alert_type: string | null;
   email_to: string; enabled: boolean;
 };
+// NOTE: match_alert_type is an exact string match against alerts.alert_type. When a
+// device/service has a custom Rule configured (see collector.js getEffectiveServiceRules /
+// evaluateServiceCheckAlerts), the collector raises the alert as `rule_${rule.id}` instead of
+// the literal type below — a route targeting e.g. 'service_down' will NOT match those alerts.
+// The literal types only fire when no custom rule exists for that check. This is a pre-existing
+// design constraint (the same limitation already applies to device rules' `rule_N` types) and is
+// out of scope here.
 const ALERT_TYPE_OPTIONS = [
   { v: '', label: 'Any type' },
   { v: 'device_down', label: 'Device down' },
   { v: 'high_latency', label: 'High latency' },
   { v: 'agent_down', label: 'Agent down' },
+  { v: 'service_down', label: 'Service Down' },
+  { v: 'ssl_expiring', label: 'SSL Certificate Expiring' },
+  { v: 'service_response_time', label: 'Service Response Time' },
 ];
 
 function NotificationRoutes() {
@@ -1130,14 +1140,34 @@ function ServiceRules() {
 // ── Maintenance windows ────────────────────────────────────────
 type Window = {
   id: number; device_id: number | null; device_name: string | null;
+  service_check_id: number | null; service_name: string | null;
   starts_at: string; ends_at: string; reason: string | null;
 };
+
+type MaintScope = 'global' | 'device' | 'service';
 
 function Maintenance() {
   const { confirm, ConfirmUI } = useConfirm();
   const windows = useApi<Window[]>('/api/maintenance');
+  const devices = useApi<DeviceLite[]>('/api/devices');
+  const services = useApi<ServiceLite[]>('/api/service-checks');
   const [form, setForm] = useState({ starts_at: '', ends_at: '', reason: '' });
+  const [scope, setScope] = useState<MaintScope>('global');
+  const [deviceSearch, setDeviceSearch] = useState('');
+  const [deviceId, setDeviceId] = useState('');
+  const [serviceSearch, setServiceSearch] = useState('');
+  const [serviceId, setServiceId] = useState('');
   const [err, setErr] = useState<string | null>(null);
+
+  const filteredDevices = (devices.data || []).filter((d) =>
+    !deviceSearch || d.name.toLowerCase().includes(deviceSearch.toLowerCase()) || (d.ip_address || '').includes(deviceSearch));
+  const filteredServices = (services.data || []).filter((s) =>
+    !serviceSearch || s.name.toLowerCase().includes(serviceSearch.toLowerCase()) ||
+    (s.target || '').toLowerCase().includes(serviceSearch.toLowerCase()) ||
+    (s.type || '').toLowerCase().includes(serviceSearch.toLowerCase()));
+
+  const canAdd = !!form.starts_at && !!form.ends_at &&
+    (scope === 'global' || (scope === 'device' && !!deviceId) || (scope === 'service' && !!serviceId));
 
   async function add() {
     setErr(null);
@@ -1146,8 +1176,15 @@ function Maintenance() {
         starts_at: form.starts_at,
         ends_at: form.ends_at,
         reason: form.reason || null,
+        device_id: scope === 'device' ? Number(deviceId) : null,
+        service_check_id: scope === 'service' ? Number(serviceId) : null,
       });
       setForm({ starts_at: '', ends_at: '', reason: '' });
+      setScope('global');
+      setDeviceSearch('');
+      setDeviceId('');
+      setServiceSearch('');
+      setServiceId('');
       windows.reload();
     } catch (e: any) {
       setErr(e?.message || 'Failed to add window');
@@ -1165,8 +1202,38 @@ function Maintenance() {
       {err && <ErrorBox message={err} />}
       <div className="sv-panel">
         <h2>Schedule Maintenance Window</h2>
-        <p className="sv-muted" style={{ marginTop: -8 }}>Alerts are suppressed for all devices during this window.</p>
-        <div className="sv-toolbar">
+        <p className="sv-muted" style={{ marginTop: -8 }}>
+          Alerts are suppressed for the selected scope during this window — leave unscoped to suppress everything.
+        </p>
+        <div className="sv-toolbar" style={{ flexWrap: 'wrap' }}>
+          <label className="sv-field">Scope
+            <select className="sv-select" value={scope}
+              onChange={(e) => { setScope(e.target.value as MaintScope); setDeviceId(''); setServiceId(''); }}>
+              <option value="global">All devices/services (global)</option>
+              <option value="device">Specific device</option>
+              <option value="service">Specific service</option>
+            </select>
+          </label>
+          {scope === 'device' && (
+            <>
+              <input className="sv-input" placeholder="Search device by name or IP…" value={deviceSearch}
+                onChange={(e) => setDeviceSearch(e.target.value)} style={{ width: 200 }} />
+              <select className="sv-select" value={deviceId} onChange={(e) => setDeviceId(e.target.value)}>
+                <option value="">Select a device…</option>
+                {filteredDevices.map((d) => <option key={d.id} value={d.id}>{d.name} ({d.ip_address})</option>)}
+              </select>
+            </>
+          )}
+          {scope === 'service' && (
+            <>
+              <input className="sv-input" placeholder="Search service by name, target, or type…" value={serviceSearch}
+                onChange={(e) => setServiceSearch(e.target.value)} style={{ width: 200 }} />
+              <select className="sv-select" value={serviceId} onChange={(e) => setServiceId(e.target.value)}>
+                <option value="">Select a service…</option>
+                {filteredServices.map((s) => <option key={s.id} value={s.id}>{s.name} ({s.type})</option>)}
+              </select>
+            </>
+          )}
           <label className="sv-field">Starts
             <input className="sv-input" type="datetime-local" value={form.starts_at}
               onChange={(e) => setForm((f) => ({ ...f, starts_at: e.target.value }))} />
@@ -1179,7 +1246,7 @@ function Maintenance() {
             <input className="sv-input" value={form.reason}
               onChange={(e) => setForm((f) => ({ ...f, reason: e.target.value }))} />
           </label>
-          <button className="sv-btn" onClick={add} disabled={!form.starts_at || !form.ends_at}>+ Add</button>
+          <button className="sv-btn" onClick={add} disabled={!canAdd}>+ Add</button>
         </div>
       </div>
 
@@ -1194,7 +1261,7 @@ function Maintenance() {
             <tbody>
               {windows.data.map((w) => (
                 <tr key={w.id}>
-                  <td>{w.device_name || 'All devices'}</td>
+                  <td>{w.device_name || w.service_name || 'All devices/services'}</td>
                   <td className="sv-muted">{fmtTime(w.starts_at)}</td>
                   <td className="sv-muted">{fmtTime(w.ends_at)}</td>
                   <td>{w.reason || '—'}</td>

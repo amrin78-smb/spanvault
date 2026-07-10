@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import Link from 'next/link';
 import { useApi, apiSend } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
 import {
@@ -390,8 +391,10 @@ function ServiceRow({ check, canEdit, onEdit, onDelete }: {
       <td style={{ width: 28, paddingLeft: 12 }}>
         <StatusDot status={dotStatus(check.current_status)} size={10} title={check.current_status} />
       </td>
-      <td style={{ whiteSpace: 'nowrap', fontWeight: 600, color: 'var(--text-primary)' }}>
-        {check.name}
+      <td style={{ whiteSpace: 'nowrap', fontWeight: 600 }}>
+        <Link href={`/services/${check.id}`} style={{ color: 'var(--text-primary)', fontWeight: 600 }}>
+          {check.name}
+        </Link>
         {!check.active && (
           <span className="sv-type-badge" style={{ fontSize: 'var(--text-xs)', marginLeft: 8 }}>Paused</span>
         )}
@@ -506,7 +509,9 @@ function GroupedServiceRows({ groupId, checks, canEdit, onEditGroup, onDeleteGro
             <StatusDot status={dotStatus(c.current_status)} size={9} title={c.current_status} />
           </td>
           <td style={{ whiteSpace: 'nowrap', paddingLeft: 28, color: 'var(--text-muted)', fontSize: 'var(--text-sm)' }}>
-            <span className="sv-type-badge">{typeLabel(c.type)}</span>
+            <Link href={`/services/${c.id}`} className="sv-type-badge" style={{ textDecoration: 'none' }}>
+              {typeLabel(c.type)}
+            </Link>
             {!c.active && (
               <span className="sv-type-badge" style={{ fontSize: 'var(--text-xs)', marginLeft: 8 }}>Paused</span>
             )}

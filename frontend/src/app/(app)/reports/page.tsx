@@ -8,6 +8,7 @@ import NetworkSummaryReport from '@/components/reports/NetworkSummaryReport';
 import SiteReport from '@/components/reports/SiteReport';
 import DeviceDetailReport from '@/components/reports/DeviceDetailReport';
 import ApDetailReport from '@/components/reports/ApDetailReport';
+import ServiceDetailReport from '@/components/reports/ServiceDetailReport';
 import SlaComplianceReport from '@/components/reports/SlaComplianceReport';
 import TopWorstReport from '@/components/reports/TopWorstReport';
 import AlertAnalysisReport from '@/components/reports/AlertAnalysisReport';
@@ -25,21 +26,22 @@ import ReportsCatalog, { CatalogReport } from '@/components/reports/ReportsCatal
 type Site = { id: number; name: string };
 type DeviceLite = { id: number; name: string; ip_address: string };
 type ApLite = { id: number; name: string; ip_address: string | null; site_name: string | null };
+type ServiceLite = { id: number; name: string; type: string; target: string; site_name: string | null };
 type Controller = { id: number; name: string };
-// One selected entity (AP or device) rendered as its own report section.
+// One selected entity (AP, device, or service) rendered as its own report section.
 type EntityRef = { id: string; label: string };
 type SavedReport = {
   id: number; name: string; template: string; scope_type: string;
   scope_id: number | null; scope_name: string | null; date_range: string;
   sla_target: number | null;
-  // Multi-entity detail reports (AP/Device Detail) persist their selected entity
-  // ids here so the selection survives a save/reload (backend scope_ids column).
+  // Multi-entity detail reports (AP/Device/Service Detail) persist their selected
+  // entity ids here so the selection survives a save/reload (backend scope_ids column).
   scope_ids: number[] | null;
 };
 // Scope modes a template supports.
-// 'apMulti'/'deviceMulti' = Phase-1 granular detail reports: pick one or many
-// entities, each rendered as its own charted section.
-type ScopeKind = 'all' | 'site' | 'device' | 'flexible' | 'flexibleNoDevice' | 'apMulti' | 'deviceMulti';
+// 'apMulti'/'deviceMulti'/'serviceMulti' = Phase-1 granular detail reports: pick
+// one or many entities, each rendered as its own charted section.
+type ScopeKind = 'all' | 'site' | 'device' | 'flexible' | 'flexibleNoDevice' | 'apMulti' | 'deviceMulti' | 'serviceMulti';
 type Template = {
   key: string; icon: string; label: string; desc: string;
   scope: ScopeKind; sla?: boolean; metric?: boolean; wireless?: boolean;
@@ -85,6 +87,7 @@ const TEMPLATES: Template[] = [
   { key: 'wireless-security', icon: '🛡️', label: 'Wireless Security', desc: 'Rogue AP detections and SSID encryption posture', scope: 'all', wireless: true, category: 'Wireless' },
   { key: 'device-detail', icon: '🖥', label: 'Device Detail', desc: 'Time-series charts, history and metrics for one or more devices', scope: 'deviceMulti', granular: true, category: 'Detail' },
   { key: 'ap-detail', icon: '📡', label: 'AP Detail', desc: 'Time-series charts, clients, RF and throughput for one or more access points', scope: 'apMulti', granular: true, category: 'Detail' },
+  { key: 'service-detail', icon: '🔌', label: 'Service Detail', desc: 'Status history, response time and alerts for one or more service checks', scope: 'serviceMulti', granular: true, category: 'Detail' },
 ];
 const TEMPLATE_BY_KEY: Record<string, Template> = Object.fromEntries(TEMPLATES.map((t) => [t.key, t]));
 // Catalog rows (display metadata) derived once from the templates.
@@ -128,6 +131,9 @@ const DETAIL_METRICS: Record<string, MetricOpt[]> = {
     { key: 'mem', label: 'Memory' },
     { key: 'interfaces', label: 'Interfaces', def: true },
     { key: 'sessions', label: 'Sessions' },
+  ],
+  'service-detail': [
+    { key: 'response_time', label: 'Response Time', def: true },
   ],
 };
 function defaultMetrics(template: string): string[] {
@@ -180,12 +186,17 @@ function resolveRange(range: string, from: string, to: string): { from: string; 
   return presetToIso(range);
 }
 // Per-entity endpoint for a multi-entity detail report.
-//   ap-detail     → GET /api/reports/ap-detail/:id?from=&to=&bucket=
-//   device-detail → GET /api/reports/device-detail?device_id=&from=&to=&bucket=
+//   ap-detail      → GET /api/reports/ap-detail/:id?from=&to=&bucket=
+//   device-detail  → GET /api/reports/device-detail?device_id=&from=&to=&bucket=
+//   service-detail → GET /api/reports/service-detail?service_check_id=&from=&to=&bucket=
 function buildEntityEndpoint(template: string, entityId: string, a: Applied): string {
   const p = granularRangeParams(a);
   if (template === 'ap-detail') {
     return `/api/reports/ap-detail/${encodeURIComponent(entityId)}?${p}`;
+  }
+  if (template === 'service-detail') {
+    p.set('service_check_id', entityId);
+    return `/api/reports/service-detail?${p}`;
   }
   // device-detail
   p.set('device_id', entityId);
@@ -232,7 +243,7 @@ function buildEndpoint(a: Applied): string {
 // Granular detail reports pass their selected entity ids + chosen metric keys.
 function buildPdfUrl(a: Applied): string {
   const base = `/api/reports/pdf/${encodeURIComponent(a.template)}`;
-  if (a.template === 'ap-detail' || a.template === 'device-detail') {
+  if (a.template === 'ap-detail' || a.template === 'device-detail' || a.template === 'service-detail') {
     const p = granularRangeParams(a);
     p.set('entity_ids', a.entities.map((e) => e.id).join(','));
     if (a.selectedMetrics.length) p.set('metrics', a.selectedMetrics.join(','));
@@ -252,6 +263,7 @@ function isEmptyReport(template: string, data: any): boolean {
     case 'alert-analysis':  return !data.total_alerts;
     case 'capacity':        return !Array.isArray(data) || data.length === 0;
     case 'device-detail':   return !data.device;
+    case 'service-detail':  return !data.service;
     case 'executive':       return false; // executive always renders a summary
     case 'wireless-overview':  return !data.summary || data.summary.total_aps === 0;
     case 'wireless-ap-health': return !data.aps || data.aps.length === 0;
@@ -270,9 +282,15 @@ function rangeLabel(a: Applied): string {
   if (a.range === '90d') return 'Last 90 Days';
   return RANGES.find((r) => r.key === a.range)?.label || a.range;
 }
+// Display noun for a multi-entity detail template's selected items.
+function detailNoun(template: string): string {
+  if (template === 'ap-detail') return 'AP';
+  if (template === 'service-detail') return 'Service';
+  return 'Device';
+}
 function scopeLabel(a: Applied): string {
-  if (a.template === 'ap-detail' || a.template === 'device-detail') {
-    const noun = a.template === 'ap-detail' ? 'AP' : 'Device';
+  if (a.template === 'ap-detail' || a.template === 'device-detail' || a.template === 'service-detail') {
+    const noun = detailNoun(a.template);
     if (a.entities.length === 0) return `No ${noun.toLowerCase()}s`;
     if (a.entities.length === 1) return `${noun}: ${a.entities[0].label}`;
     return `${a.entities.length} ${noun}s`;
@@ -313,6 +331,7 @@ export default function ReportsPage() {
   const sites = useApi<Site[]>('/api/netvault/sites');
   const devices = useApi<DeviceLite[]>('/api/devices');
   const aps = useApi<ApLite[]>('/api/wireless/aps');
+  const services = useApi<ServiceLite[]>('/api/service-checks');
   const controllers = useApi<Controller[]>('/api/wireless/controllers');
   const saved = useApi<SavedReport[]>(email ? `/api/reports/saved?created_by=${encodeURIComponent(email)}` : '/api/reports/saved');
 
@@ -374,7 +393,7 @@ export default function ReportsPage() {
     // Custom range must have both endpoints present and chronologically ordered.
     if (!customRangeValid) return false;
     // Granular detail reports need at least one selected entity.
-    if (tpl.scope === 'apMulti' || tpl.scope === 'deviceMulti') return entityIds.length > 0;
+    if (tpl.scope === 'apMulti' || tpl.scope === 'deviceMulti' || tpl.scope === 'serviceMulti') return entityIds.length > 0;
     if (tpl.scope === 'site' && !siteId) return false;
     if (tpl.scope === 'device' && !deviceId) return false;
     if (scopeMode === 'site' && !siteId) return false;
@@ -399,6 +418,11 @@ export default function ReportsPage() {
         const d = devices.data?.find((x) => String(x.id) === id);
         return { id, label: d ? `${d.name}${d.ip_address ? ` (${d.ip_address})` : ''}` : id };
       });
+    } else if (tpl.scope === 'serviceMulti') {
+      entities = entityIds.map((id) => {
+        const s = services.data?.find((x) => String(x.id) === id);
+        return { id, label: s ? `${s.name}${s.target ? ` (${s.target})` : ''}` : id };
+      });
     }
     const resolved = resolveRange(range, from, to);
     setApplied({
@@ -411,7 +435,7 @@ export default function ReportsPage() {
     setShowSave(false);
   }
 
-  // Active entity list (APs or devices) for the multi-select, filtered by search.
+  // Active entity list (APs, devices, or services) for the multi-select, filtered by search.
   const entityList: EntityRef[] = (() => {
     const q = entitySearch.toLowerCase();
     if (tpl.scope === 'apMulti') {
@@ -423,6 +447,11 @@ export default function ReportsPage() {
       return (devices.data || [])
         .filter((d) => !q || d.name.toLowerCase().includes(q) || (d.ip_address || '').includes(entitySearch))
         .map((d) => ({ id: String(d.id), label: `${d.name}${d.ip_address ? ` (${d.ip_address})` : ''}` }));
+    }
+    if (tpl.scope === 'serviceMulti') {
+      return (services.data || [])
+        .filter((s) => !q || s.name.toLowerCase().includes(q) || (s.target || '').toLowerCase().includes(q))
+        .map((s) => ({ id: String(s.id), label: `${s.name} (${(s.type || '').toUpperCase()} · ${s.target})${s.site_name ? ` · ${s.site_name}` : ''}` }));
     }
     return [];
   })();
@@ -441,7 +470,7 @@ export default function ReportsPage() {
 
   // Multi-entity detail reports fetch per entity (in EntityReportSection), so the
   // page-level single fetch is skipped for them.
-  const isMulti = applied?.template === 'ap-detail' || applied?.template === 'device-detail';
+  const isMulti = applied?.template === 'ap-detail' || applied?.template === 'device-detail' || applied?.template === 'service-detail';
   const endpoint = applied && !isMulti ? buildEndpoint(applied) : null;
   const report = useApi<any>(endpoint, 0);
 
@@ -539,6 +568,10 @@ export default function ReportsPage() {
       if (s.template === 'device-detail') {
         const d = devices.data?.find((x) => String(x.id) === id);
         return { id, label: d ? `${d.name}${d.ip_address ? ` (${d.ip_address})` : ''}` : id };
+      }
+      if (s.template === 'service-detail') {
+        const svc = services.data?.find((x) => String(x.id) === id);
+        return { id, label: svc ? `${svc.name}${svc.target ? ` (${svc.target})` : ''}` : id };
       }
       return { id, label: id };
     });
@@ -705,17 +738,17 @@ export default function ReportsPage() {
               </>
             )}
 
-            {/* Granular detail: one-or-many entity multi-select (AP or device) */}
-            {(tpl.scope === 'apMulti' || tpl.scope === 'deviceMulti') && (
+            {/* Granular detail: one-or-many entity multi-select (AP, device, or service) */}
+            {(tpl.scope === 'apMulti' || tpl.scope === 'deviceMulti' || tpl.scope === 'serviceMulti') && (
               <EntityMultiSelect
-                noun={tpl.scope === 'apMulti' ? 'AP' : 'Device'}
+                noun={tpl.scope === 'apMulti' ? 'AP' : tpl.scope === 'serviceMulti' ? 'Service' : 'Device'}
                 search={entitySearch}
                 onSearch={setEntitySearch}
                 list={entityList}
                 selected={entityIds}
                 onToggle={toggleEntity}
                 onClear={() => setEntityIds([])}
-                loading={tpl.scope === 'apMulti' ? aps.loading : devices.loading}
+                loading={tpl.scope === 'apMulti' ? aps.loading : tpl.scope === 'serviceMulti' ? services.loading : devices.loading}
               />
             )}
 
@@ -970,6 +1003,7 @@ function ReportBody({ template, data }: { template: string; data: any }) {
     case 'network-summary': return <NetworkSummaryReport data={data} />;
     case 'site-summary':    return <SiteReport data={data} />;
     case 'device-detail':   return <DeviceDetailReport data={data} />;
+    case 'service-detail':  return <ServiceDetailReport data={data} />;
     case 'sla-compliance':  return <SlaComplianceReport data={data} />;
     case 'top-worst':       return <TopWorstReport data={data} />;
     case 'alert-analysis':  return <AlertAnalysisReport data={data} />;
@@ -1052,7 +1086,7 @@ function EntityMultiSelect({
 
 // ── Per-entity report section (top-level component) ────────────
 // Fetches its own detail endpoint and renders the matching report component once
-// per AP/device, with an independent loading / error / empty state.
+// per AP/device/service, with an independent loading / error / empty state.
 function EntityReportSection({
   template, entity, endpoint, selectedMetrics,
 }: {
@@ -1068,7 +1102,7 @@ function EntityReportSection({
         fontSize: 'var(--text-sm)', fontWeight: 700, color: 'var(--text-secondary)',
         textTransform: 'uppercase', letterSpacing: '0.04em', margin: '0 0 8px',
       }}>
-        {template === 'ap-detail' ? 'AP' : 'Device'}: {entity.label}
+        {detailNoun(template)}: {entity.label}
       </div>
       {r.error ? (
         <ErrorBox message={r.error} />
@@ -1082,6 +1116,8 @@ function EntityReportSection({
         </div>
       ) : template === 'ap-detail' ? (
         <ApDetailReport data={r.data} selectedMetrics={selectedMetrics} />
+      ) : template === 'service-detail' ? (
+        <ServiceDetailReport data={r.data} selectedMetrics={selectedMetrics} />
       ) : (
         <DeviceDetailReport data={r.data} selectedMetrics={selectedMetrics} />
       )}

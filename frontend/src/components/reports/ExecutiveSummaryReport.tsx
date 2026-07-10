@@ -28,6 +28,14 @@ type Executive = {
     incidents: { current: number; previous: number; delta: number };
   };
   recommendations: string[];
+  // Service-check uptime — a parallel summary to overall_uptime_pct (device
+  // availability), computed from service_check_results. Optional: older
+  // payloads (or a report with no service checks configured) omit it.
+  service_summary?: {
+    uptime_pct: number | null;
+    total_checks: number;
+    total_services: number;
+  } | null;
 };
 
 function fmtPct(v: number | null | undefined): string {
@@ -146,6 +154,12 @@ export default function ExecutiveSummaryReport({ data }: { data: Executive }) {
           <div style={STAT_VALUE}>{data.total_downtime_minutes ?? 0} min</div>
           <div style={STAT_LABEL}>Downtime</div>
         </div>
+        {data.service_summary && data.service_summary.total_services > 0 && (
+          <div style={{ ...STAT_CARD, borderLeftColor: 'var(--primary)' }}>
+            <div style={STAT_VALUE}>{fmtPct(data.service_summary.uptime_pct)}</div>
+            <div style={STAT_LABEL}>Service Uptime</div>
+          </div>
+        )}
       </div>
 
       {/* 2b. Network performance vs previous period */}

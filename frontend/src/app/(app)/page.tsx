@@ -45,9 +45,11 @@ type SiteHealth = {
   down_count: number; warning_count: number; unknown_count: number; avg_uptime_pct: number | null;
 };
 type EventRow = {
-  id: number; device_id: number; device_name: string | null; site_id: number | null;
+  id: number; device_id: number | null; device_name: string | null; site_id: number | null;
   site_name: string | null; alert_type: string; severity: string; status: string; message: string | null;
   triggered_at: string; resolved_at: string | null; event_at: string;
+  service_check_id?: number | null; service_name?: string | null;
+  wireless_ap_id?: number | null; wireless_controller_id?: number | null; wireless_name?: string | null;
 };
 // ── Enterprise panel types ─────────────────────────────────────
 type OpsSummary = {
@@ -86,7 +88,8 @@ type TopTalker = {
   in_bps: number; out_bps: number;
 };
 type MaintenanceRow = {
-  id: number; device_id: number; device_name: string; site_name: string | null;
+  id: number; device_id: number | null; device_name: string | null; site_name: string | null;
+  service_check_id: number | null; service_name: string | null; service_site_name: string | null;
   starts_at: string; ends_at: string; reason: string | null; state: 'active' | 'upcoming';
 };
 type MaintenanceData = { active: MaintenanceRow[]; upcoming: MaintenanceRow[] };
@@ -1015,6 +1018,34 @@ function humanEvent(type: string): string {
   }
 }
 
+// Wireless AP/controller and service-check alerts have device_id = NULL — link
+// to the entity that actually owns the event instead of falling through to
+// /devices/null (mirrors the same device_id == null handling on /alerts).
+function EventSubject({ e }: { e: EventRow }) {
+  if (e.device_id == null && e.service_name) {
+    return (
+      <Link href="/services" style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
+        {e.service_name}
+      </Link>
+    );
+  }
+  if (e.device_id == null && e.wireless_name) {
+    return (
+      <Link href="/wireless" style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
+        {e.wireless_name}
+      </Link>
+    );
+  }
+  if (e.device_id == null) {
+    return <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{e.message || 'Unknown event'}</span>;
+  }
+  return (
+    <Link href={`/devices/${e.device_id}`} style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
+      {e.device_name || `#${e.device_id}`}
+    </Link>
+  );
+}
+
 function RecentEvents({ api }: { api: Api<EventRow[]> }) {
   const rows = (api.data || []).slice(0, 20);
   if (api.loading && !api.data) return <TableSkeleton rows={6} cols={2} />;
@@ -1029,9 +1060,7 @@ function RecentEvents({ api }: { api: Api<EventRow[]> }) {
             <span title={fmtTime(e.event_at)} style={{ width: 64, color: 'var(--text-muted)', whiteSpace: 'nowrap', flexShrink: 0 }}>{fmtRel(e.event_at)}</span>
             <span style={{ flexShrink: 0 }}>{icon}</span>
             <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              <Link href={`/devices/${e.device_id}`} style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
-                {e.device_name || `#${e.device_id}`}
-              </Link>{' '}
+              <EventSubject e={e} />{' '}
               <span style={{ color: 'var(--text-primary)' }}>{text}</span>
             </span>
             <span style={{ flex: 1 }} />
@@ -1509,10 +1538,20 @@ function MaintenanceGroup({ api }: { api: Api<MaintenanceData> }) {
             >
               {isActive ? 'Active' : 'Upcoming'}
             </span>
-            <Link href={`/devices/${m.device_id}`} style={{ fontWeight: 600, color: 'var(--text-primary)', whiteSpace: 'nowrap' }}>
-              {m.device_name}
-            </Link>
-            {m.site_name && <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>· {m.site_name}</span>}
+            {m.device_id != null ? (
+              <Link href={`/devices/${m.device_id}`} style={{ fontWeight: 600, color: 'var(--text-primary)', whiteSpace: 'nowrap' }}>
+                {m.device_name}
+              </Link>
+            ) : m.service_check_id != null ? (
+              <Link href={`/services/${m.service_check_id}`} style={{ fontWeight: 600, color: 'var(--text-primary)', whiteSpace: 'nowrap' }}>
+                {m.service_name}
+              </Link>
+            ) : (
+              <span style={{ fontWeight: 600, color: 'var(--text-primary)', whiteSpace: 'nowrap' }}>All devices/services</span>
+            )}
+            {(m.site_name || m.service_site_name) && (
+              <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>· {m.site_name || m.service_site_name}</span>
+            )}
             {m.reason && (
               <span style={{ color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>— {m.reason}</span>
             )}

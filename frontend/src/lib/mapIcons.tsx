@@ -68,6 +68,20 @@ export function deviceGlyphFor(typeOrName?: string | null): string {
   return 'generic';
 }
 
+// Pick a glyph key for a service_checks node, by check type. Reuses the
+// existing built-in glyph set (no new artwork) rather than a bespoke per-type
+// icon set — 'internet' (globe) for HTTP, 'switch' (socket-like) for TCP,
+// 'firewall' (lock-like) for SSL/TLS, 'database' (record lookup) for DNS.
+export function serviceGlyphFor(type?: string | null): string {
+  switch ((type || '').toLowerCase()) {
+    case 'http': return 'internet';
+    case 'tcp': return 'switch';
+    case 'ssl': return 'firewall';
+    case 'dns': return 'database';
+    default: return 'generic';
+  }
+}
+
 // Vector art for a glyph in 24×24 space, stroked (and lightly filled) in `color`.
 // strokeWidth is in FINAL (screen/canvas) units via non-scaling-stroke, so the
 // outline stays a consistent thin weight no matter how large the glyph is scaled

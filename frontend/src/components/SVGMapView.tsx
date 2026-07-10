@@ -7,7 +7,7 @@ import {
   type FullMap, type MapDevice, type MapConnection, type MapLabel, type MapShape, type MapNodeLike,
   statusFill, deviceCenter, connLive, utilColor, fmtBps, elbowPoints, nodeAnchorBox, edgePoint,
 } from '@/lib/mapTypes';
-import { MapGlyph, deviceGlyphFor, isGlyphKind } from '@/lib/mapIcons';
+import { MapGlyph, deviceGlyphFor, serviceGlyphFor, isGlyphKind } from '@/lib/mapIcons';
 
 const DEFAULT_LINE = '#94a3b8';
 
@@ -125,6 +125,9 @@ export default function SVGMapView({
             latest_mem_pct: d.latest_mem_pct,
             uptime_24h_pct: d.uptime_24h_pct,
             alert_count: d.alert_count,
+            service_status: d.service_status,
+            service_response_ms: d.service_response_ms,
+            service_last_checked_at: d.service_last_checked_at,
           };
         }
         setLive(next);
@@ -160,14 +163,17 @@ export default function SVGMapView({
     if (justPanned.current) return; // ignore the click that ends a pan-drag
     if (!interactive) return;
     if (d.drill_map_id) { router.push(`/maps/${d.drill_map_id}`); return; } // drill into child map
+    if (d.service_check_id != null) { router.push(`/services/${d.service_check_id}`); return; }
     if (d.device_id) router.push(`/devices/${d.device_id}`);
   }
 
   // Status tally for the legend (only statuses actually present are shown).
   const counts: Record<string, number> = { up: 0, down: 0, warning: 0, unknown: 0 };
   for (const d of devices) {
-    if (d.alert_suppressed) { counts.unknown++; continue; }
-    const s = (d.current_status || 'unknown').toLowerCase();
+    const isService = d.service_check_id != null;
+    if (!isService && d.alert_suppressed) { counts.unknown++; continue; }
+    const raw = isService ? d.service_status : d.current_status;
+    const s = (raw || 'unknown').toLowerCase();
     counts[s in counts ? s : 'unknown']++;
   }
   const legendItems = ([
@@ -309,9 +315,12 @@ export function ConnectionLine({
     // Unbound: keep the legacy status-based colouring for default-coloured lines.
     const custom = (conn.color || '').toLowerCase() !== DEFAULT_LINE;
     if (!custom) {
-      // Status colouring only applies to device endpoints; shapes have no status.
-      const fs = (from as MapDevice).current_status;
-      const ts = (to as MapDevice).current_status;
+      // Status colouring only applies to device/service endpoints; shapes have
+      // no status. A service endpoint's live status lives in service_status.
+      const fd = from as MapDevice;
+      const td = to as MapDevice;
+      const fs = fd.service_check_id != null ? fd.service_status : fd.current_status;
+      const ts = td.service_check_id != null ? td.service_status : td.current_status;
       if (fs === 'down' || ts === 'down') stroke = '#ef4444';
       else if (fs === 'up' && ts === 'up') stroke = '#22c55e';
       else stroke = DEFAULT_LINE;
@@ -369,10 +378,12 @@ export function DeviceNode({
   interactive: boolean;
   onClick: (d: MapDevice) => void;
 }) {
-  const status = (device.current_status || 'unknown').toLowerCase();
-  const suppressed = !!device.alert_suppressed;
-  const name = device.label || device.device_name || 'Device';
-  const ip = device.ip_address || '';
+  const isService = device.service_check_id != null;
+  const status = ((isService ? device.service_status : device.current_status) || 'unknown').toLowerCase();
+  const suppressed = !isService && !!device.alert_suppressed; // service checks have no suppress flag
+  const name = device.label || (isService ? device.service_name : device.device_name) || (isService ? 'Service' : 'Device');
+  const ip = (isService ? device.service_target : device.ip_address) || '';
+  const responseMs = isService ? device.service_response_ms : device.last_response_ms;
   const x = Number(device.x);
   const y = Number(device.y);
   const w = Number(device.width);
@@ -381,13 +392,13 @@ export function DeviceNode({
   const color = suppressed ? '#94a3b8' : statusFill(status, false);
   const pulse = !suppressed && (status === 'down' || status === 'warning');
   const drill = device.drill_map_id != null;
-  const cursor = interactive && (device.device_id || drill) ? 'pointer' : 'default';
+  const cursor = interactive && ((isService && device.service_check_id != null) || (!isService && device.device_id) || drill) ? 'pointer' : 'default';
   const alertCount = Number(device.alert_count) || 0;
 
   const tipLines = [
-    `${name}${ip ? `  ${ip}` : ''}${device.site_name ? ` · ${device.site_name}` : ''}`,
+    `${name}${ip ? `  ${ip}` : ''}${!isService && device.site_name ? ` · ${device.site_name}` : ''}`,
     `Status: ${suppressed ? 'suppressed' : status}` +
-      (device.last_response_ms != null ? ` · ${Number(device.last_response_ms).toFixed(0)} ms` : ''),
+      (responseMs != null ? ` · ${Number(responseMs).toFixed(0)} ms` : ''),
   ];
   const metricBits: string[] = [];
   if (device.latest_cpu_pct != null) metricBits.push(`CPU ${Number(device.latest_cpu_pct).toFixed(0)}%`);
@@ -419,7 +430,8 @@ export function DeviceNode({
   // ── Icon style: device glyph + label beneath (never overflows) ──
   if (device.node_style === 'icon') {
     const glyphKind = device.icon_type && device.icon_type !== 'auto'
-      ? device.icon_type : deviceGlyphFor(device.device_name);
+      ? device.icon_type
+      : isService ? serviceGlyphFor(device.service_type) : deviceGlyphFor(device.device_name);
     const gs = Math.max(24, Math.min(w, h));
     const gx = cx - gs / 2;
     const gy = y + Math.max(0, (h - gs) / 2);

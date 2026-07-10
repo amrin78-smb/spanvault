@@ -602,19 +602,19 @@ function HealthTab() {
   const rows = api.data || [];
 
   return (
-    <SectionCard title="Device Health Scores" flush={rows.length > 0}>
+    <SectionCard title="Health Scores" flush={rows.length > 0}>
       {api.loading && !api.data ? (
-        <div style={{ padding: 16 }}><TableSkeleton rows={8} cols={9} /></div>
+        <div style={{ padding: 16 }}><TableSkeleton rows={8} cols={10} /></div>
       ) : api.error ? (
         <ErrorBox message={api.error} />
       ) : !rows.length ? (
-        <Empty message="Collecting baseline data — health scores appear once devices have monitoring history." />
+        <Empty message="Collecting baseline data — health scores appear once devices/services have monitoring history." />
       ) : (
         <div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
               <tr>
-                {['Device', 'Site', 'Score', 'Grade'].map((c) => <th key={c} style={TH_STYLE}>{c}</th>)}
+                {['Type', 'Name', 'Site', 'Score', 'Grade'].map((c) => <th key={c} style={TH_STYLE}>{c}</th>)}
                 <th style={{ ...TH_STYLE, textAlign: 'right' }}>Uptime</th>
                 {['Response Trend'].map((c) => <th key={c} style={TH_STYLE}>{c}</th>)}
                 <th style={{ ...TH_STYLE, textAlign: 'right' }}>Anomalies 7d</th>
@@ -626,14 +626,23 @@ function HealthTab() {
               {rows.map((r) => {
                 const up = n(r.uptime_pct);
                 const respScore = n(r.response_score);
+                const isService = r.kind === 'service';
+                // Anomaly component doesn't apply to services (see
+                // computeServiceHealthScores) — say so instead of showing a
+                // misleading "20/20" that looks like a measured anomaly-free result.
                 const breakdown =
                   `Uptime: ${Math.round(n(r.uptime_score) ?? 0)}/40\n` +
                   `Response: ${Math.round(n(r.response_score) ?? 0)}/20\n` +
-                  `Anomaly: ${Math.round(n(r.anomaly_score) ?? 0)}/20\n` +
+                  `Anomaly: ${isService ? 'n/a (services)' : `${Math.round(n(r.anomaly_score) ?? 0)}/20`}\n` +
                   `Alert: ${Math.round(n(r.alert_score) ?? 0)}/20`;
                 return (
-                  <tr key={r.id} style={ROW_STYLE}>
-                    <IntelTD><Link href={`/devices/${r.id}`}>{r.name}</Link></IntelTD>
+                  <tr key={`${r.kind}-${r.id}`} style={ROW_STYLE}>
+                    <IntelTD>
+                      <span className="sv-type-badge">{isService ? 'Service' : 'Device'}</span>
+                    </IntelTD>
+                    <IntelTD>
+                      <Link href={isService ? `/services/${r.id}` : `/devices/${r.id}`}>{r.name}</Link>
+                    </IntelTD>
                     <IntelTD style={{ color: 'var(--text-muted)' }}>{r.site_name || '—'}</IntelTD>
                     <IntelTD title={breakdown}><ScoreMiniBar score={r.score} width={80} height={6} /></IntelTD>
                     <IntelTD><GradeBadge grade={r.grade} /></IntelTD>
@@ -643,7 +652,9 @@ function HealthTab() {
                         ? <span style={{ color: respScore >= 15 ? 'var(--green)' : respScore >= 10 ? 'var(--yellow)' : 'var(--red)', fontWeight: 600, fontSize: 'var(--text-sm)' }}>{Math.round(respScore)}/20</span>
                         : <span style={{ color: 'var(--text-muted)' }}>—</span>}
                     </IntelTD>
-                    <IntelTD right style={{ color: r.anomalies_7d > 0 ? 'var(--yellow)' : 'var(--text-muted)' }}>{r.anomalies_7d}</IntelTD>
+                    <IntelTD right style={{ color: isService ? 'var(--text-muted)' : (r.anomalies_7d > 0 ? 'var(--yellow)' : 'var(--text-muted)') }}>
+                      {isService ? '—' : r.anomalies_7d}
+                    </IntelTD>
                     <IntelTD right style={{ color: r.alerts_7d > 0 ? 'var(--red)' : 'var(--text-muted)' }}>{r.alerts_7d}</IntelTD>
                     <IntelTD><TrendArrow trend={r.trend} /></IntelTD>
                   </tr>

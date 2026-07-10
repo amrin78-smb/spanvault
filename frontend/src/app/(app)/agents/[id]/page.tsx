@@ -18,11 +18,16 @@ type AgentDevice = {
   site_id: number | null; site_name: string | null; current_status: string;
   last_response_ms: number | null; last_seen_at: string | null; snmp_enabled: boolean;
 };
+type AgentServiceCheck = {
+  id: number; name: string; type: string; target: string; site_name: string | null;
+  current_status: string; last_response_ms: number | null; last_checked_at: string | null;
+};
 type AgentDetail = {
   id: number; name: string; status: string; version: string | null;
   ip_address: string | null; hostname: string | null; disabled?: boolean;
   last_seen_at: string | null; connected_at: string | null; created_at: string;
-  sites: AgentSite[]; devices: AgentDevice[]; install_command: string;
+  sites: AgentSite[]; devices: AgentDevice[]; service_checks: AgentServiceCheck[];
+  install_command: string;
   health?: AgentHealthData; latest_agent_version?: string | null;
 };
 type Site = { id: number; name: string };
@@ -287,7 +292,7 @@ export default function AgentDetailPage({ params }: { params: { id: string } }) 
       </div>
 
       {/* Row 3 — Devices grouped by site, full width */}
-      <div style={CARD_STYLE}>
+      <div style={{ ...CARD_STYLE, marginBottom: 12 }}>
         <div style={SECTION_TITLE_STYLE}>Devices Polled by This Agent</div>
         {!a.devices.length ? (
           <Empty message="No devices yet. Assign a site above, then import/add devices to it — or use Discover Devices to scan & adopt." />
@@ -315,6 +320,31 @@ export default function AgentDetailPage({ params }: { params: { id: string } }) 
                   </div>
                 </div>
               ))}
+            </div>
+          ))
+        )}
+      </div>
+
+      {/* Row 4 — Service checks run by this agent, full width */}
+      <div style={CARD_STYLE}>
+        <div style={SECTION_TITLE_STYLE}>Service Checks Run by This Agent</div>
+        {!a.service_checks.length ? (
+          <Empty message="No service checks run by this agent." />
+        ) : (
+          a.service_checks.map((c) => (
+            <div key={c.id} className="sv-dev-row" style={{ height: 36 }}>
+              <StatusDot status={c.current_status} />
+              <div className="sv-dev-id">
+                <div className="nm">
+                  <Link href={`/services/${c.id}`} style={{ color: 'var(--primary)' }}>{c.name}</Link>
+                </div>
+                <div className="ip">{c.target}{c.site_name ? ` · ${c.site_name}` : ''}</div>
+              </div>
+              <span className="sv-type-badge">{(c.type || '').toUpperCase()}</span>
+              <div className="sv-dev-lat">
+                {fmtMs(c.last_response_ms)}
+                <div className="sv-muted">{fmtRel(c.last_checked_at)}</div>
+              </div>
             </div>
           ))
         )}

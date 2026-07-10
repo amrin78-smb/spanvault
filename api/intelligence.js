@@ -255,6 +255,105 @@ async function computeHealthScores() {
   }
 }
 
+// ── Service health score computation ───────────────────────────
+// Deliberately scoped-down sibling of computeHealthScores(): uptime (40) +
+// response-time trend (20) + alert-count (20) only. NO anomaly component —
+// a service check is a binary up/down/warning signal (service_check_results
+// .status), not a continuous metric stream like ping/SNMP, so the device
+// engine's baseline-deviation anomaly scoring (device_baselines /
+// device_anomalies, z-scores) doesn't fit it and would require a much larger,
+// not-recommended schema migration (per-service baselines) to extend. Kept
+// as its own function (not folded into computeHealthScores' loop) because the
+// query shapes genuinely differ (service_checks/service_check_results vs.
+// monitored_devices/ping_results) enough that a single generic loop would be
+// harder to read than the two side by side.
+//
+// The missing anomaly slot is filled with a flat neutral 20/20 (full points)
+// rather than dropped-and-rescaled to an 80-max scale. That keeps the total
+// on the same 0-100 scale as devices, so the existing grade thresholds
+// (>=90 A, >=80 B, >=70 C, >=60 D, else F) and every score-driven UI helper
+// (scoreColor/GradeBadge/ScoreMiniBar) apply to service rows unmodified —
+// no separate scaling path or special-casing needed for the service kind.
+async function computeServiceHealthScores() {
+  try {
+    const checks = await sv.query('SELECT id FROM service_checks WHERE active = TRUE');
+
+    for (const svc of checks.rows) {
+      const checkId = svc.id;
+
+      // Uptime score (40 pts): last 7 days — identical shape to the device
+      // version, service_check_results/check_id in place of ping_results/device_id.
+      const uptime = await sv.query(`
+        SELECT ROUND(100.0 * SUM(CASE WHEN status='up' THEN 1 ELSE 0 END)
+               / NULLIF(COUNT(*),0), 2) AS pct
+        FROM service_check_results WHERE check_id=$1 AND ts >= NOW() - INTERVAL '7 days'
+      `, [checkId]);
+      const uptimePct = parseFloat(uptime.rows[0] && uptime.rows[0].pct != null ? uptime.rows[0].pct : 100);
+      const uptimeScore = (uptimePct / 100) * 40;
+
+      // Response score (20 pts): trend direction over the last 7 days
+      // (hourly-averaged response time, x in epoch seconds) — reuses the same
+      // linearRegression() helper as the device version.
+      const trend = await sv.query(`
+        SELECT EXTRACT(EPOCH FROM DATE_TRUNC('hour', ts)) AS x, AVG(response_ms) AS y
+        FROM service_check_results
+        WHERE check_id=$1 AND ts >= NOW() - INTERVAL '7 days' AND status='up'
+          AND response_ms IS NOT NULL
+        GROUP BY DATE_TRUNC('hour', ts)
+        ORDER BY x
+      `, [checkId]);
+      let responseScore = 20;
+      if (trend.rows.length >= 2) {
+        const points = trend.rows.map((r) => ({ x: parseFloat(r.x), y: parseFloat(r.y) }));
+        const reg = linearRegression(points);
+        // Negative slope (improving) = full points; positive slope (degrading) = fewer.
+        const base = points[0].y || 1;
+        const trendPct = Math.max(0, Math.min(1, 1 - (reg.slope * 86400 * 7) / base));
+        responseScore = trendPct * 20;
+      }
+
+      // Anomaly score (20 pts): out of scope for services — see file comment
+      // above. Neutral full points every cycle (not a penalty, not a bonus).
+      const anomalyScore = 20;
+
+      // Alert score (20 pts): fewer alerts in 7 days = higher score
+      // (recovery_* records are informational, not real alerts) — identical
+      // formula to the device version, scoped by service_check_id.
+      const alertCountRow = await sv.query(`
+        SELECT COUNT(*) AS cnt FROM alerts
+        WHERE service_check_id=$1 AND triggered_at >= NOW() - INTERVAL '7 days'
+          AND alert_type NOT LIKE 'recovery%'
+      `, [checkId]);
+      const alertCount = parseInt(alertCountRow.rows[0] ? alertCountRow.rows[0].cnt : 0, 10) || 0;
+      const alertScore = Math.max(0, 20 - alertCount * 5);
+
+      const totalScore = Math.round(uptimeScore + responseScore + anomalyScore + alertScore);
+      const grade = totalScore >= 90 ? 'A' : totalScore >= 80 ? 'B' :
+        totalScore >= 70 ? 'C' : totalScore >= 60 ? 'D' : 'F';
+
+      // Trend: same two-signal shape as the device version (uptime + a
+      // secondary frequency signal), but substitutes alertCount for
+      // anomalyCount since services have no anomaly component to read from.
+      const trendDir = uptimePct >= 99.5 && alertCount === 0 ? 'improving' :
+        uptimePct < 95 || alertCount > 3 ? 'degrading' : 'stable';
+
+      await sv.query(`
+        INSERT INTO device_health_scores
+          (service_check_id, score, uptime_score, response_score, anomaly_score,
+           alert_score, grade, trend)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+        ON CONFLICT (service_check_id) WHERE service_check_id IS NOT NULL DO UPDATE SET
+          score=EXCLUDED.score, uptime_score=EXCLUDED.uptime_score,
+          response_score=EXCLUDED.response_score, anomaly_score=EXCLUDED.anomaly_score,
+          alert_score=EXCLUDED.alert_score, grade=EXCLUDED.grade,
+          trend=EXCLUDED.trend, computed_at=NOW()
+      `, [checkId, totalScore, uptimeScore, responseScore, anomalyScore, alertScore, grade, trendDir]);
+    }
+  } catch (e) {
+    console.error('[Intelligence] computeServiceHealthScores error:', e.message);
+  }
+}
+
 // ── Capacity forecasting ───────────────────────────────────────
 async function computeCapacityForecasts(deviceId) {
   // Daily average + peak bandwidth for the last 30 days.
@@ -520,6 +619,7 @@ async function correlateIncidents() {
 async function runAll() {
   await computeBaselines();
   await computeHealthScores();
+  await computeServiceHealthScores();
   await detectAnomalies();
   await detectPatterns();
   await computeThresholdRecommendations();
@@ -533,6 +633,7 @@ function startIntelligenceEngine() {
 
   setInterval(computeBaselines, 60 * 60 * 1000);                 // every hour
   setInterval(computeHealthScores, 5 * 60 * 1000);               // every 5 min
+  setInterval(computeServiceHealthScores, 5 * 60 * 1000);        // every 5 min
   setInterval(detectAnomalies, 5 * 60 * 1000);                   // every 5 min
   setInterval(detectPatterns, 6 * 60 * 60 * 1000);               // every 6 hours
   setInterval(computeThresholdRecommendations, 24 * 60 * 60 * 1000); // daily
@@ -543,6 +644,6 @@ function startIntelligenceEngine() {
 
 module.exports = {
   startIntelligenceEngine, runAll, computeBaselines, computeHealthScores,
-  detectAnomalies, computeCapacityForecasts, detectPatterns,
-  computeThresholdRecommendations, correlateIncidents,
+  computeServiceHealthScores, detectAnomalies, computeCapacityForecasts,
+  detectPatterns, computeThresholdRecommendations, correlateIncidents,
 };

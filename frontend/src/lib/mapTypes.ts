@@ -3,6 +3,10 @@
 export type MapDevice = {
   id: number;            // map_devices.id (may be a temp/client id while editing)
   device_id: number | null;
+  // A node references at most one entity: device_id OR service_check_id (never
+  // both — enforced by the map_devices_one_entity CHECK constraint). Both null
+  // is also legal: a label-only/empty node.
+  service_check_id?: number | null;
   x: number;
   y: number;
   label: string | null;
@@ -28,14 +32,23 @@ export type MapDevice = {
   latest_mem_pct?: number | null;
   uptime_24h_pct?: number | null;
   alert_count?: number | null;
+  // Joined live service_checks fields (present on GET when service_check_id is
+  // set; absent for device/empty nodes):
+  service_name?: string | null;
+  service_type?: string | null;      // 'http' | 'tcp' | 'ssl' | 'dns'
+  service_target?: string | null;
+  service_status?: string | null;    // up | down | warning | unknown
+  service_response_ms?: number | null;
+  service_last_checked_at?: string | null;
 };
 
 export type MapConnection = {
   id: number;
   from_item_id: number;
   to_item_id: number;
-  from_kind: string;  // 'device' | 'shape' — which table from_item_id refers to
-  to_kind: string;    // 'device' | 'shape'
+  from_kind: string;  // 'device' | 'shape' | 'service' — which table from_item_id refers to
+                       // ('device' and 'service' both resolve against map_devices)
+  to_kind: string;    // 'device' | 'shape' | 'service'
   color: string;
   line_style: string; // 'solid' | 'dashed'
   label: string | null;
@@ -177,11 +190,13 @@ export function normalizeMap(m: FullMap): FullMap {
       latest_mem_pct: d.latest_mem_pct == null ? null : Number(d.latest_mem_pct),
       uptime_24h_pct: d.uptime_24h_pct == null ? null : Number(d.uptime_24h_pct),
       alert_count: d.alert_count == null ? null : Number(d.alert_count),
+      service_check_id: d.service_check_id == null ? null : Number(d.service_check_id),
+      service_response_ms: d.service_response_ms == null ? null : Number(d.service_response_ms),
     })),
     connections: (m.connections || []).map((c) => ({
       ...c,
-      from_kind: c.from_kind === 'shape' ? 'shape' : 'device',
-      to_kind: c.to_kind === 'shape' ? 'shape' : 'device',
+      from_kind: c.from_kind === 'shape' ? 'shape' : c.from_kind === 'service' ? 'service' : 'device',
+      to_kind: c.to_kind === 'shape' ? 'shape' : c.to_kind === 'service' ? 'service' : 'device',
       width: Number(c.width ?? 2),
       arrow: !!c.arrow,
       routing: c.routing === 'elbow' ? 'elbow' : 'straight',

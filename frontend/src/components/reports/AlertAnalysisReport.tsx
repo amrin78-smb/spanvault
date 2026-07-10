@@ -2,25 +2,26 @@
 
 import { SECTION_TITLE, PANEL, STAT_GRID, STAT_CARD, STAT_VALUE, STAT_LABEL, TH, TD } from '@/components/reports/reportStyles';
 
+// Estate-wide: an alerted entity is either a device (alerts.device_id) or a
+// service check (alerts.service_check_id) — `source` distinguishes which;
+// exactly one of device_id/service_check_id is set per row (mirrors the
+// LEFT JOIN in GET /api/reports/alert-analysis).
+type AlertedEntity = {
+  device_id: number | null;
+  service_check_id: number | null;
+  device_name: string;
+  site_name: string;
+  source: 'device' | 'service';
+  count: number;
+  mttr_minutes: number | null;
+};
 type AlertAnalysis = {
   total_alerts: number;
   by_type: { key: string; count: number }[];
   by_severity: { key: string; count: number }[];
   by_site: { key: string; count: number }[];
-  by_device: {
-    device_id: number;
-    device_name: string;
-    site_name: string;
-    count: number;
-    mttr_minutes: number | null;
-  }[];
-  top_alerted: {
-    device_id: number;
-    device_name: string;
-    site_name: string;
-    count: number;
-    mttr_minutes: number | null;
-  }[];
+  by_device: AlertedEntity[];
+  top_alerted: AlertedEntity[];
   avg_mttr_minutes: number | null;
   busiest_hour: number | null; // 0-23
   busiest_day: number | null; // 0-6, 0=Sunday
@@ -110,13 +111,14 @@ export default function AlertAnalysisReport({ data }: { data: AlertAnalysis }) {
           : 'Not enough data to detect a pattern.'}
       </div>
 
-      {/* 3. Top alerted devices */}
+      {/* 3. Top alerted devices & services */}
       <div className="sv-panel" style={{ ...PANEL, ...sectionStyle }}>
-        <h3 style={SECTION_TITLE}>Top Alerted Devices</h3>
+        <h3 style={SECTION_TITLE}>Top Alerted</h3>
         <table className="sv-table">
           <thead>
             <tr>
-              <th style={TH}>Device</th>
+              <th style={TH}>Name</th>
+              <th style={TH}>Type</th>
               <th style={TH}>Site</th>
               <th style={numThStyle}>Alerts</th>
               <th style={numThStyle}>MTTR (min)</th>
@@ -125,8 +127,13 @@ export default function AlertAnalysisReport({ data }: { data: AlertAnalysis }) {
           <tbody>
             {topRows && topRows.length > 0 ? (
               topRows.map((d) => (
-                <tr key={d.device_id}>
+                <tr key={`${d.source}-${d.device_id ?? d.service_check_id}`}>
                   <td style={TD}>{d.device_name}</td>
+                  <td style={TD}>
+                    <span className={d.source === 'service' ? 'sv-badge' : 'sv-badge up'}>
+                      {d.source === 'service' ? 'Service' : 'Device'}
+                    </span>
+                  </td>
                   <td style={TD}>{d.site_name}</td>
                   <td style={numCellStyle}>{d.count}</td>
                   <td style={numCellStyle}>{formatMttr(d.mttr_minutes)}</td>
@@ -134,8 +141,8 @@ export default function AlertAnalysisReport({ data }: { data: AlertAnalysis }) {
               ))
             ) : (
               <tr>
-                <td colSpan={4} className="sv-muted">
-                  No device alert data.
+                <td colSpan={5} className="sv-muted">
+                  No alert data.
                 </td>
               </tr>
             )}

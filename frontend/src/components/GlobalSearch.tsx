@@ -7,20 +7,23 @@ import { apiGet } from '@/lib/api';
 type DeviceHit = { id: number; name: string; ip_address: string | null; site_name: string | null };
 type ApHit = { id: number; name: string; ip_address: string | null; site_name: string | null };
 type ControllerHit = { id: number; name: string; site_name: string | null };
+type ServiceHit = { id: number; name: string; type: string; target: string; site_name: string | null };
 
 type GlobalSearchResults = {
   devices: DeviceHit[];
   aps: ApHit[];
   controllers: ControllerHit[];
+  services: ServiceHit[];
 };
 
-const EMPTY_RESULTS: GlobalSearchResults = { devices: [], aps: [], controllers: [] };
+const EMPTY_RESULTS: GlobalSearchResults = { devices: [], aps: [], controllers: [], services: [] };
 
 // Type accent dots (raw signal colors — tokens flip with the theme).
-const TYPE_DOT: Record<'device' | 'ap' | 'controller', string> = {
+const TYPE_DOT: Record<'device' | 'ap' | 'controller' | 'service', string> = {
   device: 'var(--primary)',
   ap: 'var(--green)',
   controller: 'var(--purple)',
+  service: 'var(--yellow)',
 };
 
 // A single result row. Top-level (suite rule: never define a component inside a
@@ -68,7 +71,7 @@ function SearchGroup({ label, children }: { label: string; children: React.React
   );
 }
 
-/** Ctrl/Cmd+K command palette to jump to any device, access point, or controller. */
+/** Ctrl/Cmd+K command palette to jump to any device, access point, controller, or service check. */
 export default function GlobalSearch() {
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -102,7 +105,7 @@ export default function GlobalSearch() {
     }
   }, [open]);
 
-  // Debounced search across devices, access points, and controllers.
+  // Debounced search across devices, access points, controllers, and service checks.
   useEffect(() => {
     if (!open) return;
     const term = q.trim();
@@ -117,6 +120,7 @@ export default function GlobalSearch() {
             devices: data?.devices ?? [],
             aps: data?.aps ?? [],
             controllers: data?.controllers ?? [],
+            services: data?.services ?? [],
           });
         }
       } catch {
@@ -146,10 +150,15 @@ export default function GlobalSearch() {
     router.push('/wireless?tab=controllers');
   }
 
+  function goService(id: number) {
+    setOpen(false);
+    router.push(`/services/${id}`);
+  }
+
   if (!open) return null;
 
   const term = q.trim();
-  const total = results.devices.length + results.aps.length + results.controllers.length;
+  const total = results.devices.length + results.aps.length + results.controllers.length + results.services.length;
 
   return (
     <div className="sv-search-backdrop" onMouseDown={() => setOpen(false)}>
@@ -157,7 +166,7 @@ export default function GlobalSearch() {
         <input
           ref={inputRef}
           className="sv-search-input"
-          placeholder="Search devices, access points, controllers…"
+          placeholder="Search devices, access points, controllers, service checks…"
           value={q}
           onChange={(e) => setQ(e.target.value)}
         />
@@ -209,6 +218,21 @@ export default function GlobalSearch() {
                   name={c.name}
                   site={c.site_name}
                   onClick={() => goController(c.id)}
+                />
+              ))}
+            </SearchGroup>
+          )}
+
+          {!loading && results.services.length > 0 && (
+            <SearchGroup label="Services">
+              {results.services.map((s) => (
+                <SearchRow
+                  key={`service-${s.id}`}
+                  dot={TYPE_DOT.service}
+                  name={s.name}
+                  ip={s.target}
+                  site={s.site_name}
+                  onClick={() => goService(s.id)}
                 />
               ))}
             </SearchGroup>

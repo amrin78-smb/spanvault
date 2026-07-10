@@ -28,6 +28,16 @@ type SlaCompliance = {
     }[];
     trends: string[];
   };
+  // Service-check uptime — a bounded parallel summary (not a second full
+  // per-service table; see api/server.js serviceSlaSummary). Optional: older
+  // payloads (or an estate with no service checks configured) omit/null it.
+  service_summary?: {
+    total: number;
+    meeting: number;
+    failing: number;
+    overall_uptime_pct: number | null;
+    total_downtime_minutes: number;
+  } | null;
 };
 
 function fmtNum(value: number | null): string {
@@ -61,6 +71,7 @@ export default function SlaComplianceReport({ data }: { data: SlaCompliance }) {
   const summary = data.summary || ({} as SlaCompliance['summary']);
   const devices = data.devices || [];
   const riskAssessment = data.risk_assessment;
+  const serviceSummary = data.service_summary;
 
   // Failing devices first, then by uptime ascending (worst first), preserving order otherwise.
   const sortedDevices = devices
@@ -151,6 +162,17 @@ export default function SlaComplianceReport({ data }: { data: SlaCompliance }) {
           <div style={STAT_VALUE}>{summary.total_downtime_minutes ?? 0} min</div>
           <div style={STAT_LABEL}>Total Downtime</div>
         </div>
+        {serviceSummary && serviceSummary.total > 0 && (
+          <div style={{ ...STAT_CARD, borderLeftColor: 'var(--primary)' }}>
+            <div style={STAT_VALUE}>
+              {serviceSummary.overall_uptime_pct == null ? '—' : `${serviceSummary.overall_uptime_pct}%`}
+            </div>
+            <div style={STAT_LABEL}>Service Uptime</div>
+            <div className="sv-muted" style={{ marginTop: 4, fontSize: 'var(--text-xs)' }}>
+              {serviceSummary.meeting}/{serviceSummary.total} services meeting SLA
+            </div>
+          </div>
+        )}
       </div>
 
       {/* 3. Export button */}

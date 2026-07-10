@@ -19,6 +19,11 @@ type Device = {
 type Alert = {
   id: number; device_id: number; device_name: string; ip_address: string;
   alert_type: string; severity: string; message: string; triggered_at: string; status: string;
+  service_check_id?: number | null; service_name?: string | null;
+};
+type ServiceLite = {
+  id: number; name: string; type: string; target: string; site_id: number | null;
+  current_status: string; last_response_ms: number | null; last_checked_at: string | null;
 };
 
 function countByStatus(devices: Device[]) {
@@ -49,6 +54,13 @@ function availColor(pct: number | null): string {
   return 'var(--red)';
 }
 
+// Map a service's current_status to a StatusDot-recognised token.
+function svcDotStatus(s: string): string {
+  const v = (s || 'unknown').toLowerCase();
+  if (v === 'up' || v === 'down' || v === 'warning') return v;
+  return 'unknown';
+}
+
 // "8 up (80%) · 2 down (20%) · …" — only non-zero categories, percent of total.
 function statusSummary(counts: { up: number; down: number; warning: number; unknown: number }, total: number): string {
   if (!total) return 'No devices';
@@ -69,21 +81,33 @@ export default function SiteDetailPage() {
 
   const sites = useApi<Site[]>('/api/netvault/sites');
   const devices = useApi<Device[]>(`/api/devices?site_id=${id}`, 20000);
+  const services = useApi<ServiceLite[]>(`/api/service-checks?site_id=${id}`, 20000);
   const alerts = useApi<Alert[]>('/api/alerts?status=active&limit=1000', 20000);
 
   const site = sites.data?.find((s) => String(s.id) === String(id)) || null;
   const deviceList = devices.data || [];
+  const serviceList = services.data || [];
   const deviceIds = new Set(deviceList.map((d) => d.id));
-  const siteAlerts = (alerts.data || []).filter((a) => deviceIds.has(a.device_id));
+  const serviceIds = new Set(serviceList.map((s) => s.id));
+  // Service-check alerts carry device_id = null and use service_check_id instead —
+  // match on either so active service alerts aren't silently dropped from this page.
+  const siteAlerts = (alerts.data || []).filter(
+    (a) => deviceIds.has(a.device_id) || (a.service_check_id != null && serviceIds.has(a.service_check_id))
+  );
   const counts = countByStatus(deviceList);
 
   // Fall back to the site name carried on the devices if the site isn't in the active list.
   const siteName = site?.name || deviceList[0]?.site_name || `Site #${id}`;
   const siteCity = site?.city || null;
+  const deviceCountLabel = `${deviceList.length} ${deviceList.length === 1 ? 'device' : 'devices'}`;
+  const serviceCountLabel = serviceList.length
+    ? `${serviceList.length} ${serviceList.length === 1 ? 'service' : 'services'}`
+    : null;
   const siteSubtitle = [
     siteCity,
     site?.code,
-    `${deviceList.length} ${deviceList.length === 1 ? 'device' : 'devices'}`,
+    deviceCountLabel,
+    serviceCountLabel,
   ].filter(Boolean).join(' · ');
 
   const gateway = deviceList.find((d) => d.is_gateway) || null;
@@ -118,7 +142,9 @@ export default function SiteDetailPage() {
         </div>
       )}
 
-      {(sites.error || devices.error) && <ErrorBox message={sites.error || devices.error || ''} />}
+      {(sites.error || devices.error || services.error) && (
+        <ErrorBox message={sites.error || devices.error || services.error || ''} />
+      )}
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 8, marginBottom: 16 }}>
         <SiteStatCard num={deviceList.length} label="Total Devices" color="var(--text-primary)" />
@@ -148,6 +174,27 @@ export default function SiteDetailPage() {
         )}
       </div>
 
+      <div className="sv-panel" style={{ padding: 0, marginBottom: 22 }}>
+        <h2 style={{ padding: '14px 16px 0' }}>Services</h2>
+        {services.loading && !services.data ? (
+          <TableSkeleton rows={3} cols={5} />
+        ) : serviceList.length ? (
+          <>
+            <div className="sv-dev-row sv-dev-head">
+              <span style={{ width: 11, flex: 'none' }} />
+              <span className="sv-dev-id">Service</span>
+              <span className="sv-dev-col">Type</span>
+              <span className="sv-dev-col">Target</span>
+              <span className="sv-dev-lat">Response</span>
+              <span className="sv-dev-col">Checked</span>
+            </div>
+            {serviceList.map((s) => <SiteServiceRow key={s.id} service={s} />)}
+          </>
+        ) : (
+          <Empty message="No service checks configured at this site." />
+        )}
+      </div>
+
       <div className="sv-panel">
         <h2>Active Alerts</h2>
         {alerts.loading && !alerts.data ? (
@@ -162,9 +209,18 @@ export default function SiteDetailPage() {
                 <tr key={a.id}>
                   <td><StatusBadge status={a.severity} /></td>
                   <td>
-                    <Link href={`/devices/${a.device_id}`} style={{ color: 'var(--sv-crimson)', fontWeight: 600 }}>
-                      {a.device_name || a.ip_address}
-                    </Link>
+                    {a.device_id == null && a.service_name ? (
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                        <Link href={`/services/${a.service_check_id}`} style={{ color: 'var(--sv-crimson)', fontWeight: 600 }}>
+                          {a.service_name}
+                        </Link>
+                        <span className="sv-type-badge" style={{ fontSize: 'var(--text-xs)' }}>Service</span>
+                      </span>
+                    ) : (
+                      <Link href={`/devices/${a.device_id}`} style={{ color: 'var(--sv-crimson)', fontWeight: 600 }}>
+                        {a.device_name || a.ip_address}
+                      </Link>
+                    )}
                   </td>
                   <td>{a.message}</td>
                   <td className="sv-muted">{fmtTime(a.triggered_at)}</td>
@@ -238,6 +294,37 @@ function SiteDeviceRow({ device }: { device: Device }) {
       </div>
       <div className="sv-dev-col" style={{ color: availColor(device.uptime_24h_pct), fontWeight: 600 }}>
         {fmtAvail(device.uptime_24h_pct)}
+      </div>
+    </div>
+  );
+}
+
+// ── Service row (top-level component, mirrors SiteDeviceRow / the /services page style) ──
+// No /services/:id detail route exists yet, so rows link to the /services list page.
+function SiteServiceRow({ service }: { service: ServiceLite }) {
+  return (
+    <div className="sv-dev-row">
+      <StatusDot status={svcDotStatus(service.current_status)} title={service.current_status} />
+      <div className="sv-dev-id">
+        <div className="nm">
+          <Link href={`/services/${service.id}`} className="sv-dev-name-link" style={{ color: 'var(--text-primary)' }}>
+            {service.name}
+          </Link>
+        </div>
+      </div>
+      <div className="sv-dev-col">
+        <span className="sv-type-badge">{(service.type || '').toUpperCase()}</span>
+      </div>
+      <div
+        className="sv-dev-col"
+        style={{ maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+        title={service.target}
+      >
+        {service.target}
+      </div>
+      <div className="sv-dev-lat">{fmtMs(service.last_response_ms)}</div>
+      <div className="sv-dev-col" title={service.last_checked_at ? fmtTime(service.last_checked_at) : 'Never checked'}>
+        {fmtRel(service.last_checked_at)}
       </div>
     </div>
   );

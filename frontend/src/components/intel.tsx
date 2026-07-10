@@ -13,6 +13,9 @@ export type HealthRow = {
   response_score: number | string | null; anomaly_score: number | string | null;
   alert_score: number | string | null; uptime_pct: number | string | null;
   anomalies_7d: number; alerts_7d: number; computed_at?: string;
+  // 'device' rows come from monitored_devices, 'service' rows from
+  // service_checks (no anomaly component — see computeServiceHealthScores).
+  kind: 'device' | 'service'; service_type?: string | null;
 };
 export type AnomalyRow = {
   id: number; device_id: number; device_name: string; site_id: number | null;

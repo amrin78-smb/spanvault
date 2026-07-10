@@ -35,6 +35,13 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.69.0': [
+    'Services (HTTP/TCP/SSL/DNS checks) are now first-class across the app: new Service Check detail page (/services/[id]) with uptime %, a response-time chart, and recent-checks history (SSL checks surface certificate-expiry as a callout); services now appear in Ctrl+K global search, on the Site Detail page, and on the Agent detail page ("Service Checks Run by This Agent"); services can be placed as nodes on interactive maps alongside devices, with live status coloring and connections.',
+    'Maintenance windows can now be scoped to a specific device or a specific service check (previously only a global "suppress everything" scope existed with no picker in the UI) — alerts are suppressed accordingly, including for service checks, which maintenance windows never covered before.',
+    'New lightweight Service Health Score on the Intelligence page\'s Health tab (uptime + response-trend + alert-count), alongside the existing device health scores in one combined table.',
+    'Reports: Alert Analysis, Executive Summary, and SLA Compliance now include service-check data alongside devices; new Service Detail report (on-screen, PDF, and scheduled email) mirroring the existing Device/AP Detail reports.',
+    'Fixed: escalation emails for service-check alerts showed "Alert on unknown" instead of the service name; the Site Detail page\'s alert list silently dropped every service alert; the Dashboard\'s Recent Events and Maintenance widgets linked device-less events/windows to /devices/null (500 error) instead of the right entity or a global label; a scheduled Alert Analysis report blended distinct agent-down/wireless alerts into one mislabeled row; a scheduled AP Detail report silently fell back to Network Summary data.',
+  ],
   '1.68.0': [
     'New Wireless Security report — rogue/neighboring AP detections (classified friendly/interfering/malicious) and SSID encryption posture (flagging any Open or WEP SSIDs), with counts, a detail table, and recommendations when something needs attention. PDF export and scheduled-email delivery included.',
     'The Wireless RF report now shows real *measured* interference (channel airtime actually consumed by other traffic) alongside the existing channel-plan-based Interference Score — including per-band averages and a worst-APs table, so you can see which is which.',
@@ -1422,13 +1429,31 @@ app.get('/api/dashboard/site-health', wrap(async (req, res) => {
 
 // Last 20 notable events — alerts triggered or resolved in the last 24h.
 app.get('/api/dashboard/events', wrap(async (_req, res) => {
+  // Not every event has a device: wireless (AP/controller) and service-check
+  // alerts all raise with device_id = NULL. Without these joins the event
+  // rendered as device_name/device_id "#null" and linked to /devices/null,
+  // which 500s. Mirrors the same device_id-null handling used by /api/alerts.
+  const caps = await getAlertCaps();
+  const svcSel = caps.has_service_check_id ? 'a.service_check_id' : 'NULL::int AS service_check_id';
+  const svcNameSel = caps.has_service_check_id ? 'sc2.name AS service_name' : 'NULL::text AS service_name';
+  const svcJoin = caps.has_service_check_id ? 'LEFT JOIN service_checks sc2 ON sc2.id = a.service_check_id' : '';
+  const wlSel = caps.has_wireless
+    ? 'a.wireless_ap_id, a.wireless_controller_id, COALESCE(wap.name, wctl.name) AS wireless_name'
+    : 'NULL::int AS wireless_ap_id, NULL::int AS wireless_controller_id, NULL::text AS wireless_name';
+  const wlJoin = caps.has_wireless
+    ? 'LEFT JOIN wireless_aps wap ON wap.id = a.wireless_ap_id LEFT JOIN wireless_controllers wctl ON wctl.id = a.wireless_controller_id'
+    : '';
+
   const r = await sv.query(`
     SELECT a.id, a.device_id, d.name AS device_name, d.site_id, d.site_name,
+           ${svcSel}, ${svcNameSel}, ${wlSel},
            a.alert_type, a.severity, a.status, a.message,
            a.triggered_at, a.resolved_at,
            GREATEST(a.triggered_at, COALESCE(a.resolved_at, a.triggered_at)) AS event_at
     FROM alerts a
     LEFT JOIN monitored_devices d ON d.id = a.device_id
+    ${svcJoin}
+    ${wlJoin}
     WHERE a.triggered_at >= NOW() - INTERVAL '24 hours'
        OR a.resolved_at  >= NOW() - INTERVAL '24 hours'
     ORDER BY event_at DESC
@@ -1680,20 +1705,33 @@ app.get('/api/dashboard/top-talkers', wrap(async (req, res) => {
 }));
 
 // ── Maintenance windows — active now + upcoming within 7 days ──
+// LEFT JOIN, not JOIN: device_id IS NULL covers both the pre-existing global
+// scope and the newer service-check scope (maintenance_windows.service_check_id).
+// An INNER JOIN here silently dropped every one of those rows from the widget
+// even though inMaintenance() was still correctly suppressing their alerts.
 app.get('/api/dashboard/maintenance', wrap(async (req, res) => {
   const params = [];
-  const sc = siteFilterClause(getSiteFilter(req), params, 'd.site_id');
+  const scDev = siteFilterClause(getSiteFilter(req), params, 'd.site_id');
+  const scSvc = siteFilterClause(getSiteFilter(req), params, 'sc.site_id');
+  // A global window (both m.device_id and m.service_check_id NULL) suppresses
+  // alerts everywhere — it must stay visible to a site-scoped user too, not
+  // just to a site-scoped device/service that happens to match their sites.
+  const siteWhere = (scDev && scSvc)
+    ? ` AND ((m.device_id IS NULL AND m.service_check_id IS NULL) OR ${scDev} OR ${scSvc})`
+    : '';
   const r = await sv.query(`
     SELECT m.id, m.device_id, d.name AS device_name, d.site_name,
+           m.service_check_id, sc.name AS service_name, sc.site_name AS service_site_name,
            m.starts_at, m.ends_at, m.reason,
            CASE WHEN NOW() BETWEEN m.starts_at AND m.ends_at THEN 'active'
                 ELSE 'upcoming' END AS state
     FROM maintenance_windows m
-    JOIN monitored_devices d ON d.id = m.device_id AND d.active = TRUE
+    LEFT JOIN monitored_devices d ON d.id = m.device_id AND d.active = TRUE
+    LEFT JOIN service_checks sc ON sc.id = m.service_check_id
     WHERE (
             (NOW() BETWEEN m.starts_at AND m.ends_at)
             OR (m.starts_at > NOW() AND m.starts_at <= NOW() + INTERVAL '7 days')
-          )${sc ? ` AND ${sc}` : ''}
+          )${siteWhere}
     ORDER BY m.starts_at
   `, params);
   const active = [];
@@ -1842,7 +1880,7 @@ app.get('/api/devices', wrap(async (req, res) => {
 app.get('/api/global-search', wrap(async (req, res) => {
   const q = String(req.query.q || '').trim();
   if (q.length < 1) {
-    return res.json({ devices: [], aps: [], controllers: [] });
+    return res.json({ devices: [], aps: [], controllers: [], services: [] });
   }
   const like = `%${q}%`;
   const siteFilter = getSiteFilter(req);
@@ -1886,10 +1924,24 @@ app.get('/api/global-search', wrap(async (req, res) => {
     LIMIT 8
   `, ctlParams);
 
+  // Service checks (HTTP/TCP/SSL/DNS)
+  const svcParams = [like];
+  const svcWhere = ['(sc.name ILIKE $1 OR sc.target ILIKE $1)'];
+  const svcSc = siteFilterClause(siteFilter, svcParams, 'sc.site_id');
+  if (svcSc) svcWhere.push(svcSc);
+  const services = await sv.query(`
+    SELECT sc.id, sc.name, sc.type, sc.target, sc.site_name
+    FROM service_checks sc
+    WHERE ${svcWhere.join(' AND ')}
+    ORDER BY sc.name
+    LIMIT 8
+  `, svcParams);
+
   res.json({
     devices: devices.rows,
     aps: aps.rows,
     controllers: controllers.rows,
+    services: services.rows,
   });
 }));
 
@@ -2719,11 +2771,16 @@ app.get('/api/agents/:id', wrap(async (req, res) => {
     FROM monitored_devices WHERE agent_id = $1 AND active = TRUE
     ORDER BY site_name NULLS LAST, name
   `, [id]);
+  const serviceChecks = await sv.query(`
+    SELECT id, name, type, target, site_name, current_status, last_response_ms, last_checked_at
+    FROM service_checks WHERE agent_id = $1 ORDER BY name
+  `, [id]);
   const serverUrl = getServerUrl(req);
   res.json({
     ...a.rows[0],
     sites: sites.rows,
     devices: devices.rows,
+    service_checks: serviceChecks.rows,
     install_command: installCommand(serverUrl, a.rows[0].api_key),
     latest_agent_version: latestAgentVersion(),
   });
@@ -3245,16 +3302,23 @@ async function fetchFullMap(mapId) {
   const map = m.rows[0];
   if (!map) return null;
   const devices = await sv.query(`
-    SELECT md.id, md.device_id, md.x, md.y, md.label, md.icon_type, md.width, md.height,
+    SELECT md.id, md.device_id, md.service_check_id, md.x, md.y, md.label, md.icon_type, md.width, md.height,
            md.z_index, md.node_style, md.locked, md.group_id, md.drill_map_id,
            d.name AS device_name, d.ip_address, d.site_name,
            d.current_status, d.last_response_ms, d.last_seen_at,
            d.is_gateway, d.alert_suppressed,
+           sc.name AS service_name, sc.type AS service_type, sc.target AS service_target,
+           sc.current_status AS service_status, sc.last_response_ms AS service_response_ms,
+           sc.last_checked_at AS service_last_checked_at,
            cpu.value AS latest_cpu_pct, mem.value AS latest_mem_pct,
            avail.uptime_24h_pct,
-           (SELECT COUNT(*)::int FROM alerts al WHERE al.device_id = d.id AND al.status = 'active') AS alert_count
+           (SELECT COUNT(*)::int FROM alerts al WHERE al.status = 'active' AND (
+              (md.device_id IS NOT NULL AND al.device_id = md.device_id) OR
+              (md.service_check_id IS NOT NULL AND al.service_check_id = md.service_check_id)
+            )) AS alert_count
     FROM map_devices md
     LEFT JOIN monitored_devices d ON d.id = md.device_id
+    LEFT JOIN service_checks sc ON sc.id = md.service_check_id
     LEFT JOIN LATERAL (
       SELECT value FROM snmp_results
       WHERE device_id = d.id AND metric_name = 'cpu_pct' ORDER BY ts DESC LIMIT 1
@@ -3408,6 +3472,16 @@ app.put('/api/maps/:id/layout', wrap(async (req, res) => {
   const exists = await sv.query(`SELECT id FROM sv_maps WHERE id = $1`, [id]);
   if (!exists.rows[0]) return res.status(404).json({ error: 'Map not found' });
 
+  // A node references at most one entity — a device OR a service check, never
+  // both (matches the map_devices_one_entity CHECK constraint). Validate up
+  // front so a bad payload gets a clean 400 instead of a transaction-aborting
+  // constraint violation.
+  for (const d of devices) {
+    if (d && d.device_id != null && d.service_check_id != null) {
+      return res.status(400).json({ error: 'A map node cannot reference both a device and a service check' });
+    }
+  }
+
   const client = await sv.connect();
   try {
     await client.query('BEGIN');
@@ -3415,17 +3489,25 @@ app.put('/api/maps/:id/layout', wrap(async (req, res) => {
     await client.query(`DELETE FROM map_labels WHERE map_id = $1`, [id]);
     await client.query(`DELETE FROM map_devices WHERE map_id = $1`, [id]);
 
-    const idMap = new Map(); // `${kind}:${client id}` → new db id (devices + shapes)
+    const idMap = new Map(); // `${kind}:${client id}` → new db id (devices/services + shapes)
     for (const d of devices) {
+      const serviceCheckId = d.service_check_id != null ? Number(d.service_check_id) : null;
       const r = await client.query(`
-        INSERT INTO map_devices (map_id, device_id, x, y, label, icon_type, width, height, z_index, node_style, locked, group_id, drill_map_id)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id
-      `, [id, d.device_id || null, Number(d.x) || 0, Number(d.y) || 0,
+        INSERT INTO map_devices (map_id, device_id, service_check_id, x, y, label, icon_type, width, height, z_index, node_style, locked, group_id, drill_map_id)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id
+      `, [id, d.device_id || null, serviceCheckId, Number(d.x) || 0, Number(d.y) || 0,
           d.label || null, d.icon_type || 'circle', safeInt(d.width, 120), safeInt(d.height, 60),
           safeInt(d.z_index, 0), d.node_style === 'icon' ? 'icon' : 'box', !!d.locked,
           Number(d.group_id) > 0 ? Number(d.group_id) : null,
           Number(d.drill_map_id) > 0 ? Number(d.drill_map_id) : null]);
-      if (d.id !== undefined && d.id !== null) idMap.set(`device:${d.id}`, r.rows[0].id);
+      if (d.id !== undefined && d.id !== null) {
+        // Both device- and service-backed nodes live in map_devices, so register
+        // under 'device:' (legacy/default kind) always, and additionally under
+        // 'service:' when this node is service-backed — connections sent with
+        // from_kind/to_kind = 'service' resolve via the second key.
+        idMap.set(`device:${d.id}`, r.rows[0].id);
+        if (serviceCheckId != null) idMap.set(`service:${d.id}`, r.rows[0].id);
+      }
     }
 
     // Decorative shapes — replace-all, but only when the client sent them. Insert
@@ -3457,8 +3539,8 @@ app.put('/api/maps/:id/layout', wrap(async (req, res) => {
     }
 
     for (const c of connections) {
-      const fKind = c.from_kind === 'shape' ? 'shape' : 'device';
-      const tKind = c.to_kind === 'shape' ? 'shape' : 'device';
+      const fKind = c.from_kind === 'shape' ? 'shape' : c.from_kind === 'service' ? 'service' : 'device';
+      const tKind = c.to_kind === 'shape' ? 'shape' : c.to_kind === 'service' ? 'service' : 'device';
       const from = idMap.get(`${fKind}:${c.from_item_id}`);
       const to = idMap.get(`${tKind}:${c.to_item_id}`);
       if (!from || !to) continue; // skip dangling connections (endpoint not saved)
@@ -5136,6 +5218,49 @@ async function slaRows(q, siteFilter) {
   return { rows, slaTarget };
 }
 
+// Parallel service-check uptime rollup for the SLA Compliance report — a single
+// bounded summary line (total/meeting/failing/overall uptime/downtime), mirroring
+// slaRows' shape but WITHOUT a full per-service table/at-risk/trend section (the
+// device table is this report's whole structure; services get a summary, not a
+// second full table). Uses service_check_results the same way slaRows uses
+// ping_results.
+async function serviceSlaSummary(q, siteFilter, slaTarget) {
+  const win = getDateRange(q);
+  const params = [win.start, win.end];
+  const filters = ['sc.active = TRUE'];
+  if (q.site_id) { params.push(parseInt(q.site_id, 10)); filters.push(`sc.site_id = $${params.length}`); }
+  const scc = siteFilterClause(siteFilter, params, 'sc.site_id');
+  if (scc) filters.push(scc);
+  const r = await sv.query(`
+    WITH res AS (
+      SELECT check_id, COUNT(*)::int AS total_checks,
+             SUM(CASE WHEN status = 'up' THEN 0 ELSE 1 END)::int AS failed_checks
+      FROM service_check_results WHERE ts BETWEEN $1 AND $2 GROUP BY check_id
+    )
+    SELECT sc.id,
+           COALESCE(r.total_checks, 0) AS total_checks,
+           COALESCE(r.failed_checks, 0) AS failed_checks,
+           ROUND(sc.interval_seconds * COALESCE(r.failed_checks, 0) / 60.0, 1) AS downtime_minutes,
+           CASE WHEN r.total_checks > 0
+                THEN ROUND((1 - r.failed_checks::numeric / r.total_checks) * 100, 3)
+                ELSE NULL END AS uptime_pct
+    FROM service_checks sc
+    LEFT JOIN res r ON r.check_id = sc.id
+    WHERE ${filters.join(' AND ')}
+  `, params);
+  const rows = r.rows;
+  const withData = rows.filter((x) => x.total_checks > 0);
+  const tChecks = withData.reduce((a, x) => a + x.total_checks, 0);
+  const tFailed = withData.reduce((a, x) => a + x.failed_checks, 0);
+  return {
+    total: rows.length,
+    meeting: rows.filter((x) => x.uptime_pct != null && Number(x.uptime_pct) >= slaTarget).length,
+    failing: rows.filter((x) => x.uptime_pct != null && Number(x.uptime_pct) < slaTarget).length,
+    overall_uptime_pct: tChecks ? Math.round((1 - tFailed / tChecks) * 100000) / 1000 : null,
+    total_downtime_minutes: Math.round(rows.reduce((a, x) => a + (Number(x.downtime_minutes) || 0), 0) * 10) / 10,
+  };
+}
+
 app.get('/api/reports/sla', wrap(async (req, res) => {
   const { rows, slaTarget } = await slaRows(req.query, getSiteFilter(req));
   res.json({ sla_target: slaTarget, generated_at: new Date().toISOString(), devices: rows });
@@ -5888,6 +6013,11 @@ app.get('/api/reports/sla-compliance', wrap(async (req, res) => {
     for (const i of incr.slice(0, 2)) trends.push(`${i.name} downtime increased ${i.pct}% versus the previous period.`);
   } catch (e) { console.error('[reports/sla-compliance] trend failed:', e.message); }
 
+  // Service-check uptime — a bounded parallel summary (not a second full table;
+  // see serviceSlaSummary). Degrades to null on failure rather than 500ing.
+  const service_summary = await serviceSlaSummary(req.query, getSiteFilter(req), slaTarget)
+    .catch((e) => { console.error('[reports/sla-compliance] service summary failed:', e.message); return null; });
+
   res.json({
     sla_target: slaTarget, generated_at: new Date().toISOString(),
     summary: {
@@ -5899,6 +6029,7 @@ app.get('/api/reports/sla-compliance', wrap(async (req, res) => {
     },
     devices: rows,
     risk_assessment: { at_risk, trends },
+    service_summary,
   });
 }));
 
@@ -5923,22 +6054,39 @@ app.get('/api/reports/top-worst', wrap(async (req, res) => {
 }));
 
 // ── Alert analysis ────────────────────────────────────────────
+// Estate-wide: device alerts (alerts.device_id) AND service-check alerts
+// (alerts.service_check_id) both feed this report. LEFT JOIN both sources
+// (never INNER JOIN either alone — that would silently drop whichever alert
+// class doesn't match) and COALESCE the display name/site from whichever
+// joined. RBAC site scoping applies to both branches (a site_admin's assigned
+// sites cover d.site_id OR sc2.site_id).
 app.get('/api/reports/alert-analysis', wrap(async (req, res) => {
   const win = getDateRange(req.query);
   const params = [win.start, win.end];
-  const sc = siteFilterClause(getSiteFilter(req), params, 'd.site_id');
-  const base = `FROM alerts a JOIN monitored_devices d ON d.id = a.device_id
-    WHERE a.alert_type <> 'recovery' AND a.triggered_at BETWEEN $1 AND $2${sc ? ` AND ${sc}` : ''}`;
+  const siteFilter = getSiteFilter(req);
+  let siteClause = '';
+  if (siteFilter && siteFilter.length) {
+    params.push(siteFilter);
+    siteClause = ` AND (d.site_id = ANY($${params.length}::int[]) OR sc2.site_id = ANY($${params.length}::int[]))`;
+  }
+  const base = `FROM alerts a
+    LEFT JOIN monitored_devices d ON d.id = a.device_id
+    LEFT JOIN service_checks sc2 ON sc2.id = a.service_check_id
+    WHERE a.alert_type <> 'recovery' AND a.triggered_at BETWEEN $1 AND $2${siteClause}`;
   const [tot, byType, bySev, bySite, byDevice, mttr, hour, day] = await Promise.all([
     sv.query(`SELECT COUNT(*)::int AS c ${base}`, params),
     sv.query(`SELECT a.alert_type AS key, COUNT(*)::int AS count ${base} GROUP BY a.alert_type ORDER BY count DESC`, params),
     sv.query(`SELECT a.severity AS key, COUNT(*)::int AS count ${base} GROUP BY a.severity ORDER BY count DESC`, params),
-    sv.query(`SELECT COALESCE(d.site_name, 'Unassigned') AS key, COUNT(*)::int AS count ${base} GROUP BY 1 ORDER BY count DESC`, params),
-    sv.query(`SELECT d.id AS device_id, d.name AS device_name, COALESCE(d.site_name, 'Unassigned') AS site_name,
+    sv.query(`SELECT COALESCE(d.site_name, sc2.site_name, 'Unassigned') AS key, COUNT(*)::int AS count ${base} GROUP BY 1 ORDER BY count DESC`, params),
+    sv.query(`SELECT d.id AS device_id, sc2.id AS service_check_id,
+                     COALESCE(d.name, sc2.name) AS device_name,
+                     COALESCE(d.site_name, sc2.site_name, 'Unassigned') AS site_name,
+                     CASE WHEN a.device_id IS NOT NULL THEN 'device' ELSE 'service' END AS source,
                      COUNT(*)::int AS count,
                      ROUND(AVG(EXTRACT(EPOCH FROM (a.resolved_at - a.triggered_at)) / 60.0)
                        FILTER (WHERE a.resolved_at IS NOT NULL)::numeric, 1) AS mttr_minutes
-              ${base} GROUP BY d.id, d.name, site_name ORDER BY count DESC LIMIT 10`, params),
+              ${base} AND (a.device_id IS NOT NULL OR a.service_check_id IS NOT NULL)
+              GROUP BY d.id, sc2.id, device_name, site_name, source ORDER BY count DESC LIMIT 10`, params),
     sv.query(`SELECT ROUND(AVG(EXTRACT(EPOCH FROM (a.resolved_at - a.triggered_at)) / 60.0)::numeric, 1) AS mttr
               ${base} AND a.resolved_at IS NOT NULL`, params),
     sv.query(`SELECT EXTRACT(HOUR FROM a.triggered_at)::int AS key, COUNT(*)::int AS count ${base} GROUP BY 1 ORDER BY count DESC LIMIT 1`, params),
@@ -6072,6 +6220,16 @@ app.get('/api/reports/executive', wrap(async (req, res) => {
       COUNT(*) FILTER (WHERE a.triggered_at >= $3::timestamptz AND a.triggered_at < $1::timestamptz)::int AS prev
     FROM alerts a JOIN monitored_devices d ON d.id = a.device_id
     WHERE a.alert_type <> 'recovery' AND a.triggered_at >= $3::timestamptz${scPrevAnd}`, pPrev, [{ cur: 0, prev: 0 }]);
+  // Service-check uptime — a bounded parallel summary to the device overview
+  // above (service_check_results is service_checks' analogue of ping_results).
+  // Reuses the SAME site-filter parameter scWin already pushed onto pWin, just
+  // applied to sc.site_id (service_checks' own site column) instead of d.site_id.
+  const scWinSvcAnd = scWin ? ` AND sc.site_id = ANY($${pWin.length}::int[])` : '';
+  const svcOv = await runQ('service-overview', `
+    SELECT COUNT(*)::int AS tc, SUM(CASE WHEN r.status <> 'up' THEN 1 ELSE 0 END)::int AS bad,
+           COUNT(DISTINCT r.check_id)::int AS services
+    FROM service_check_results r JOIN service_checks sc ON sc.id = r.check_id
+    WHERE r.ts BETWEEN $1::timestamptz AND $2::timestamptz${scWinSvcAnd}`, pWin, [{ tc: 0, bad: 0, services: 0 }]);
   // Per-site availability + a per-site "incidents" count (device_down alerts).
   // The incident count is pre-aggregated into a CTE keyed by the resolved site
   // name and LEFT JOINed — this avoids referencing the grouped column inside a
@@ -6192,6 +6350,14 @@ app.get('/api/reports/executive', wrap(async (req, res) => {
       incidents: { current: totalIncidents, previous: prevIncidents, delta: totalIncidents - prevIncidents },
     },
     recommendations: recommendations.slice(0, 3),
+    // Service-check uptime — parallel summary to overall_uptime_pct above (see
+    // svcOv query). A bounded addition: one rollup, not a restructure of the
+    // device-shaped executive report.
+    service_summary: {
+      uptime_pct: pct2(svcOv.rows[0].bad, svcOv.rows[0].tc),
+      total_checks: svcOv.rows[0].tc,
+      total_services: svcOv.rows[0].services,
+    },
   });
   } catch (err) {
     console.error('[reports/executive] FULL ERROR:', err);
@@ -6841,6 +7007,117 @@ app.get('/api/reports/ap-detail/:id', wrap(async (req, res) => {
   });
 }));
 
+// ── Service detail (granular, per-service-check) ──────────────
+// Mirrors GET /api/reports/device-detail: identity, availability (up/down/
+// warning counts over the window from service_check_results), response-time
+// summary + bucketed series, a 90-day status calendar, and alerts raised in
+// the window (alerts.service_check_id). RBAC: a site_admin may only read a
+// service check in one of their assigned sites.
+app.get('/api/reports/service-detail', wrap(async (req, res) => {
+  const id = parseInt(req.query.service_check_id, 10);
+  if (isNaN(id)) return res.status(400).json({ error: 'service_check_id is required' });
+  const sRange = resolveSeriesRange(req.query);
+  const svcQ = await sv.query(
+    `SELECT sc.id, sc.name, sc.type, sc.target, sc.site_id, sc.site_name,
+            sc.agent_id, ag.name AS agent_name, sc.interval_seconds,
+            sc.current_status, sc.last_response_ms, sc.last_detail, sc.last_checked_at
+       FROM service_checks sc LEFT JOIN agents ag ON ag.id = sc.agent_id
+      WHERE sc.id = $1`, [id]);
+  if (!svcQ.rows[0]) return res.status(404).json({ error: 'Service check not found' });
+  const svc = svcQ.rows[0];
+
+  // RBAC site scoping — enforced server-side so a site_admin cannot bypass it by
+  // calling the API directly. An unscoped (admin/viewer) caller passes through.
+  const siteFilter = getSiteFilter(req);
+  if (siteFilter && siteFilter.length && !siteFilter.includes(svc.site_id)) {
+    return res.status(403).json({ error: 'forbidden: service outside your assigned sites' });
+  }
+
+  // Each sub-query is isolated: a failure degrades that section to empty rather
+  // than failing the whole report (mirrors device-detail).
+  const safeQ = (sql, p) => sv.query(sql, p).catch((e) => {
+    console.error('[reports/service-detail] subquery failed:', e.message);
+    return { rows: [] };
+  });
+  const [avail, resp, alerts, byDay] = await Promise.all([
+    safeQ(`SELECT COUNT(*)::int AS total_checks,
+                  SUM(CASE WHEN status = 'up' THEN 0 ELSE 1 END)::int AS failed_checks,
+                  SUM(CASE WHEN status = 'up' THEN 1 ELSE 0 END)::int AS up_checks,
+                  SUM(CASE WHEN status = 'down' THEN 1 ELSE 0 END)::int AS down_checks,
+                  SUM(CASE WHEN status = 'warning' THEN 1 ELSE 0 END)::int AS warning_checks
+             FROM service_check_results WHERE check_id = $1 AND ts BETWEEN $2 AND $3`, [id, sRange.from, sRange.to]),
+    safeQ(`SELECT ROUND(AVG(response_ms)::numeric,1) AS avg_ms, ROUND(MIN(response_ms)::numeric,1) AS min_ms,
+                  ROUND(MAX(response_ms)::numeric,1) AS max_ms,
+                  ROUND(percentile_cont(0.95) WITHIN GROUP (ORDER BY response_ms)::numeric,1) AS p95_ms
+             FROM service_check_results WHERE check_id = $1 AND status = 'up' AND ts BETWEEN $2 AND $3`, [id, sRange.from, sRange.to]),
+    safeQ(`SELECT id, alert_type, severity, message, triggered_at, resolved_at, acknowledged_by, status,
+                  ROUND(EXTRACT(EPOCH FROM (COALESCE(resolved_at, NOW()) - triggered_at)) / 60.0)::int AS duration_minutes
+             FROM alerts WHERE service_check_id = $1 ORDER BY triggered_at DESC LIMIT 20`, [id]),
+    safeQ(`WITH series AS (
+                SELECT generate_series(date_trunc('day', NOW()) - INTERVAL '89 days', date_trunc('day', NOW()), INTERVAL '1 day') AS dd
+              ), res AS (
+                SELECT date_trunc('day', ts) AS dd, COUNT(*) AS tc,
+                       SUM(CASE WHEN status <> 'up' THEN 1 ELSE 0 END) AS bad
+                FROM service_check_results WHERE check_id = $1 AND ts >= date_trunc('day', NOW()) - INTERVAL '89 days'
+                GROUP BY 1
+              )
+              SELECT to_char(series.dd, 'YYYY-MM-DD') AS day,
+                     CASE WHEN r.tc > 0 THEN ROUND((1 - (r.bad::numeric / r.tc)) * 100, 1) ELSE NULL END AS uptime_pct,
+                     COALESCE(r.tc, 0)::int AS total_checks
+              FROM series LEFT JOIN res r ON r.dd = series.dd ORDER BY series.dd`, [id]),
+  ]);
+
+  const a0 = avail.rows[0] || { total_checks: 0, failed_checks: 0, up_checks: 0, down_checks: 0, warning_checks: 0 };
+  const poll = svc.interval_seconds || 60;
+
+  // ── Bucketed response-time series (mirrors device-detail's scalar series) ──
+  const bin = sRange.intervalSql; // whitelisted interval string (sRange resolved above)
+  const scalar = await safeQ(`
+    SELECT date_bin($2::interval, ts, TIMESTAMPTZ '2000-01-01') AS ts,
+           ROUND(AVG(response_ms) FILTER (WHERE status = 'up')::numeric, 1) AS response_ms,
+           ROUND(AVG(CASE WHEN status = 'up' THEN 100 ELSE 0 END)::numeric, 1) AS up_pct
+      FROM service_check_results WHERE check_id = $1 AND ts BETWEEN $3 AND $4
+      GROUP BY 1 ORDER BY 1`, [id, bin, sRange.from, sRange.to]);
+
+  // ── Auto-generated "Service Analysis" paragraph (mirrors device-detail) ──
+  const periodLabel = ({ '24h': 'the last 24 hours', '7d': 'the last 7 days', '30d': 'the last 30 days', '90d': 'the last 90 days' })[req.query.range] || 'this period';
+  const uptimePct = pct2(a0.failed_checks, a0.total_checks);
+  const avgMs = resp.rows[0] && resp.rows[0].avg_ms != null ? Number(resp.rows[0].avg_ms) : null;
+  let analysis = `${svc.name} was ${uptimePct == null ? 'not monitored' : `${uptimePct}% available`} over ${periodLabel}.`;
+  if (avgMs != null) analysis += ` Average response was ${avgMs}ms.`;
+  if (alerts.rows.length > 0) {
+    const active = alerts.rows.filter((a) => a.alert_type !== 'recovery').length;
+    if (active > 0) analysis += ` ${active} alert${active > 1 ? 's were' : ' was'} raised in this period.`;
+  }
+
+  res.json({
+    service: {
+      id: svc.id, name: svc.name, type: svc.type, target: svc.target,
+      site: svc.site_name, site_id: svc.site_id, agent_id: svc.agent_id, agent_name: svc.agent_name,
+      current_status: svc.current_status, interval_seconds: svc.interval_seconds,
+    },
+    period: req.query.range || '30d',
+    analysis,
+    availability: {
+      uptime_pct: uptimePct,
+      total_checks: a0.total_checks, failed_checks: a0.failed_checks,
+      up_checks: a0.up_checks, down_checks: a0.down_checks, warning_checks: a0.warning_checks,
+      downtime_minutes: round1(a0.failed_checks * poll / 60),
+    },
+    response: resp.rows[0] || { avg_ms: null, min_ms: null, max_ms: null, p95_ms: null },
+    alerts: alerts.rows,
+    status_by_day: byDay.rows,
+    range: { from: sRange.from, to: sRange.to, bucket: sRange.bucket },
+    series: {
+      scalar: scalar.rows.map((r) => ({
+        ts: r.ts,
+        response_ms: r.response_ms == null ? null : Number(r.response_ms),
+        up_pct: r.up_pct == null ? null : Number(r.up_pct),
+      })),
+    },
+  });
+}));
+
 // ══════════════════════════════════════════════════════════════
 // Settings
 // ══════════════════════════════════════════════════════════════
@@ -6978,8 +7255,14 @@ function deriveServiceCheck(baseTarget, type, shared, secure) {
   return { target: host, params };
 }
 
-app.get('/api/service-checks', wrap(async (_req, res) => {
+app.get('/api/service-checks', wrap(async (req, res) => {
   try {
+    const { site_id, active } = req.query;
+    const where = [];
+    const params = [];
+    if (site_id) { params.push(parseInt(site_id, 10)); where.push(`sc.site_id = $${params.length}`); }
+    if (active === 'true') where.push(`sc.active = TRUE`);
+    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
     const r = await sv.query(`
       SELECT sc.id, sc.name, sc.type, sc.target, sc.site_id, sc.site_name,
              sc.group_id,
@@ -6989,8 +7272,9 @@ app.get('/api/service-checks', wrap(async (_req, res) => {
              (SELECT COUNT(*)::int FROM service_check_results r WHERE r.check_id = sc.id) AS result_count
         FROM service_checks sc
         LEFT JOIN agents ag ON ag.id = sc.agent_id
+        ${whereSql}
         ORDER BY sc.name
-    `);
+    `, params);
     res.json(r.rows);
   } catch (e) {
     if (/service_checks/.test(e.message)) return res.json([]); // un-migrated DB
@@ -7222,16 +7506,46 @@ app.put('/api/service-checks/group/:groupId', wrap(async (req, res) => {
   res.json(result.rows);
 }));
 
+// Single service-check detail — full row for the drill-down page header/stats.
+app.get('/api/service-checks/:id', wrap(async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const r = await sv.query(`
+    SELECT sc.id, sc.name, sc.type, sc.target, sc.site_id, sc.site_name,
+           sc.group_id,
+           sc.agent_id, ag.name AS agent_name,
+           sc.interval_seconds, sc.params,
+           sc.current_status, sc.last_response_ms, sc.last_detail, sc.last_checked_at, sc.active
+      FROM service_checks sc
+      LEFT JOIN agents ag ON ag.id = sc.agent_id
+      WHERE sc.id = $1
+  `, [id]);
+  if (!r.rows.length) return res.status(404).json({ error: 'Service check not found' });
+  res.json(r.rows[0]);
+}));
+
+// Per-poll history + uptime % for the drill-down page. ?range= follows the same
+// 24h/7d/30d/90d convention as the device history endpoints (rangeToInterval);
+// defaults to 24h. ?limit= caps the returned row list (default 100, max 1000) —
+// the uptime % is computed over the FULL range, not capped by limit.
 app.get('/api/service-checks/:id/results', wrap(async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const limit = safeInt(req.query.limit, 100, 1000);
+  const interval = rangeToInterval(req.query.range);
   try {
     const r = await sv.query(
       `SELECT ts, status, response_ms, detail FROM service_check_results
-        WHERE check_id = $1 ORDER BY ts DESC LIMIT ${limit}`, [id]);
-    res.json(r.rows);
+        WHERE check_id = $1 AND ts >= NOW() - $2::interval
+        ORDER BY ts DESC LIMIT ${limit}`, [id, interval]);
+    const u = await sv.query(
+      `SELECT COUNT(*)::int AS total, COUNT(*) FILTER (WHERE status = 'up')::int AS up_count
+         FROM service_check_results WHERE check_id = $1 AND ts >= NOW() - $2::interval`,
+      [id, interval]);
+    const total = u.rows[0].total;
+    const upCount = u.rows[0].up_count;
+    const uptimePct = total > 0 ? Math.round((upCount / total) * 10000) / 100 : null;
+    res.json({ rows: r.rows, uptime_pct: uptimePct, total });
   } catch (e) {
-    if (/service_check_results/.test(e.message)) return res.json([]); // un-migrated DB
+    if (/service_check_results/.test(e.message)) return res.json({ rows: [], uptime_pct: null, total: 0 }); // un-migrated DB
     throw e;
   }
 }));
@@ -7284,8 +7598,9 @@ app.delete('/api/oncall-shifts/:id', wrap(async (req, res) => {
 // ══════════════════════════════════════════════════════════════
 app.get('/api/maintenance', wrap(async (_req, res) => {
   const r = await sv.query(`
-    SELECT m.*, d.name AS device_name FROM maintenance_windows m
+    SELECT m.*, d.name AS device_name, sc.name AS service_name FROM maintenance_windows m
     LEFT JOIN monitored_devices d ON d.id = m.device_id
+    LEFT JOIN service_checks sc ON sc.id = m.service_check_id
     ORDER BY m.starts_at DESC
   `);
   res.json(r.rows);
@@ -7294,10 +7609,13 @@ app.get('/api/maintenance', wrap(async (_req, res) => {
 app.post('/api/maintenance', wrap(async (req, res) => {
   const b = req.body || {};
   if (!b.starts_at || !b.ends_at) return res.status(400).json({ error: 'starts_at and ends_at required' });
+  if (b.device_id && b.service_check_id) {
+    return res.status(400).json({ error: 'device_id and service_check_id are mutually exclusive — set at most one' });
+  }
   const r = await sv.query(`
-    INSERT INTO maintenance_windows (device_id, starts_at, ends_at, reason)
-    VALUES ($1,$2,$3,$4) RETURNING *
-  `, [b.device_id || null, b.starts_at, b.ends_at, b.reason || null]);
+    INSERT INTO maintenance_windows (device_id, service_check_id, starts_at, ends_at, reason)
+    VALUES ($1,$2,$3,$4,$5) RETURNING *
+  `, [b.device_id || null, b.service_check_id || null, b.starts_at, b.ends_at, b.reason || null]);
   res.status(201).json(r.rows[0]);
 }));
 
@@ -7442,33 +7760,69 @@ app.get('/api/intelligence/overview', wrap(async (req, res) => {
   });
 }));
 
-// Device health scores (all, by device, or by site).
+// Device + service health scores (all, by device, or by site). Rows are
+// discriminated by `kind: 'device' | 'service'`; service rows never have an
+// anomaly count (no anomaly component — see computeServiceHealthScores in
+// api/intelligence.js) so anomalies_7d is always 0 for them.
 app.get('/api/intelligence/health', wrap(async (req, res) => {
+  const siteFilter = getSiteFilter(req);
   const params = [];
-  let filter = '';
+
+  let devFilter = '';
   if (req.query.device_id) {
     params.push(safeInt(req.query.device_id, 0));
-    filter = `AND d.id = $${params.length}`;
+    devFilter = `AND d.id = $${params.length}`;
   } else if (req.query.site_id) {
     params.push(safeInt(req.query.site_id, 0));
-    filter = `AND d.site_id = $${params.length}`;
+    devFilter = `AND d.site_id = $${params.length}`;
   }
-  const hSc = siteFilterClause(getSiteFilter(req), params, 'd.site_id');
-  if (hSc) filter += ` AND ${hSc}`;
+  const devSc = siteFilterClause(siteFilter, params, 'd.site_id');
+  if (devSc) devFilter += ` AND ${devSc}`;
+
+  // A device_id filter can never match a service row (different id space) —
+  // short-circuit the service branch entirely in that case.
+  let svcFilter = '';
+  if (req.query.device_id) {
+    svcFilter = 'AND FALSE';
+  } else {
+    if (req.query.site_id) {
+      params.push(safeInt(req.query.site_id, 0));
+      svcFilter = `AND sc.site_id = $${params.length}`;
+    }
+    const svcSc = siteFilterClause(siteFilter, params, 'sc.site_id');
+    if (svcSc) svcFilter += ` AND ${svcSc}`;
+  }
+
   const r = await sv.query(`
-    SELECT d.id, d.name, d.site_id, d.site_name, d.current_status,
-           h.score, h.grade, h.trend, h.uptime_score, h.response_score,
-           h.anomaly_score, h.alert_score, h.computed_at,
-           ROUND(h.uptime_score / 40.0 * 100, 1) AS uptime_pct,
-           (SELECT COUNT(*)::int FROM device_anomalies an
-             WHERE an.device_id = d.id AND an.detected_at >= NOW() - INTERVAL '7 days') AS anomalies_7d,
-           (SELECT COUNT(*)::int FROM alerts al
-             WHERE al.device_id = d.id AND al.triggered_at >= NOW() - INTERVAL '7 days'
-               AND al.alert_type NOT LIKE 'recovery%') AS alerts_7d
-    FROM device_health_scores h
-    JOIN monitored_devices d ON d.id = h.device_id
-    WHERE d.active = TRUE ${filter}
-    ORDER BY h.score ASC
+    SELECT * FROM (
+      SELECT d.id, d.name, d.site_id, d.site_name, d.current_status,
+             h.score, h.grade, h.trend, h.uptime_score, h.response_score,
+             h.anomaly_score, h.alert_score, h.computed_at,
+             ROUND(h.uptime_score / 40.0 * 100, 1) AS uptime_pct,
+             (SELECT COUNT(*)::int FROM device_anomalies an
+               WHERE an.device_id = d.id AND an.detected_at >= NOW() - INTERVAL '7 days') AS anomalies_7d,
+             (SELECT COUNT(*)::int FROM alerts al
+               WHERE al.device_id = d.id AND al.triggered_at >= NOW() - INTERVAL '7 days'
+                 AND al.alert_type NOT LIKE 'recovery%') AS alerts_7d,
+             'device' AS kind, NULL::text AS service_type
+      FROM device_health_scores h
+      JOIN monitored_devices d ON d.id = h.device_id
+      WHERE d.active = TRUE ${devFilter}
+      UNION ALL
+      SELECT sc.id, sc.name, sc.site_id, sc.site_name, sc.current_status,
+             h.score, h.grade, h.trend, h.uptime_score, h.response_score,
+             h.anomaly_score, h.alert_score, h.computed_at,
+             ROUND(h.uptime_score / 40.0 * 100, 1) AS uptime_pct,
+             0 AS anomalies_7d,
+             (SELECT COUNT(*)::int FROM alerts al
+               WHERE al.service_check_id = sc.id AND al.triggered_at >= NOW() - INTERVAL '7 days'
+                 AND al.alert_type NOT LIKE 'recovery%') AS alerts_7d,
+             'service' AS kind, sc.type AS service_type
+      FROM device_health_scores h
+      JOIN service_checks sc ON sc.id = h.service_check_id
+      WHERE sc.active = TRUE ${svcFilter}
+    ) combined
+    ORDER BY score ASC
   `, params);
   res.json(r.rows);
 }));
