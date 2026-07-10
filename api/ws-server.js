@@ -87,10 +87,18 @@ const agentLogs = new Map();
 // Read the agent's API key from the Authorization header (preferred — keeps the
 // secret out of URLs and proxy/access logs) and fall back to the legacy ?key=
 // query param so already-deployed agents keep working during a rolling upgrade.
+// Returns { key, legacy } — legacy is true when the key came from the deprecated
+// ?key= fallback (so callers can warn without ever logging the key itself).
 function getApiKey(req) {
   const auth = req.headers && req.headers['authorization'];
-  if (auth && /^Bearer\s+/i.test(auth)) return auth.replace(/^Bearer\s+/i, '').trim();
-  try { return new URL(req.url, 'ws://x').searchParams.get('key'); } catch (_e) { return null; }
+  if (auth && /^Bearer\s+/i.test(auth)) {
+    return { key: auth.replace(/^Bearer\s+/i, '').trim(), legacy: false };
+  }
+  try {
+    return { key: new URL(req.url, 'ws://x').searchParams.get('key'), legacy: true };
+  } catch (_e) {
+    return { key: null, legacy: false };
+  }
 }
 
 // Forcibly drop a connected agent by api_key (used when it is disabled/rotated).
@@ -115,13 +123,20 @@ function startWsServer(port) {
     console.log('[WS] TLS enabled (SV_WS_TLS_CERT/KEY configured)');
   } else {
     wss = new WebSocketServer({ port });
+    console.warn(
+      `[WS] WARNING: TLS is NOT configured — agent connections are unencrypted (plain ws://) ` +
+      `on port ${port}. This exposes the agent self-update mechanism (SHA-256 check over an ` +
+      `unauthenticated channel) to MITM tampering. Set SV_WS_TLS_CERT and SV_WS_TLS_KEY to a ` +
+      `certificate/key pair to enable wss:// and close this gap.`
+    );
   }
 
   wss.on('connection', async (ws, req) => {
     let agent = null;
     let apiKey = null;
     try {
-      apiKey = getApiKey(req);
+      const keyInfo = getApiKey(req);
+      apiKey = keyInfo.key;
       if (!apiKey) { ws.close(4001, 'No API key'); return; }
 
       const r = await sv.query('SELECT * FROM agents WHERE api_key = $1', [apiKey]);
@@ -131,6 +146,13 @@ function startWsServer(port) {
         console.log(`[WS] Rejected disabled agent: ${agent.name}`);
         ws.close(4003, 'Agent disabled');
         return;
+      }
+      if (keyInfo.legacy) {
+        console.warn(
+          `[WS] WARNING: agent "${agent.name}" (#${agent.id}) authenticated via the ` +
+          `deprecated ?key= URL query param, not the Authorization header. This agent ` +
+          `needs updating to a newer agent.js that sends the API key via header.`
+        );
       }
 
       connectedAgents.set(apiKey, ws);
@@ -446,37 +468,70 @@ async function handleAgentMessage(agent, msg) {
       break;
 
     case 'discovery':
-      // Candidates the agent found by sweeping its local subnet(s).
+      // Candidates the agent found by sweeping its local subnet(s). Same
+      // one-bad-item-kills-the-rest shape as 'batch' below: many independent hosts
+      // in a single message sharing one loop. Isolate each so a single bad row
+      // (e.g. unexpected data shape) doesn't drop every other host in the sweep.
       if (Array.isArray(msg.hosts)) {
+        let discFailed = 0;
         for (const h of msg.hosts) {
           if (!h || !h.ip_address) continue;
-          await sv.query(`
-            INSERT INTO agent_discovered_devices
-              (agent_id, ip_address, sys_name, sys_descr, snmp_ok, snmp_community, snmp_version, last_seen_at)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())
-            ON CONFLICT (agent_id, ip_address) DO UPDATE SET
-              sys_name = EXCLUDED.sys_name, sys_descr = EXCLUDED.sys_descr,
-              snmp_ok = EXCLUDED.snmp_ok,
-              snmp_community = COALESCE(EXCLUDED.snmp_community, agent_discovered_devices.snmp_community),
-              snmp_version = COALESCE(EXCLUDED.snmp_version, agent_discovered_devices.snmp_version),
-              last_seen_at = NOW()`,
-            [agent.id, h.ip_address, h.sys_name || null, h.sys_descr || null, !!h.snmp_ok,
-             h.snmp_community || null, h.snmp_version || null]);
+          try {
+            await sv.query(`
+              INSERT INTO agent_discovered_devices
+                (agent_id, ip_address, sys_name, sys_descr, snmp_ok, snmp_community, snmp_version, last_seen_at)
+              VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())
+              ON CONFLICT (agent_id, ip_address) DO UPDATE SET
+                sys_name = EXCLUDED.sys_name, sys_descr = EXCLUDED.sys_descr,
+                snmp_ok = EXCLUDED.snmp_ok,
+                snmp_community = COALESCE(EXCLUDED.snmp_community, agent_discovered_devices.snmp_community),
+                snmp_version = COALESCE(EXCLUDED.snmp_version, agent_discovered_devices.snmp_version),
+                last_seen_at = NOW()`,
+              [agent.id, h.ip_address, h.sys_name || null, h.sys_descr || null, !!h.snmp_ok,
+               h.snmp_community || null, h.snmp_version || null]);
+          } catch (e) {
+            discFailed += 1;
+            console.error(`[WS] Discovery host ${h.ip_address} from ${agent.name} failed: ${e.message}`);
+          }
         }
-        console.log(`[WS] Discovery from ${agent.name}: ${msg.hosts.length} host(s)`);
+        console.log(`[WS] Discovery from ${agent.name}: ${msg.hosts.length} host(s)` +
+          (discFailed > 0 ? `, ${discFailed} failed` : ''));
       }
       break;
 
-    case 'batch':
-      // Buffered results flushed on reconnect.
+    case 'batch': {
+      // Buffered results flushed on reconnect. The agent already cleared + persisted
+      // its local buffer as empty the instant this was sent (no ack round-trip exists
+      // in this protocol) — so if one bad item (e.g. a device deleted while the agent
+      // was offline, orphaning its ping_results/snmp_results FK) threw out of a shared
+      // for-loop, EVERY remaining item in the batch would be silently dropped, even
+      // though the agent already considers them delivered. Isolate each item so one
+      // failure can't take out unrelated devices' data; log failures clearly since
+      // this is the only remaining visibility into buffered data loss.
       if (Array.isArray(msg.results)) {
-        for (const r of msg.results) await handleAgentMessage(agent, r);
+        let failed = 0;
+        for (let i = 0; i < msg.results.length; i++) {
+          const r = msg.results[i];
+          try {
+            await handleAgentMessage(agent, r);
+          } catch (e) {
+            failed += 1;
+            console.error(
+              `[WS] Batch item ${i + 1}/${msg.results.length} from ${agent.name} failed ` +
+              `(type=${r && r.type}, device_id=${r && r.device_id}): ${e.message}`
+            );
+          }
+        }
+        if (failed > 0) {
+          console.error(`[WS] Batch from ${agent.name}: ${failed}/${msg.results.length} item(s) failed and were dropped`);
+        }
       }
       break;
+    }
 
     default:
       break;
   }
 }
 
-module.exports = { startWsServer, connectedAgents, agentLogs, pushConfigToAgent, pushConfigToAgentId, disconnectAgent, sendToAgentId };
+module.exports = { startWsServer, connectedAgents, agentLogs, pushConfigToAgent, pushConfigToAgentId, disconnectAgent, sendToAgentId, agentMeta };

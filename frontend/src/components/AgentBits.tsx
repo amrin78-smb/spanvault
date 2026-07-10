@@ -2,7 +2,11 @@
 
 import { useState } from 'react';
 import { useApi, apiSend } from '@/lib/api';
-import { useEscape } from '@/components/ui';
+import { useEscape, fmtRel } from '@/components/ui';
+
+// Discovery rows never expire — a candidate this old may have been reassigned
+// by DHCP to a different device since the agent last saw it.
+const STALE_DISCOVERY_MS = 7 * 86400 * 1000;
 
 type Site = { id: number; name: string };
 
@@ -223,9 +227,15 @@ export function AgentDiscovery({ agentId, online }: { agentId: number; online: b
     setBusy(true);
     setMsg(null);
     try {
-      const r = await apiSend<{ adopted: number }>(
+      const r = await apiSend<{ adopted: number; skipped?: { ip_address: string; reason: string }[] }>(
         `/api/agents/${agentId}/discovered/adopt`, 'POST', { ips });
-      setMsg(`Adopted ${r.adopted} device${r.adopted === 1 ? '' : 's'} — now polled by this agent.`);
+      const skipped = r.skipped || [];
+      let text = `Adopted ${r.adopted} device${r.adopted === 1 ? '' : 's'} — now polled by this agent.`;
+      if (skipped.length) {
+        const ipList = skipped.map((s) => s.ip_address).join(', ');
+        text += ` ${skipped.length} skipped (already monitored elsewhere): ${ipList}.`;
+      }
+      setMsg(text);
       setSelected(new Set());
       disc.reload();
     } catch (e: any) {
@@ -284,12 +294,15 @@ export function AgentDiscovery({ agentId, online }: { agentId: number; online: b
               <th style={DISC_TH}>IP</th>
               <th style={DISC_TH}>Name</th>
               <th style={DISC_TH}>SNMP</th>
+              <th style={DISC_TH}>Last Seen</th>
               <th style={DISC_TH}>Status</th>
             </tr>
           </thead>
           <tbody>
             {rows.map((r) => {
               const taken = r.already_monitored || r.adopted;
+              const lastSeenMs = r.last_seen_at ? Date.now() - new Date(r.last_seen_at).getTime() : null;
+              const stale = lastSeenMs != null && !isNaN(lastSeenMs) && lastSeenMs > STALE_DISCOVERY_MS;
               return (
                 <tr key={r.ip_address} style={{ height: 34 }}>
                   <td style={DISC_TD}>
@@ -306,6 +319,11 @@ export function AgentDiscovery({ agentId, online }: { agentId: number; online: b
                     {r.sys_name || <span className="sv-muted">—</span>}
                   </td>
                   <td style={DISC_TD}>{r.snmp_ok ? '✓' : <span className="sv-muted">—</span>}</td>
+                  <td style={DISC_TD} title={stale ? 'Seen more than 7 days ago — this IP may have been reassigned since.' : ''}>
+                    <span style={stale ? { color: 'var(--yellow)', fontWeight: 700 } : { color: 'var(--text-muted)' }}>
+                      {stale && '⚠ '}{fmtRel(r.last_seen_at)}
+                    </span>
+                  </td>
                   <td style={DISC_TD}>
                     {taken
                       ? <span className="sv-muted">monitored</span>

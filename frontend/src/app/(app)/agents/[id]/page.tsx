@@ -207,6 +207,9 @@ export default function AgentDetailPage({ params }: { params: { id: string } }) 
             <span style={{ flex: 1 }} />
             <button className="sv-btn ghost sm" onClick={handleRotateKey} title="Generate a new API key (old key stops working)">Rotate key</button>
           </div>
+          <p className="sv-muted" style={{ fontSize: 'var(--text-sm)', margin: '0 0 8px' }}>
+            Run this on the remote server (PowerShell, as Administrator):
+          </p>
           <AgentInstall command={a.install_command} />
         </div>
 

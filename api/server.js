@@ -22,7 +22,7 @@ const { discoverDevice, snmpTest } = require('../collector/discovery');
 const topology = require('../collector/topology');
 const wireless = require('../collector/wirelessCollector');
 const { wirelessVendorFor } = require('../collector/wireless');
-const { startWsServer, connectedAgents, agentLogs, pushConfigToAgent, pushConfigToAgentId, disconnectAgent, sendToAgentId } = require('./ws-server');
+const { startWsServer, connectedAgents, agentLogs, pushConfigToAgent, pushConfigToAgentId, disconnectAgent, sendToAgentId, agentMeta } = require('./ws-server');
 const intelligence = require('./intelligence');
 const { getLicense, getLicenseState } = require('./licenseCheck');
 const reportScheduler = require('./reportScheduler');
@@ -35,6 +35,12 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.70.0': [
+    'SECURITY: fixed a critical auth bypass — the frontend proxy let every unauthenticated GET /api/* request through to the backend with no session check, since the write-side RBAC middleware never examined GET requests. Confirmed exploitable against production (an anonymous request returned a live agent\'s API key). Now blocked with a narrow, explicit allow-list for the handful of routes that must genuinely work with no session (public map viewers, health check, agent-installer distribution).',
+    'Fixed several remote-agent correctness bugs found in a full audit: an automatic NetVault-driven agent reassignment never notified the live agent (devices could sit with the wrong agent, or a stale status, for up to 30 minutes); a newly agent-assigned device kept its old "up" status until the agent\'s first poll instead of resetting to "unknown"; a discovered device that collided with an already-monitored IP was silently marked "adopted" and vanished from the UI with no explanation; a buffered result batch from a reconnecting agent could lose every remaining item in the batch if one item failed to insert.',
+    'Agent installer (install.ps1) now verifies the downloaded agent.js against a server-advertised SHA-256 before installing it (previously zero integrity checking on the bootstrap install, unlike the agent\'s own self-update path). Deleting an agent now immediately disconnects its live session instead of leaving it running until the socket happens to drop.',
+    'Agent detail page: install/reconnect command now shows the same "PowerShell, as Administrator" context the New Agent flow already had. Discovered-device list now shows how long ago each candidate was last seen, flagging anything over 7 days old since its IP may have been reassigned since.',
+  ],
   '1.69.0': [
     'Services (HTTP/TCP/SSL/DNS checks) are now first-class across the app: new Service Check detail page (/services/[id]) with uptime %, a response-time chart, and recent-checks history (SSL checks surface certificate-expiry as a callout); services now appear in Ctrl+K global search, on the Site Detail page, and on the Agent detail page ("Service Checks Run by This Agent"); services can be placed as nodes on interactive maps alongside devices, with live status coloring and connections.',
     'Maintenance windows can now be scoped to a specific device or a specific service check (previously only a global "suppress everything" scope existed with no picker in the UI) — alerts are suppressed accordingly, including for service checks, which maintenance windows never covered before.',
@@ -775,6 +781,40 @@ app.use((req, _res, next) => {
   next();
 });
 
+// ── Internal-only: collector → API service calls ───────────────
+// Not proxied by the frontend — frontend/src/middleware.ts blocks /api/internal/*
+// outright, so it is unreachable from any browser session, authenticated or not —
+// and gated here to loopback callers only as a defense-in-depth backstop.
+// Registered ahead of enforceLicense/RBAC/audit below on purpose: this is a
+// same-host service call with no user session or x-user-role header, and it never
+// changes config — it only re-pushes what's already in the DB to a live agent
+// connection, so it should keep working even during a license grace/disabled state.
+function requireLoopback(req, res, next) {
+  const ra = ((req.socket && req.socket.remoteAddress) || '').replace(/^::ffff:/, '');
+  if (ra === '127.0.0.1' || ra === '::1') return next();
+  return res.status(403).json({ error: 'Forbidden' });
+}
+
+// Called by the collector after reassignAgents() changes monitored_devices.agent_id
+// (NetVault site-change sync, every 30 min) so affected agents get a fresh config
+// push instead of waiting up to 30 min for their next reconnect. Mirrors the push
+// POST /api/agents/:id/sites already does for the manual reassignment path.
+// Pushing to an agent that isn't currently connected is a silent no-op
+// (pushConfigToAgentId checks connectedAgents internally) — never throws.
+app.post('/api/internal/agents/push-config', requireLoopback, (req, res) => {
+  const b = req.body || {};
+  const raw = Array.isArray(b.agent_ids) ? b.agent_ids : (b.agent_id !== undefined ? [b.agent_id] : []);
+  const ids = raw.map((n) => parseInt(n, 10)).filter((n) => !isNaN(n));
+  Promise.all(ids.map((id) =>
+    pushConfigToAgentId(id).catch((e) => console.error('[internal] push config failed for agent', id, ':', e.message))
+  ))
+    .then(() => res.json({ ok: true, pushed: ids.length }))
+    .catch((e) => {
+      console.error('[internal] push-config error:', e.message);
+      res.status(500).json({ error: 'push failed' });
+    });
+});
+
 // ── License enforcement ───────────────────────────────────────
 // Checks the NocVault license (cached 24h) and gates writes during grace and
 // all access once disabled. Never blocks on network failure.
@@ -981,20 +1021,50 @@ app.get('/api/agent/agent.js', (req, res) => {
 app.get('/api/agent/package.json', (req, res) => {
   res.sendFile(path.join(__dirname, '..', 'agent', 'package.json'));
 });
+// Integrity check for the bootstrap install: install.ps1 downloads agent.js over
+// plain HTTP with zero verification otherwise. This mirrors the check the agent's
+// OWN maybeSelfUpdate() already does (compares against the sha256 the server
+// advertises via the WS `config` message's agent_sha, from the same agentMeta()
+// helper) so the very first install gets the same integrity bar as every
+// self-update after it. Public/unauthenticated like the other /api/agent/* routes
+// above - a not-yet-installed agent has no session.
+app.get('/api/agent/agent.js.sha256', (req, res) => {
+  const meta = agentMeta();
+  res.json({ sha256: meta.sha, version: meta.version });
+});
 // Serve NSSM to the installer from the SpanVault server itself, so a remote agent
 // host never needs to reach the public nssm.cc (which can be down/blocked). The
 // binary is taken from a bundled copy or a configured path (NetVault ships one on
 // the same server). 404 if unavailable — the installer then falls back to nssm.cc.
-app.get('/api/agent/nssm.exe', (req, res) => {
+function resolveNssmPath() {
   const fs = require('fs');
   const candidates = [
     process.env.SV_NSSM_PATH,
     path.join(__dirname, '..', 'agent', 'nssm.exe'),
     'C:\\Apps\\NetVault\\nssm\\nssm-2.24\\win64\\nssm.exe',
   ].filter(Boolean);
-  const found = candidates.find((p) => { try { return fs.existsSync(p); } catch (_e) { return false; } });
+  return candidates.find((p) => { try { return fs.existsSync(p); } catch (_e) { return false; } });
+}
+app.get('/api/agent/nssm.exe', (req, res) => {
+  const found = resolveNssmPath();
   if (!found) return res.status(404).send('nssm not available on server');
   res.sendFile(found);
+});
+// Hash of whatever nssm.exe /api/agent/nssm.exe currently serves (same resolution
+// order), so install.ps1 can verify it the same way as agent.js when the server's
+// own copy is used. Only covers the SpanVault-served copy - if the installer falls
+// back to the public nssm.cc zip, there is nothing here to check that against.
+app.get('/api/agent/nssm.exe.sha256', (req, res) => {
+  const found = resolveNssmPath();
+  if (!found) return res.status(404).json({ error: 'nssm not available on server' });
+  try {
+    const fs = require('fs');
+    const crypto = require('crypto');
+    const sha256 = crypto.createHash('sha256').update(fs.readFileSync(found)).digest('hex');
+    res.json({ sha256 });
+  } catch (e) {
+    res.status(500).json({ error: 'failed to hash nssm.exe' });
+  }
 });
 
 // ══════════════════════════════════════════════════════════════
@@ -2730,9 +2800,14 @@ app.post('/api/agents', wrap(async (req, res) => {
           [agent.id, sid, names[sid] || null]
         );
       }
-      // Auto-assign every monitored device in those sites to this agent.
+      // Auto-assign every monitored device in those sites to this agent. Reset
+      // current_status to 'unknown' — these devices' status was last observed by
+      // whoever polled them before (central collector or another agent), and this
+      // brand-new agent hasn't polled them yet, so any stale 'up' must not linger
+      // (evaluateAgentDevices() does nothing for a non-online agent, e.g.
+      // never_connected, so a stale status could otherwise persist indefinitely).
       await client.query(
-        `UPDATE monitored_devices SET agent_id = $1, updated_at = NOW() WHERE site_id = ANY($2::int[])`,
+        `UPDATE monitored_devices SET agent_id = $1, current_status = 'unknown', updated_at = NOW() WHERE site_id = ANY($2::int[])`,
         [agent.id, siteIds]
       );
     }
@@ -2835,10 +2910,13 @@ app.post('/api/agents/:id/disabled', wrap(async (req, res) => {
 // FK), and any lingering 'agent_offline' status is reset so the collector repolls.
 app.delete('/api/agents/:id', wrap(async (req, res) => {
   const id = parseInt(req.params.id, 10);
+  const cur = await sv.query(`SELECT api_key FROM agents WHERE id = $1`, [id]);
+  const oldKey = cur.rows[0] && cur.rows[0].api_key;
   await sv.query(
     `UPDATE monitored_devices SET current_status = 'unknown', updated_at = NOW()
       WHERE agent_id = $1 AND current_status = 'agent_offline'`, [id]);
   await sv.query(`DELETE FROM agents WHERE id = $1`, [id]);
+  if (oldKey) { try { disconnectAgent(oldKey, 'Agent deleted'); } catch (_e) { /* ignore */ } }
   res.json({ ok: true });
 }));
 
@@ -2888,10 +2966,18 @@ app.post('/api/agents/:id/sites', wrap(async (req, res) => {
         WHERE agent_id = $1 AND NOT (site_id = ANY($2::int[]))`,
       [id, siteIds.length ? siteIds : [-1]]
     );
-    // Devices in the assigned sites are owned by this agent.
+    // Devices in the assigned sites are owned by this agent. Only devices whose
+    // owner is actually changing (new to this agent, or moving from another agent)
+    // get current_status reset to 'unknown' — this agent hasn't polled them yet,
+    // so a stale 'up' from the previous owner must not linger (evaluateAgentDevices()
+    // in collector.js does nothing for a non-online agent, e.g. never_connected).
+    // Devices already owned by this agent are left alone so their real status isn't
+    // clobbered on a no-op reassignment (e.g. re-saving the same site list).
     if (siteIds.length) {
       await client.query(
-        `UPDATE monitored_devices SET agent_id = $1, updated_at = NOW() WHERE site_id = ANY($2::int[])`,
+        `UPDATE monitored_devices
+            SET agent_id = $1, current_status = 'unknown', updated_at = NOW()
+          WHERE site_id = ANY($2::int[]) AND agent_id IS DISTINCT FROM $1`,
         [id, siteIds]
       );
     }
@@ -3000,6 +3086,7 @@ app.post('/api/agents/:id/discovered/adopt', wrap(async (req, res) => {
       WHERE agent_id = $1 AND ip_address = ANY($2::text[])`, [id, ips]);
 
   let adopted = 0;
+  const skipped = [];
   for (const d of disc.rows) {
     const name = (d.sys_name && d.sys_name.trim()) ? d.sys_name.trim() : d.ip_address;
     // Preserve the credentials discovery actually used; only fall back to
@@ -3013,13 +3100,23 @@ app.post('/api/agents/:id/discovered/adopt', wrap(async (req, res) => {
       RETURNING id`,
       [name, d.ip_address, target.site_id, target.site_name, id, !!d.snmp_ok,
        d.snmp_version || '2c', d.snmp_community || 'public']);
-    if (ins.rows[0]) adopted++;
-    await sv.query(
-      `UPDATE agent_discovered_devices SET adopted = TRUE WHERE agent_id = $1 AND ip_address = $2`,
-      [id, d.ip_address]);
+    if (ins.rows[0]) {
+      // Only mark the candidate adopted when the insert actually landed a row.
+      // monitored_devices.ip_address carries a GLOBAL unique index (schema.sql),
+      // so ON CONFLICT DO NOTHING silently no-ops when the IP is already
+      // monitored under a different site/agent — do not mark those adopted,
+      // or the candidate vanishes from the discovery UI with no explanation
+      // and no retry path (a re-scan only refreshes last_seen_at).
+      adopted++;
+      await sv.query(
+        `UPDATE agent_discovered_devices SET adopted = TRUE WHERE agent_id = $1 AND ip_address = $2`,
+        [id, d.ip_address]);
+    } else {
+      skipped.push({ ip_address: d.ip_address, reason: 'ip_already_monitored' });
+    }
   }
   try { await pushConfigToAgentId(id); } catch (e) { console.error('[adopt] push config failed:', e.message); }
-  res.json({ ok: true, adopted });
+  res.json({ ok: true, adopted, skipped });
 }));
 
 // ══════════════════════════════════════════════════════════════

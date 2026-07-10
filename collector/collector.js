@@ -41,6 +41,46 @@ process.on('unhandledRejection', (reason) => {
 
 const log = (...a) => console.log(`[${new Date().toISOString()}]`, ...a);
 
+// ── Internal API notification (loopback) ────────────────────────
+// reassignAgents() below updates monitored_devices.agent_id directly in the DB,
+// but the collector process has no in-process handle on the live agent WebSocket
+// connections — those live in api/ws-server.js, inside the separate api/server.js
+// OS process (SpanVault-API service). Without this, an agent that lost or gained
+// devices keeps polling its stale cached config for up to 30 min until it happens
+// to reconnect. This calls the internal loopback-only endpoint added in
+// api/server.js (POST /api/internal/agents/push-config) which pushes a fresh
+// config to any of the given agent ids that are currently connected — mirrors
+// what POST /api/agents/:id/sites already does for the manual reassignment path.
+// Best-effort only: never throws, never blocks the sync cycle. A failure here
+// just means the pre-existing 30-minute-late self-correction is what applies.
+const API_PORT = parseInt(process.env.SV_API_PORT || '3009', 10);
+function notifyAgentsConfigChanged(agentIds) {
+  const ids = Array.from(new Set((agentIds || []).filter((id) => id !== null && id !== undefined)));
+  if (!ids.length) return;
+  try {
+    const body = JSON.stringify({ agent_ids: ids });
+    const req = http.request({
+      host: '127.0.0.1',
+      port: API_PORT,
+      path: '/api/internal/agents/push-config',
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+      timeout: 5000,
+    }, (res) => {
+      res.resume(); // drain, don't care about the body
+      if (res.statusCode >= 400) {
+        console.warn(`[sync] push-config notify returned HTTP ${res.statusCode}`);
+      }
+    });
+    req.on('timeout', () => req.destroy());
+    req.on('error', (err) => console.warn('[sync] push-config notify failed:', err.message));
+    req.write(body);
+    req.end();
+  } catch (err) {
+    console.warn('[sync] push-config notify failed:', err.message);
+  }
+}
+
 // ── Databases ─────────────────────────────────────────────────
 const sv = new Pool({
   host:     process.env.SV_DB_HOST || 'localhost',
@@ -152,7 +192,25 @@ async function syncNetVaultDevices() {
 // site falls back to local polling (agent_id → NULL). 'agent_offline' status is
 // reset to 'unknown' so the local collector repolls it on the next tick.
 async function reassignAgents() {
+  const affected = new Set();
   try {
+    // Snapshot which devices are about to change agent ownership (and to/from
+    // which agent ids) BEFORE each UPDATE runs — plain SQL UPDATE ... RETURNING
+    // only exposes post-update values, so the old owner has to be read first.
+    // Both the old and new owner need a fresh push: the old owner must stop
+    // polling a device it no longer owns, the new owner must start.
+    const reassigning = await sv.query(`
+      SELECT d.agent_id AS old_agent_id, sub.agent_id AS new_agent_id
+        FROM monitored_devices d
+        JOIN (SELECT DISTINCT ON (site_id) site_id, agent_id
+                FROM agent_sites ORDER BY site_id, agent_id) sub
+          ON d.site_id = sub.site_id
+       WHERE d.agent_id IS DISTINCT FROM sub.agent_id
+    `);
+    for (const row of reassigning.rows) {
+      if (row.old_agent_id) affected.add(row.old_agent_id);
+      if (row.new_agent_id) affected.add(row.new_agent_id);
+    }
     await sv.query(`
       UPDATE monitored_devices d
          SET agent_id = sub.agent_id, updated_at = NOW()
@@ -160,6 +218,18 @@ async function reassignAgents() {
                 FROM agent_sites ORDER BY site_id, agent_id) sub
        WHERE d.site_id = sub.site_id AND d.agent_id IS DISTINCT FROM sub.agent_id
     `);
+
+    const unassigning = await sv.query(`
+      SELECT d.agent_id AS old_agent_id
+        FROM monitored_devices d
+       WHERE d.agent_id IS NOT NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM agent_sites s WHERE s.site_id = d.site_id AND s.agent_id = d.agent_id
+         )
+    `);
+    for (const row of unassigning.rows) {
+      if (row.old_agent_id) affected.add(row.old_agent_id);
+    }
     await sv.query(`
       UPDATE monitored_devices d
          SET agent_id = NULL,
@@ -170,6 +240,8 @@ async function reassignAgents() {
            SELECT 1 FROM agent_sites s WHERE s.site_id = d.site_id AND s.agent_id = d.agent_id
          )
     `);
+
+    if (affected.size) notifyAgentsConfigChanged(Array.from(affected));
   } catch (err) {
     console.error('[sync] agent reassignment failed:', err.message);
   }

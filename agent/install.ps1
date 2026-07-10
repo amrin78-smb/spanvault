@@ -91,6 +91,30 @@ Write-Step "Downloading agent files..."
 Invoke-WebRequest -Uri "$ServerUrl/api/agent/agent.js"     -OutFile "$InstallDir\agent.js"     -UseBasicParsing
 Invoke-WebRequest -Uri "$ServerUrl/api/agent/package.json" -OutFile "$InstallDir\package.json" -UseBasicParsing
 
+# -- Verify agent.js integrity before it is ever installed/run as a service. -----
+#    Plain Invoke-WebRequest has no built-in integrity check, so without this a
+#    network-position attacker (rogue DHCP/ARP spoof at the install site) could
+#    swap in a malicious agent.js with zero detection. This brings the bootstrap
+#    install up to the same bar the agent's own self-update path already uses
+#    (comparing sha256 against the agent_sha the server advertises) - see
+#    agentMeta() in api/ws-server.js / maybeSelfUpdate() in agent/agent.js.
+Write-Step "Verifying agent.js integrity..."
+try {
+  $expected = Invoke-RestMethod -Uri "$ServerUrl/api/agent/agent.js.sha256" -TimeoutSec 10
+} catch {
+  Remove-Item "$InstallDir\agent.js" -Force -ErrorAction SilentlyContinue
+  Write-Fail "Could not fetch the expected agent.js checksum from $ServerUrl - $($_.Exception.Message)"
+  throw "agent.js integrity check failed (checksum endpoint unreachable)."
+}
+$actualHash = (Get-FileHash -Algorithm SHA256 -Path "$InstallDir\agent.js").Hash
+if (-not $expected -or -not $expected.sha256 -or ($actualHash.ToLower() -ne $expected.sha256.ToLower())) {
+  Remove-Item "$InstallDir\agent.js" -Force -ErrorAction SilentlyContinue
+  Write-Fail "agent.js checksum mismatch - the downloaded file does not match what the server advertises."
+  Write-Fail "This usually means the download was tampered with in transit. Aborting before installing anything."
+  throw "agent.js integrity check failed (checksum mismatch)."
+}
+Write-Ok "  agent.js verified (sha256 matches server)."
+
 # -- Config: write UTF-8 WITHOUT a BOM. Windows PowerShell's Out-File -Encoding
 #    UTF8 prepends a BOM that Node's JSON.parse rejects, crashing the agent. -----
 $cfgJson = @{ serverUrl = $ServerUrl; apiKey = $ApiKey; wsPort = $WsPort } | ConvertTo-Json
@@ -126,10 +150,32 @@ function Resolve-Nssm {
 
   # 4) Preferred: fetch nssm.exe straight from the SpanVault server. It is always
   #    reachable (the preflight just confirmed it) and needs no public internet.
+  #    Unlike the nssm.cc fallback below, this copy is served by SpanVault's own
+  #    server, so it can be integrity-checked the same way as agent.js above -
+  #    the server hashes the exact bytes it just handed us. A checksum mismatch
+  #    here is treated like an unreachable server copy (skip to the nssm.cc
+  #    fallback) rather than a hard abort, since nssm.exe isn't the code path
+  #    that changes on every release and a working install still matters more
+  #    than hard-failing on a secondary, less-sensitive binary.
   try {
     Write-Step "Fetching NSSM from the SpanVault server..."
     Invoke-WebRequest -Uri "$ServerUrl/api/agent/nssm.exe" -OutFile $local -UseBasicParsing
-    if ((Test-Path $local) -and ((Get-Item $local).Length -gt 0)) { Write-Ok "  NSSM ready."; return $local }
+    if ((Test-Path $local) -and ((Get-Item $local).Length -gt 0)) {
+      $nssmVerified = $false
+      try {
+        $nssmExpected = Invoke-RestMethod -Uri "$ServerUrl/api/agent/nssm.exe.sha256" -TimeoutSec 10
+        $nssmActual = (Get-FileHash -Algorithm SHA256 -Path $local).Hash
+        if ($nssmExpected -and $nssmExpected.sha256 -and ($nssmActual.ToLower() -eq $nssmExpected.sha256.ToLower())) {
+          $nssmVerified = $true
+        } else {
+          Write-Host "  NSSM checksum mismatch from server copy; trying nssm.cc..." -ForegroundColor Gray
+        }
+      } catch {
+        Write-Host "  Could not verify NSSM checksum ($($_.Exception.Message)); trying nssm.cc..." -ForegroundColor Gray
+      }
+      if ($nssmVerified) { Write-Ok "  NSSM ready (sha256 verified)."; return $local }
+      Remove-Item $local -Force -ErrorAction SilentlyContinue
+    }
   } catch {
     Write-Host "  Server copy unavailable ($($_.Exception.Message)); trying nssm.cc..." -ForegroundColor Gray
   }
