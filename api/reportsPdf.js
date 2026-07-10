@@ -2248,7 +2248,16 @@ async function gatherWirelessSecurity(db, params) {
   const scope = wlScope(q);
   const win = getDateRange({ ...q, range: q.range || '30d' });
   const runQ = mkRunQ(db, 'wireless-security');
-  const rc = wlCtrlOnly(scope, 'r.controller_id');
+  // RBAC: wireless_rogue_aps has no site_id of its own — scope via the owning
+  // controller's site_id (wireless_controllers.site_id, joined as `c` below),
+  // unlike gatherWirelessRf's wlApClauses(scope) which filters wireless_aps
+  // (alias `a`) directly on a.site_id. wireless_ssids carries site_id
+  // directly (alias `s`), so it can use its own column.
+  const rcParams = [];
+  const rcParts = [];
+  if (scope.hasCtrl) { rcParams.push(scope.ctrlId); rcParts.push(`r.controller_id = $${rcParams.length}`); }
+  const rcSite = siteClause(scope.siteFilter, rcParams, 'c.site_id'); if (rcSite) rcParts.push(rcSite);
+  const rc = { params: rcParams, where: rcParts.length ? 'WHERE ' + rcParts.join(' AND ') : '' };
 
   const summaryP = [...rc.params, win.start];
   const rogueSummary = await runQ('rogue_summary', `
@@ -2259,6 +2268,7 @@ async function gatherWirelessSecurity(db, params) {
       COUNT(*) FILTER (WHERE r.last_seen_at >= $${summaryP.length}
         AND (r.classification IS NULL OR LOWER(r.classification) IN ('friendly', 'unclassified')))::int AS informational
     FROM wireless_rogue_aps r
+    JOIN wireless_controllers c ON c.id = r.controller_id
     ${rc.where}`, summaryP, [{}]);
 
   const rogueDetail = await runQ('rogue_detail', `
@@ -2277,7 +2287,11 @@ async function gatherWirelessSecurity(db, params) {
       r.last_seen_at DESC
     LIMIT 50`, rc.params, []);
 
-  const sc = wlCtrlOnly(scope, 's.controller_id');
+  const scParams = [];
+  const scParts = [];
+  if (scope.hasCtrl) { scParams.push(scope.ctrlId); scParts.push(`s.controller_id = $${scParams.length}`); }
+  const scSite = siteClause(scope.siteFilter, scParams, 's.site_id'); if (scSite) scParts.push(scSite);
+  const sc = { params: scParams, where: scParts.length ? 'WHERE ' + scParts.join(' AND ') : '' };
   const ssidRows = await runQ('ssids', `
     SELECT s.id, s.ssid_name, c.name AS controller_name, s.site_name,
            s.encryption_type, s.clients_total

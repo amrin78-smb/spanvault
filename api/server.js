@@ -35,6 +35,12 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.71.1': [
+    'Security fix: a service check\'s detail page and history (GET /api/service-checks/:id and its results) had no site check at all — any authenticated user could view another site\'s service data just by knowing or guessing its ID. Now scoped to the caller\'s assigned sites, matching the rest of the app.',
+    'Security fix: the service-checks list, the Service Rules tab, the Wireless Security report, the dashboard\'s Recent Events widget, and the alerts list all either skipped site-scoping for service-check data or (for alerts) silently dropped every service-check alert for a site-scoped user. All five are now consistently scoped.',
+    'Security fix: any authenticated user, regardless of role, could read a live agent\'s secret API key from its detail page — enough to impersonate that agent. The key (and the install command that embeds it) is now only shown to admins.',
+    'Security fix: the per-user app-access block only stopped a denied user from reaching SpanVault pages — a valid session could still call the API directly and get full data. The API now enforces the same check.',
+  ],
   '1.71.0': [
     'Per-user app-access enforcement (suite Phase 2) now applies at the SpanVault app level, not just the hub launcher: a user whose account isn\'t granted SpanVault is blocked from every SpanVault page and redirected to the hub launcher with a "denied" banner, instead of being able to deep-link straight into the app.',
     'The user\'s allowed-apps set is resolved at SSO sign-in from NetVault\'s user_apps table and carried on the SpanVault session, so the middleware can gate page routes without any extra per-request lookup.',
@@ -1504,7 +1510,7 @@ app.get('/api/dashboard/site-health', wrap(async (req, res) => {
 }));
 
 // Last 20 notable events — alerts triggered or resolved in the last 24h.
-app.get('/api/dashboard/events', wrap(async (_req, res) => {
+app.get('/api/dashboard/events', wrap(async (req, res) => {
   // Not every event has a device: wireless (AP/controller) and service-check
   // alerts all raise with device_id = NULL. Without these joins the event
   // rendered as device_name/device_id "#null" and linked to /devices/null,
@@ -1520,6 +1526,21 @@ app.get('/api/dashboard/events', wrap(async (_req, res) => {
     ? 'LEFT JOIN wireless_aps wap ON wap.id = a.wireless_ap_id LEFT JOIN wireless_controllers wctl ON wctl.id = a.wireless_controller_id'
     : '';
 
+  // RBAC: same device-or-service OR pattern as /api/alerts (Fix 6) — a
+  // service-check event has device_id = NULL so it must also be matched via
+  // the service check's own site (sc2.site_id) or a site_admin's dashboard
+  // silently drops every service-check event.
+  const params = [];
+  const where = [`(a.triggered_at >= NOW() - INTERVAL '24 hours' OR a.resolved_at >= NOW() - INTERVAL '24 hours')`];
+  const siteFilter = getSiteFilter(req);
+  if (siteFilter && siteFilter.length) {
+    params.push(siteFilter);
+    const idx = params.length;
+    where.push(caps.has_service_check_id
+      ? `(d.site_id = ANY($${idx}::int[]) OR sc2.site_id = ANY($${idx}::int[]))`
+      : `d.site_id = ANY($${idx}::int[])`);
+  }
+
   const r = await sv.query(`
     SELECT a.id, a.device_id, d.name AS device_name, d.site_id, d.site_name,
            ${svcSel}, ${svcNameSel}, ${wlSel},
@@ -1530,11 +1551,10 @@ app.get('/api/dashboard/events', wrap(async (_req, res) => {
     LEFT JOIN monitored_devices d ON d.id = a.device_id
     ${svcJoin}
     ${wlJoin}
-    WHERE a.triggered_at >= NOW() - INTERVAL '24 hours'
-       OR a.resolved_at  >= NOW() - INTERVAL '24 hours'
+    WHERE ${where.join(' AND ')}
     ORDER BY event_at DESC
     LIMIT 20
-  `);
+  `, params);
   res.json(r.rows);
 }));
 
@@ -2840,6 +2860,10 @@ app.post('/api/agents', wrap(async (req, res) => {
 }));
 
 // Agent detail: agent + assigned sites + device list.
+// RBAC: api_key (and install_command, which embeds it) is a live secret — only
+// admin/super_admin may see it. Other authenticated roles (site_admin/viewer)
+// still get the rest of the agent object (status/name/devices/etc), just with
+// the secret fields redacted rather than being blocked from the route.
 app.get('/api/agents/:id', wrap(async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const a = await sv.query(`SELECT * FROM agents WHERE id = $1`, [id]);
@@ -2857,12 +2881,16 @@ app.get('/api/agents/:id', wrap(async (req, res) => {
     FROM service_checks WHERE agent_id = $1 ORDER BY name
   `, [id]);
   const serverUrl = getServerUrl(req);
+  const role = req.headers['x-user-role'];
+  const isAdmin = role === 'admin' || role === 'super_admin';
+  const agent = { ...a.rows[0] };
+  if (!isAdmin) delete agent.api_key;
   res.json({
-    ...a.rows[0],
+    ...agent,
     sites: sites.rows,
     devices: devices.rows,
     service_checks: serviceChecks.rows,
-    install_command: installCommand(serverUrl, a.rows[0].api_key),
+    install_command: isAdmin ? installCommand(serverUrl, a.rows[0].api_key) : null,
     latest_agent_version: latestAgentVersion(),
   });
 }));
@@ -3167,8 +3195,6 @@ app.get('/api/alerts', wrap(async (req, res) => {
   if (status)    { params.push(status);    where.push(`a.status = $${params.length}`); }
   if (severity)  { params.push(severity);  where.push(`a.severity = $${params.length}`); }
   if (device_id) { params.push(parseInt(device_id, 10)); where.push(`a.device_id = $${params.length}`); }
-  const alSc = siteFilterClause(getSiteFilter(req), params, 'd.site_id');
-  if (alSc) where.push(alSc);
   const limit = safeInt(req.query.limit, 200, 1000);
 
   const caps = await getAlertCaps();
@@ -3188,6 +3214,19 @@ app.get('/api/alerts', wrap(async (req, res) => {
   const wlJoin = caps.has_wireless
     ? 'LEFT JOIN wireless_aps wap ON wap.id = a.wireless_ap_id LEFT JOIN wireless_controllers wctl ON wctl.id = a.wireless_controller_id'
     : '';
+
+  // RBAC: a service-check alert has device_id = NULL (so d.site_id is NULL and
+  // `NULL = ANY(...)` never matches) — scope via the service check's own site
+  // too (sc2.site_id, only joined when caps.has_service_check_id) and OR the
+  // two paths so device alerts AND service alerts both pass for a site_admin.
+  const siteFilter = getSiteFilter(req);
+  if (siteFilter && siteFilter.length) {
+    params.push(siteFilter);
+    const idx = params.length;
+    where.push(caps.has_service_check_id
+      ? `(d.site_id = ANY($${idx}::int[]) OR sc2.site_id = ANY($${idx}::int[]))`
+      : `d.site_id = ANY($${idx}::int[])`);
+  }
 
   const rows = await sv.query(`
     SELECT a.id, a.device_id, d.name AS device_name, d.ip_address,
@@ -3271,6 +3310,17 @@ app.get('/api/alert-rules', wrap(async (req, res) => {
   if (req.query.site_id)   { params.push(parseInt(req.query.site_id, 10)); where.push(`r.site_id = $${params.length}`); }
   if (req.query.device_id) { params.push(parseInt(req.query.device_id, 10)); where.push(`r.device_id = $${params.length}`); }
   if (req.query.service_check_id) { params.push(parseInt(req.query.service_check_id, 10)); where.push(`r.service_check_id = $${params.length}`); }
+  // RBAC: alert_rules has no single site column that always applies — a rule's
+  // site is either r.site_id directly (scope='site'), inherited from its device
+  // (d.site_id, scope='device'), or from its service check (sc.site_id,
+  // scope='service'); scope='global' rules apply everywhere so remain visible.
+  // A site_admin must not see site/device/service rules outside their sites.
+  const siteFilter = getSiteFilter(req);
+  if (siteFilter && siteFilter.length) {
+    params.push(siteFilter);
+    const idx = params.length;
+    where.push(`(r.scope = 'global' OR r.site_id = ANY($${idx}::int[]) OR d.site_id = ANY($${idx}::int[]) OR sc.site_id = ANY($${idx}::int[]))`);
+  }
   const r = await sv.query(`
     SELECT r.*, d.name AS device_name, sc.name AS service_name
     FROM alert_rules r
@@ -6896,21 +6946,33 @@ function wlIsWeakEncryption(type) {
   return t.includes('open') || t.includes('wep');
 }
 app.get('/api/reports/wireless-security', wrap(async (req, res) => {
-  const c = wlCtrl(req);
-  const p = c.has ? [c.id] : [];
-  const rogueW = c.has ? 'WHERE r.controller_id = $1' : '';
+  const wlc = wlCtrl(req);
   const win = getDateRange(req.query);
 
+  // RBAC: wireless_rogue_aps has no site_id of its own — scope via the owning
+  // controller's site_id (wireless_controllers.site_id, joined below as `c`).
+  // wireless_ssids carries site_id directly. Mirrors the site-scoping added to
+  // gatherWirelessSecurity() in reportsPdf.js for the equivalent PDF report.
+  const siteFilter = getSiteFilter(req);
+  const rcParams = [];
+  const rcParts = [];
+  if (wlc.has) { rcParams.push(wlc.id); rcParts.push(`r.controller_id = $${rcParams.length}`); }
+  const rcSite = siteFilterClause(siteFilter, rcParams, 'c.site_id');
+  if (rcSite) rcParts.push(rcSite);
+  const rogueW = rcParts.length ? 'WHERE ' + rcParts.join(' AND ') : '';
+
+  const summaryP = [...rcParams, win.start];
   const rogueSummary = await sv.query(`
     SELECT
-      COUNT(*) FILTER (WHERE r.last_seen_at >= $${p.length + 1})::int AS recent_total,
-      COUNT(*) FILTER (WHERE r.last_seen_at >= $${p.length + 1}
+      COUNT(*) FILTER (WHERE r.last_seen_at >= $${summaryP.length})::int AS recent_total,
+      COUNT(*) FILTER (WHERE r.last_seen_at >= $${summaryP.length}
         AND LOWER(r.classification) IN ('malicious', 'rogue', 'interfering'))::int AS needs_attention,
-      COUNT(*) FILTER (WHERE r.last_seen_at >= $${p.length + 1}
+      COUNT(*) FILTER (WHERE r.last_seen_at >= $${summaryP.length}
         AND (r.classification IS NULL OR LOWER(r.classification) IN ('friendly', 'unclassified')))::int AS informational
     FROM wireless_rogue_aps r
+    JOIN wireless_controllers c ON c.id = r.controller_id
     ${rogueW}
-  `, [...p, win.start]).catch(() => ({ rows: [{}] }));
+  `, summaryP).catch(() => ({ rows: [{}] }));
 
   const rogueDetail = await sv.query(`
     SELECT r.id, r.bssid, r.ssid, r.classification, r.channel, r.rssi_dbm,
@@ -6929,16 +6991,21 @@ app.get('/api/reports/wireless-security', wrap(async (req, res) => {
       END,
       r.last_seen_at DESC
     LIMIT 50
-  `, p).catch(() => ({ rows: [] }));
+  `, rcParams).catch(() => ({ rows: [] }));
 
+  const scParams = [];
+  const scParts = [];
+  if (wlc.has) { scParams.push(wlc.id); scParts.push(`s.controller_id = $${scParams.length}`); }
+  const scSite = siteFilterClause(siteFilter, scParams, 's.site_id');
+  if (scSite) scParts.push(scSite);
   const ssidRows = await sv.query(`
     SELECT s.id, s.ssid_name, c.name AS controller_name, s.site_name,
            s.encryption_type, s.clients_total
     FROM wireless_ssids s
     LEFT JOIN wireless_controllers c ON c.id = s.controller_id
-    ${c.has ? 'WHERE s.controller_id = $1' : ''}
+    ${scParts.length ? 'WHERE ' + scParts.join(' AND ') : ''}
     ORDER BY s.ssid_name
-  `, p);
+  `, scParams);
 
   const ssids = ssidRows.rows
     .map((r) => ({ ...r, weak_encryption: wlIsWeakEncryption(r.encryption_type) }))
@@ -7365,6 +7432,8 @@ app.get('/api/service-checks', wrap(async (req, res) => {
     const params = [];
     if (site_id) { params.push(parseInt(site_id, 10)); where.push(`sc.site_id = $${params.length}`); }
     if (active === 'true') where.push(`sc.active = TRUE`);
+    const svcSc = siteFilterClause(getSiteFilter(req), params, 'sc.site_id');
+    if (svcSc) where.push(svcSc);
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
     const r = await sv.query(`
       SELECT sc.id, sc.name, sc.type, sc.target, sc.site_id, sc.site_name,
@@ -7610,6 +7679,8 @@ app.put('/api/service-checks/group/:groupId', wrap(async (req, res) => {
 }));
 
 // Single service-check detail — full row for the drill-down page header/stats.
+// RBAC: a site_admin may only read a service check in one of their assigned
+// sites (mirrors GET /api/reports/service-detail).
 app.get('/api/service-checks/:id', wrap(async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const r = await sv.query(`
@@ -7623,18 +7694,31 @@ app.get('/api/service-checks/:id', wrap(async (req, res) => {
       WHERE sc.id = $1
   `, [id]);
   if (!r.rows.length) return res.status(404).json({ error: 'Service check not found' });
-  res.json(r.rows[0]);
+  const svc = r.rows[0];
+  const siteFilter = getSiteFilter(req);
+  if (siteFilter && siteFilter.length && !siteFilter.includes(svc.site_id)) {
+    return res.status(403).json({ error: 'forbidden: service outside your assigned sites' });
+  }
+  res.json(svc);
 }));
 
 // Per-poll history + uptime % for the drill-down page. ?range= follows the same
 // 24h/7d/30d/90d convention as the device history endpoints (rangeToInterval);
 // defaults to 24h. ?limit= caps the returned row list (default 100, max 1000) —
 // the uptime % is computed over the FULL range, not capped by limit.
+// RBAC: a site_admin may only read results for a service check in one of their
+// assigned sites (mirrors GET /api/service-checks/:id).
 app.get('/api/service-checks/:id/results', wrap(async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const limit = safeInt(req.query.limit, 100, 1000);
   const interval = rangeToInterval(req.query.range);
   try {
+    const svcQ = await sv.query(`SELECT site_id FROM service_checks WHERE id = $1`, [id]);
+    if (!svcQ.rows.length) return res.status(404).json({ error: 'Service check not found' });
+    const siteFilter = getSiteFilter(req);
+    if (siteFilter && siteFilter.length && !siteFilter.includes(svcQ.rows[0].site_id)) {
+      return res.status(403).json({ error: 'forbidden: service outside your assigned sites' });
+    }
     const r = await sv.query(
       `SELECT ts, status, response_ms, detail FROM service_check_results
         WHERE check_id = $1 AND ts >= NOW() - $2::interval
