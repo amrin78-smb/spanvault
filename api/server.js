@@ -35,6 +35,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.67.3': [
+    'Fixed the Dashboard\'s Unacknowledged (and MTTR/MTTA) KPIs undercounting — they used an inner join to devices that silently dropped every wireless AP-down, rogue-AP, and service-check alert (none of those have a device). The Alerts page already counted correctly; the Dashboard now matches it.',
+  ],
   '1.67.2': [
     'The Dashboard\'s KPI row brought back Agents and Services — but only when something\'s actually wrong (an agent offline, or a service down/in warning). Silent when healthy, so they don\'t re-crowd the row, but visible the moment they need attention.',
   ],
@@ -1438,6 +1441,15 @@ app.get('/api/dashboard/events', wrap(async (_req, res) => {
 // ── Operational metrics: MTTR / MTTA / unacknowledged + open incident count ──
 // MTTR/MTTA are averaged over the last 30 days. unacked_count = active alerts
 // never acknowledged. open_incidents guarded for DBs predating the incidents table.
+//
+// LEFT JOIN monitored_devices (not JOIN): alerts raised by the wireless
+// collector (AP down, rogue AP) or service checks have device_id = NULL — an
+// INNER JOIN here silently dropped every one of them from MTTR/MTTA and the
+// unacknowledged count, which is why the Dashboard's Unack'd tile could read
+// far lower than the Alerts page's own count (the Alerts list query already
+// uses LEFT JOIN). Site-filtering still applies via d.site_id when a filter is
+// active, so a device-less alert only drops out of a SITE-scoped view (it has
+// no device to attribute a site to) — the all-sites view now matches exactly.
 app.get('/api/dashboard/ops-summary', wrap(async (req, res) => {
   const siteFilter = getSiteFilter(req);
 
@@ -1452,7 +1464,7 @@ app.get('/api/dashboard/ops-summary', wrap(async (req, res) => {
             FILTER (WHERE a.acknowledged_at IS NOT NULL
                       AND a.acknowledged_at >= NOW() - INTERVAL '30 days')::numeric, 1) AS mtta_minutes
     FROM alerts a
-    JOIN monitored_devices d ON d.id = a.device_id
+    LEFT JOIN monitored_devices d ON d.id = a.device_id
     ${sc1 ? `WHERE ${sc1}` : ''}
   `, p1);
 
@@ -1461,7 +1473,7 @@ app.get('/api/dashboard/ops-summary', wrap(async (req, res) => {
   const unack = await sv.query(`
     SELECT COUNT(*)::int AS c
     FROM alerts a
-    JOIN monitored_devices d ON d.id = a.device_id
+    LEFT JOIN monitored_devices d ON d.id = a.device_id
     WHERE a.status = 'active' AND a.acknowledged_at IS NULL${sc2 ? ` AND ${sc2}` : ''}
   `, p2);
 
