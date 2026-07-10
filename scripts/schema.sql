@@ -776,6 +776,20 @@ ALTER TABLE wireless_controllers ADD COLUMN IF NOT EXISTS ha_active_vap_tunnels 
 ALTER TABLE wireless_controllers ADD COLUMN IF NOT EXISTS ha_standby_vap_tunnels INTEGER;
 ALTER TABLE wireless_controllers ADD COLUMN IF NOT EXISTS ha_total_vap_tunnels INTEGER;
 ALTER TABLE wireless_controllers ADD COLUMN IF NOT EXISTS ha_ap_hbt_tunnels INTEGER;
+-- Aruba cluster/peer roster — WLSX-SYSTEMEXT-MIB wlsxNSysExtSwitchListTable
+-- (1.3.6.1.4.1.14823.2.2.1.2.1.40; live-verified authoritative over the older
+-- wlsxSysExtSwitchListTable at .2.1.19 — same role/location/status data, but this
+-- controller's firmware only populates the serial-number column on the "N" table).
+-- Per the MIB, the roster "is valid only when queried from the master controller" —
+-- a non-master member legitimately returns fewer rows (its own entry only) or none;
+-- that is expected, not a poll failure. Array of peer objects, one per cluster
+-- member reported this poll: [{ip, role, status, location, serial}, ...].
+--   role:   ArubaSwitchRole   -> 'master' | 'local' | 'backupmaster' | 'standalone'
+--   status: ArubaActiveState  -> 'active' | 'inactive'
+-- (sw_version/name columns exist in the MIB but were confirmed empty on live
+-- hardware across all three controllers in this deployment, so they are not
+-- captured — see collector/wirelessCollector.js pollHaPeers).
+ALTER TABLE wireless_controllers ADD COLUMN IF NOT EXISTS ha_peers JSONB DEFAULT '[]';
 -- Auto-created SNMP controllers are keyed on their device so they aren't dup'd.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_wctl_snmp_device
   ON wireless_controllers(snmp_device_id) WHERE snmp_device_id IS NOT NULL;

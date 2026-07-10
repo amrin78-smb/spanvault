@@ -340,6 +340,87 @@ async function pollControllerMetadata(session, controller) {
   return md;
 }
 
+// Aruba cluster/peer roster (WLSX-SYSTEMEXT-MIB) — a TABLE walk, so it doesn't fit
+// the scalar VENDOR_OID_CANDIDATES capability-probe pattern above. Two candidate
+// tables were checked against primary MIB text (WLSX-SYSTEMEXT-MIB.txt) and
+// live-verified column-by-column on all three Aruba controllers in this
+// deployment:
+//   wlsxSysExtSwitchListTable  (1.3.6.1.4.1.14823.2.2.1.2.1.19) — entry cols:
+//     1 sysExtSwitchIPAddress   (index, IpAddress — native 4-octet OID index)
+//     2 sysExtSwitchRole        (ArubaSwitchRole:   1 master / 2 local / 3 backupmaster / 4 standalone)
+//     3 sysExtSwitchLocation    (DisplayString) — live-verified populated ("Building1.floor1")
+//     4 sysExtSwitchSWVersion   (DisplayString) — live-verified EMPTY on all 3 controllers, not captured
+//     5 sysExtSwitchStatus      (ArubaActiveState: 1 active / 2 inactive) — populated
+//     6 sysExtSwitchName        (DisplayString) — live-verified EMPTY on all 3 controllers, not captured
+//     7 sysExtSwitchSerNo       (DisplayString) — live-verified EMPTY on all 3 controllers (this table)
+//   wlsxNSysExtSwitchListTable (1.3.6.1.4.1.14823.2.2.1.2.1.40) — IPv4/IPv6-capable
+//     successor with an extra leading index column; role/location/status are
+//     identical to the table above, but ITS SerNo column (col 8) IS populated
+//     live (e.g. "CS0012829") where the older table's SerNo (col 7) is empty on
+//     this firmware. So the "N" table is authoritative for serial number; role/
+//     location/status/ip are read from the simpler-to-parse original table.
+// Result: one row per peer IP: { ip, role, status, location, serial }.
+const ARUBA_SWITCH_ROLE_MAP = { '1': 'master', '2': 'local', '3': 'backupmaster', '4': 'standalone' };
+const ARUBA_ACTIVE_STATE_MAP = { '1': 'active', '2': 'inactive' };
+
+// Empty OCTET STRING columns decode to a zero-length Buffer/string on this
+// firmware (verified live) — treat as "not reported", not an empty-but-real value.
+function strOrNull(v) {
+  const s = asStr(v);
+  return s && s.length ? s : null;
+}
+
+async function pollHaPeers(session, controller) {
+  if (controller.vendor !== 'aruba') return [];
+  const peers = new Map(); // ip -> { ip, role, status, location, serial }
+  const getPeer = (ip) => {
+    if (!peers.has(ip)) peers.set(ip, { ip, role: null, status: null, location: null, serial: null });
+    return peers.get(ip);
+  };
+  try {
+    // wlsxSysExtSwitchListTable — native IpAddress index, so the OID suffix after
+    // the column number IS the dotted-quad IP (4 sub-identifiers), no decoding needed.
+    const base19 = '1.3.6.1.4.1.14823.2.2.1.2.1.19.1';
+    const rows19 = await walk(session, base19, 200);
+    for (const row of rows19) {
+      if (!row.oid.startsWith(`${base19}.`)) continue;
+      const parts = row.oid.slice(base19.length + 1).split('.');
+      const col = parts[0];
+      const ip = parts.slice(1).join('.');
+      if (!ip || parts.length - 1 !== 4) continue; // expect exactly 4 octets
+      const p = getPeer(ip);
+      if (col === '2') p.role = ARUBA_SWITCH_ROLE_MAP[String(row.value)] || null;
+      else if (col === '3') p.location = strOrNull(row.value);
+      else if (col === '5') p.status = ARUBA_ACTIVE_STATE_MAP[String(row.value)] || null;
+    }
+
+    // wlsxNSysExtSwitchListTable — only used here for its populated SerNo (col 8).
+    // Index is (sysExtNSwitchIPAddressType, sysExtNSwitchIPAddress): a fixed
+    // Integer32 sub-identifier followed by the DisplayString IP address encoded
+    // BER-in-OID as <length>.<ascii-code-per-char>. Decode that back to the
+    // dotted-quad IP so it can be matched against the peers collected above.
+    const base40 = '1.3.6.1.4.1.14823.2.2.1.2.1.40.1';
+    const rows40 = await walk(session, base40, 200);
+    for (const row of rows40) {
+      if (!row.oid.startsWith(`${base40}.`)) continue;
+      const parts = row.oid.slice(base40.length + 1).split('.');
+      const col = parts[0];
+      if (col !== '8') continue; // only need SerNo from this table
+      const idx = parts.slice(1); // [addrType, len, char1, char2, ...]
+      const len = parseInt(idx[1], 10);
+      if (!Number.isFinite(len) || len <= 0 || idx.length - 2 !== len) continue;
+      const chars = idx.slice(2, 2 + len);
+      const ip = chars.map((c) => String.fromCharCode(parseInt(c, 10))).join('');
+      const serial = strOrNull(row.value);
+      if (!ip || !serial) continue;
+      getPeer(ip).serial = serial;
+    }
+  } catch (_e) {
+    return [];
+  }
+  return Array.from(peers.values());
+}
+
 // ── SNMP polling ──────────────────────────────────────────────
 // Ceiling on rows per parser-column walk. Generous — the biggest legitimate
 // tables are one row per AP radio (a few hundred rows on a large controller) —
@@ -449,7 +530,12 @@ async function pollSnmpController(pool, controller) {
     let metadata = {};
     try { metadata = await pollControllerMetadata(session, controller); }
     catch (_e) { metadata = {}; }
-    return { aps, ssids, rogues, metadata };
+    // Cluster/peer roster (Aruba only) — a table walk, isolated from metadata so
+    // a failure here never affects the scalar metadata above. Never throws.
+    let haPeers = [];
+    try { haPeers = await pollHaPeers(session, controller); }
+    catch (_e) { haPeers = []; }
+    return { aps, ssids, rogues, metadata, haPeers };
   } finally {
     try { session.close(); } catch (_e) { /* ignore */ }
   }
@@ -891,6 +977,7 @@ async function pollController(pool, controller) {
     let ssids = [];
     let rogues = [];
     let metadata = {};
+    let haPeers = [];
     if (controller.snmp_device_id) {
       // One-time capability discovery: probe OIDs once, then reuse stored OIDs.
       if (!controller.capabilities || !controller.capabilities.probe_done) {
@@ -898,7 +985,7 @@ async function pollController(pool, controller) {
         const rq = await pool.query('SELECT * FROM wireless_controllers WHERE id = $1', [controller.id]);
         if (rq.rows[0]) controller = rq.rows[0];
       }
-      ({ aps, ssids, rogues = [], metadata = {} } = await pollSnmpController(pool, controller));
+      ({ aps, ssids, rogues = [], metadata = {}, haPeers = [] } = await pollSnmpController(pool, controller));
     } else if (controller.controller_url) {
       ({ aps, ssids } = await pollApiController(controller));
     } else {
@@ -941,6 +1028,16 @@ async function pollController(pool, controller) {
     // COALESCE keeps the stored value when this poll's metadata field is NULL —
     // a partial poll (capability OID timed out / not exposed) must never wipe
     // known-good model/firmware/license/HA info.
+    //
+    // ha_peers is the one exception: it is ALWAYS overwritten, not COALESCEd,
+    // mirroring the existing ap_disconnects_24h precedent just above — a fresh
+    // empty array from a poll that reached this point (the SNMP session already
+    // answered; see the pre-flight/re-probe checks above) means "no peers
+    // reported this cycle" (e.g. a non-master cluster member, per the MIB's own
+    // "valid only when queried from the master controller" note), which is a
+    // real, meaningful result, not a partial-failure signal to mask with
+    // COALESCE. A poll that fails outright never reaches this UPDATE at all
+    // (see the catch block below), so ha_peers is left untouched in that case.
     await pool.query(
       `UPDATE wireless_controllers SET last_polled_at = NOW(), status = 'ok', last_error = NULL,
          model                 = COALESCE($2, model),
@@ -961,7 +1058,8 @@ async function pollController(pool, controller) {
          ha_active_vap_tunnels  = COALESCE($17, ha_active_vap_tunnels),
          ha_standby_vap_tunnels = COALESCE($18, ha_standby_vap_tunnels),
          ha_total_vap_tunnels   = COALESCE($19, ha_total_vap_tunnels),
-         ha_ap_hbt_tunnels      = COALESCE($20, ha_ap_hbt_tunnels)
+         ha_ap_hbt_tunnels      = COALESCE($20, ha_ap_hbt_tunnels),
+         ha_peers               = $21::jsonb
        WHERE id = $1`,
       [
         controller.id,
@@ -984,6 +1082,7 @@ async function pollController(pool, controller) {
         md.ha_standby_vap_tunnels ?? null,
         md.ha_total_vap_tunnels ?? null,
         md.ha_ap_hbt_tunnels ?? null,
+        JSON.stringify(haPeers || []),
       ]);
     const s0 = aps[0];
     const sample = s0

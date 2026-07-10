@@ -222,7 +222,7 @@ function SiteDeviceRow({ device }: { device: Device }) {
         : <StatusDot status={device.current_status} />}
       <div className="sv-dev-id">
         <div className="nm" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <Link href={`/devices/${device.id}`} style={{ color: 'var(--sv-crimson)' }}>
+          <Link href={`/devices/${device.id}`} className="sv-dev-name-link" style={{ color: 'var(--text-primary)' }}>
             {device.name}
           </Link>
           {device.is_gateway && <span className="sv-gw-star" title="Site gateway">⭐</span>}

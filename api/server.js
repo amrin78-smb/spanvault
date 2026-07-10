@@ -35,6 +35,11 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.66.0': [
+    'Aruba HA controllers now show their cluster/peer roster (a "Peers" button on the Controllers table) — each cluster member\'s role, status, location, and serial number, live-read from the controller.',
+    'The AP detail page\'s "Errors" stat was showing raw lifetime packet counts (e.g. "39104189 RX") with no indication of what they meant. It\'s now labeled "Errors (lifetime pkts)" with a tooltip explaining these are cumulative counts since the radio was last reset (not a rate), and large numbers are abbreviated (e.g. "39.1M").',
+    'Device names on the Devices and Site Detail pages were rendered in the suite\'s crimson accent color at all times, which read as a permanent "down" indicator regardless of actual status. Names are now normal text, with crimson reserved for hover (matching the rest of the suite).',
+  ],
   '1.65.2': [
     'Fixed Aruba access points with two same-band radios (dual-5 GHz or Wi-Fi 6E) undercounting clients and mixing two radios’ channel/noise/retry readings into one row: per-band client counts now add up correctly, 6 GHz clients are counted, and the first radio’s readings are kept — matching how Cisco APs already behave.',
     'Wireless polling now has a safety time limit per controller, so a slow-but-responsive controller can no longer run so long that access points it hasn’t reached yet get flagged stale; if the limit is hit it logs how far it got and keeps the data it gathered.',
@@ -3732,6 +3737,7 @@ app.get('/api/wireless/controllers', wrap(async (_req, res) => {
            c.reported_ap_count, c.reported_client_count,
            c.ha_active_aps, c.ha_standby_aps, c.ha_total_aps,
            c.ha_active_vap_tunnels, c.ha_standby_vap_tunnels, c.ha_total_vap_tunnels, c.ha_ap_hbt_tunnels,
+           c.ha_peers,
            ${hp},
            (c.capabilities IS NOT NULL AND c.capabilities <> '{}') AS has_capabilities,
            d.snmp_community AS snmp_community,
@@ -3775,6 +3781,7 @@ app.get('/api/wireless/controllers/overview', wrap(async (_req, res) => {
            c.reported_ap_count, c.reported_client_count,
            c.ha_active_aps, c.ha_standby_aps, c.ha_total_aps,
            c.ha_active_vap_tunnels, c.ha_standby_vap_tunnels, c.ha_total_vap_tunnels, c.ha_ap_hbt_tunnels,
+           c.ha_peers,
            ${hp},
            (SELECT COUNT(*)::int FROM wireless_aps a WHERE a.controller_id = c.id) AS ap_count,
            (SELECT COALESCE(SUM(a.clients_total), 0)::int FROM wireless_aps a WHERE a.controller_id = c.id) AS client_count,
@@ -3875,6 +3882,9 @@ app.get('/api/wireless/controllers/overview', wrap(async (_req, res) => {
       ha_standby_vap_tunnels: row.ha_standby_vap_tunnels == null ? null : Number(row.ha_standby_vap_tunnels),
       ha_total_vap_tunnels: row.ha_total_vap_tunnels == null ? null : Number(row.ha_total_vap_tunnels),
       ha_ap_hbt_tunnels: row.ha_ap_hbt_tunnels == null ? null : Number(row.ha_ap_hbt_tunnels),
+      // Aruba cluster/peer roster (WLSX-SYSTEMEXT-MIB wlsxNSysExtSwitchListTable) —
+      // see collector/wirelessCollector.js pollHaPeers for how this is populated.
+      ha_peers: Array.isArray(row.ha_peers) ? row.ha_peers : [],
     };
   });
 

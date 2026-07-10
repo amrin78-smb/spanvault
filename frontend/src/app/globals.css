@@ -1417,6 +1417,11 @@ body.sv-noc .sv-content:has(.sv-tabs.sticky) > :first-child { padding-top: 28px;
 .sv-dev-id { min-width: 220px; }
 .sv-dev-id .nm { font-weight: 600; }
 .sv-dev-id .ip { color: var(--text-muted); font-size: var(--text-sm); margin-top: 2px; }
+/* Device name links read as plain text at rest — a permanent crimson tint on
+   every row looked like a persistent "down" alert regardless of real status
+   (crimson is otherwise reserved for --red/down elsewhere in the suite).
+   Crimson appears only on hover, as the existing suite hover-link convention. */
+.sv-dev-name-link:hover { color: var(--sv-crimson); text-decoration: underline; }
 .sv-dev-lat { min-width: 90px; font-size: var(--text-base); color: var(--text-primary); }
 .sv-dev-lat .sv-muted { font-size: var(--text-sm); }
 .sv-dev-col { min-width: 96px; font-size: var(--text-base); color: var(--text-primary); }

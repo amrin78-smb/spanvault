@@ -224,6 +224,17 @@ interface OverviewController {
   ha_standby_vap_tunnels: number | null;
   ha_total_vap_tunnels: number | null;
   ha_ap_hbt_tunnels: number | null;
+  // Aruba cluster/peer roster (WLSX-SYSTEMEXT-MIB wlsxNSysExtSwitchListTable) —
+  // populated only when queried from the cluster master (per the MIB); a non-master
+  // member legitimately reports fewer/no peers. sw_version/name columns exist in the
+  // MIB but were confirmed empty on live hardware, so they aren't captured.
+  ha_peers: {
+    ip: string;
+    role: string | null;
+    status: string | null;
+    location: string | null;
+    serial: string | null;
+  }[] | null;
 }
 
 interface ControllerOverview {
@@ -1986,6 +1997,17 @@ function ApDetailDrawer({
   );
 }
 
+// Compact packet-count formatter (39104189 -> "39.1M") — these error counters
+// are raw cumulative lifetime packet counts (since the radio's last counter
+// reset), not a rate, so a wall of unformatted digits reads as meaningless.
+function fmtPktCount(n: number | null | undefined): string {
+  if (n == null || !Number.isFinite(Number(n))) return '—';
+  const v = Number(n);
+  if (v < 1000) return String(v);
+  if (v < 1e6) return `${(v / 1e3).toFixed(1)}K`;
+  return `${(v / 1e6).toFixed(1)}M`;
+}
+
 // ── Radio band stats block (top-level component) ──────────────
 function RadioBandStats({
   band, noiseFloor, utilPct, retryRate, interference, rxErrors, txErrors,
@@ -2044,8 +2066,13 @@ function RadioBandStats({
         display: 'flex', justifyContent: 'space-between',
         padding: '3px 0', fontSize: 'var(--text-base)',
       }}>
-        <span style={{ color: 'var(--text-muted)' }}>Errors</span>
-        <span>{rxErrors ?? '—'} RX / {txErrors ?? '—'} TX</span>
+        <span
+          style={{ color: 'var(--text-muted)', cursor: 'help' }}
+          title="Cumulative error packet count since the radio's counters were last reset (e.g. a reboot) — a lifetime total, not a per-second rate."
+        >Errors (lifetime pkts)</span>
+        <span title={rxErrors != null || txErrors != null ? `${rxErrors ?? 0} RX / ${txErrors ?? 0} TX packets` : undefined}>
+          {fmtPktCount(rxErrors)} RX / {fmtPktCount(txErrors)} TX
+        </span>
       </div>
     </div>
   );
@@ -3376,9 +3403,10 @@ function reportedCountMismatch(reported: number | null, local: number): boolean 
 }
 
 // ── Controller inventory table (top-level) ────────────────────
-function ControllerInventoryTable({ controllers, capsById }: {
+function ControllerInventoryTable({ controllers, capsById, onShowPeers }: {
   controllers: OverviewController[];
   capsById: Map<number, boolean>;
+  onShowPeers: (c: OverviewController) => void;
 }) {
   return (
     <div style={{ overflowX: 'auto' }}>
@@ -3440,6 +3468,17 @@ function ControllerInventoryTable({ controllers, capsById }: {
                 <td style={{ color: ha.color, fontWeight: 600 }}>
                   {ha.dot && <span style={{ marginRight: 4 }}>●</span>}
                   {ha.text === 'N/A' || ha.text === 'Standalone' ? (ha.text === 'N/A' ? 'N/A' : '—') : ha.text}
+                  {Array.isArray(c.ha_peers) && c.ha_peers.length > 0 && (
+                    <button
+                      type="button"
+                      className="sv-btn ghost sm"
+                      title={`View ${c.ha_peers.length} cluster peer(s)`}
+                      onClick={() => onShowPeers(c)}
+                      style={{ marginLeft: 6, padding: '1px 6px', fontSize: 'var(--text-xs)', fontWeight: 600 }}
+                    >
+                      Peers ({c.ha_peers.length})
+                    </button>
+                  )}
                 </td>
                 <td>{fmtUptimeShort(c.uptime_seconds)}</td>
               </tr>
@@ -3713,6 +3752,48 @@ function CapabilityResultModal({ result, onClose }: {
   );
 }
 
+// Aruba cluster/peer roster (WLSX-SYSTEMEXT-MIB) — simple read-only listing,
+// reusing the same sv-modal-backdrop/sv-modal pattern as CapabilityResultModal.
+function HaPeersModal({ controller, onClose }: { controller: OverviewController; onClose: () => void }) {
+  const peers = controller.ha_peers || [];
+  return (
+    <div className="sv-modal-backdrop" onMouseDown={onClose}>
+      <div className="sv-modal" style={{ maxWidth: 640 }} onMouseDown={(e) => e.stopPropagation()}>
+        <h2 style={{ marginTop: 0 }}>Cluster Peers — {controller.name}</h2>
+        <p className="sv-muted" style={{ fontSize: 'var(--text-base)', marginTop: -4 }}>
+          Aruba cluster/peer roster reported by this controller. Only the cluster master returns a
+          populated roster — a non-master member may report only itself or nothing this cycle.
+        </p>
+        {peers.length === 0 ? (
+          <Empty message="No peer data reported." />
+        ) : (
+          <table className="sv-table">
+            <thead><tr>
+              <th>IP</th><th>Role</th><th>Status</th><th>Location</th><th>Serial</th>
+            </tr></thead>
+            <tbody>
+              {peers.map((p) => (
+                <tr key={p.ip}>
+                  <td style={{ fontFamily: 'var(--font-mono)' }}>{p.ip}</td>
+                  <td style={{ textTransform: 'capitalize' }}>{p.role || '—'}</td>
+                  <td style={{ color: p.status === 'active' ? 'var(--green)' : 'var(--text-muted)' }}>
+                    {p.status || '—'}
+                  </td>
+                  <td>{p.location || '—'}</td>
+                  <td>{p.serial || '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        <div style={{ marginTop: 16, textAlign: 'right' }}>
+          <button className="sv-btn" onClick={onClose}>Close</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // Raw SNMP diagnostics — walks the controller live and shows what its OID tables
 // actually return (metadata scalars + subtree row counts + samples). Read-only.
 function ControllerDiagnosticsModal({ controller, onClose }: { controller: Controller; onClose: () => void }) {
@@ -3941,6 +4022,7 @@ function ControllersTab({ onViewEvents }: { onViewEvents?: () => void }) {
   const [probingId, setProbingId] = useState<number | null>(null);
   const [probeResult, setProbeResult] = useState<{ name: string; details: CapabilityDetail[]; message: string | null } | null>(null);
   const [diagController, setDiagController] = useState<Controller | null>(null);
+  const [peersController, setPeersController] = useState<OverviewController | null>(null);
   async function handleProbe(c: Controller) {
     setProbingId(c.id);
     try {
@@ -4035,6 +4117,9 @@ function ControllersTab({ onViewEvents }: { onViewEvents?: () => void }) {
           {diagController && (
             <ControllerDiagnosticsModal controller={diagController} onClose={() => setDiagController(null)} />
           )}
+          {peersController && (
+            <HaPeersModal controller={peersController} onClose={() => setPeersController(null)} />
+          )}
 
           {overview.loading && !ov ? (
             <div className="sv-panel"><Loading /></div>
@@ -4043,7 +4128,7 @@ function ControllersTab({ onViewEvents }: { onViewEvents?: () => void }) {
               {/* Row 2 — Inventory (60%) | AP Capacity (40%) */}
               <EqualRow>
                 <SectionCard title="Controller Inventory" flex="1 1 60%" minWidth={360}>
-                  <ControllerInventoryTable controllers={ovCtls} capsById={capsById} />
+                  <ControllerInventoryTable controllers={ovCtls} capsById={capsById} onShowPeers={(c) => setPeersController(c)} />
                 </SectionCard>
                 <SectionCard title="AP Capacity" flex="1 1 36%" minWidth={260}>
                   <ApCapacityChart controllers={ovCtls} />

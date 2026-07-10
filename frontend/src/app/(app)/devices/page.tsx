@@ -497,7 +497,7 @@ function DeviceRow({
         : <StatusDot status={device.current_status} size={8} title={statusTooltip(device)} />}
       <div className="sv-dev-id" style={{ minWidth: 200 }}>
         <div className="nm" style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--text-base)', fontWeight: 500 }}>
-          <Link href={`/devices/${device.id}`} style={{ color: 'var(--sv-crimson)' }}>
+          <Link href={`/devices/${device.id}`} className="sv-dev-name-link" style={{ color: 'var(--text-primary)' }}>
             {device.name}
           </Link>
           {device.is_gateway && <span className="sv-gw-star" title="Site gateway">⭐</span>}
