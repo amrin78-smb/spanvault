@@ -35,6 +35,12 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.71.0': [
+    'Per-user app-access enforcement (suite Phase 2) now applies at the SpanVault app level, not just the hub launcher: a user whose account isn\'t granted SpanVault is blocked from every SpanVault page and redirected to the hub launcher with a "denied" banner, instead of being able to deep-link straight into the app.',
+    'The user\'s allowed-apps set is resolved at SSO sign-in from NetVault\'s user_apps table and carried on the SpanVault session, so the middleware can gate page routes without any extra per-request lookup.',
+    'Fail-open by design: users with no app-access restriction configured (the default), and older sessions issued before this change, keep full access — a transient error or a legacy token never locks anyone out.',
+    'Scope is limited to real app pages — SSO/auth callbacks, the API proxy, static assets, health, and public map views are untouched, so nothing in the existing auth or monitoring flow changes.',
+  ],
   '1.70.0': [
     'SECURITY: fixed a critical auth bypass — the frontend proxy let every unauthenticated GET /api/* request through to the backend with no session check, since the write-side RBAC middleware never examined GET requests. Confirmed exploitable against production (an anonymous request returned a live agent\'s API key). Now blocked with a narrow, explicit allow-list for the handful of routes that must genuinely work with no session (public map viewers, health check, agent-installer distribution).',
     'Fixed several remote-agent correctness bugs found in a full audit: an automatic NetVault-driven agent reassignment never notified the live agent (devices could sit with the wrong agent, or a stale status, for up to 30 minutes); a newly agent-assigned device kept its old "up" status until the agent\'s first poll instead of resetting to "unknown"; a discovered device that collided with an already-monitored IP was silently marked "adopted" and vanished from the UI with no explanation; a buffered result batch from a reconnecting agent could lose every remaining item in the batch if one item failed to insert.',

@@ -23,6 +23,29 @@ const netvaultPool = new Pool({
   password: process.env.NETVAULT_DB_PASS || '',
   ssl: false,
 });
+
+/**
+ * Resolve which suite apps this user may access (per-user app-access, Phase 2).
+ * Mirrors NetVault's getUserApps semantics so the two stay in lockstep:
+ *   - super_admin        → all apps
+ *   - no user_apps rows  → all apps (legacy / default-all)
+ *   - otherwise          → the explicit set stored in netvault.user_apps
+ * Fails OPEN (returns []) on any error so a transient DB problem or an older
+ * NetVault schema without user_apps never locks a user out of SpanVault.
+ * An empty array is treated as "default-all" by the middleware gate.
+ */
+async function resolveUserApps(userId: string, role: string): Promise<string[]> {
+  if (role === 'super_admin') return ['netvault', 'logvault', 'ddivault', 'spanvault'];
+  const id = parseInt(userId, 10);
+  if (!Number.isFinite(id)) return [];
+  try {
+    const r = await netvaultPool.query('SELECT app FROM user_apps WHERE user_id = $1', [id]);
+    if (r.rows.length === 0) return []; // default-all
+    return r.rows.map((row) => row.app as string);
+  } catch {
+    return []; // fail open — never lock out on a transient error
+  }
+}
 export const authOptions: NextAuthOptions = {
   secret: process.env.NEXTAUTH_SECRET,
   session: { strategy: 'jwt' },
@@ -103,7 +126,10 @@ export const authOptions: NextAuthOptions = {
               }
             }
 
-            return { id, email, name: userName, role: userRole, sites: userSites };
+            // Per-user app-access set (fail-open) so middleware can gate SpanVault.
+            const apps = await resolveUserApps(id, userRole);
+
+            return { id, email, name: userName, role: userRole, sites: userSites, apps };
           } catch {
             return null;
           }
@@ -121,6 +147,7 @@ export const authOptions: NextAuthOptions = {
         token.name = user.name;
         token.email = user.email;
         token.sites = (user as any).sites || [];
+        token.apps = (user as any).apps || [];
       }
       return token;
     },
@@ -131,6 +158,7 @@ export const authOptions: NextAuthOptions = {
         session.user.name = token.name;
         session.user.email = token.email;
         (session.user as any).sites = token.sites || [];
+        (session.user as any).apps = token.apps || [];
       }
       return session;
     },

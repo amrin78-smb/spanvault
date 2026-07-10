@@ -4,6 +4,15 @@ import { getToken } from 'next-auth/jwt';
 const HUB = process.env.NOCVAULT_HUB_URL || 'http://localhost:3000';
 const CALLBACK = encodeURIComponent('/sso');
 
+// Per-user app-access gate (Phase 2). NetVault always allowed; a missing/empty
+// claim means default-all (FAIL OPEN — older tokens without `apps` are never
+// locked out); otherwise the app slug must be in the user's allowed set.
+function appAllowed(apps: unknown, slug: string): boolean {
+  if (slug === 'netvault') return true;
+  if (!Array.isArray(apps) || apps.length === 0) return true;
+  return apps.includes(slug);
+}
+
 export async function middleware(req: NextRequest) {
   const { pathname, search } = req.nextUrl;
 
@@ -57,6 +66,13 @@ export async function middleware(req: NextRequest) {
   const token = await getToken({ req, secret: process.env.NEXTAUTH_SECRET });
   if (!token) {
     return NextResponse.redirect(`${HUB}/login?callbackUrl=${CALLBACK}`);
+  }
+
+  // Per-user app-access enforcement: a signed-in user who isn't granted the
+  // SpanVault app is redirected to the hub launcher with a denied banner. The
+  // launcher lives on the hub (a different origin), so this can't loop here.
+  if (!appAllowed((token as any).apps, 'spanvault')) {
+    return NextResponse.redirect(`${HUB}/launcher?denied=spanvault`);
   }
 
   return NextResponse.next();
