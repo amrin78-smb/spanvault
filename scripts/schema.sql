@@ -117,9 +117,11 @@ CREATE TABLE IF NOT EXISTS alert_rules (
 );
 CREATE INDEX IF NOT EXISTS idx_alert_rules_device ON alert_rules(device_id);
 
--- ── Multi-level alert rules (global / site / device inheritance) ──────────────
--- scope decides where a rule applies; site_id mirrors the denormalised site
--- grouping on monitored_devices (which is NOT unique, so no FK is possible).
+-- ── Multi-level alert rules (global / site / device / service inheritance) ────
+-- scope decides where a rule applies: 'global' | 'site' | 'device' | 'service'.
+-- site_id mirrors the denormalised site grouping on monitored_devices (which is
+-- NOT unique, so no FK is possible). 'service' scope uses service_check_id
+-- (added below, after service_checks is defined) instead of device_id.
 ALTER TABLE alert_rules ADD COLUMN IF NOT EXISTS scope           TEXT NOT NULL DEFAULT 'global';
 ALTER TABLE alert_rules ADD COLUMN IF NOT EXISTS site_id         INTEGER;
 ALTER TABLE alert_rules ADD COLUMN IF NOT EXISTS site_name       TEXT;
@@ -130,8 +132,10 @@ ALTER TABLE alert_rules ALTER COLUMN threshold DROP NOT NULL;
 -- Backfill scope for rules created before the scope column existed.
 UPDATE alert_rules SET scope = 'device' WHERE device_id IS NOT NULL AND scope = 'global';
 CREATE INDEX IF NOT EXISTS idx_alert_rules_scope ON alert_rules(scope, site_id);
--- Supported metrics: device_down, response_time, packet_loss, cpu_pct, mem_pct,
--- interface_down, snmp_no_data, bandwidth_pct.
+-- Supported device-scope metrics: device_down, response_time, packet_loss,
+-- cpu_pct, mem_pct, interface_down, snmp_no_data, bandwidth_pct.
+-- Supported service-scope metrics (scope = 'global'/'site'/'service' only):
+-- service_down, service_response_time, ssl_expiring.
 
 CREATE TABLE IF NOT EXISTS availability_summary (
   id              SERIAL PRIMARY KEY,
@@ -413,6 +417,13 @@ CREATE INDEX IF NOT EXISTS idx_svc_group ON service_checks(group_id);
 ALTER TABLE alerts ADD COLUMN IF NOT EXISTS service_check_id INTEGER REFERENCES service_checks(id) ON DELETE CASCADE;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_alerts_active_service_unique
   ON alerts(service_check_id, alert_type) WHERE status = 'active' AND service_check_id IS NOT NULL;
+
+-- Service-scoped alert rules (scope = 'service') reference the check, not a
+-- device. Placed here (after service_checks) rather than in the alert_rules
+-- block above so the forward FK target exists, matching the agent_id/
+-- service_check_id pattern used for the alerts table above.
+ALTER TABLE alert_rules ADD COLUMN IF NOT EXISTS service_check_id INTEGER REFERENCES service_checks(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS idx_alert_rules_service ON alert_rules(service_check_id);
 
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO spanvault_user;
 GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO spanvault_user;

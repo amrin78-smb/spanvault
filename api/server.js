@@ -35,6 +35,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.67.0': [
+    'Settings → Alert Rules now has a Service Rules tab alongside Global/Site/Device — monitored services (HTTP/TCP/SSL/DNS checks) can now get the same configurable severity, enable/disable, and recovery notifications as devices already have, plus a brand-new response-time alert. Previously service alerts were entirely fixed (always critical for down, always warning for SSL expiry) with no way to configure them per service; that fixed behavior is preserved as the default when no rule is configured.',
+  ],
   '1.66.0': [
     'Aruba HA controllers now show their cluster/peer roster (a "Peers" button on the Controllers table) — each cluster member\'s role, status, location, and serial number, live-read from the controller.',
     'The AP detail page\'s "Errors" stat was showing raw lifetime packet counts (e.g. "39104189 RX") with no indication of what they meant. It\'s now labeled "Errors (lifetime pkts)" with a tooltip explaining these are cumulative counts since the radio was last reset (not a rate), and large numbers are abbreviated (e.g. "39.1M").',
@@ -3059,11 +3062,18 @@ app.post('/api/alerts/:id/resolve', wrap(async (req, res) => {
 // Alert rules
 // ══════════════════════════════════════════════════════════════
 // Conditions that carry no operator/threshold.
-const NO_THRESHOLD_METRICS = ['device_down', 'interface_down'];
+const NO_THRESHOLD_METRICS = ['device_down', 'interface_down', 'service_down', 'ssl_expiring'];
 
-// Merge global → site → device rules by metric (later scope wins).
+// Service-check metric namespace — kept distinct from device metrics so a
+// device-scoped global/site rule can never leak into a service's effective
+// ruleset, and vice versa (mirrors collector.js's SERVICE_METRICS).
+const SERVICE_METRICS = ['service_down', 'service_response_time', 'ssl_expiring'];
+
+// Merge global → site → device (or global → site → service) rules by metric
+// (later scope wins). Metric-agnostic — reused for both device and service
+// effective-rule endpoints.
 function mergeEffectiveRules(rows) {
-  const prec = { global: 0, site: 1, device: 2 };
+  const prec = { global: 0, site: 1, device: 2, service: 2 };
   const byMetric = new Map();
   for (const rule of rows) {
     const cur = byMetric.get(rule.metric);
@@ -3078,11 +3088,14 @@ app.get('/api/alert-rules', wrap(async (req, res) => {
   if (req.query.scope)     { params.push(String(req.query.scope));        where.push(`r.scope = $${params.length}`); }
   if (req.query.site_id)   { params.push(parseInt(req.query.site_id, 10)); where.push(`r.site_id = $${params.length}`); }
   if (req.query.device_id) { params.push(parseInt(req.query.device_id, 10)); where.push(`r.device_id = $${params.length}`); }
+  if (req.query.service_check_id) { params.push(parseInt(req.query.service_check_id, 10)); where.push(`r.service_check_id = $${params.length}`); }
   const r = await sv.query(`
-    SELECT r.*, d.name AS device_name
-    FROM alert_rules r LEFT JOIN monitored_devices d ON d.id = r.device_id
+    SELECT r.*, d.name AS device_name, sc.name AS service_name
+    FROM alert_rules r
+      LEFT JOIN monitored_devices d ON d.id = r.device_id
+      LEFT JOIN service_checks sc ON sc.id = r.service_check_id
     ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
-    ORDER BY r.scope, r.site_name NULLS FIRST, r.device_id NULLS FIRST, r.metric
+    ORDER BY r.scope, r.site_name NULLS FIRST, r.device_id NULLS FIRST, r.service_check_id NULLS FIRST, r.metric
   `, params);
   res.json(r.rows);
 }));
@@ -3106,21 +3119,43 @@ app.get('/api/alert-rules/effective/:device_id', wrap(async (req, res) => {
   res.json({ device, rules: mergeEffectiveRules(r.rows) });
 }));
 
+// Effective ruleset for a service check after global → site → service
+// inheritance. The global/site branches are namespaced to SERVICE_METRICS so a
+// device-scoped global rule (e.g. metric='cpu_pct') never shows up here.
+app.get('/api/alert-rules/effective-service/:service_check_id', wrap(async (req, res) => {
+  const id = parseInt(req.params.service_check_id, 10);
+  const sq = await sv.query(`SELECT id, name, type, target, site_id, site_name FROM service_checks WHERE id = $1`, [id]);
+  const service = sq.rows[0];
+  if (!service) return res.status(404).json({ error: 'Service check not found' });
+  const r = await sv.query(`
+    SELECT r.*, sc.name AS service_name
+    FROM alert_rules r LEFT JOIN service_checks sc ON sc.id = r.service_check_id
+    WHERE r.enabled = TRUE AND (
+      (r.scope = 'global' AND r.metric = ANY($3::text[]))
+      OR (r.scope = 'site' AND r.site_id IS NOT DISTINCT FROM $2 AND r.metric = ANY($3::text[]))
+      OR (r.scope = 'service' AND r.service_check_id = $1)
+    )
+    ORDER BY r.metric
+  `, [id, service.site_id == null ? null : service.site_id, SERVICE_METRICS]);
+  res.json({ service, rules: mergeEffectiveRules(r.rows) });
+}));
+
 app.post('/api/alert-rules', wrap(async (req, res) => {
   const b = req.body || {};
   const noThreshold = NO_THRESHOLD_METRICS.includes(b.metric);
   if (!b.metric || (!noThreshold && (b.threshold === undefined || b.threshold === null || b.threshold === ''))) {
     return res.status(400).json({ error: 'metric and threshold required' });
   }
-  const scope = b.scope || (b.device_id ? 'device' : b.site_id ? 'site' : 'global');
+  const scope = b.scope || (b.device_id ? 'device' : b.service_check_id ? 'service' : b.site_id ? 'site' : 'global');
   const r = await sv.query(`
     INSERT INTO alert_rules
-      (device_id, site_id, site_name, scope, metric, operator, threshold, severity, enabled, notify_recovery, description)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *
+      (device_id, site_id, site_name, scope, metric, operator, threshold, severity, enabled, notify_recovery, description, service_check_id)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *
   `, [
     b.device_id || null, b.site_id || null, b.site_name || null, scope, b.metric,
     b.operator || '>', noThreshold ? null : b.threshold, b.severity || 'warning',
     b.enabled === undefined ? true : !!b.enabled, !!b.notify_recovery, b.description || null,
+    b.service_check_id || null,
   ]);
   res.status(201).json(r.rows[0]);
 }));
@@ -3129,7 +3164,7 @@ app.put('/api/alert-rules/:id', wrap(async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const b = req.body || {};
   const allowed = ['metric', 'operator', 'threshold', 'severity', 'enabled', 'device_id',
-                   'scope', 'site_id', 'site_name', 'notify_recovery', 'description'];
+                   'scope', 'site_id', 'site_name', 'notify_recovery', 'description', 'service_check_id'];
   const sets = [];
   const params = [];
   for (const k of allowed) if (b[k] !== undefined) { params.push(b[k]); sets.push(`${k} = $${params.length}`); }

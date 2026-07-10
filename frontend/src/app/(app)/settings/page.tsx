@@ -663,9 +663,10 @@ function AuditLog() {
   );
 }
 
-// ── Alert rules (multi-level: global / site / device) ─────────
+// ── Alert rules (multi-level: global / site / device / service) ─────────
 type Rule = {
   id: number; device_id: number | null; device_name: string | null;
+  service_check_id: number | null; service_name: string | null;
   site_id: number | null; site_name: string | null; scope: string;
   metric: string; operator: string; threshold: number | null; severity: string;
   enabled: boolean; notify_recovery: boolean; description: string | null;
@@ -676,6 +677,7 @@ type NewRule = {
 };
 type Site = { id: number; name: string; code?: string; city?: string };
 type DeviceLite = { id: number; name: string; ip_address: string; site_id: number | null; site_name: string | null };
+type ServiceLite = { id: number; name: string; type: string; target: string; site_id: number | null; site_name: string | null };
 
 const OPERATORS = ['>', '>=', '<', '<=', '=', '!='];
 const METRIC_OPTIONS = [
@@ -687,7 +689,13 @@ const METRIC_OPTIONS = [
   { value: 'snmp_no_data',  label: 'SNMP No Data (minutes)', unit: 'm' },
   { value: 'interface_down', label: 'Interface Down',      noThreshold: true,  unit: '' },
   { value: 'bandwidth_pct', label: 'Bandwidth % (SNMP)',   unit: '%' },
+  { value: 'service_down',  label: 'Service Down',         noThreshold: true,  unit: '' },
+  { value: 'service_response_time', label: 'Response Time (ms)', unit: 'ms' },
+  { value: 'ssl_expiring',  label: 'SSL Certificate Expiring', noThreshold: true, unit: '' },
 ];
+const SERVICE_METRIC_VALUES = ['service_down', 'service_response_time', 'ssl_expiring'];
+const DEVICE_METRIC_OPTIONS = METRIC_OPTIONS.filter((m) => !SERVICE_METRIC_VALUES.includes(m.value));
+const SERVICE_METRIC_OPTIONS = METRIC_OPTIONS.filter((m) => SERVICE_METRIC_VALUES.includes(m.value));
 function metricLabel(metric: string): string {
   return METRIC_OPTIONS.find((m) => m.value === metric)?.label || metric;
 }
@@ -707,6 +715,7 @@ const RULE_SUBTABS = [
   { key: 'global', label: 'Global Rules' },
   { key: 'site', label: 'Site Rules' },
   { key: 'device', label: 'Device Rules' },
+  { key: 'service', label: 'Service Rules' },
 ];
 
 function AlertRules() {
@@ -723,13 +732,20 @@ function AlertRules() {
       {sub === 'global' && <GlobalRules />}
       {sub === 'site' && <SiteRules />}
       {sub === 'device' && <DeviceRules />}
+      {sub === 'service' && <ServiceRules />}
     </div>
   );
 }
 
-// Shared add-rule form (top-level component).
-function RuleForm({ onAdd }: { onAdd: (r: NewRule) => Promise<void> }) {
-  const [metric, setMetric] = useState('response_time');
+// Shared add-rule form (top-level component). metricOptions scopes which
+// metrics are offered — device tabs pass the device-only subset (the default),
+// the Service Rules tab passes SERVICE_METRIC_OPTIONS, so a rule's metric
+// always matches its intended namespace.
+function RuleForm({ onAdd, metricOptions = DEVICE_METRIC_OPTIONS }: {
+  onAdd: (r: NewRule) => Promise<void>;
+  metricOptions?: { value: string; label: string; unit?: string; noThreshold?: boolean }[];
+}) {
+  const [metric, setMetric] = useState(metricOptions[0]?.value || 'response_time');
   const [operator, setOperator] = useState('>');
   const [threshold, setThreshold] = useState('100');
   const [severity, setSeverity] = useState('warning');
@@ -756,7 +772,7 @@ function RuleForm({ onAdd }: { onAdd: (r: NewRule) => Promise<void> }) {
     <div>
       <div className="sv-toolbar" style={{ flexWrap: 'wrap' }}>
         <select className="sv-select" value={metric} onChange={(e) => setMetric(e.target.value)}>
-          {METRIC_OPTIONS.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
+          {metricOptions.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
         </select>
         {!noThresh && (
           <>
@@ -1005,6 +1021,105 @@ function DeviceRules() {
             </table>
           ) : (
             <Empty message="No effective rules — add a global, site, or device rule." />
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ServiceRules() {
+  const services = useApi<ServiceLite[]>('/api/service-checks');
+  const [search, setSearch] = useState('');
+  const [serviceId, setServiceId] = useState('');
+  const service = services.data?.find((s) => String(s.id) === serviceId);
+  const rules = useApi<Rule[]>(serviceId ? `/api/alert-rules?scope=service&service_check_id=${serviceId}` : null);
+  const effective = useApi<{ service: any; rules: Rule[] }>(serviceId ? `/api/alert-rules/effective-service/${serviceId}` : null);
+  const globals = useApi<Rule[]>('/api/alert-rules?scope=global');
+  const siteRules = useApi<Rule[]>(service?.site_id ? `/api/alert-rules?scope=site&site_id=${service.site_id}` : null);
+  const [err, setErr] = useState<string | null>(null);
+
+  // Inherited panels are metric-namespace-filtered client-side too — the API's
+  // ?scope=global/site filters don't distinguish device vs. service metrics, so
+  // a service's "inherited" panel would otherwise show unrelated device rules
+  // that happen to also be scope=global/site.
+  const globalService = (globals.data || []).filter((r) => SERVICE_METRIC_VALUES.includes(r.metric));
+  const siteService = (siteRules.data || []).filter((r) => SERVICE_METRIC_VALUES.includes(r.metric));
+
+  const filtered = (services.data || []).filter((s) =>
+    !search || s.name.toLowerCase().includes(search.toLowerCase()) ||
+    (s.target || '').toLowerCase().includes(search.toLowerCase()) ||
+    (s.type || '').toLowerCase().includes(search.toLowerCase()));
+
+  async function add(r: NewRule) {
+    if (!service) return;
+    setErr(null);
+    try {
+      await apiSend('/api/alert-rules', 'POST', { ...r, scope: 'service', service_check_id: service.id, enabled: true });
+      rules.reload();
+      effective.reload();
+    } catch (e: any) { setErr(e?.message || 'Failed to add rule'); }
+  }
+
+  return (
+    <div>
+      {err && <ErrorBox message={err} />}
+      <div className="sv-panel">
+        <h2>Service Rules</h2>
+        <div className="sv-toolbar" style={{ flexWrap: 'wrap' }}>
+          <input className="sv-input" placeholder="Search service by name, target, or type…" value={search}
+            onChange={(e) => setSearch(e.target.value)} style={{ width: 240 }} />
+          <select className="sv-select" value={serviceId} onChange={(e) => setServiceId(e.target.value)}>
+            <option value="">Select a service…</option>
+            {filtered.map((s) => <option key={s.id} value={s.id}>{s.name} ({s.type})</option>)}
+          </select>
+        </div>
+        {service ? (
+          <>
+            <p className="sv-muted" style={{ marginTop: 4 }}>
+              Service rules for <strong>{service.name}</strong> override site and global rules.
+            </p>
+            <RuleForm onAdd={add} metricOptions={SERVICE_METRIC_OPTIONS} />
+          </>
+        ) : (
+          <Empty message="Select a service to manage its rules." />
+        )}
+      </div>
+
+      {service && (
+        <div className="sv-panel" style={{ padding: 0 }}>
+          <RulesTable rules={rules.data} onChange={() => { rules.reload(); effective.reload(); }} />
+        </div>
+      )}
+
+      {service && <InheritedRules title="Inherited site rules" rules={siteService} />}
+      {service && <InheritedRules title="Inherited global rules" rules={globalService} />}
+
+      {service && effective.data && (
+        <div className="sv-panel" style={{ padding: 0 }}>
+          <div style={{ padding: '12px 16px 0' }}>
+            <h2 style={{ fontSize: 'var(--text-md)', margin: 0 }}>Effective Rules</h2>
+            <p className="sv-muted" style={{ fontSize: 'var(--text-sm)', margin: '4px 0 0' }}>
+              Final merged ruleset actually evaluated for {service.name}.
+            </p>
+          </div>
+          {effective.data.rules.length ? (
+            <table className="sv-table">
+              <thead><tr><th>Metric</th><th>Condition</th><th>Severity</th><th>Source</th><th>Recovery</th></tr></thead>
+              <tbody>
+                {effective.data.rules.map((r) => (
+                  <tr key={r.id}>
+                    <td>{metricLabel(r.metric)}</td>
+                    <td>{conditionText(r)}</td>
+                    <td>{r.severity}</td>
+                    <td><span className={`sv-badge ${r.scope === 'service' ? 'down' : r.scope === 'site' ? 'warning' : 'unknown'}`}>{r.scope}</span></td>
+                    <td className="sv-muted">{r.notify_recovery ? 'Yes' : '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <Empty message="No effective rules — add a global, site, or service rule." />
           )}
         </div>
       )}

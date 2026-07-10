@@ -937,6 +937,17 @@ const METRIC_UNITS = {
   snmp_no_data: 'm', bandwidth_pct: '%',
 };
 
+// Service-check metric namespace — kept distinct from the device METRIC_LABELS/
+// METRIC_UNITS above so a device-scoped global rule (e.g. cpu_pct) can never be
+// mistaken for a service rule, and vice versa (see getEffectiveServiceRules).
+const SERVICE_METRICS = ['service_down', 'service_response_time', 'ssl_expiring'];
+const SERVICE_METRIC_LABELS = {
+  service_down: 'Service down', service_response_time: 'Response time', ssl_expiring: 'SSL expiring',
+};
+const SERVICE_METRIC_UNITS = {
+  service_response_time: 'ms',
+};
+
 // Effective rules for a device: global + matching-site + device, merged by
 // metric with device > site > global precedence.
 async function getEffectiveRules(device) {
@@ -949,6 +960,29 @@ async function getEffectiveRules(device) {
     [device.id, device.site_id == null ? null : device.site_id]
   );
   const prec = { global: 0, site: 1, device: 2 };
+  const byMetric = new Map();
+  for (const rule of r.rows) {
+    const cur = byMetric.get(rule.metric);
+    if (!cur || (prec[rule.scope] || 0) >= (prec[cur.scope] || 0)) byMetric.set(rule.metric, rule);
+  }
+  return Array.from(byMetric.values());
+}
+
+// Effective rules for a service check: global + matching-site + service, merged
+// by metric with service > site > global precedence. The global/site branches
+// are filtered to the SERVICE_METRICS namespace so a device-scoped global rule
+// (e.g. metric='cpu_pct') is never treated as effective for a service, and a
+// service-scoped rule is never picked up by a device's getEffectiveRules().
+async function getEffectiveServiceRules(check) {
+  const r = await sv.query(
+    `SELECT * FROM alert_rules WHERE enabled = TRUE AND (
+        (scope = 'global' AND metric = ANY($3::text[]))
+        OR (scope = 'site' AND site_id IS NOT DISTINCT FROM $2 AND metric = ANY($3::text[]))
+        OR (scope = 'service' AND service_check_id = $1)
+     )`,
+    [check.id, check.site_id == null ? null : check.site_id, SERVICE_METRICS]
+  );
+  const prec = { global: 0, site: 1, service: 2 };
   const byMetric = new Map();
   for (const rule of r.rows) {
     const cur = byMetric.get(rule.metric);
@@ -1395,6 +1429,35 @@ async function resolveServiceAlert(checkId, alertType) {
   }
 }
 
+// Log a one-shot recovery record for a service rule (mirrors recoveryEvent()
+// for devices, keyed on service_check_id instead of device_id).
+async function serviceRecoveryEvent(check, rule) {
+  try {
+    await sv.query(
+      `INSERT INTO alerts (service_check_id, alert_type, severity, message, status, resolved_at)
+       VALUES ($1,$2,'info',$3,'resolved',NOW())`,
+      [check.id, `recovery_${rule.id}`,
+       `${check.name} recovered: ${SERVICE_METRIC_LABELS[rule.metric] || rule.metric} back to normal`]
+    );
+    log(`[alert] RECOVERY ${rule.metric} on service ${check.name}`);
+  } catch (err) {
+    console.error('[alerts] service recovery event failed:', err.message);
+  }
+}
+
+// Notify that a service alert cleared (mirrors notifyRecovery() for devices).
+async function notifyServiceRecovery(check, alertType, label) {
+  if (String(setting('email_recovery_enabled', 'true')).toLowerCase() === 'false') return;
+  const to = await recipientsFor(check.site_id, null, alertType);
+  if (to) {
+    await sendAlertEmail(
+      `[SpanVault] RESOLVED: ${label} on ${check.name}`,
+      `${label} on ${check.name} has recovered.`,
+      to
+    );
+  }
+}
+
 // Run one central check, persist its status + a result row.
 async function runAndStoreServiceCheck(check) {
   const res = await runServiceCheck(check);
@@ -1420,24 +1483,94 @@ async function runAndStoreServiceCheck(check) {
 }
 
 // Evaluate alerts for one check from its STORED status (central + agent alike).
+// Consults configurable service rules (getEffectiveServiceRules) where present;
+// falls back to the original hardcoded behavior for any metric with no matching
+// rule, so a deployment with zero service rules configured behaves identically
+// to before this function grew rule support.
 async function evaluateServiceCheckAlerts(check) {
-  // Reachability — service_down (critical).
-  if (check.current_status === 'down') {
-    await raiseServiceAlert(check, 'service_down', 'critical',
-      `Service ${check.name} is down — ${check.last_detail || ''}`.trim());
-  } else {
-    await resolveServiceAlert(check.id, 'service_down');
+  let rules = [];
+  try { rules = await getEffectiveServiceRules(check); }
+  catch (err) {
+    // Rule lookup failed — degrade to the pre-existing hardcoded behavior below.
+    console.error('[alerts] effective service rule fetch failed:', err.message);
+    rules = [];
+  }
+  const byMetric = new Map(rules.map((r) => [r.metric, r]));
+
+  // Reachability — service_down.
+  const downRule = byMetric.get('service_down');
+  if (!downRule) {
+    // No rule configured: identical to pre-rule-engine behavior (always critical).
+    if (check.current_status === 'down') {
+      await raiseServiceAlert(check, 'service_down', 'critical',
+        `Service ${check.name} is down — ${check.last_detail || ''}`.trim());
+    } else {
+      await resolveServiceAlert(check.id, 'service_down');
+    }
+  } else if (downRule.enabled) {
+    const alertType = `rule_${downRule.id}`;
+    if (check.current_status === 'down') {
+      await raiseServiceAlert(check, alertType, downRule.severity || 'critical',
+        `Service ${check.name} is down — ${check.last_detail || ''}`.trim());
+    } else {
+      const wasActive = await resolveServiceAlert(check.id, alertType);
+      if (wasActive && downRule.notify_recovery) {
+        await serviceRecoveryEvent(check, downRule);
+        await notifyServiceRecovery(check, alertType, SERVICE_METRIC_LABELS.service_down);
+      }
+    }
+  }
+  // downRule exists but disabled: skip alerting entirely for this metric, as
+  // specified — no raise, no resolve.
+
+  // Response time — service_response_time. NEW capability: only evaluated when
+  // a rule exists (no rule = no response-time alerting, matching pre-existing
+  // absence of this feature).
+  const rtRule = byMetric.get('service_response_time');
+  if (rtRule && rtRule.enabled) {
+    const val = check.last_response_ms;
+    const alertType = `rule_${rtRule.id}`;
+    if (val !== undefined && val !== null) {
+      const triggered = compare(Number(val), rtRule.operator || '>', Number(rtRule.threshold));
+      if (triggered) {
+        await raiseServiceAlert(check, alertType, rtRule.severity || 'warning',
+          `${check.name} response time ${val}ms ${rtRule.operator} ${rtRule.threshold}ms`);
+      } else {
+        const wasActive = await resolveServiceAlert(check.id, alertType);
+        if (wasActive && rtRule.notify_recovery) {
+          await serviceRecoveryEvent(check, rtRule);
+          await notifyServiceRecovery(check, alertType, SERVICE_METRIC_LABELS.service_response_time);
+        }
+      }
+    }
   }
 
-  // SSL expiry — ssl_expiring (warning). The SSL runner reports status='warning'
-  // when the cert is within ssl_warn_days; reflect that as an alert.
+  // SSL expiry — ssl_expiring. The SSL runner reports status='warning' when the
+  // cert is within ssl_warn_days; a matching rule overrides severity/enabled/
+  // notify_recovery, defaulting to the original hardcoded 'warning' when absent.
   if (String(check.type || '').toLowerCase() === 'ssl') {
-    if (check.current_status === 'warning') {
-      await raiseServiceAlert(check, 'ssl_expiring', 'warning',
-        `SSL for ${check.name}: ${check.last_detail || ''}`.trim());
-    } else {
-      await resolveServiceAlert(check.id, 'ssl_expiring');
+    const sslRule = byMetric.get('ssl_expiring');
+    if (!sslRule) {
+      if (check.current_status === 'warning') {
+        await raiseServiceAlert(check, 'ssl_expiring', 'warning',
+          `SSL for ${check.name}: ${check.last_detail || ''}`.trim());
+      } else {
+        await resolveServiceAlert(check.id, 'ssl_expiring');
+      }
+    } else if (sslRule.enabled) {
+      const alertType = `rule_${sslRule.id}`;
+      if (check.current_status === 'warning') {
+        await raiseServiceAlert(check, alertType, sslRule.severity || 'warning',
+          `SSL for ${check.name}: ${check.last_detail || ''}`.trim());
+      } else {
+        const wasActive = await resolveServiceAlert(check.id, alertType);
+        if (wasActive && sslRule.notify_recovery) {
+          await serviceRecoveryEvent(check, sslRule);
+          await notifyServiceRecovery(check, alertType, SERVICE_METRIC_LABELS.ssl_expiring);
+        }
+      }
     }
+    // sslRule exists but disabled: skip entirely, same as service_down above.
   }
 }
 
