@@ -6,7 +6,6 @@ import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine, ResponsiveContainer,
 } from 'recharts';
 import { useApi } from '@/lib/api';
-import { useRbac } from '@/lib/rbac';
 import { StatusDot } from '@/components/StatusDot';
 import { useLicense, LicenseDisabledScreen } from '@/components/LicenseGuard';
 import {
@@ -241,7 +240,6 @@ function NocViewButton() {
 }
 
 export default function DashboardPage() {
-  const { canManageAgents } = useRbac();
   const { state: licenseState, loading: licenseLoading } = useLicense();
   const summary = useApi<Summary>('/api/dashboard/summary', REFRESH_MS);
   const problems = useApi<Problem[]>('/api/dashboard/problems', REFRESH_MS);
@@ -275,9 +273,7 @@ export default function DashboardPage() {
 
   const s = summary.data;
   const tDir = availTrend(trend.data);
-  // UP card: availability improving = good. DOWN card: improving means fewer down.
-  const upTrend = tDir === 'up' ? 'good' : tDir === 'down' ? 'bad' : null;
-  const upArrow = tDir === 'up' ? '↑' : tDir === 'down' ? '↓' : '';
+  // DOWN card: availability improving means fewer down.
   const downTrend = tDir === 'up' ? 'good' : tDir === 'down' ? 'bad' : null;
   const downArrow = tDir === 'up' ? '↓' : tDir === 'down' ? '↑' : '';
 
@@ -311,36 +307,30 @@ export default function DashboardPage() {
         </div>
       ) : s ? (
         <>
-          {/* Single responsive KPI strip: status + operational metrics + wireless.
-              Unknown / MTTA / Wireless / Agents are conditional — they appear only
-              when they carry signal, so the row stays clean (no orphaned tiles). */}
+          {/* Single responsive KPI strip — deliberately narrowed to the 6 tiles
+              that answer "is anything broken right now, and are we meeting our
+              commitments": current-state (Down/Warning), actionable backlog
+              (Unack'd), composite glance score (Health), the tracked commitment
+              (SLA), and Total as the scale anchor those numbers sit against.
+              Up/Alerts/Unknown/MTTR/MTTA/Wireless/Agents/Services were dropped
+              from this row — MTTR/MTTA are retrospective (better on Reports),
+              Alerts overlaps Unack'd but is less actionable, and Wireless/
+              Agents/Services are meta/domain-specific counts better surfaced on
+              their own pages (or only when abnormal — a possible future cut). */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 8, marginBottom: 10 }}>
             <StatTile href="/devices" color="var(--text-primary)" value={s.total} label="Total" />
-            <StatTile href="/devices?status=up" color="var(--green)" value={s.up} label="Up"
-              trend={upTrend} arrow={upArrow} />
             <StatTile href="/devices?status=down" color="var(--red)" value={s.down} label="Down"
               pulse={s.down > 0} trend={downTrend} arrow={downArrow} />
             <StatTile href="/devices?status=warning" color="var(--yellow)" value={s.warning} label="Warning"
               pulse={s.warning > 0} />
-            {s.unknown > 0 && (
-              <StatTile href="/devices?status=unknown" color="var(--text-muted)" value={s.unknown} label="Unknown" />
-            )}
-            <StatTile href="/alerts?status=active" color="var(--red)" value={s.active_alerts} label="Alerts" />
             <HealthScoreTile data={intel.data} />
             <SlaTile api={sla} />
-            <OpsTile color="var(--text-primary)" value={fmtMins(ops.data ? ops.data.mttr_minutes : null)} label="MTTR 30d" />
-            {ops.data && ops.data.mtta_minutes != null && (
-              <OpsTile color="var(--text-primary)" value={fmtMins(ops.data.mtta_minutes)} label="MTTA 30d" />
-            )}
             <OpsTile
               color={ops.data && ops.data.unacked_count > 0 ? 'var(--red)' : 'var(--green)'}
               value={ops.data ? ops.data.unacked_count : 0}
               label="Unack'd"
               alert={!!(ops.data && ops.data.unacked_count > 0)}
             />
-            <WirelessApsTile />
-            <AgentsTile canManageAgents={canManageAgents} agentsOnline={s.agents_online} agentsTotal={s.agents_total} />
-            <ServicesTile checks={services.data || []} />
           </div>
         </>
       ) : null}
@@ -526,110 +516,6 @@ function HealthScoreTile({ data }: { data: Overview | null }) {
       </div>
       <div style={{ fontSize: 'var(--text-xs)', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', fontWeight: 600 }}>
         Health
-      </div>
-    </Link>
-  );
-}
-
-// ── Wireless APs tile (self-fetching; hidden on wired-only sites) ─
-// Lives inline in the KPI strip. Self-fetches and returns null until at least
-// one AP exists, so it never strands a near-empty secondary row.
-function WirelessApsTile() {
-  const wifi = useApi<WirelessSummaryLite>('/api/wireless/summary', REFRESH_MS);
-  const ssids = useApi<WirelessSsidLite>('/api/wireless/ssids/summary', REFRESH_MS);
-  const w = wifi.data;
-  if (!w || !w.total_aps) return null;
-  const wifiColor = w.offline_aps > 0 ? 'var(--red)' : 'var(--green)';
-  const clients = w.total_clients || 0;
-  const ssidCount = ssids.data?.active_ssids ?? ssids.data?.total_ssids ?? 0;
-  return (
-    <Link
-      href="/wireless"
-      className={w.offline_aps > 0 ? 'sv-stat pulse' : undefined}
-      style={{
-        display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 2,
-        height: 74, padding: '10px 13px', borderRadius: 'var(--radius-sm)',
-        background: 'var(--bg-card)', border: '1px solid var(--border)',
-        borderLeft: `3px solid ${wifiColor}`, textDecoration: 'none', minWidth: 0,
-      }}
-    >
-      <span style={{ fontSize: 'var(--text-xl)', fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1 }}>
-        {w.online_aps}/{w.total_aps}
-      </span>
-      <div style={{ fontSize: 'var(--text-xs)', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', fontWeight: 600 }}>
-        Wireless APs
-      </div>
-      <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-        {clients} client{clients === 1 ? '' : 's'} · {ssidCount} SSID{ssidCount === 1 ? '' : 's'}
-      </div>
-    </Link>
-  );
-}
-
-// ── Agents tile (manage-agents users; hidden when none registered) ─
-// Inline strip tile; returns null unless the viewer can manage agents and at
-// least one agent is registered.
-function AgentsTile({ canManageAgents, agentsOnline, agentsTotal }: {
-  canManageAgents: boolean; agentsOnline: number; agentsTotal: number;
-}) {
-  if (!canManageAgents || agentsTotal <= 0) return null;
-  const down = agentsOnline < agentsTotal;
-  return (
-    <Link
-      href="/agents"
-      className={down ? 'sv-stat pulse' : undefined}
-      style={{
-        display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 2,
-        height: 74, padding: '10px 13px', borderRadius: 'var(--radius-sm)',
-        background: 'var(--bg-card)', border: '1px solid var(--border)',
-        borderLeft: `3px solid ${down ? 'var(--red)' : 'var(--green)'}`, textDecoration: 'none', minWidth: 0,
-      }}
-    >
-      <span style={{ fontSize: 'var(--text-xl)', fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1 }}>
-        {agentsOnline}/{agentsTotal}
-      </span>
-      <div style={{ fontSize: 'var(--text-xs)', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', fontWeight: 600 }}>
-        Agents
-      </div>
-    </Link>
-  );
-}
-
-type WirelessSummaryLite = { total_aps: number; online_aps: number; offline_aps: number; total_clients: number };
-type WirelessSsidLite = { total_ssids: number; active_ssids: number };
-
-// ── Services KPI tile (self-hides when no service checks defined) ─
-// Inline strip tile; returns null until at least one service check exists.
-function ServicesTile({ checks }: { checks: ServiceCheck[] }) {
-  if (!checks.length) return null;
-  const total = checks.length;
-  let up = 0, down = 0, warning = 0;
-  for (const c of checks) {
-    const st = (c.current_status || '').toLowerCase();
-    if (st === 'up') up += 1;
-    else if (st === 'down') down += 1;
-    else if (st === 'warning') warning += 1;
-  }
-  const color = down > 0 ? 'var(--red)' : warning > 0 ? 'var(--yellow)' : 'var(--green)';
-  return (
-    <Link
-      href="/services"
-      className={down > 0 ? 'sv-stat pulse' : undefined}
-      style={{
-        display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 2,
-        height: 74, padding: '10px 13px', borderRadius: 'var(--radius-sm)',
-        background: 'var(--bg-card)', border: '1px solid var(--border)',
-        borderLeft: `3px solid ${color}`, textDecoration: 'none', minWidth: 0,
-      }}
-    >
-      <span style={{ fontSize: 'var(--text-xl)', fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1 }}>
-        {up}/{total}
-      </span>
-      <div style={{ fontSize: 'var(--text-xs)', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', fontWeight: 600 }}>
-        Services
-      </div>
-      <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-        {down} down · {warning} warning
       </div>
     </Link>
   );
@@ -1107,18 +993,7 @@ function AgentOfflineGroup({ api }: { api: Api<AgentOfflineRow[]> }) {
   );
 }
 
-// ── Ops metrics (MTTR / MTTA / Unacknowledged) ─────────────────
-// Compact minutes → "12m" / "3h 5m" / "—".
-function fmtMins(v: number | string | null | undefined): string {
-  const m = num(v as any);
-  if (m == null) return '—';
-  if (m < 1) return '<1m';
-  if (m < 60) return `${Math.round(m)}m`;
-  const h = Math.floor(m / 60);
-  const rem = Math.round(m % 60);
-  return `${h}h ${rem}m`;
-}
-
+// ── Ops metrics (Unacknowledged) ────────────────────────────────
 // Plain (non-link) KPI tile matching the StatTile visual spec.
 function OpsTile({ value, label, color, alert }: {
   value: string | number; label: string; color: string; alert?: boolean;

@@ -35,6 +35,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.67.1': [
+    'The Dashboard\'s top KPI row was showing 13 tiles and had become hard to scan at a glance. Narrowed to the 6 that matter most for "is anything wrong right now": Total, Down, Warning, Health, SLA 30d, and Unacknowledged. Up, Alerts, Unknown, MTTR/MTTA, Wireless APs, Agents, and Services moved off the row (MTTR/MTTA are retrospective and fit Reports better; the others are meta or domain-specific counts already visible on their own pages).',
+  ],
   '1.67.0': [
     'Settings → Alert Rules now has a Service Rules tab alongside Global/Site/Device — monitored services (HTTP/TCP/SSL/DNS checks) can now get the same configurable severity, enable/disable, and recovery notifications as devices already have, plus a brand-new response-time alert. Previously service alerts were entirely fixed (always critical for down, always warning for SSL expiry) with no way to configure them per service; that fixed behavior is preserved as the default when no rule is configured.',
   ],
