@@ -2,7 +2,7 @@
 
 import React from 'react';
 import { GradeBadge } from '@/components/intel';
-import { SECTION_TITLE, PANEL, STAT_GRID, STAT_CARD, STAT_VALUE, STAT_LABEL } from '@/components/reports/reportStyles';
+import { SECTION_TITLE, PANEL, STAT_GRID, STAT_CARD, STAT_VALUE, STAT_LABEL, TH, TD } from '@/components/reports/reportStyles';
 
 type ChannelMap = { [channel: string]: number };
 
@@ -23,6 +23,11 @@ type WirelessRF = {
     '5GHz': ChannelMap;
   };
   ap_health_distribution: { A: number; B: number; C: number; D: number; F: number };
+  measured_interference_2g: number | null;
+  measured_interference_5g: number | null;
+  aps_reporting_interference: number;
+  aps_high_interference: number;
+  worst_interference_aps: { name: string; site_name: string | null; band: string; pct: number }[];
 };
 
 const GRADE_ORDER: Array<keyof WirelessRF['ap_health_distribution']> = ['A', 'B', 'C', 'D', 'F'];
@@ -51,7 +56,7 @@ function sortChannels(keys: string[]): string[] {
   return [...numeric, ...other];
 }
 
-function ScoreCard({ label, value, badge }: { label: string; value: string; badge?: React.ReactNode }) {
+function ScoreCard({ label, value, badge }: { label: string; value: React.ReactNode; badge?: React.ReactNode }) {
   return (
     <div style={STAT_CARD}>
       <div style={{ ...STAT_VALUE, display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -131,6 +136,8 @@ export default function WirelessRFReport({ data }: { data: WirelessRF }) {
   const band2g = channelDistribution['2.4GHz'] || {};
   const band5g = channelDistribution['5GHz'] || {};
   const apHealth = data.ap_health_distribution || { A: 0, B: 0, C: 0, D: 0, F: 0 };
+  const worstInterferenceAps = data.worst_interference_aps || [];
+  const apsHighInterference = data.aps_high_interference ?? 0;
 
   const gradeMax = Math.max(...GRADE_ORDER.map((g) => apHealth[g] || 0), 1);
 
@@ -151,6 +158,52 @@ export default function WirelessRFReport({ data }: { data: WirelessRF }) {
           <ScoreCard label="Co-Channel Affected" value={String(data.co_channel_affected ?? 0)} />
           <ScoreCard label="Overloaded APs" value={String(data.overloaded_aps ?? 0)} />
         </div>
+      </section>
+
+      {/* Measured Interference */}
+      <section style={PANEL}>
+        <h3 style={SECTION_TITLE}>Measured Interference</h3>
+        <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', marginBottom: 12 }}>
+          Real-time measured airtime interference per AP, distinct from the channel-plan-based
+          Interference Score above.
+        </div>
+        <div style={STAT_GRID}>
+          <ScoreCard label="2.4GHz Avg" value={data.measured_interference_2g == null ? '—' : `${fmtScore(data.measured_interference_2g)}%`} />
+          <ScoreCard label="5GHz Avg" value={data.measured_interference_5g == null ? '—' : `${fmtScore(data.measured_interference_5g)}%`} />
+          <ScoreCard label="APs Reporting" value={String(data.aps_reporting_interference ?? 0)} />
+          <ScoreCard
+            label="High Interference APs"
+            value={
+              <span style={{ color: apsHighInterference > 0 ? 'var(--tint-danger-fg)' : undefined }}>
+                {String(apsHighInterference)}
+              </span>
+            }
+          />
+        </div>
+        {worstInterferenceAps.length > 0 && (
+          <table className="sv-table" style={{ width: '100%', borderCollapse: 'collapse', marginTop: 16 }}>
+            <thead>
+              <tr>
+                <th style={TH}>AP</th>
+                <th style={TH}>Site</th>
+                <th style={TH}>Band</th>
+                <th style={{ ...TH, textAlign: 'right' }}>Interference %</th>
+              </tr>
+            </thead>
+            <tbody>
+              {worstInterferenceAps.map((ap, i) => (
+                <tr key={`${ap.name}-${ap.band}-${i}`}>
+                  <td style={TD}>{ap.name}</td>
+                  <td style={TD}>{ap.site_name ?? '—'}</td>
+                  <td style={TD}>{ap.band}</td>
+                  <td style={{ ...TD, textAlign: 'right', fontWeight: 700, color: ap.pct >= 25 ? 'var(--tint-danger-fg)' : 'var(--text-primary)' }}>
+                    {ap.pct}%
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </section>
 
       {/* Recommendations */}

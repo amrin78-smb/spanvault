@@ -35,6 +35,10 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.68.0': [
+    'New Wireless Security report — rogue/neighboring AP detections (classified friendly/interfering/malicious) and SSID encryption posture (flagging any Open or WEP SSIDs), with counts, a detail table, and recommendations when something needs attention. PDF export and scheduled-email delivery included.',
+    'The Wireless RF report now shows real *measured* interference (channel airtime actually consumed by other traffic) alongside the existing channel-plan-based Interference Score — including per-band averages and a worst-APs table, so you can see which is which.',
+  ],
   '1.67.3': [
     'Fixed the Dashboard\'s Unacknowledged (and MTTR/MTTA) KPIs undercounting — they used an inner join to devices that silently dropped every wireless AP-down, rogue-AP, and service-check alert (none of those have a device). The Alerts page already counted correctly; the Dashboard now matches it.',
   ],
@@ -6475,6 +6479,22 @@ app.get('/api/reports/wireless-rf', wrap(async (req, res) => {
     SELECT ai.health_grade AS g, COUNT(*)::int AS n
     FROM wireless_ap_intelligence ai JOIN wireless_aps a ON a.id = ai.ap_id ${apW}
     GROUP BY 1`, p).catch(() => ({ rows: [] }));
+  // Real measured airtime interference (Aruba SNMP: channelBusy - ownRxAirtime - ownTxAirtime),
+  // distinct from the channel-plan-based interference_score above.
+  const interf = await sv.query(`
+    SELECT ROUND(AVG(a.interference_pct_2g)::numeric, 1) AS avg_2g,
+           ROUND(AVG(a.interference_pct_5g)::numeric, 1) AS avg_5g,
+           COUNT(*) FILTER (WHERE a.interference_pct_2g IS NOT NULL OR a.interference_pct_5g IS NOT NULL)::int AS reporting,
+           COUNT(*) FILTER (WHERE a.interference_pct_2g >= 25 OR a.interference_pct_5g >= 25)::int AS high
+    FROM wireless_aps a ${apW}`, p).catch(() => ({ rows: [] }));
+  const worstInterf = await sv.query(`
+    SELECT a.name, COALESCE(a.site_name, 'Unassigned') AS site_name,
+           CASE WHEN COALESCE(a.interference_pct_2g, -1) >= COALESCE(a.interference_pct_5g, -1)
+                THEN '2.4GHz' ELSE '5GHz' END AS band,
+           GREATEST(COALESCE(a.interference_pct_2g, 0), COALESCE(a.interference_pct_5g, 0)) AS pct
+    FROM wireless_aps a
+    WHERE (a.interference_pct_2g IS NOT NULL OR a.interference_pct_5g IS NOT NULL)${c.has ? ' AND a.controller_id = $1' : ''}
+    ORDER BY pct DESC LIMIT 10`, p).catch(() => ({ rows: [] }));
 
   const recommendations = [];
   const seen = new Set();
@@ -6500,6 +6520,7 @@ app.get('/api/reports/wireless-rf', wrap(async (req, res) => {
   }
   const a = agg.rows[0] || {};
   const score = a.overall_score != null ? Number(a.overall_score) : null;
+  const iRow = interf.rows[0] || {};
   res.json({
     period: req.query.range || '30d',
     overall_score: score, overall_grade: gradeFromScore(score),
@@ -6513,6 +6534,13 @@ app.get('/api/reports/wireless-rf', wrap(async (req, res) => {
     recommendations: recommendations.slice(0, 10),
     channel_distribution: { '2.4GHz': dist24, '5GHz': dist5 },
     ap_health_distribution,
+    measured_interference_2g: iRow.avg_2g != null ? Number(iRow.avg_2g) : null,
+    measured_interference_5g: iRow.avg_5g != null ? Number(iRow.avg_5g) : null,
+    aps_reporting_interference: iRow.reporting || 0,
+    aps_high_interference: iRow.high || 0,
+    worst_interference_aps: worstInterf.rows.map((r) => ({
+      name: r.name, site_name: r.site_name, band: r.band, pct: Number(r.pct),
+    })),
   });
 }));
 
@@ -6581,6 +6609,100 @@ app.get('/api/reports/wireless-capacity', wrap(async (req, res) => {
     high_util_aps: highUtil.rows,
     growth_rate,
     projected_capacity: { days_to_80pct, days_to_full },
+  });
+}));
+
+// ── Wireless Security ─────────────────────────────────────────
+// Rogue/neighboring AP detections (wireless_rogue_aps, populated by the wireless
+// collector from live SNMP rogue-AP tables) + SSID encryption posture
+// (wireless_ssids.encryption_type). NOTE: auth_failures is deliberately excluded
+// from this report — it is hardcoded to 0 by the Aruba collector (never real
+// data), so surfacing it here would be misleading.
+// Weak/no-encryption classification mirrors encryptionBadgeColor() in
+// frontend/src/app/(app)/wireless/page.tsx exactly: null, or a label containing
+// "open" or "wep" (case-insensitive) is weak; everything else is strong.
+function wlIsWeakEncryption(type) {
+  if (!type) return true;
+  const t = String(type).toLowerCase();
+  return t.includes('open') || t.includes('wep');
+}
+app.get('/api/reports/wireless-security', wrap(async (req, res) => {
+  const c = wlCtrl(req);
+  const p = c.has ? [c.id] : [];
+  const rogueW = c.has ? 'WHERE r.controller_id = $1' : '';
+  const win = getDateRange(req.query);
+
+  const rogueSummary = await sv.query(`
+    SELECT
+      COUNT(*) FILTER (WHERE r.last_seen_at >= $${p.length + 1})::int AS recent_total,
+      COUNT(*) FILTER (WHERE r.last_seen_at >= $${p.length + 1}
+        AND LOWER(r.classification) IN ('malicious', 'rogue', 'interfering'))::int AS needs_attention,
+      COUNT(*) FILTER (WHERE r.last_seen_at >= $${p.length + 1}
+        AND (r.classification IS NULL OR LOWER(r.classification) IN ('friendly', 'unclassified')))::int AS informational
+    FROM wireless_rogue_aps r
+    ${rogueW}
+  `, [...p, win.start]).catch(() => ({ rows: [{}] }));
+
+  const rogueDetail = await sv.query(`
+    SELECT r.id, r.bssid, r.ssid, r.classification, r.channel, r.rssi_dbm,
+           r.detecting_ap, r.last_seen_at, r.first_seen_at,
+           c.name AS controller_name, c.site_name
+    FROM wireless_rogue_aps r
+    JOIN wireless_controllers c ON c.id = r.controller_id
+    ${rogueW}
+    ORDER BY
+      CASE LOWER(COALESCE(r.classification, ''))
+        WHEN 'malicious' THEN 0
+        WHEN 'rogue' THEN 0
+        WHEN 'interfering' THEN 1
+        WHEN 'friendly' THEN 3
+        ELSE 2
+      END,
+      r.last_seen_at DESC
+    LIMIT 50
+  `, p).catch(() => ({ rows: [] }));
+
+  const ssidRows = await sv.query(`
+    SELECT s.id, s.ssid_name, c.name AS controller_name, s.site_name,
+           s.encryption_type, s.clients_total
+    FROM wireless_ssids s
+    LEFT JOIN wireless_controllers c ON c.id = s.controller_id
+    ${c.has ? 'WHERE s.controller_id = $1' : ''}
+    ORDER BY s.ssid_name
+  `, p);
+
+  const ssids = ssidRows.rows
+    .map((r) => ({ ...r, weak_encryption: wlIsWeakEncryption(r.encryption_type) }))
+    .sort((a, b) => (a.weak_encryption === b.weak_encryption ? 0 : a.weak_encryption ? -1 : 1));
+  const weakSsidCount = ssids.filter((s) => s.weak_encryption).length;
+
+  const rs = rogueSummary.rows[0] || {};
+  const rogueNeedsAttention = rs.needs_attention || 0;
+
+  const recommendations = [];
+  if (rogueNeedsAttention > 0) {
+    recommendations.push(
+      `${rogueNeedsAttention} malicious/interfering/rogue AP${rogueNeedsAttention === 1 ? '' : 's'} detected in the ${win.label.toLowerCase()}.`
+    );
+  }
+  if (weakSsidCount > 0) {
+    recommendations.push(
+      `${weakSsidCount} SSID${weakSsidCount === 1 ? ' is' : 's are'} broadcasting with weak or no encryption.`
+    );
+  }
+
+  res.json({
+    period: req.query.range || '30d',
+    summary: {
+      rogue_total: rs.recent_total || 0,
+      rogue_needs_attention: rogueNeedsAttention,
+      rogue_informational: rs.informational || 0,
+      ssid_total: ssids.length,
+      ssid_weak_encryption: weakSsidCount,
+    },
+    rogue_aps: rogueDetail.rows,
+    ssids,
+    recommendations,
   });
 }));
 

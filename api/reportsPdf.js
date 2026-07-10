@@ -1862,6 +1862,24 @@ async function gatherWirelessRf(db, params) {
     SELECT ai.health_grade AS g, COUNT(*)::int AS n
     FROM wireless_ap_intelligence ai JOIN wireless_aps a ON a.id = ai.ap_id ${gr.where}
     GROUP BY 1`, gr.params, []);
+  // Real measured airtime interference (Aruba SNMP: channelBusy - ownRxAirtime - ownTxAirtime),
+  // distinct from the channel-plan-based interference_score above.
+  const ic = wlApClauses(scope);
+  const interf = await runQ('interference', `
+    SELECT ROUND(AVG(a.interference_pct_2g)::numeric, 1) AS avg_2g,
+           ROUND(AVG(a.interference_pct_5g)::numeric, 1) AS avg_5g,
+           COUNT(*) FILTER (WHERE a.interference_pct_2g IS NOT NULL OR a.interference_pct_5g IS NOT NULL)::int AS reporting,
+           COUNT(*) FILTER (WHERE a.interference_pct_2g >= 25 OR a.interference_pct_5g >= 25)::int AS high
+    FROM wireless_aps a ${ic.where}`, ic.params, [{}]);
+  const wc = wlApClauses(scope);
+  const worstInterf = await runQ('worst_interference', `
+    SELECT a.name, COALESCE(a.site_name, 'Unassigned') AS site_name,
+           CASE WHEN COALESCE(a.interference_pct_2g, -1) >= COALESCE(a.interference_pct_5g, -1)
+                THEN '2.4GHz' ELSE '5GHz' END AS band,
+           GREATEST(COALESCE(a.interference_pct_2g, 0), COALESCE(a.interference_pct_5g, 0)) AS pct
+    FROM wireless_aps a
+    WHERE (a.interference_pct_2g IS NOT NULL OR a.interference_pct_5g IS NOT NULL)${wc.and}
+    ORDER BY pct DESC LIMIT 10`, wc.params, []);
 
   const recommendations = [];
   const seen = new Set();
@@ -1884,6 +1902,7 @@ async function gatherWirelessRf(db, params) {
   }
   const a = agg.rows[0] || {};
   const score = a.overall_score != null ? Number(a.overall_score) : null;
+  const iRow = interf.rows[0] || {};
   return {
     title: 'Wireless RF',
     dateRange: win.label,
@@ -1897,6 +1916,13 @@ async function gatherWirelessRf(db, params) {
     recommendations: recommendations.slice(0, 10),
     channel_distribution: { '2.4GHz': dist24, '5GHz': dist5 },
     ap_health_distribution,
+    measured_interference_2g: iRow.avg_2g != null ? Number(iRow.avg_2g) : null,
+    measured_interference_5g: iRow.avg_5g != null ? Number(iRow.avg_5g) : null,
+    aps_reporting_interference: iRow.reporting || 0,
+    aps_high_interference: iRow.high || 0,
+    worst_interference_aps: worstInterf.rows.map((r) => ({
+      name: r.name, site_name: r.site_name, band: r.band, pct: Number(r.pct),
+    })),
     summary: [
       { label: 'Overall Score', value: score == null ? '—' : String(score), color: GREEN },
       { label: 'Co-Channel', value: String(a.co_channel_affected || 0), color: YELLOW },
@@ -1925,6 +1951,12 @@ function renderWirelessRf(doc, data, layout) {
     { value: data.load_balance_score == null ? '—' : String(data.load_balance_score), label: 'Load Balance', color: NAVY },
     { value: String(data.co_channel_affected || 0), label: 'Co-Channel Affected', color: YELLOW },
     { value: String(data.overloaded_aps || 0), label: 'Overloaded APs', color: (data.overloaded_aps || 0) > 0 ? RED : MUTED },
+  ]);
+  y += 12;
+  y = drawKpiTiles(doc, layout, y, [
+    { value: data.measured_interference_2g == null ? '—' : `${data.measured_interference_2g}%`, label: 'Measured Interference 2.4GHz', color: NAVY },
+    { value: data.measured_interference_5g == null ? '—' : `${data.measured_interference_5g}%`, label: 'Measured Interference 5GHz', color: NAVY },
+    { value: String(data.aps_high_interference || 0), label: 'High Interference APs', color: (data.aps_high_interference || 0) > 0 ? RED : MUTED },
   ]);
   doc.y = y + 22;
 
@@ -1962,6 +1994,21 @@ function renderWirelessRf(doc, data, layout) {
       { key: 'count', label: 'APs', width: 120, align: 'right' },
     ],
     rows: ['A', 'B', 'C', 'D', 'F'].map((g) => ({ grade: g, count: String(gd[g] || 0) })),
+  }, layout, { continueOnPage: true });
+  doc.y += 18;
+
+  sectionTitle(doc, layout, 'Worst APs by Measured Interference');
+  drawTable(doc, {
+    columns: [
+      { key: 'name', label: 'Name', width: 160 },
+      { key: 'site_name', label: 'Site', width: 120 },
+      { key: 'band', label: 'Band', width: 80, align: 'center' },
+      { key: 'pct', label: 'Interference %', width: 100, align: 'right', color: (r) => r._p == null ? MUTED : (r._p >= 25 ? RED : '#1e293b') },
+    ],
+    rows: (data.worst_interference_aps || []).map((r) => ({
+      name: r.name || '—', site_name: r.site_name || '—', band: r.band || '—',
+      pct: r.pct == null ? '—' : `${r.pct}%`, _p: r.pct == null ? null : Number(r.pct),
+    })),
   }, layout, { continueOnPage: true });
 }
 
@@ -2094,6 +2141,185 @@ function renderWirelessCapacity(doc, data, layout) {
     rows: (data.high_util_aps || []).map((r) => ({
       name: r.name || '—', site_name: r.site_name || '—',
       util: r.util == null ? '—' : `${r.util}%`, _u: r.util == null ? null : Number(r.util),
+    })),
+  }, layout, { continueOnPage: true });
+}
+
+// ── Wireless Security — mirror of GET /api/reports/wireless-security ──
+// Rogue/neighboring AP detections (wireless_rogue_aps) + SSID encryption
+// posture (wireless_ssids.encryption_type). auth_failures is deliberately
+// excluded — hardcoded to 0 by the Aruba collector, never real data.
+// Weak/no-encryption classification mirrors encryptionBadgeColor() in
+// frontend/src/app/(app)/wireless/page.tsx exactly.
+function wlIsWeakEncryption(type) {
+  if (!type) return true;
+  const t = String(type).toLowerCase();
+  return t.includes('open') || t.includes('wep');
+}
+// Rogue classification colour — mirrors rogueClassColor() in
+// frontend/src/app/(app)/wireless/page.tsx exactly (malicious/rogue = red,
+// interfering = yellow, friendly/known = green, else = muted).
+function wlRogueClassColor(c) {
+  switch (String(c || '').toLowerCase()) {
+    case 'malicious':
+    case 'rogue':
+      return RED;
+    case 'interfering':
+      return YELLOW;
+    case 'friendly':
+    case 'known':
+      return GREEN;
+    default:
+      return MUTED;
+  }
+}
+async function gatherWirelessSecurity(db, params) {
+  const q = params || {};
+  const scope = wlScope(q);
+  const win = getDateRange({ ...q, range: q.range || '30d' });
+  const runQ = mkRunQ(db, 'wireless-security');
+  const rc = wlCtrlOnly(scope, 'r.controller_id');
+
+  const summaryP = [...rc.params, win.start];
+  const rogueSummary = await runQ('rogue_summary', `
+    SELECT
+      COUNT(*) FILTER (WHERE r.last_seen_at >= $${summaryP.length})::int AS recent_total,
+      COUNT(*) FILTER (WHERE r.last_seen_at >= $${summaryP.length}
+        AND LOWER(r.classification) IN ('malicious', 'rogue', 'interfering'))::int AS needs_attention,
+      COUNT(*) FILTER (WHERE r.last_seen_at >= $${summaryP.length}
+        AND (r.classification IS NULL OR LOWER(r.classification) IN ('friendly', 'unclassified')))::int AS informational
+    FROM wireless_rogue_aps r
+    ${rc.where}`, summaryP, [{}]);
+
+  const rogueDetail = await runQ('rogue_detail', `
+    SELECT r.id, r.bssid, r.ssid, r.classification, r.channel, r.rssi_dbm,
+           r.detecting_ap, r.last_seen_at, c.name AS controller_name, c.site_name
+    FROM wireless_rogue_aps r
+    JOIN wireless_controllers c ON c.id = r.controller_id
+    ${rc.where}
+    ORDER BY
+      CASE LOWER(COALESCE(r.classification, ''))
+        WHEN 'malicious' THEN 0 WHEN 'rogue' THEN 0
+        WHEN 'interfering' THEN 1
+        WHEN 'friendly' THEN 3
+        ELSE 2
+      END,
+      r.last_seen_at DESC
+    LIMIT 50`, rc.params, []);
+
+  const sc = wlCtrlOnly(scope, 's.controller_id');
+  const ssidRows = await runQ('ssids', `
+    SELECT s.id, s.ssid_name, c.name AS controller_name, s.site_name,
+           s.encryption_type, s.clients_total
+    FROM wireless_ssids s
+    LEFT JOIN wireless_controllers c ON c.id = s.controller_id
+    ${sc.where}
+    ORDER BY s.ssid_name`, sc.params, []);
+
+  const ssids = ssidRows.rows
+    .map((r) => ({ ...r, weak_encryption: wlIsWeakEncryption(r.encryption_type) }))
+    .sort((a, b) => (a.weak_encryption === b.weak_encryption ? 0 : a.weak_encryption ? -1 : 1));
+  const weakSsidCount = ssids.filter((s) => s.weak_encryption).length;
+
+  const rs = rogueSummary.rows[0] || {};
+  const rogueNeedsAttention = rs.needs_attention || 0;
+
+  const recommendations = [];
+  if (rogueNeedsAttention > 0) {
+    recommendations.push(`${rogueNeedsAttention} malicious/interfering/rogue AP${rogueNeedsAttention === 1 ? '' : 's'} detected in the ${win.label.toLowerCase()}.`);
+  }
+  if (weakSsidCount > 0) {
+    recommendations.push(`${weakSsidCount} SSID${weakSsidCount === 1 ? ' is' : 's are'} broadcasting with weak or no encryption.`);
+  }
+
+  return {
+    title: 'Wireless Security',
+    dateRange: win.label,
+    headline: `${rogueNeedsAttention} rogue AP(s) need attention - ${weakSsidCount} SSID(s) with weak encryption`,
+    summary_stats: {
+      rogue_total: rs.recent_total || 0,
+      rogue_needs_attention: rogueNeedsAttention,
+      rogue_informational: rs.informational || 0,
+      ssid_total: ssids.length,
+      ssid_weak_encryption: weakSsidCount,
+    },
+    rogue_aps: rogueDetail.rows,
+    ssids,
+    recommendations,
+    summary: [
+      { label: 'Rogue APs', value: String(rs.recent_total || 0), color: NAVY },
+      { label: 'Need Attention', value: String(rogueNeedsAttention), color: rogueNeedsAttention > 0 ? RED : MUTED },
+      { label: 'Weak SSIDs', value: String(weakSsidCount), color: weakSsidCount > 0 ? YELLOW : MUTED },
+    ],
+  };
+}
+
+function renderWirelessSecurity(doc, data, layout) {
+  const { left, contentW } = layout;
+  doc.addPage();
+  let y = doc.page.margins.top;
+  doc.fillColor(NAVY).fontSize(20).font('Helvetica-Bold').text(data.title, left, y, { width: contentW });
+  y = doc.y + 2;
+  doc.fillColor(MUTED).fontSize(11).font('Helvetica').text(data.headline || '', left, y, { width: contentW });
+  y = doc.y + 4;
+  doc.moveTo(left, y).lineTo(left + 90, y).lineWidth(2).stroke(RED);
+  y += 14;
+
+  const s = data.summary_stats || {};
+  y = drawKpiTiles(doc, layout, y, [
+    { value: String(s.rogue_total || 0), label: 'Rogue APs (Window)', color: NAVY },
+    { value: String(s.rogue_needs_attention || 0), label: 'Need Attention', color: (s.rogue_needs_attention || 0) > 0 ? RED : MUTED },
+    { value: String(s.rogue_informational || 0), label: 'Informational', color: GREEN },
+  ]);
+  y += 12;
+  y = drawKpiTiles(doc, layout, y, [
+    { value: String(s.ssid_total || 0), label: 'SSIDs Configured', color: NAVY },
+    { value: String(s.ssid_weak_encryption || 0), label: 'Weak/No Encryption', color: (s.ssid_weak_encryption || 0) > 0 ? YELLOW : MUTED },
+  ]);
+  doc.y = y + 22;
+
+  sectionTitle(doc, layout, 'Recommendations');
+  bulletList(doc, layout, data.recommendations, 'No security issues found - no malicious/interfering rogue APs and no weak-encryption SSIDs.');
+  doc.y += 14;
+
+  sectionTitle(doc, layout, 'Rogue / Neighboring AP Detections');
+  drawTable(doc, {
+    columns: [
+      { key: 'bssid', label: 'BSSID', width: 150 },
+      { key: 'ssid', label: 'SSID', width: 130 },
+      { key: 'classification', label: 'Classification', width: 110, color: (r) => r._classColor },
+      { key: 'channel', label: 'Channel', width: 70, align: 'center' },
+      { key: 'rssi', label: 'RSSI', width: 70, align: 'right' },
+      { key: 'detecting_ap', label: 'Detecting AP', width: 130 },
+      { key: 'last_seen', label: 'Last Seen', width: 100 },
+    ],
+    rows: (data.rogue_aps || []).map((r) => ({
+      bssid: r.bssid || '—',
+      ssid: r.ssid || '—',
+      classification: r.classification || 'unclassified',
+      _classColor: wlRogueClassColor(r.classification),
+      channel: r.channel != null ? String(r.channel) : '—',
+      rssi: r.rssi_dbm != null ? `${r.rssi_dbm} dBm` : '—',
+      detecting_ap: r.detecting_ap || '—',
+      last_seen: fmtDay(r.last_seen_at),
+    })),
+  }, layout, { continueOnPage: true });
+  doc.y += 18;
+
+  sectionTitle(doc, layout, 'SSID Encryption Posture');
+  drawTable(doc, {
+    columns: [
+      { key: 'ssid_name', label: 'SSID', width: 160 },
+      { key: 'site_name', label: 'Site', width: 130 },
+      { key: 'encryption_type', label: 'Encryption', width: 170, color: (r) => r._weak ? YELLOW : GREEN },
+      { key: 'clients_total', label: 'Clients', width: 70, align: 'right' },
+    ],
+    rows: (data.ssids || []).map((s) => ({
+      ssid_name: s.ssid_name || '—',
+      site_name: s.site_name || '—',
+      encryption_type: s.encryption_type || 'Unknown',
+      _weak: !!s.weak_encryption,
+      clients_total: String(s.clients_total || 0),
     })),
   }, layout, { continueOnPage: true });
 }
@@ -2723,6 +2949,7 @@ const RENDERERS = {
   'wireless-clients': { title: 'Wireless Client', gather: gatherWirelessClients, render: renderWirelessClients },
   'wireless-rf': { title: 'Wireless RF', gather: gatherWirelessRf, render: renderWirelessRf },
   'wireless-capacity': { title: 'Wireless Capacity', gather: gatherWirelessCapacity, render: renderWirelessCapacity },
+  'wireless-security': { title: 'Wireless Security', gather: gatherWirelessSecurity, render: renderWirelessSecurity },
   'top-worst': { title: 'Top 10 Worst', gather: gatherTopWorst, render: renderTopWorst },
   'alert-analysis': { title: 'Alerts & Anomalies', gather: gatherAlertAnalysis, render: renderAlertAnalysis },
   'device-detail': { title: 'Device Detail', gather: gatherDeviceDetail, render: renderDeviceDetail },
@@ -2745,6 +2972,11 @@ const ALIASES = {
   'wireless-ap-health-report': 'wireless-ap-health',
   'wireless-rf-health': 'wireless-rf',
   'wireless-capacity-planning': 'wireless-capacity',
+  'wireless-security-report': 'wireless-security',
+  'wireless-rogue': 'wireless-security',
+  'wireless-rogues': 'wireless-security',
+  'wireless-encryption': 'wireless-security',
+  'rogue-aps': 'wireless-security',
   // Aggregate + granular detail aliases (canonical keys mirror the frontend
   // TEMPLATES list + the /api/reports/* endpoints).
   'top-10-worst': 'top-worst',
