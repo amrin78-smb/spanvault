@@ -6,6 +6,7 @@ import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine, ResponsiveContainer,
 } from 'recharts';
 import { useApi } from '@/lib/api';
+import { useRbac } from '@/lib/rbac';
 import { StatusDot } from '@/components/StatusDot';
 import { useLicense, LicenseDisabledScreen } from '@/components/LicenseGuard';
 import {
@@ -240,6 +241,7 @@ function NocViewButton() {
 }
 
 export default function DashboardPage() {
+  const { canManageAgents } = useRbac();
   const { state: licenseState, loading: licenseLoading } = useLicense();
   const summary = useApi<Summary>('/api/dashboard/summary', REFRESH_MS);
   const problems = useApi<Problem[]>('/api/dashboard/problems', REFRESH_MS);
@@ -312,11 +314,13 @@ export default function DashboardPage() {
               commitments": current-state (Down/Warning), actionable backlog
               (Unack'd), composite glance score (Health), the tracked commitment
               (SLA), and Total as the scale anchor those numbers sit against.
-              Up/Alerts/Unknown/MTTR/MTTA/Wireless/Agents/Services were dropped
-              from this row — MTTR/MTTA are retrospective (better on Reports),
-              Alerts overlaps Unack'd but is less actionable, and Wireless/
-              Agents/Services are meta/domain-specific counts better surfaced on
-              their own pages (or only when abnormal — a possible future cut). */}
+              Up/Alerts/Unknown/MTTR/MTTA/Wireless were dropped from this row —
+              MTTR/MTTA are retrospective (better on Reports), Alerts overlaps
+              Unack'd but is less actionable, and Wireless is a domain-specific
+              count better surfaced on its own page. Agents/Services are back,
+              but only when abnormal (AgentsTile/ServicesTile self-hide unless
+              something is actually down) — they stay meta/boring noise when
+              healthy, but earn their spot the moment they're not. */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 8, marginBottom: 10 }}>
             <StatTile href="/devices" color="var(--text-primary)" value={s.total} label="Total" />
             <StatTile href="/devices?status=down" color="var(--red)" value={s.down} label="Down"
@@ -331,6 +335,8 @@ export default function DashboardPage() {
               label="Unack'd"
               alert={!!(ops.data && ops.data.unacked_count > 0)}
             />
+            <AgentsTile canManageAgents={canManageAgents} agentsOnline={s.agents_online} agentsTotal={s.agents_total} />
+            <ServicesTile checks={services.data || []} />
           </div>
         </>
       ) : null}
@@ -516,6 +522,78 @@ function HealthScoreTile({ data }: { data: Overview | null }) {
       </div>
       <div style={{ fontSize: 'var(--text-xs)', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', fontWeight: 600 }}>
         Health
+      </div>
+    </Link>
+  );
+}
+
+// ── Agents tile (manage-agents users; ONLY shown when abnormal) ─
+// Inline strip tile; returns null unless the viewer can manage agents, at
+// least one agent is registered, AND at least one is currently offline —
+// deliberately noisy-free when healthy, so it only claims a slot in the KPI
+// row the moment it's actually worth a glance.
+function AgentsTile({ canManageAgents, agentsOnline, agentsTotal }: {
+  canManageAgents: boolean; agentsOnline: number; agentsTotal: number;
+}) {
+  if (!canManageAgents || agentsTotal <= 0) return null;
+  const down = agentsOnline < agentsTotal;
+  if (!down) return null;
+  return (
+    <Link
+      href="/agents"
+      className="sv-stat pulse"
+      style={{
+        display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 2,
+        height: 74, padding: '10px 13px', borderRadius: 'var(--radius-sm)',
+        background: 'var(--bg-card)', border: '1px solid var(--border)',
+        borderLeft: '3px solid var(--red)', textDecoration: 'none', minWidth: 0,
+      }}
+    >
+      <span style={{ fontSize: 'var(--text-xl)', fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1 }}>
+        {agentsOnline}/{agentsTotal}
+      </span>
+      <div style={{ fontSize: 'var(--text-xs)', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', fontWeight: 600 }}>
+        Agents
+      </div>
+    </Link>
+  );
+}
+
+// ── Services KPI tile (ONLY shown when a service is down/warning) ─
+// Inline strip tile; returns null unless at least one service check has a
+// problem — same "earn your slot" rule as AgentsTile, so an all-healthy
+// service fleet never occupies the top row.
+function ServicesTile({ checks }: { checks: ServiceCheck[] }) {
+  if (!checks.length) return null;
+  const total = checks.length;
+  let up = 0, down = 0, warning = 0;
+  for (const c of checks) {
+    const st = (c.current_status || '').toLowerCase();
+    if (st === 'up') up += 1;
+    else if (st === 'down') down += 1;
+    else if (st === 'warning') warning += 1;
+  }
+  if (down === 0 && warning === 0) return null;
+  const color = down > 0 ? 'var(--red)' : 'var(--yellow)';
+  return (
+    <Link
+      href="/services"
+      className="sv-stat pulse"
+      style={{
+        display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 2,
+        height: 74, padding: '10px 13px', borderRadius: 'var(--radius-sm)',
+        background: 'var(--bg-card)', border: '1px solid var(--border)',
+        borderLeft: `3px solid ${color}`, textDecoration: 'none', minWidth: 0,
+      }}
+    >
+      <span style={{ fontSize: 'var(--text-xl)', fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1 }}>
+        {up}/{total}
+      </span>
+      <div style={{ fontSize: 'var(--text-xs)', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', fontWeight: 600 }}>
+        Services
+      </div>
+      <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+        {down} down · {warning} warning
       </div>
     </Link>
   );

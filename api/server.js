@@ -35,6 +35,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.67.2': [
+    'The Dashboard\'s KPI row brought back Agents and Services — but only when something\'s actually wrong (an agent offline, or a service down/in warning). Silent when healthy, so they don\'t re-crowd the row, but visible the moment they need attention.',
+  ],
   '1.67.1': [
     'The Dashboard\'s top KPI row was showing 13 tiles and had become hard to scan at a glance. Narrowed to the 6 that matter most for "is anything wrong right now": Total, Down, Warning, Health, SLA 30d, and Unacknowledged. Up, Alerts, Unknown, MTTR/MTTA, Wireless APs, Agents, and Services moved off the row (MTTR/MTTA are retrospective and fit Reports better; the others are meta or domain-specific counts already visible on their own pages).',
   ],
