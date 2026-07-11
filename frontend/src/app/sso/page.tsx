@@ -31,8 +31,13 @@ function SsoInner() {
     }
     (async () => {
       try {
-        // Verify the token with the NocVault hub before trusting it.
-        const res = await fetch(`${getHubUrl()}/api/auth/sso-verify`, {
+        // Verify the token via our own server-side proxy (same-origin) rather
+        // than calling the hub directly from the browser — a direct browser
+        // fetch to a different port is cross-origin, and the hub's
+        // sso-verify endpoint sets no CORS headers, so it would always fail
+        // with "Failed to fetch". The proxy calls the hub server-to-server,
+        // which isn't subject to browser CORS at all.
+        const res = await fetch('/api/sso', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ token }),

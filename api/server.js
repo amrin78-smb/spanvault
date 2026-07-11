@@ -35,6 +35,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.71.3': [
+    'Fixed: signing into SpanVault via the NocVault launcher failed with "Sign-in error: Failed to fetch" — SpanVault verified its login token by calling the hub directly from the browser, which browsers block as a cross-origin request. It now verifies through its own server (the same pattern DDIVault already used), matching how every other app in the suite does it.',
+  ],
   '1.71.2': [
     'Fixed: links back to the NocVault hub (sign-out, home button, license page, session-expiry redirect) always pointed at the server\'s original install-time IP address, regardless of what hostname you actually used to reach SpanVault. Every hub link now follows your current hostname instead.',
   ],
