@@ -3,12 +3,22 @@
 import { useEffect, useRef, useState } from 'react';
 import { signOut } from 'next-auth/react';
 
-// Hub URL — client-side reads NEXT_PUBLIC_*, falling back to the server var name
-// (undefined in the browser) and finally localhost for local dev.
-const HUB =
-  process.env.NEXT_PUBLIC_NOCVAULT_HUB_URL ||
-  process.env.NOCVAULT_HUB_URL ||
-  'http://localhost:3000';
+// Hub URL — derived from the current page's own hostname so the timeout
+// redirect keeps working if the suite is later accessed via a local-DNS
+// hostname instead of the install-time server IP. This component is only ever
+// used client-side (it drives an idle-logout timer), so `window` is always
+// available by the time doLogout() runs; the env-var fallback only matters
+// for the vanishingly rare SSR edge case.
+function getHubUrl(): string {
+  if (typeof window !== 'undefined') {
+    return `${window.location.protocol}//${window.location.hostname}:3000`;
+  }
+  return (
+    process.env.NEXT_PUBLIC_NOCVAULT_HUB_URL ||
+    process.env.NOCVAULT_HUB_URL ||
+    'http://localhost:3000'
+  );
+}
 
 const DEFAULT_TIMEOUT_MINUTES = 15;   // used only when the fetch fails
 const WARNING_SECONDS = 60;           // lead time the warning modal is shown for
@@ -74,7 +84,7 @@ export default function IdleTimeout() {
 
     const doLogout = () => {
       clearAll();
-      signOut({ callbackUrl: `${HUB}/login?reason=timeout` });
+      signOut({ callbackUrl: `${getHubUrl()}/login?reason=timeout` });
     };
 
     const startWarning = () => {

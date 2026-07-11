@@ -23,6 +23,19 @@ interface LicenseContextType {
   loading: boolean;
 }
 
+// Hub URL — derived from the current page's own hostname so license-management
+// links keep working if the suite is later accessed via a local-DNS hostname
+// instead of the install-time server IP. Both call sites below only render
+// after a client-side fetch resolves the license state (never on first paint),
+// so there is no SSR/hydration mismatch in practice; the env-var fallback only
+// matters for the vanishingly rare SSR edge case.
+function getHubUrl(): string {
+  if (typeof window !== 'undefined') {
+    return `${window.location.protocol}//${window.location.hostname}:3000`;
+  }
+  return process.env.NEXT_PUBLIC_NOCVAULT_HUB_URL || 'http://localhost:3000';
+}
+
 const LicenseContext = createContext<LicenseContextType>({
   license: null,
   state: { mode: 'unknown', canWrite: true, canRead: true, disabled: false },
@@ -65,7 +78,7 @@ export function useLicense() {
 
 export function LicenseBanner() {
   const { license, state } = useLicense();
-  const hubUrl = process.env.NEXT_PUBLIC_NOCVAULT_HUB_URL || 'http://localhost:3000';
+  const hubUrl = getHubUrl();
   if (!license || state.mode === 'active') return null;
 
   const configs: Record<string, { bg: string; message: string }> = {
@@ -101,7 +114,7 @@ export function LicenseBanner() {
 
 export function LicenseDisabledScreen() {
   const { state } = useLicense();
-  const hubUrl = process.env.NEXT_PUBLIC_NOCVAULT_HUB_URL || 'http://localhost:3000';
+  const hubUrl = getHubUrl();
 
   // 'unlicensed' = an active key that does not include the spanvault module
   // (per-app entitlement lock); other disabled cases = expired + grace ended.

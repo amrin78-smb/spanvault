@@ -35,6 +35,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.71.2': [
+    'Fixed: links back to the NocVault hub (sign-out, home button, license page, session-expiry redirect) always pointed at the server\'s original install-time IP address, regardless of what hostname you actually used to reach SpanVault. Every hub link now follows your current hostname instead.',
+  ],
   '1.71.1': [
     'Security fix: a service check\'s detail page and history (GET /api/service-checks/:id and its results) had no site check at all — any authenticated user could view another site\'s service data just by knowing or guessing its ID. Now scoped to the caller\'s assigned sites, matching the rest of the app.',
     'Security fix: the service-checks list, the Service Rules tab, the Wireless Security report, the dashboard\'s Recent Events widget, and the alerts list all either skipped site-scoping for service-check data or (for alerts) silently dropped every service-check alert for a site-scoped user. All five are now consistently scoped.',
@@ -975,6 +978,24 @@ function sendCsv(res, filename, rows) {
 // async route wrapper
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
+// Derive the hub origin from the CURRENT REQUEST (X-Forwarded-Host/Host) instead
+// of the static NOCVAULT_HUB_URL env var, so hub-proxy calls keep working when
+// the suite is accessed via a customer's own local-DNS hostname (e.g.
+// nocvault.thaiunion.com) rather than the install-time server IP. legacyFallback
+// is used only when the request carries no usable Host header.
+const HOSTNAME_RE = /^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/;
+function resolveOrigin(req, port, legacyFallback) {
+  const rawHost = req.headers['x-forwarded-host'] || req.headers['host'] || '';
+  const hostname = String(rawHost).split(':')[0].trim();
+  const forwardedProto = req.headers['x-forwarded-proto'];
+  const proto = String(forwardedProto || req.protocol || 'http').split(',')[0].trim();
+
+  if (hostname && hostname.length <= 253 && HOSTNAME_RE.test(hostname) && (proto === 'http' || proto === 'https')) {
+    return `${proto}://${hostname}${port ? ':' + port : ''}`;
+  }
+  return legacyFallback;
+}
+
 // ── RBAC site scoping ─────────────────────────────────────────
 // The frontend middleware sets x-user-role / x-user-sites headers from the
 // session when proxying /api/* calls. A site_admin is scoped to their assigned
@@ -1331,8 +1352,8 @@ app.get('/api/collector/status', wrap(async (_req, res) => {
 
 // Proxy the NocVault hub's settings server-side so the browser doesn't make a
 // cross-origin (CORS-blocked) request to the hub. Used by the idle-timeout UI.
-app.get('/api/hub/settings', wrap(async (_req, res) => {
-  const hub = (process.env.NOCVAULT_HUB_URL || 'http://localhost:3000').replace(/\/+$/, '');
+app.get('/api/hub/settings', wrap(async (req, res) => {
+  const hub = resolveOrigin(req, 3000, process.env.NOCVAULT_HUB_URL || 'http://localhost:3000').replace(/\/+$/, '');
   try {
     const r = await fetch(`${hub}/api/settings`, { headers: { Accept: 'application/json' } });
     if (!r.ok) return res.status(502).json({ error: `Hub returned ${r.status}` });

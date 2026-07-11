@@ -8,13 +8,25 @@ import { IconHome, IconLogout, IconBell } from './icons';
 import TopBarSearch from './TopBarSearch';
 import ThemeToggle from './ThemeToggle';
 
-const HUB = process.env.NEXT_PUBLIC_NOCVAULT_HUB_URL || 'http://localhost:3000';
+// Hub URL — derived from the current page's own hostname (so it keeps working
+// if the suite is later accessed via a local-DNS hostname instead of the
+// install-time server IP), falling back to the baked-in env var during SSR
+// (window is unavailable server-side; this component's hub links only ever
+// render after the user opens the menu, i.e. client-side, so there is no
+// hydration mismatch in practice).
+function getHubUrl(): string {
+  if (typeof window !== 'undefined') {
+    return `${window.location.protocol}//${window.location.hostname}:3000`;
+  }
+  return process.env.NEXT_PUBLIC_NOCVAULT_HUB_URL || 'http://localhost:3000';
+}
 
 type Summary = {
   total: number; up: number; down: number; warning: number; unknown: number; active_alerts: number;
 };
 
 export default function TopBar() {
+  const HUB = getHubUrl();
   const { data: session } = useSession();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);

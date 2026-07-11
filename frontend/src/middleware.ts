@@ -1,7 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getToken } from 'next-auth/jwt';
+import { resolveOrigin } from '@/lib/publicUrl';
 
-const HUB = process.env.NOCVAULT_HUB_URL || 'http://localhost:3000';
+// Legacy fallback only — the real target origin is derived per-request from
+// the Host/X-Forwarded-Host headers (see resolveOrigin) so hub-redirects keep
+// working when the suite is accessed via a customer's own local-DNS hostname
+// instead of the install-time server IP.
+const HUB_FALLBACK = process.env.NOCVAULT_HUB_URL || 'http://localhost:3000';
 const CALLBACK = encodeURIComponent('/sso');
 
 // Per-user app-access gate (Phase 2). NetVault always allowed; a missing/empty
@@ -65,14 +70,14 @@ export async function middleware(req: NextRequest) {
   // Auth guard for all page routes
   const token = await getToken({ req, secret: process.env.NEXTAUTH_SECRET });
   if (!token) {
-    return NextResponse.redirect(`${HUB}/login?callbackUrl=${CALLBACK}`);
+    return NextResponse.redirect(`${resolveOrigin(req, 3000, HUB_FALLBACK)}/login?callbackUrl=${CALLBACK}`);
   }
 
   // Per-user app-access enforcement: a signed-in user who isn't granted the
   // SpanVault app is redirected to the hub launcher with a denied banner. The
   // launcher lives on the hub (a different origin), so this can't loop here.
   if (!appAllowed((token as any).apps, 'spanvault')) {
-    return NextResponse.redirect(`${HUB}/launcher?denied=spanvault`);
+    return NextResponse.redirect(`${resolveOrigin(req, 3000, HUB_FALLBACK)}/launcher?denied=spanvault`);
   }
 
   return NextResponse.next();

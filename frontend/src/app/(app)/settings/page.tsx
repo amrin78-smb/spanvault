@@ -1337,7 +1337,15 @@ function SystemUpdates() {
   const { state: licenseState } = useLicense();
   const [updateErr, setUpdateErr] = useState<string | null>(null);
 
-  const hubUrl = process.env.NEXT_PUBLIC_NOCVAULT_HUB_URL || 'http://localhost:3000';
+  // Derived from the current page's own hostname so the "Manage License" link
+  // keeps working if the suite is later accessed via a local-DNS hostname
+  // instead of the install-time server IP. Both render sites below are gated
+  // behind licenseState.mode, which starts 'unknown' on first paint (both SSR
+  // and hydration), so there is no hydration mismatch in practice; the env-var
+  // fallback only matters for the vanishingly rare SSR edge case.
+  const hubUrl = typeof window !== 'undefined'
+    ? `${window.location.protocol}//${window.location.hostname}:3000`
+    : (process.env.NEXT_PUBLIC_NOCVAULT_HUB_URL || 'http://localhost:3000');
   const updatesBlocked = licenseState.mode === 'grace' || licenseState.mode === 'disabled';
 
   // isRecheck=true keeps the current panel visible and only shows the button
