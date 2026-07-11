@@ -80,18 +80,37 @@ installer/             ← Update-SpanVault.ps1
 
 ### No hardcoded IPs or hostnames
 Never write `192.168.x.x` or any server IP in any file.
-All URLs come from environment variables:
-- `process.env.NOCVAULT_HUB_URL` (server-side)
-- `process.env.NEXT_PUBLIC_NOCVAULT_HUB_URL` (client-side)
-Safe fallback: `|| 'http://localhost:3000'` only. Never a real IP.
+
+**Cross-app URLs (hub URL, own public URL) are resolved per-request, not from a
+static env var** (`frontend/src/lib/publicUrl.ts` `resolveOrigin(req, port,
+legacyFallback)`, and the equivalent plain-JS copy in `api/server.js` next to
+`/api/hub/settings`). It derives the origin from the CURRENT request's
+`x-forwarded-host`/`host` + `x-forwarded-proto` (validated against a hostname-
+shape regex), so links keep working when the suite is reached via a hostname
+different from the install-time server IP (a customer's own local-DNS name,
+for instance) — added 2026-07 after exactly this class of bug broke cross-app
+navigation on a customer box. Client-side call sites mirror this with
+`window.location`-derived helpers instead of reading `NEXT_PUBLIC_*` directly.
+The env vars (`NOCVAULT_HUB_URL` / `NEXT_PUBLIC_NOCVAULT_HUB_URL`) are now only
+the LAST-RESORT fallback (used when a request carries no usable Host at all) —
+don't reintroduce a raw `process.env.NOCVAULT_HUB_URL` read as the primary
+source in new code; use/extend `resolveOrigin` instead.
 
 ### SSO — no local login page
 SpanVault has NO login page. Auth is provided by the NocVault hub.
 - Unauthenticated requests → redirect to `HUB_URL/login?callbackUrl=...`
 - Hub redirects back to `/sso?token=xxx` after login
-- `/sso` page verifies token with hub at `HUB_URL/api/auth/sso-verify`
-- Then calls `signIn('credentials', { ssoToken: token })` from next-auth
-- middleware.ts uses `withAuth` from 'next-auth/middleware' — not a custom guard
+- `/sso` page (`frontend/src/app/sso/page.tsx`) posts the token to this app's
+  OWN `/api/sso` (Express route in `api/server.js`, NOT a Next.js route — see
+  the API proxy gotcha below) — that route verifies it against the hub's
+  `HUB_URL/api/auth/sso-verify` **server-to-server** (a direct browser fetch to
+  the hub would be cross-origin and CORS-blocked; this bit us in 1.71.3, fixed
+  in 1.71.4)
+- Then calls `signIn('credentials', { ssoToken: token, ... })` from next-auth
+- `middleware.ts` is a plain custom `async function middleware(req)` (NOT
+  `withAuth` from `next-auth/middleware` — that was the original scaffold and
+  is no longer accurate; see the real file for the current shape, which also
+  does per-user app-access gating and the API proxying described below)
 
 ### No sub-components inside React components
 NEVER define a component (function that returns JSX) inside another component.
@@ -154,8 +173,15 @@ users: id, name, email, password_hash, role ('admin'/'super_admin'/'site_admin'/
 POST `{HUB_URL}/api/auth/sso-verify`  body: { token: string }
 Response: { email, role, name, userId }
 Shared secret: process.env.NEXTAUTH_SECRET
+**Call this server-to-server, never as a direct browser fetch** — see the SSO
+bullet above and the API proxy gotcha below for why (CORS).
 
-## auth.ts pattern (frontend/src/lib/auth.ts)
+## auth.ts pattern (frontend/src/lib/auth.ts) — simplified illustration, not current
+The real file additionally resolves per-user app-access (`resolveUserApps`,
+fail-open cross-DB read of `netvault.user_apps`) and looks up `sites`/`name`
+from the netvault `users`/`user_sites` tables when the SSO JWT omits them —
+read the actual file for the current shape; treat this snippet as the
+original scaffold, not a spec.
 ```ts
 import NextAuth, { NextAuthOptions } from 'next-auth';
 import CredentialsProvider from 'next-auth/providers/credentials';
@@ -203,26 +229,15 @@ export const authOptions: NextAuthOptions = {
 };
 ```
 
-## middleware.ts pattern (frontend/src/middleware.ts)
-```ts
-import { withAuth } from 'next-auth/middleware';
-import { NextResponse } from 'next/server';
-
-const HUB = process.env.NOCVAULT_HUB_URL || 'http://localhost:3000';
-const CALLBACK = encodeURIComponent('/sso');
-
-export default withAuth(
-  function middleware(_req) { return NextResponse.next(); },
-  {
-    callbacks: { authorized: ({ token }) => !!token },
-    pages: { signIn: `${HUB}/login?callbackUrl=${CALLBACK}` },
-  }
-);
-
-export const config = {
-  matcher: ['/((?!api|sso|_next/static|_next/image|favicon.ico).*)'],
-};
-```
+## middleware.ts (frontend/src/middleware.ts) — outdated snippet removed
+The original scaffold above (a `withAuth`-wrapped page guard with no API
+proxying) is **no longer accurate** — don't use it as a reference. The real
+file is a plain custom `async function middleware(req: NextRequest)` that does
+three things: (1) proxies non-auth `/api/*` calls to Express — see the proxy
+gotcha immediately below, (2) redirects unauthenticated page requests to the
+hub login (via `resolveOrigin`, not a static `HUB` const), (3) per-user
+app-access gating (`appAllowed`, redirects a denied user to the hub launcher
+with `?denied=spanvault`). Read the actual file before changing it.
 
 ## API proxy pattern (critical — do not use next.config.js rewrites for this)
 SpanVault proxies /api/* to Express (port 3009) using middleware.ts, NOT
@@ -236,6 +251,31 @@ The correct pattern is in middleware.ts:
 - /api/auth/* routes are never touched — NextAuth handles them directly
 
 Never change this to a next.config.js rewrite approach.
+
+### ⚠️ Corollary — a Next.js route under `frontend/src/app/api/**` is DEAD CODE here
+Because middleware forwards **every** `/api/*` request (except `/api/auth/*`)
+straight to Express, adding a Next.js App Router route handler anywhere under
+`frontend/src/app/api/` (other than the NextAuth catch-all) will **never
+run** — the request gets intercepted and rewritten to Express first, which
+then 404s with no matching route. This bit us for real: 1.71.3 added
+`frontend/src/app/api/sso/route.ts` to fix a CORS bug (copying DDIVault's
+working `/api/sso` proxy-route pattern verbatim), and it type-checked and
+built cleanly but never actually worked at runtime — the request always hit
+Express's 404 instead. Fixed in 1.71.4 by moving the exact same logic into
+`api/server.js` (`POST /api/sso`, right next to the near-identical
+`/api/hub/settings` proxy) and adding it to middleware's `PUBLIC_API`
+allowlist (it must be reachable with no session — that's the means by which
+a session gets created).
+**DDIVault's equivalent works differently and is NOT a transferable pattern**:
+DDIVault uses `next.config.js` rewrites for a specific allowlist of routes,
+and `/api/sso` isn't on that list, so its own `frontend/src/app/api/sso/route.ts`
+is a real, reachable Next.js route there. Before porting an "add a proxy route"
+fix between suite apps, check which of the four different `/api/*` routing
+architectures (LogVault: `proxy.ts` header-injection proxy; DDIVault:
+`next.config.js` rewrite allowlist; SpanVault: `middleware.ts` blanket-proxy-
+except-auth; NetVault: no proxying, it IS the hub) the target app actually
+uses — a working pattern in one app can silently never run in another that
+looks similar on the surface, and a clean build will not catch it.
 
 ## UI design (match NetVault exactly)
 - Sidebar: #1a2744 (dark navy), white text/icons, 220px wide
