@@ -35,6 +35,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.71.5': [
+    'Fixed another regression from the sign-in fix: the verify route moved into the backend in 1.71.4, but two blanket security checks there (the read-only-role write gate, and the expired/disabled-license gate) didn\'t know about it and rejected it with "Your role is read-only" (403) before it could run, since a brand-new sign-in never has a role yet. Both now correctly let sign-in through — its real protection is the signed one-time token, not a role or an active license.',
+  ],
   '1.71.4': [
     'Fixed a regression from the 1.71.3 sign-in fix: the new same-origin verify route was added as a Next.js page route, but SpanVault proxies every /api/* call straight to its own backend — so the route never actually ran and sign-in still failed (now "Token verification failed" / 404, instead of the earlier "Failed to fetch"). Moved the verify logic into the backend where the rest of the API already lives, and made sure it works before you have a session yet (that\'s the whole point of it).',
   ],
@@ -845,10 +848,14 @@ async function enforceLicense(req, res, next) {
   req.licenseState = state;
   req.license      = license;
 
-  // Block writes during grace/disabled
+  // Block writes during grace/disabled — except the ack link (no session, one
+  // click from an email) and SSO sign-in itself: a user must always be able
+  // to log in, even on a fully expired license, or they could never even
+  // reach the disabled-license screen that explains why writes are blocked.
   if (!state.canWrite && ['POST','PUT','PATCH','DELETE'].includes(req.method)) {
     const isAck = req.path.includes('acknowledge') && req.method === 'POST';
-    if (!isAck) {
+    const isSso = req.path === '/api/sso';
+    if (!isAck && !isSso) {
       return res.status(402).json({
         error: 'License expired — write operations disabled',
         license_status: license?.status,
@@ -858,7 +865,7 @@ async function enforceLicense(req, res, next) {
   }
 
   // Block all access if disabled
-  const exemptPaths = ['/api/health', '/api/stats', '/api/license-status', '/api/system/update-available'];
+  const exemptPaths = ['/api/health', '/api/stats', '/api/license-status', '/api/system/update-available', '/api/sso'];
   if (state.disabled && !exemptPaths.some(p => req.path.startsWith(p))) {
     return res.status(402).json({
       error: 'License has expired. Please renew your NocVault license.',
@@ -889,8 +896,16 @@ function userRank(req) {
   const role = req.headers['x-user-role'] || 'viewer';
   return ROLE_RANK[role] != null ? ROLE_RANK[role] : 0;
 }
+// POST /api/sso is the one deliberately-unauthenticated write: it's the means
+// by which a session gets created in the first place (see middleware.ts's
+// PUBLIC_API allowlist), so it never carries an x-user-role header and must
+// be exempt from the read-only gate below rather than defaulting to viewer.
+// Its own security boundary is the signed one-time token in the body,
+// verified server-side against the hub — not a session/role at all.
+const WRITE_GATE_EXEMPT = [/^\/api\/sso$/];
 app.use((req, res, next) => {
   if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) return next();
+  if (WRITE_GATE_EXEMPT.some((re) => re.test(req.path))) return next();
   const rank = userRank(req);
   if (rank < 1) return res.status(403).json({ error: 'Your role is read-only.' });
   if (rank < 2 && ADMIN_ONLY_WRITE.some((re) => re.test(req.path))) {
