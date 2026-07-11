@@ -3,7 +3,10 @@
 ## What this is
 SpanVault is a Network Monitoring System (NMS) in the NocVault suite. It runs alongside
 NetVault (port 3000), LogVault (port 3004), and DDIVault (port 3006) on the same Windows Server.
-SpanVault runs on port 3008 (frontend) and port 3009 (API).
+SpanVault runs on port 3008 (frontend), port 3009 (API), and port 3010 (WebSocket
+server for remote polling agents — `api/ws-server.js`, started from `api/server.js`,
+bound to all interfaces so remote agent hosts can reach it; the API itself stays
+loopback-only).
 
 ## Installer parity (IMPORTANT — read before any deploy-affecting change)
 
@@ -60,13 +63,33 @@ work. **NEVER run `npm audit fix --force`.**
   (App Router / runtime breaking changes) rather than a forced bump.
 
 ## Repo layout
-api/server.js          ← Express API (port 3009, 127.0.0.1 only)
-collector/collector.js ← Background polling service (ICMP + SNMP)
+api/server.js          ← Express API (port 3009, 127.0.0.1 only); also starts ws-server.js
+api/ws-server.js       ← WebSocket server for remote polling agents (port 3010, all interfaces)
+api/intelligence.js    ← intelligence analytics engine
+api/licenseCheck.js    ← license/feature-gate checks
+api/pdfCharts.js       ← chart rendering helpers for PDF reports
+api/reportScheduler.js ← scheduled report email delivery
+api/reportsPdf.js      ← pdfkit report renderers
+collector/collector.js ← Background polling service (ICMP + SNMP), NetVault device sync
+collector/discovery.js ← LLDP/CDP topology discovery
+collector/topology.js  ← topology engine
+collector/snmp-session.js         ← shared SNMP session helper
+collector/wirelessCollector.js    ← wireless (AP/controller/client) SNMP polling
+collector/wirelessIntelligence.js ← wireless RF statistical analytics
+collector/parsers/     ← per-vendor SNMP parsers (Cisco, Aruba, HPE, Juniper, Fortinet, etc.)
+collector/wireless/    ← per-vendor wireless parsers (Aruba, Cisco, Ruckus, HPE, etc.)
+agent/agent.js         ← remote polling agent (poll + ship + offline buffer over WS)
+agent/install.ps1      ← agent NSSM service installer
 frontend/              ← Next.js 14 app (App Router, port 3008)
-src/app/             ← Pages (App Router)
-src/components/      ← Shared components
-src/lib/             ← auth.ts, db.ts
-src/middleware.ts    ← withAuth SSO guard
+  src/app/(app)/       ← Pages: dashboard, devices, sites, alerts, services, reports,
+                          maps, wireless, topology, agents, intelligence, settings
+  src/components/      ← Shared components (Sidebar.tsx, TopBar.tsx, etc.)
+  src/lib/             ← auth.ts, api.ts, rbac.ts, theme.ts, publicUrl.ts, mapExport.ts,
+                          mapIcons.tsx, mapTypes.ts — no db.ts; the frontend never talks
+                          to Postgres directly, only through the Express API
+  src/middleware.ts    ← plain custom middleware (proxy + SSO redirect + per-user
+                          app-access gating — see the middleware.ts section below;
+                          NOT a withAuth guard)
 scripts/schema.sql     ← spanvault DB schema
 installer/             ← Update-SpanVault.ps1
 .env.local             ← gitignored; .env.local.example is the committed template
@@ -131,6 +154,46 @@ next.config.js does NOT have `output: 'standalone'`. The NSSM service runs
 - NEXT_PUBLIC_* vars bake in at build time — they must be in .env.local on the
   server before `npm run build` runs (the update script handles this).
 
+### Remote agents, the WebSocket server, and SV_PUBLIC_URL
+SpanVault supports distributed polling via remote agents (`agent/agent.js`,
+installed with `agent/install.ps1` as an NSSM service on the remote host). Agents
+connect back over WebSocket to `api/ws-server.js`, started from `api/server.js` on
+`SV_WS_PORT` (default 3010, all interfaces — see the port list in "What this is").
+
+`SV_PUBLIC_URL` (`.env.local.example`) is the base URL agents use to download the
+installer/config and dial back to this app. `api/server.js`'s `getServerUrl(req)`
+resolves it with **`SV_PUBLIC_URL` checked FIRST**, falling back to deriving the
+origin from the incoming request (`x-forwarded-host`/`host` +
+`x-forwarded-proto`) only if it's unset:
+
+```js
+function getServerUrl(req) {
+  if (process.env.SV_PUBLIC_URL) return process.env.SV_PUBLIC_URL.replace(/\/+$/, '');
+  const proto = (req.headers['x-forwarded-proto'] || req.protocol || 'http').split(',')[0];
+  const host = req.headers['x-forwarded-host'] || req.headers.host || 'localhost';
+  return `${proto}://${host}`;
+}
+```
+
+**This priority order is the deliberate OPPOSITE of `resolveOrigin`** (the
+request-derived-first pattern documented under "No hardcoded IPs or hostnames"
+above) — and that's intentional, not a bug to "fix" into consistency. A browser
+link can safely follow whatever hostname the user's current request came in on;
+an already-installed remote agent cannot. The agent dials back on its own
+schedule with no incoming "request" to derive a host from, and it must keep
+hitting the same address it was configured with at install time even if an
+admin later also starts browsing the suite via a different hostname — a value
+that shifted with request traffic would silently break every agent's
+connectivity. Don't change `getServerUrl` to prefer the request-derived origin
+to match `resolveOrigin`'s pattern; the two functions solve different problems
+on purpose.
+
+Related env vars (`.env.local.example`): `SV_WS_PORT` (WS server port, default
+3010), `SV_WS_TLS_CERT`/`SV_WS_TLS_KEY` (optional, terminate `wss://` on the
+agent WebSocket — leave blank for plain `ws://` on a trusted LAN/behind a
+proxy), `SV_NSSM_PATH` (nssm.exe path the server hands to the agent installer,
+defaults to NetVault's bundled copy).
+
 ### After any change
 Run `npm run build` inside frontend/ to verify before committing.
 Commit message format: `feat: <short description>` or `fix: <short description>`
@@ -147,7 +210,10 @@ const sv = new Pool({
   user: process.env.SV_DB_USER || 'spanvault_user',
   password: process.env.SV_DB_PASS || '',
   ssl: false,
+  max: 10,
+  idleTimeoutMillis: 30000,
 });
+sv.on('error', (err) => console.error('[DB sv] Pool error:', err.message));
 ```
 
 ### netvault DB (read-only — users + devices + sites source)
@@ -159,7 +225,10 @@ const nv = new Pool({
   user: process.env.NETVAULT_DB_USER || 'netvault',
   password: process.env.NETVAULT_DB_PASS || '',
   ssl: false,
+  max: 5,
+  idleTimeoutMillis: 30000,
 });
+nv.on('error', (err) => console.error('[DB nv] Pool error:', err.message));
 ```
 
 ### NetVault schema (read-only reference)
@@ -281,10 +350,16 @@ looks similar on the surface, and a clean build will not catch it.
 - Sidebar: #1a2744 (dark navy), white text/icons, 220px wide
 - Accent: #C8102E (crimson red) for primary buttons, active nav, stat card highlights
 - Content area: white (#ffffff) background
-- Top bar: white, with home button (links to HUB_URL/launcher), user avatar + dropdown
-- Home button icon: house SVG, links to process.env.NEXT_PUBLIC_NOCVAULT_HUB_URL + '/launcher'
+- Top bar: white, user avatar + dropdown containing a "NocVault Hub" item (house
+  icon, links to `HUB/launcher`)
+- Hub URL for that link is client-derived (`getHubUrl()` in `TopBar.tsx`, `window.
+  location`-based, env var only as an SSR fallback) — see CRITICAL RULES above,
+  not a raw `process.env.NEXT_PUBLIC_NOCVAULT_HUB_URL` read
 - Sign out: calls signOut() then redirects to HUB_URL/launcher
-- Nav items: Dashboard, Devices, Alerts, Reports, Network Map, Settings
+- Nav items (in order, `frontend/src/components/Sidebar.tsx`): Dashboard, Devices,
+  Alerts, Services, Reports, Maps, Wireless, Topology, Agents (admin-only, gated
+  by `canManageAgents`), Intelligence, Settings (admin-only, gated by
+  `canManageSettings`)
 - Stat cards: colored border-left (green=up, red=down, yellow=warning, grey=unknown)
 - Sidebar nav uses the suite-standard colored icon chips (`.sv-nav-chip`, 28×28 radius 8)
   with a per-route tint via `--chip-color`/`--chip-bg` inline props; only the active
@@ -369,7 +444,16 @@ tokens used in **logvault** and **ddivault** (suite-wide standard).
 - This is the **suite-wide standard** — apply the same `color-scheme` + tokenised
   panel pattern in netvault, logvault, and ddivault.
 
-## Build status — all phases complete ✅
+## Build status — historical snapshot (Phases 1-6 only, baseline ~1.2.0)
+This section and "Completed enhancements" below it are a **historical snapshot**
+frozen at roughly the original 6-page app (Dashboard/Devices/Alerts/Reports/Map/
+Settings) plus its first round of polish. The app is now on version `1.71.x`+
+(see `package.json`) and has grown several entire subsystems since — see
+"Since then" below "Completed enhancements" for what actually shipped. Don't
+treat the phase list or the "Next step" that used to follow it as current state;
+the app has been deployed, iterated on, and is live on the production server
+(see "Live Server Verification" below) for a long time.
+
 Phase 1: scaffold, schema (scripts/schema.sql), config — done
 Phase 2: api/server.js — Express API (devices, alerts, rules, reports, settings, NetVault sync) — done
 Phase 3: collector/collector.js — ICMP ping, SNMP polling, alert evaluation,
@@ -381,9 +465,6 @@ Phase 5: frontend pages — dashboard, devices list, device detail (graphs), ale
 Phase 6: installer/Update-SpanVault.ps1 — 3 NSSM services (SpanVault-API, SpanVault-App,
           SpanVault-Collector), -ServerIp writes .env.local from template — done
 
-Next step: deploy on the Windows Server and test end-to-end (SSO login via hub,
-NetVault device sync, ICMP/SNMP polling, alerts, dashboard graphs).
-
 ## Deployment notes (server testing)
 - Run installer/Update-SpanVault.ps1 -ServerIp <ip> on the server; it writes .env.local
   from .env.local.example (existing .env.local is preserved — see commit f12b787).
@@ -394,7 +475,12 @@ NetVault device sync, ICMP/SNMP polling, alerts, dashboard graphs).
 - SSO: ensure NEXTAUTH_SECRET matches the hub's so sso-verify / JWT verification succeeds.
 
 ## Completed enhancements
-Post-Phase-6 UI/API enhancements (all built, committed, and pushed to main):
+Post-Phase-6 UI/API enhancements (all built, committed, and pushed to main). Items
+0-6 below are the **original** post-Phase-6 batch (through commit `51800b1`,
+Ctrl+K search, ~1.2.0) — kept verbatim as a historical record. Items 7+ are the
+headline subsystems added since, at a much higher level than 0-6 (there have been
+100+ feature/fix commits since 1.2.0; this is not exhaustive — check `git log` for
+full detail on any one of them):
 
 0. **PRTG-style Devices page** (`df9fd75`) — devices grouped into collapsible per-site
    accordions with up/down/warning/unknown summary pills; rows show status dot, name,
@@ -420,6 +506,41 @@ Post-Phase-6 UI/API enhancements (all built, committed, and pushed to main):
 6. **Ctrl+K global search** (`51800b1`) — components/GlobalSearch.tsx, rendered in (app)/layout.tsx.
    Cmd/Ctrl+K opens a command-palette modal (Esc closes); debounced search via /api/devices?q=X;
    results show status dot, name, IP, site; click navigates to /devices/[id].
+
+### Since then (major subsystems, verified via `git log`/current files — not exhaustive)
+
+7. **Wireless monitoring** (`034e0c8` onward, e.g. `f3b1239` UI overhaul, `60e3a70`
+   1.68.0) — full SNMP-based AP/controller/client polling
+   (`collector/wirelessCollector.js`, per-vendor parsers in `collector/wireless/`)
+   with its own `/wireless` page (Overview/Intelligence/Controllers/Clients/SSIDs
+   tabs), an RF statistical-analytics engine (`collector/wirelessIntelligence.js`),
+   HA cluster peer roster (`4c4c1e3`, 1.66.0), and dedicated wireless report
+   templates.
+8. **Services / service_checks as first-class entities** (`2d711a2`, 1.69.0) —
+   `/services` page + detail, its own alert-rule tab, and dashboard/API
+   integration alongside devices.
+9. **Remote agent subsystem** (`c985c77`…`43cc32f`, "distributed polling parts
+   1-7", plus later hardening phases through `bbfc4c8`, 1.70.0) — top-level
+   `agent/` directory (`agent.js`, `install.ps1`) shipping a poll/ship/
+   offline-buffer agent that connects to `api/ws-server.js` over WebSocket
+   (port 3010); `/agents` page (admin-only), zero-touch device discovery,
+   agent fleet health/self-update, and per-user app-access enforcement layered
+   on top (`4c77651`, `035af3e`).
+10. **Topology mapping** (`f156876`) — LLDP/CDP discovery (`collector/discovery.js`,
+    `collector/topology.js`), `/topology` page with a visual link map grouped
+    by site.
+11. **Intelligence page** (`28805af`…`06cc0f3`) — `api/intelligence.js` analytics
+    engine, `/intelligence` page (multi-tab), plus intelligence signals surfaced
+    on the dashboard and device detail.
+12. **Dashboard KPI rework** (`a31f610` 1.3.0 enterprise dashboard, `b523610`
+    1.67.1 narrowed the top strip, `add1c09` 1.67.2 conditional Agents/Services
+    tiles) — the dashboard has been substantially reworked multiple times since
+    the original Phase 5 page; don't assume the current KPI layout matches the
+    Phase 5 description above.
+13. **PDF report rendering** (`b94301d` 1.59.0 two-pane redesign + server-side
+    pdfkit engine, followed by per-report-type pdfkit renderers in
+    `api/reportsPdf.js`/`api/pdfCharts.js`) — reports now render as real PDFs
+    server-side rather than the original Phase 5 report page.
 
 ---
 
