@@ -35,6 +35,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.71.4': [
+    'Fixed a regression from the 1.71.3 sign-in fix: the new same-origin verify route was added as a Next.js page route, but SpanVault proxies every /api/* call straight to its own backend — so the route never actually ran and sign-in still failed (now "Token verification failed" / 404, instead of the earlier "Failed to fetch"). Moved the verify logic into the backend where the rest of the API already lives, and made sure it works before you have a session yet (that\'s the whole point of it).',
+  ],
   '1.71.3': [
     'Fixed: signing into SpanVault via the NocVault launcher failed with "Sign-in error: Failed to fetch" — SpanVault verified its login token by calling the hub directly from the browser, which browsers block as a cross-origin request. It now verifies through its own server (the same pattern DDIVault already used), matching how every other app in the suite does it.',
   ],
@@ -1360,6 +1363,31 @@ app.get('/api/hub/settings', wrap(async (req, res) => {
   try {
     const r = await fetch(`${hub}/api/settings`, { headers: { Accept: 'application/json' } });
     if (!r.ok) return res.status(502).json({ error: `Hub returned ${r.status}` });
+    res.json(await r.json());
+  } catch (e) {
+    res.status(502).json({ error: e && e.message ? e.message : 'Hub unreachable' });
+  }
+}));
+
+// SSO verify proxy — mirrors /api/hub/settings above: the browser calls this
+// same-origin route instead of fetching the hub's sso-verify endpoint
+// directly (which is cross-origin and CORS-blocked). This is the means by
+// which a session gets created in the first place, so it must be reachable
+// with NO existing session (see PUBLIC_API in middleware.ts).
+app.post('/api/sso', wrap(async (req, res) => {
+  const hub = resolveOrigin(req, 3000, process.env.NOCVAULT_HUB_URL || 'http://localhost:3000').replace(/\/+$/, '');
+  const token = req.body && req.body.token;
+  if (!token) return res.status(400).json({ error: 'No token provided' });
+  try {
+    const r = await fetch(`${hub}/api/auth/sso-verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token }),
+    });
+    if (!r.ok) {
+      const text = await r.text();
+      return res.status(401).json({ error: `sso-verify failed: ${r.status} ${text}` });
+    }
     res.json(await r.json());
   } catch (e) {
     res.status(502).json({ error: e && e.message ? e.message : 'Hub unreachable' });

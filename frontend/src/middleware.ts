@@ -38,12 +38,17 @@ export async function middleware(req: NextRequest) {
 
     // Explicit, narrow allow-list of API routes that must work with no session:
     // public map viewers (/maps/public/:uuid page fetches its own data), the
-    // health check, and the agent-binary distribution endpoints (a not-yet-
+    // health check, the agent-binary distribution endpoints (a not-yet-
     // installed agent has no session — it's a script running via `irm`, not a
-    // logged-in browser). Everything else requires a valid token; the RBAC
-    // middleware in api/server.js only gates writes (POST/PUT/PATCH/DELETE), so
-    // without this check every GET was reachable with zero authentication.
-    const PUBLIC_API = /^\/api\/(maps\/public\/|health$|agent\/(install\.ps1|agent\.js(\.sha256)?|package\.json|nssm\.exe(\.sha256)?)$)/;
+    // logged-in browser), and the SSO verify proxy (POST /api/sso — this is the
+    // means by which a session gets created in the first place, so requiring an
+    // existing token here would make sign-in impossible; its own security
+    // boundary is the signed one-time token in the request body, verified
+    // server-side against the hub, not a session cookie). Everything else
+    // requires a valid token; the RBAC middleware in api/server.js only gates
+    // writes (POST/PUT/PATCH/DELETE), so without this check every GET was
+    // reachable with zero authentication.
+    const PUBLIC_API = /^\/api\/(maps\/public\/|health$|sso$|agent\/(install\.ps1|agent\.js(\.sha256)?|package\.json|nssm\.exe(\.sha256)?)$)/;
     if (PUBLIC_API.test(pathname)) {
       return NextResponse.rewrite(target);
     }
