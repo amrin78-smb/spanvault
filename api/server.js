@@ -35,6 +35,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.71.6': [
+    'Fixed: the NocVault launcher always showed "—" instead of real numbers on the SpanVault tile (monitored devices, availability, active alerts). SpanVault\'s stats endpoint was the only one in the suite still requiring a login for the launcher\'s background stats check — DDIVault and LogVault\'s equivalent endpoints were already open the same way. It returns only aggregate counts, nothing sensitive.',
+  ],
   '1.71.5': [
     'Fixed another regression from the sign-in fix: the verify route moved into the backend in 1.71.4, but two blanket security checks there (the read-only-role write gate, and the expired/disabled-license gate) didn\'t know about it and rejected it with "Your role is read-only" (403) before it could run, since a brand-new sign-in never has a role yet. Both now correctly let sign-in through — its real protection is the signed one-time token, not a role or an active license.',
   ],
