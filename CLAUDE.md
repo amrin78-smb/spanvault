@@ -308,6 +308,27 @@ hub login (via `resolveOrigin`, not a static `HUB` const), (3) per-user
 app-access gating (`appAllowed`, redirects a denied user to the hub launcher
 with `?denied=spanvault`). Read the actual file before changing it.
 
+### ⚠️ Open gap — `appAllowed()` is NOT currently enforced on the `/api/*` proxy branch
+A new access-control gate must be checked against BOTH the page-rendering path
+AND any API/proxy path reachable with the same session — a gate on only one
+leaves a denied user's still-valid session able to pull full data straight
+from the API. As of this review, `appAllowed()` is called ONLY in the
+page-guard branch near the bottom of `middleware()` (the one that redirects
+to `HUB/launcher?denied=spanvault`); the `/api/*` proxy branch above it (the
+one that rewrites requests to Express on port 3009) checks only that a
+`getToken()` session exists — it never reads the token's `apps` claim before
+rewriting. The 1.71.1 release notes claim "The API now enforces the same
+check" and that commit's message (`035af3e`) describes fixing exactly this in
+`middleware.ts` — but `git show --stat 035af3e` shows that commit never
+touched `middleware.ts` at all (it only changed `api/server.js`, for
+unrelated site-scoping fixes). None of the later commits that did touch
+`middleware.ts` (`3277921`/1.71.2, `f1d3518`/1.71.4, `52ba04b`/1.71.6) added
+it either. **Don't trust the release notes on this — re-read the live
+`/api/*` branch of `middleware.ts` and confirm it calls `appAllowed()` (or
+forwards an `apps`/equivalent header the API itself checks) before rewriting
+to Express, not just before rendering a page, before treating this as
+fixed.**
+
 ## API proxy pattern (critical — do not use next.config.js rewrites for this)
 SpanVault proxies /api/* to Express (port 3009) using middleware.ts, NOT
 next.config.js rewrites. Rewrites intercept /api/auth/* before NextAuth
@@ -345,6 +366,55 @@ architectures (LogVault: `proxy.ts` header-injection proxy; DDIVault:
 except-auth; NetVault: no proxying, it IS the hub) the target app actually
 uses — a working pattern in one app can silently never run in another that
 looks similar on the surface, and a clean build will not catch it.
+
+### Checklist: adding a new intentionally-public API route
+A route that must work with **no session** (an SSO bootstrap endpoint, an
+unauthenticated agent-install script, etc.) has to clear three INDEPENDENT
+gates, each in a different file/layer, and each only surfaces once the
+previous one is fixed. This is not hypothetical: adding one such route
+(`POST /api/sso`, the SSO-verify proxy) took **three separate broken
+releases in a row** (1.71.4 → 1.71.5 → 1.71.6) because each fix only exposed
+the next blocking gate. Check all three in one pass before shipping a new one:
+
+1. **`frontend/src/middleware.ts`'s `PUBLIC_API` allowlist regex** (in the
+   `/api/*` proxy branch). A route not matched here requires a valid
+   `getToken()` session before it's even forwarded to Express — so a
+   route reachable pre-login must be added to this regex.
+2. **`api/server.js`'s write-side RBAC gate — the `WRITE_GATE_EXEMPT` array**,
+   checked by the `app.use` registered right after `userRank()`/`ROLE_RANK`.
+   `userRank()` defaults a missing `x-user-role` header to `'viewer'` (rank 0),
+   and an unauthenticated request never carries that header — so any public
+   route that does a POST/PUT/PATCH/DELETE gets 403'd ("Your role is
+   read-only") before its own handler runs unless it's listed here.
+3. **`api/server.js`'s `enforceLicense` middleware** — has TWO separate checks
+   in the same function that both need the route added: the grace-period
+   write-block (the `isAck`/`isSso`-style exemption inside the
+   `!state.canWrite` branch) and the fully-disabled-state `exemptPaths` array
+   (matched with `req.path.startsWith(p)`). A route can clear gates 1 and 2
+   and still get a 402 from either of these during a license grace period or
+   once the license is fully expired.
+
+All three currently exempt `/api/sso` (verified against the live file:
+`PUBLIC_API` includes `sso$`, `WRITE_GATE_EXEMPT` includes `/^\/api\/sso$/`,
+and `enforceLicense` exempts it in both its write-block `isSso` check and its
+`exemptPaths` array). Check the next new public route against all three
+in one pass instead of discovering them one broken release at a time.
+
+### Site-scoping — audit every sibling route in a batch, not just the one that gets reported
+When a feature adds several similar routes for one resource (list/detail/
+history, etc.), don't assume consistency across the batch just because most
+of them got it right. The `service_checks` feature shipped `GET
+/api/service-checks/:id` and `/api/service-checks/:id/results` with **zero**
+`getSiteFilter(req)` scoping, while a third route added in the very same
+commit (`/api/reports/service-detail`) had the identical pattern implemented
+correctly right next to it. This was an isolated oversight, not a knowledge
+gap — the correct pattern already existed in the same diff. Both routes are
+now fixed (each calls `getSiteFilter(req)` and 403s with `'forbidden: service
+outside your assigned sites'` when the check's `site_id` isn't in the
+caller's assigned sites — see `api/server.js` around the `/api/service-checks/
+:id` and `:id/results` handlers). Rule: when a commit adds several routes for
+the same resource, verify EACH one individually against the established
+`getSiteFilter` pattern — don't spot-check one and assume the rest match.
 
 ## UI design (match NetVault exactly)
 - Sidebar: #1a2744 (dark navy), white text/icons, 220px wide
@@ -567,6 +637,12 @@ Examples of what counts as each type:
 Rules:
 - ALWAYS bump version as part of the same commit as the changes
 - NEVER skip the version bump
+- **Exception: pure documentation changes do NOT require a version bump.**
+  A commit that touches ONLY CLAUDE.md and/or code comments — no change to
+  actual runtime behavior — can skip `npm version`. Everything else, however
+  small (a copy tweak, a config default, a hardcoded value), still counts as
+  a real change and needs the bump. If a commit mixes a doc change with any
+  runtime change, it needs the bump.
 - Run npm version BEFORE npm run build
 - The app reads version from package.json via /api/health
 - NocVault suite itself has no version number — only the 4 apps
