@@ -65,6 +65,14 @@ export async function middleware(req: NextRequest) {
     if (!token) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
+    // Per-user app-access enforcement (same claim/rule as the page-route branch
+    // below) — a session that exists but isn't granted SpanVault must not reach
+    // the API either. Without this, a denied user was correctly bounced from
+    // every page but could still call the API directly with the same valid
+    // session and get full data.
+    if (!appAllowed((token as any).apps, 'spanvault')) {
+      return NextResponse.json({ error: 'forbidden', reason: 'app_access_denied' }, { status: 403 });
+    }
     const headers = new Headers(req.headers);
     headers.set('x-user-role', (token.role as string) || 'viewer');
     headers.set('x-user-sites', ((token.sites as number[]) || []).join(','));

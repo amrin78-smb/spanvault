@@ -35,6 +35,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.71.7': [
+    'SECURITY: closed a gap where a user explicitly denied access to SpanVault (per-user app-access) was correctly blocked from every page, but a valid session could still call the API directly and get full data — the API proxy never checked the app-access claim, only that a session existed. Found during a routine documentation review, not from an incident; fixed the same way the equivalent gap was already closed in every sibling app.',
+  ],
   '1.71.6': [
     'Fixed: the NocVault launcher always showed "—" instead of real numbers on the SpanVault tile (monitored devices, availability, active alerts). SpanVault\'s stats endpoint was the only one in the suite still requiring a login for the launcher\'s background stats check — DDIVault and LogVault\'s equivalent endpoints were already open the same way. It returns only aggregate counts, nothing sensitive.',
   ],
