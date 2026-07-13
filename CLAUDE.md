@@ -251,6 +251,18 @@ fail-open cross-DB read of `netvault.user_apps`) and looks up `sites`/`name`
 from the netvault `users`/`user_sites` tables when the SSO JWT omits them —
 read the actual file for the current shape; treat this snippet as the
 original scaffold, not a spec.
+
+### App-access resolution differs from the other satellites — do NOT "fix" it to match them
+SpanVault mints its OWN NextAuth token (it does not read NetVault's shared
+session cookie), so it cannot inherit an `apps` claim the way a cookie-sharing
+satellite could. Instead it resolves the allowed-apps set at `authorize()` time
+in `frontend/src/lib/auth.ts` (`resolveUserApps(userId, role)`) via a direct
+read of `netvault.user_apps` on its OWN read-only NETVAULT_DB_* pool —
+`super_admin` = all apps, no rows = default-all, fail-open on any error
+(mirrors NetVault's `getUserApps`) — and persists it to `token.apps` /
+`session.user.apps` so `getToken()` in `middleware.ts` sees it. This is
+deliberately different from siblings that lift the claim off a shared cookie;
+don't rewrite it to match them.
 ```ts
 import NextAuth, { NextAuthOptions } from 'next-auth';
 import CredentialsProvider from 'next-auth/providers/credentials';
@@ -308,26 +320,20 @@ hub login (via `resolveOrigin`, not a static `HUB` const), (3) per-user
 app-access gating (`appAllowed`, redirects a denied user to the hub launcher
 with `?denied=spanvault`). Read the actual file before changing it.
 
-### ⚠️ Open gap — `appAllowed()` is NOT currently enforced on the `/api/*` proxy branch
-A new access-control gate must be checked against BOTH the page-rendering path
-AND any API/proxy path reachable with the same session — a gate on only one
-leaves a denied user's still-valid session able to pull full data straight
-from the API. As of this review, `appAllowed()` is called ONLY in the
-page-guard branch near the bottom of `middleware()` (the one that redirects
-to `HUB/launcher?denied=spanvault`); the `/api/*` proxy branch above it (the
-one that rewrites requests to Express on port 3009) checks only that a
-`getToken()` session exists — it never reads the token's `apps` claim before
-rewriting. The 1.71.1 release notes claim "The API now enforces the same
-check" and that commit's message (`035af3e`) describes fixing exactly this in
-`middleware.ts` — but `git show --stat 035af3e` shows that commit never
-touched `middleware.ts` at all (it only changed `api/server.js`, for
-unrelated site-scoping fixes). None of the later commits that did touch
-`middleware.ts` (`3277921`/1.71.2, `f1d3518`/1.71.4, `52ba04b`/1.71.6) added
-it either. **Don't trust the release notes on this — re-read the live
-`/api/*` branch of `middleware.ts` and confirm it calls `appAllowed()` (or
-forwards an `apps`/equivalent header the API itself checks) before rewriting
-to Express, not just before rendering a page, before treating this as
-fixed.**
+### App-access must gate BOTH the page-route AND the `/api/*` proxy branch of `middleware.ts`
+A per-user access gate has to run on every path reachable with the same
+session — a gate on only the page-render branch leaves a denied user's
+still-valid session able to pull full data straight from the API. `middleware.ts`
+now calls `appAllowed((token as any).apps, 'spanvault')` in BOTH branches: the
+`/api/*` proxy branch returns a JSON `403 {error:'forbidden',
+reason:'app_access_denied'}`, the page branch redirects to
+`HUB/launcher?denied=spanvault`. **SpanVault was the one suite app that shipped
+a release (1.71.1) whose notes CLAIMED this API-branch check while the commit
+never touched `middleware.ts` at all** — the fix didn't actually land until
+1.71.7 (`accb4c2`). Lesson: when a release note claims an enforcement fix,
+`git show --stat` the commit and re-read the live enforcement file to confirm
+the check reached it — don't trust the notes. Every sibling app already had
+this on both branches.
 
 ## API proxy pattern (critical — do not use next.config.js rewrites for this)
 SpanVault proxies /api/* to Express (port 3009) using middleware.ts, NOT
