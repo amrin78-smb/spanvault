@@ -1579,11 +1579,17 @@ async function pollAllClients(pool) {
 }
 
 // Clients are polled on a slower cadence than APs to reduce SNMP load on the
-// controllers: every 15 minutes, with a first pass 30s after startup. (A faster
-// cadence does not reconcile the Clients-tab total with Wireless Insights — the
-// controller re-reports aged-out stations each poll — so the count is sourced from
-// the live per-AP associated gauge in the API instead.)
-const CLIENT_POLL_INTERVAL = 15 * 60 * 1000;
+// controllers: every 10 minutes (was 15 — tightened for fresher per-client
+// bandwidth data; the busiest production controller's client table is ~6.5x
+// the row count of its AP table, so this wasn't dropped straight to the 5-min
+// AP cadence — watch actual cycle-to-cycle spacing after this change the same
+// way it was checked before making it, since poll DURATION itself isn't
+// directly observable, only the gap between completed cycles), with a first
+// pass 30s after startup. (A faster cadence does not reconcile the Clients-tab
+// total with Wireless Insights — the controller re-reports aged-out stations
+// each poll — so the count is sourced from the live per-AP associated gauge in
+// the API instead.)
+const CLIENT_POLL_INTERVAL = 10 * 60 * 1000;
 
 // Start the wireless collector on a 5-minute cadence (first pass after 20s so
 // the initial NetVault sync + vendor detection has a chance to populate).

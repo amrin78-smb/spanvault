@@ -35,6 +35,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.72.2': [
+    'Wireless client polling tightened from every 15 minutes to every 10, for fresher per-client bandwidth numbers. Checked actual poll cycle timing against production first (AP polling was healthy with room to spare; client polling — a much larger SNMP walk on busy controllers — was also keeping pace, so this was a deliberate smaller step rather than matching the faster 5-minute AP cadence outright).',
+  ],
   '1.72.1': [
     'Wireless Overview layout: "Top Clients by Bandwidth" moved out of the crowded 4-card row into its own row alongside Offline APs / High Utilization APs, so both rows read as clean, evenly-sized groups again.',
   ],
