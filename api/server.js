@@ -35,6 +35,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.72.3': [
+    'Fixed: per-client wireless bandwidth could briefly show an impossible value (hundreds of thousands of Mbps) right around a collector restart. The delta-to-bandwidth math had a sanity cap on one code path (a wrapped 32-bit counter producing an implausible rate) but not the everyday path — a timing artifact around a restart could divide a real byte count by an abnormally small elapsed time with nothing catching the result. Same cap now applies everywhere; an implausible reading is now discarded (shows as unavailable) instead of displayed.',
+  ],
   '1.72.2': [
     'Wireless client polling tightened from every 15 minutes to every 10, for fresher per-client bandwidth numbers. Checked actual poll cycle timing against production first (AP polling was healthy with room to spare; client polling — a much larger SNMP walk on busy controllers — was also keeping pace, so this was a deliberate smaller step rather than matching the faster 5-minute AP cadence outright).',
   ],

@@ -602,7 +602,20 @@ const COUNTER32_WRAP = 2 ** 32;
 const MAX_SANE_BPS = 2e9;
 function counterDeltaBps(cur, prev, elapsed, counterBits) {
   if (cur === null || prev === null) return null;
-  if (cur >= prev) return Math.round(((cur - prev) * 8) / elapsed);
+  // The MAX_SANE_BPS cap below was previously applied only on the wrap-
+  // recovery branch (a wrapped Counter32 producing an implausible rate is
+  // easy to hit deliberately). This "normal" cur>=prev branch had no such
+  // cap at all — in practice a transient timing artifact around a collector
+  // restart (prevCounters/prevClientCounters is in-memory only, so any
+  // restart mid-cycle can leave `elapsed` abnormally small relative to a
+  // real byte delta) produced a one-off multi-hundred-Gbps client bandwidth
+  // reading that looked absurd on the wireless page before self-correcting
+  // on the next clean poll. Apply the same sanity cap here too, rather than
+  // relying on every future timing edge case to self-correct on its own.
+  if (cur >= prev) {
+    const bps = Math.round(((cur - prev) * 8) / elapsed);
+    return bps < MAX_SANE_BPS ? bps : null;
+  }
   if (counterBits !== 64 && prev < COUNTER32_WRAP) {
     const bps = Math.round(((cur + COUNTER32_WRAP - prev) * 8) / elapsed);
     if (bps < MAX_SANE_BPS) return bps;
