@@ -585,12 +585,14 @@ async function matchMonitoredDevice(pool, ap) {
 const prevCounters = new Map();
 
 // Separate Map + prune cadence for per-CLIENT counters. Clients poll on their
-// own, slower interval (CLIENT_POLL_INTERVAL, 15 min) than APs (WIRELESS_POLL_
-// INTERVAL, 5 min) — reusing prevCounters would have it pruned by the AP loop's
-// 5-min-interval sweep (evicting anything idle 3*5=15 min), which is exactly a
-// client's own poll period, so a client's entry could be evicted moments before
-// its own next poll needs it, making rx_bps/tx_bps unreliably null. A dedicated
-// Map pruned on the client interval avoids that race.
+// own, slower interval (CLIENT_POLL_INTERVAL, currently 10 min) than APs
+// (WIRELESS_POLL_INTERVAL, 5 min) — reusing prevCounters would have it pruned
+// by the AP loop's 5-min-interval sweep (evicting anything idle 3*5=15 min).
+// When CLIENT_POLL_INTERVAL was originally 15 min, that AP-side prune window
+// landed exactly on a client's own poll period, so a client's entry could be
+// evicted moments before its own next poll needed it, making rx_bps/tx_bps
+// unreliably null — a dedicated Map pruned on the CLIENT interval avoids that
+// race regardless of how the two intervals relate going forward.
 const prevClientCounters = new Map();
 
 // Delta between two cumulative counter readings, wrap-aware. A decrease from a
@@ -1616,7 +1618,7 @@ function startWirelessCollector(pool) {
   // Client polling on its own (slower) schedule, separate from the AP poll.
   setTimeout(() => pollAllClients(pool), 30 * 1000);
   setInterval(() => pollAllClients(pool), CLIENT_POLL_INTERVAL);
-  log('wireless collector started (APs every 5 min, clients every 15 min)');
+  log('wireless collector started (APs every 5 min, clients every 10 min)');
 }
 
 module.exports = {

@@ -35,6 +35,10 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.72.5': [
+    'Corrected a stale comment and startup log line in the wireless collector that still said client polling ran every 15 minutes — it was tightened to 10 minutes back in 1.72.2, the code was already correct, just the wording wasn\'t updated at the time. No behavior change.',
+    'Added an offline structural test for the Cisco wireless client parser (OID mapping, upload/download direction, Counter64 decoding), matching the existing HPE/MikroTik/Ruckus parser tests — guards against future accidental regressions; does not validate against real Cisco hardware (none in the lab).',
+  ],
   '1.72.4': [
     'Fixed the real cause of the "ridiculous" per-client bandwidth numbers: rx_bps/tx_bps are BIGINT columns, which come back from the database as strings, not numbers — the Wireless page combined them with a plain "+", which is string concatenation ("1459311" + "254812" = "1459311254812") not addition. The 1.72.3 fix was still worth keeping (a real, separate gap in the delta calculation), but this was the one actually producing what you saw. All real-world data was correct in the database the entire time — this was purely a display bug.',
   ],
