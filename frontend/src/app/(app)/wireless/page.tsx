@@ -348,9 +348,11 @@ interface WirelessClient {
   rx_rate_mbps: number | null;
   // Client-relative bandwidth (bits/sec): rx_bps = what the client downloaded,
   // tx_bps = what the client uploaded. Nullable — first poll after joining, or
-  // an unsupported vendor/firmware, may not report either.
-  rx_bps?: number | null;
-  tx_bps?: number | null;
+  // an unsupported vendor/firmware, may not report either. BIGINT columns come
+  // back from the API as strings (see fmtBps's comment) — always route through
+  // fmtBps()/bwTotal(), never `+` these directly.
+  rx_bps?: number | string | null;
+  tx_bps?: number | string | null;
   connected_since: string | null;
   last_seen_at: string | null;
   auth_type: string | null;
@@ -447,8 +449,9 @@ interface ClientBandwidthRow {
   ap_name: string | null;
   ssid_name: string | null;
   controller_id: number;
-  rx_bps: number | null;
-  tx_bps: number | null;
+  // BIGINT columns come back from the API as strings — see fmtBps's comment.
+  rx_bps: number | string | null;
+  tx_bps: number | string | null;
 }
 
 // ── Wireless Intelligence contracts ───────────────────────────
@@ -519,19 +522,30 @@ interface IntelRow {
 }
 
 // ── Formatting / RF helpers (top-level) ───────────────────────
-function fmtBps(n: number | null | undefined): string {
-  if (n == null || isNaN(n)) return '—';
-  if (Math.abs(n) < 1e6) return `${(n / 1e3).toFixed(1)} Kbps`;
-  return `${(n / 1e6).toFixed(1)} Mbps`;
+// Postgres BIGINT columns (rx_bps/tx_bps) come back from the API as STRINGS,
+// not numbers — the pg driver does this for every int8/bigint column to avoid
+// silently losing precision above Number.MAX_SAFE_INTEGER. Number(...) here
+// converts before any arithmetic; skipping this in bwTotal() below is exactly
+// what caused two bigint strings to get `+`-concatenated ("1459311"+"254812"
+// = "1459311254812") instead of added, producing wildly wrong bandwidth
+// figures that were nonetheless internally consistent (not random garbage).
+function fmtBps(n: number | string | null | undefined): string {
+  if (n == null) return '—';
+  const v = Number(n);
+  if (isNaN(v)) return '—';
+  if (Math.abs(v) < 1e6) return `${(v / 1e3).toFixed(1)} Kbps`;
+  return `${(v / 1e6).toFixed(1)} Mbps`;
 }
 
 // Combined client bandwidth (rx_bps + tx_bps) for sorting/display. Only null
 // when BOTH directions are unknown (first poll after joining, or an
 // unsupported vendor/firmware) — a single known direction still yields a
 // number, treating the missing side as 0 rather than propagating null.
-function bwTotal(c: { rx_bps?: number | null; tx_bps?: number | null }): number | null {
+// Number(...) on each operand is required, not cosmetic — see fmtBps's
+// comment above: these arrive as strings, and `+` on two strings concatenates.
+function bwTotal(c: { rx_bps?: number | string | null; tx_bps?: number | string | null }): number | null {
   if (c.rx_bps == null && c.tx_bps == null) return null;
-  return (c.rx_bps || 0) + (c.tx_bps || 0);
+  return (Number(c.rx_bps) || 0) + (Number(c.tx_bps) || 0);
 }
 
 // A real noise floor is always strongly negative dBm. Null/0/positive means the

@@ -35,6 +35,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.72.4': [
+    'Fixed the real cause of the "ridiculous" per-client bandwidth numbers: rx_bps/tx_bps are BIGINT columns, which come back from the database as strings, not numbers — the Wireless page combined them with a plain "+", which is string concatenation ("1459311" + "254812" = "1459311254812") not addition. The 1.72.3 fix was still worth keeping (a real, separate gap in the delta calculation), but this was the one actually producing what you saw. All real-world data was correct in the database the entire time — this was purely a display bug.',
+  ],
   '1.72.3': [
     'Fixed: per-client wireless bandwidth could briefly show an impossible value (hundreds of thousands of Mbps) right around a collector restart. The delta-to-bandwidth math had a sanity cap on one code path (a wrapped 32-bit counter producing an implausible rate) but not the everyday path — a timing artifact around a restart could divide a real byte count by an abnormally small elapsed time with nothing catching the result. Same cap now applies everywhere; an implausible reading is now discarded (shows as unavailable) instead of displayed.',
   ],
