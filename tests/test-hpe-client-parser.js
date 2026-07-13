@@ -37,6 +37,8 @@ const clientWalked = [
   { oid: `${TABLE}.3.${CMAC1}`, value: '10.10.10.11' },  // aiClientIPAddress
   { oid: `${TABLE}.4.${CMAC1}`, value: AP_IP },          // aiClientAPIPAddress
   { oid: `${TABLE}.7.${CMAC1}`, value: 30 },             // aiClientSNR (positive -> convert)
+  { oid: `${TABLE}.9.${CMAC1}`, value: 123456 },         // aiClientTxDataBytes (Counter32, plain int)
+  { oid: `${TABLE}.13.${CMAC1}`, value: 789012 },        // aiClientRxDataBytes (Counter32, plain int)
   { oid: `${TABLE}.11.${CMAC1}`, value: 300 },           // aiClientTxRate (mbps, direct)
   { oid: `${TABLE}.15.${CMAC1}`, value: 150 },           // aiClientRxRate (mbps, direct)
   { oid: `${TABLE}.16.${CMAC1}`, value: 360000 },        // aiClientUptime (ticks -> 3600s)
@@ -47,6 +49,10 @@ const clientWalked = [
   { oid: `${TABLE}.3.${CMAC2}`, value: '10.10.10.22' },
   { oid: `${TABLE}.4.${CMAC2}`, value: AP_IP },          // matches AP's own IP -> fallback correlation
   { oid: `${TABLE}.7.${CMAC2}`, value: -70 },            // aiClientSNR (already negative -> kept as-is)
+  // aiClientTxDataBytes/RxDataBytes as a 4-byte big-endian Buffer (0x00015E86 =
+  // 89734) — counterNum() must decode a Buffer the same as a plain integer.
+  { oid: `${TABLE}.9.${CMAC2}`, value: Buffer.from([0x00, 0x01, 0x5e, 0x86]) },
+  { oid: `${TABLE}.13.${CMAC2}`, value: Buffer.from([0x00, 0x00, 0x27, 0x10]) }, // 10000
   { oid: `${TABLE}.11.${CMAC2}`, value: 54 },
   { oid: `${TABLE}.15.${CMAC2}`, value: 24 },
   { oid: `${TABLE}.16.${CMAC2}`, value: 100 },           // 100 ticks -> 1s
@@ -103,6 +109,10 @@ const apMap = {
     ['client1 band 5GHz (dot11a)', cl1.band === '5GHz'],
     ['client1 AP resolved via BSSID', cl1.ap_id === 5 && cl1.ap_name === 'AP-TEST-01'],
     ['client1 ssid_name left null (no SSID column in aiClientTable)', cl1.ssid_name === null],
+    // Client 1 byte counters: plain-integer Counter32 values, decoded via counterNum.
+    ['client1 tx_bytes = 123456 (aiClientTxDataBytes, plain int)', cl1.tx_bytes === 123456],
+    ['client1 rx_bytes = 789012 (aiClientRxDataBytes, plain int)', cl1.rx_bytes === 789012],
+    ['client1 byte_counter_bits === 32 (Counter32, NOT 64)', cl1.byte_counter_bits === 32],
     // Client 2: already-negative SNR kept as-is, AP-IP fallback correlation
     ['client2 mac from index', cl2.mac_address === '11:22:33:44:55:66'],
     ['client2 rssi_dbm = -70 kept as-is (already negative dBm)', cl2.rssi_dbm === -70],
@@ -111,9 +121,18 @@ const apMap = {
     ['client2 connected_since ~1s ago',
       cl2.connected_since instanceof Date &&
       Math.abs((now - cl2.connected_since.getTime()) / 1000 - 1) < 5],
+    // Client 2 byte counters: 4-byte Buffer-encoded Counter32 values, decoded via counterNum.
+    ['client2 tx_bytes = 89734 (aiClientTxDataBytes, 4-byte Buffer)', cl2.tx_bytes === 89734],
+    ['client2 rx_bytes = 10000 (aiClientRxDataBytes, 4-byte Buffer)', cl2.rx_bytes === 10000],
+    ['client2 byte_counter_bits === 32 (Counter32, NOT 64)', cl2.byte_counter_bits === 32],
     // Client 3: SNR = 0 boundary -> must convert (not be kept as 0)
     ['client3 mac from index', cl3.mac_address === '22:33:44:55:66:77'],
     ['client3 rssi_dbm = 0 - 95 = -95 (SNR=0 boundary converted)', cl3.rssi_dbm === -95],
+    // Client 3 has no .9/.13 varbinds at all -> byte counters must stay null,
+    // not default to 0 or false-positively set byte_counter_bits.
+    ['client3 tx_bytes null when .9 absent from the walk', cl3.tx_bytes === null],
+    ['client3 rx_bytes null when .13 absent from the walk', cl3.rx_bytes === null],
+    ['client3 byte_counter_bits stays null when no byte counters present', cl3.byte_counter_bits === null],
   ];
 
   let fail = 0;

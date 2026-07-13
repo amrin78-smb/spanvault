@@ -346,6 +346,11 @@ interface WirelessClient {
   rssi_dbm: number | null;
   tx_rate_mbps: number | null;
   rx_rate_mbps: number | null;
+  // Client-relative bandwidth (bits/sec): rx_bps = what the client downloaded,
+  // tx_bps = what the client uploaded. Nullable — first poll after joining, or
+  // an unsupported vendor/firmware, may not report either.
+  rx_bps?: number | null;
+  tx_bps?: number | null;
   connected_since: string | null;
   last_seen_at: string | null;
   auth_type: string | null;
@@ -363,7 +368,7 @@ interface WirelessClient {
 // ── Clients table sorting (top-level — not nested inside a component) ──────
 type ClientSortKey =
   | 'mac_address' | 'ip_address' | 'ap_name' | 'ssid_name' | 'band'
-  | 'vlan_id' | 'rssi_dbm' | 'tx_rate_mbps' | 'connected_since' | 'status';
+  | 'vlan_id' | 'rssi_dbm' | 'tx_rate_mbps' | 'connected_since' | 'status' | 'bandwidth';
 
 // Numeric status rank mirroring ClientStatusBadge's exact precedence (worst
 // first): 0=Sticky, 1=Low Signal, 2=Frequent Roamer, 3=Normal. Ascending sort
@@ -394,6 +399,7 @@ function clientSortValue(c: WirelessClient, key: ClientSortKey): number | string
     case 'tx_rate_mbps': return c.tx_rate_mbps;
     case 'connected_since': return c.connected_since;
     case 'status': return clientStatusRank(c);
+    case 'bandwidth': return bwTotal(c);
     default: return null;
   }
 }
@@ -427,6 +433,22 @@ interface ClientSummary {
   low_signal_clients: number;
   frequent_roamers: number;
   top_aps_by_clients: { ap_name: string; count: number }[];
+  top_clients_by_bandwidth: ClientBandwidthRow[];
+}
+
+// Row shape of `top_clients_by_bandwidth` on GET /api/wireless/clients/summary —
+// top 10 clients ordered by rx_bps+tx_bps, excluding clients with no bandwidth
+// data at all. A trimmed subset of WirelessClient's fields (the backend query
+// only projects what this card needs).
+interface ClientBandwidthRow {
+  mac_address: string;
+  hostname: string | null;
+  ip_address: string | null;
+  ap_name: string | null;
+  ssid_name: string | null;
+  controller_id: number;
+  rx_bps: number | null;
+  tx_bps: number | null;
 }
 
 // ── Wireless Intelligence contracts ───────────────────────────
@@ -497,10 +519,19 @@ interface IntelRow {
 }
 
 // ── Formatting / RF helpers (top-level) ───────────────────────
-function fmtBps(n: number | null): string {
+function fmtBps(n: number | null | undefined): string {
   if (n == null || isNaN(n)) return '—';
   if (Math.abs(n) < 1e6) return `${(n / 1e3).toFixed(1)} Kbps`;
   return `${(n / 1e6).toFixed(1)} Mbps`;
+}
+
+// Combined client bandwidth (rx_bps + tx_bps) for sorting/display. Only null
+// when BOTH directions are unknown (first poll after joining, or an
+// unsupported vendor/firmware) — a single known direction still yields a
+// number, treating the missing side as 0 rather than propagating null.
+function bwTotal(c: { rx_bps?: number | null; tx_bps?: number | null }): number | null {
+  if (c.rx_bps == null && c.tx_bps == null) return null;
+  return (c.rx_bps || 0) + (c.tx_bps || 0);
 }
 
 // A real noise floor is always strongly negative dBm. Null/0/positive means the
@@ -1108,16 +1139,24 @@ function OverviewTab({
   onViewControllers: () => void;
 }) {
   const [selectedApId, setSelectedApId] = useState<number | null>(null);
+  const [selectedClientMac, setSelectedClientMac] = useState<string | null>(null);
   const summary = useApi<WirelessSummary>('/api/wireless/summary', 30000);
   const apsApi = useApi<AccessPoint[]>('/api/wireless/aps', 30000);
   const ssidSummary = useApi<SsidSummary>('/api/wireless/ssids/summary', 30000);
   const controllers = useApi<Controller[]>('/api/wireless/controllers', 30000);
+  const clientSummary = useApi<ClientSummary>('/api/wireless/clients/summary', 30000);
 
   const aps = useMemo(() => apsApi.data || [], [apsApi.data]);
 
   const topApsByClients = useMemo(
     () => [...aps].sort((a, b) => (b.clients_total || 0) - (a.clients_total || 0)).slice(0, 5),
     [aps],
+  );
+  // Already ordered + capped (top 10) server-side by rx_bps+tx_bps; slice to 5
+  // client-side to match the row density of the other Row 2 cards (maxHeight 200).
+  const topClientsByBandwidth = useMemo(
+    () => (clientSummary.data?.top_clients_by_bandwidth || []).slice(0, 5),
+    [clientSummary.data],
   );
   const offlineAps = useMemo(() => aps.filter((a) => a.status === 'offline'), [aps]);
   const highUtilAps = useMemo(
@@ -1241,6 +1280,26 @@ function OverviewTab({
             </table>
           ) : <Empty message="No SSID data yet." />}
         </SectionCard>
+
+        <SectionCard title="Top Clients by Bandwidth" action={<DrillHint />} maxHeight={200} minWidth={240}>
+          {topClientsByBandwidth.length ? (
+            <table className="sv-table">
+              <thead><tr>
+                <th style={STICKY_TH}>Client</th><th style={STICKY_TH}>AP</th><th style={STICKY_TH}>Bandwidth</th>
+              </tr></thead>
+              <tbody>
+                {topClientsByBandwidth.map((cl) => (
+                  <tr key={cl.mac_address} style={{ cursor: 'pointer' }}
+                    onClick={() => setSelectedClientMac(cl.mac_address)} title="View client details">
+                    <td style={{ fontWeight: 600 }}>{cl.hostname || cl.mac_address}</td>
+                    <td style={{ color: 'var(--text-muted)' }}>{cl.ap_name || '—'}</td>
+                    <td title={`↓ ${fmtBps(cl.rx_bps)} · ↑ ${fmtBps(cl.tx_bps)}`}>{fmtBps(bwTotal(cl))}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : <Empty message="No client bandwidth data yet." />}
+        </SectionCard>
       </EqualRow>
 
       {/* Row 3 — Offline APs | High utilization APs */}
@@ -1330,6 +1389,11 @@ function OverviewTab({
           onClose={() => setSelectedApId(null)}
           onViewAllClients={(apId) => { setSelectedApId(null); onViewApClients(apId); }}
         />
+      )}
+
+      {/* Client detail panel (opened from Top Clients by Bandwidth rows) */}
+      {selectedClientMac != null && (
+        <ClientDetailPanel mac={selectedClientMac} onClose={() => setSelectedClientMac(null)} />
       )}
     </div>
   );
@@ -2852,6 +2916,9 @@ function ClientControllerGroup({
                 <th onClick={() => onSort('tx_rate_mbps')} style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }} title="Click to sort">
                   Rate{sortKey === 'tx_rate_mbps' ? (sortDir === 'asc' ? ' ▲' : ' ▼') : ''}
                 </th>
+                <th onClick={() => onSort('bandwidth')} style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }} title="Click to sort">
+                  Bandwidth{sortKey === 'bandwidth' ? (sortDir === 'asc' ? ' ▲' : ' ▼') : ''}
+                </th>
                 <th onClick={() => onSort('connected_since')} style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }} title="Click to sort">
                   Connected{sortKey === 'connected_since' ? (sortDir === 'asc' ? ' ▲' : ' ▼') : ''}
                 </th>
@@ -2875,6 +2942,9 @@ function ClientControllerGroup({
                   <td><SignalCell rssi={c.rssi_dbm} /></td>
                   <td title={c.rx_rate_mbps != null ? `↓ ${fmtRate(c.rx_rate_mbps)}` : undefined}>
                     {fmtRate(c.tx_rate_mbps)}
+                  </td>
+                  <td title={(c.rx_bps != null || c.tx_bps != null) ? `↓ ${fmtBps(c.rx_bps)} · ↑ ${fmtBps(c.tx_bps)}` : undefined}>
+                    {fmtBps(bwTotal(c))}
                   </td>
                   <td>{fmtRel(c.connected_since)}</td>
                   <td><ClientStatusBadge client={c} /></td>
@@ -3296,6 +3366,14 @@ function ClientDetailPanel({ mac, onClose }: { mac: string; onClose: () => void 
                 <tr>
                   <td style={{ color: 'var(--text-muted)' }}>Rate</td>
                   <td>Tx {fmtRate(c.tx_rate_mbps)} · Rx {fmtRate(c.rx_rate_mbps)}</td>
+                </tr>
+                <tr>
+                  <td style={{ color: 'var(--text-muted)' }}>Bandwidth</td>
+                  <td>
+                    {(c.rx_bps != null || c.tx_bps != null)
+                      ? `↓ ${fmtBps(c.rx_bps)} · ↑ ${fmtBps(c.tx_bps)}`
+                      : '—'}
+                  </td>
                 </tr>
                 <tr><td style={{ color: 'var(--text-muted)' }}>Auth</td><td>{c.auth_type || '—'}</td></tr>
                 <tr>

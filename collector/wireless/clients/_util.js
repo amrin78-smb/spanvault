@@ -94,6 +94,18 @@ function emptyClient() {
     // (the negotiated rate). VLAN is the client's assigned VLAN ID.
     phy_mode: null,
     vlan_id: null,
+    // Cumulative byte counters read straight off the SNMP table, direction
+    // relative to the CLIENT (rx_bytes = downloaded BY the client, tx_bytes =
+    // uploaded BY the client) — matches the rest of this struct's convention
+    // (tx_rate_mbps/rx_rate_mbps are already client-relative). These are
+    // in-memory only, never written to the DB directly: wirelessCollector.js's
+    // shared deriveThroughput() delta helper converts the counter difference
+    // between this poll and the last into wireless_clients.rx_bps/tx_bps.
+    // byte_counter_bits (32 or 64) tells deriveThroughput() whether to apply
+    // Counter32-wrap handling — set it whenever rx_bytes/tx_bytes are set.
+    rx_bytes: null,
+    tx_bytes: null,
+    byte_counter_bits: null,
   };
 }
 

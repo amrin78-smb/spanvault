@@ -36,7 +36,10 @@ const IDX2 = `${MAC2_HEAD}.${IFACE2}`;
 const rtabWalked = [
   // Client 1 — correct columns.
   { oid: `${RTAB_BASE}.3.${IDX1}`, value: -55 },        // Strength (dBm) -> rssi_dbm
-  { oid: `${RTAB_BASE}.5.${IDX1}`, value: 999999999 },  // RxBytes (decoy — must NOT be read as rssi)
+  { oid: `${RTAB_BASE}.4.${IDX1}`, value: 123456789 },  // TxBytes (router->client, Counter32) -> rx_bytes (client's download)
+  { oid: `${RTAB_BASE}.5.${IDX1}`, value: 999999999 },  // RxBytes (client->router, Counter32) -> tx_bytes (client's upload);
+                                                         // also doubles as the pre-existing decoy proving this
+                                                         // value is NOT read as rssi_dbm (Bug 2 regression check).
   { oid: `${RTAB_BASE}.7.${IDX1}`, value: 424242 },     // RxPackets (decoy — must NOT be read as a rate)
   { oid: `${RTAB_BASE}.8.${IDX1}`, value: 866700000 },  // TxRate (bits/sec) -> tx_rate_mbps
   { oid: `${RTAB_BASE}.9.${IDX1}`, value: 400000000 },  // RxRate (bits/sec) -> rx_rate_mbps
@@ -44,6 +47,8 @@ const rtabWalked = [
 
   // Client 2 — different values, no AP-table match for its interface.
   { oid: `${RTAB_BASE}.3.${IDX2}`, value: -70 },
+  { oid: `${RTAB_BASE}.4.${IDX2}`, value: 5555555 },    // TxBytes -> rx_bytes
+  { oid: `${RTAB_BASE}.5.${IDX2}`, value: 7777777 },    // RxBytes -> tx_bytes
   { oid: `${RTAB_BASE}.8.${IDX2}`, value: 54000000 },   // 54 Mbps
   { oid: `${RTAB_BASE}.9.${IDX2}`, value: 24000000 },   // 24 Mbps
   { oid: `${RTAB_BASE}.11.${IDX2}`, value: 72000 },     // 720s
@@ -105,6 +110,18 @@ const apMap = {
     ['client 2 rssi_dbm from .3 (-70)', c2.rssi_dbm === -70],
     ['client 2 tx_rate_mbps = 54', c2.tx_rate_mbps === 54],
     ['client 2 rx_rate_mbps = 24', c2.rx_rate_mbps === 24],
+
+    // ── New: per-client bandwidth (.4 TxBytes / .5 RxBytes, Counter32) ──
+    // mtxrWlRtabTable is router-relative (like Cisco's stats table), the
+    // opposite of every other field here — so .4 (router->client) is the
+    // client's DOWNLOAD -> rx_bytes, and .5 (client->router) is the client's
+    // UPLOAD -> tx_bytes. Swapped relative to the raw OID names.
+    ['client 1 rx_bytes from .4 TxBytes (router->client = client download)', c1.rx_bytes === 123456789],
+    ['client 1 tx_bytes from .5 RxBytes (client->router = client upload), not read as rssi_dbm', c1.tx_bytes === 999999999],
+    ['client 1 byte_counter_bits === 32 (Counter32, not Counter64)', c1.byte_counter_bits === 32],
+    ['client 2 rx_bytes from .4 TxBytes', c2.rx_bytes === 5555555],
+    ['client 2 tx_bytes from .5 RxBytes', c2.tx_bytes === 7777777],
+    ['client 2 byte_counter_bits === 32', c2.byte_counter_bits === 32],
 
     // ── Bug 3: SSID/band cross-reference via sibling mtxrWlApTable ──────
     ['client 1 ssid resolved via mtxrWlApTable iface lookup', c1.ssid_name === 'TestNet'],

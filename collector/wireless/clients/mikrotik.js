@@ -17,7 +17,7 @@
 // joining on the recovered interface index.
 
 const { walk } = require('../../snmp-session');
-const { columnMap } = require('../_util');
+const { columnMap, counterNum } = require('../_util');
 const {
   num, str, macFromHead, emptyClient, connectedSinceFromSeconds,
 } = require('./_util');
@@ -25,12 +25,43 @@ const {
 // mtxrWlRtabTable: 1.3.6.1.4.1.14988.1.1.1.2.1
 const RTAB_BASE = '1.3.6.1.4.1.14988.1.1.1.2.1';
 const cStrength = RTAB_BASE + '.3';  // mtxrWlRtabStrength (Integer32, dBm) -> rssi_dbm
+const cTxBytes = RTAB_BASE + '.4';   // mtxrWlRtabTxBytes (Counter32) -> rx_bytes (client's download — see note below)
+const cRxBytes = RTAB_BASE + '.5';   // mtxrWlRtabRxBytes (Counter32) -> tx_bytes (client's upload — see note below)
 const cTxRate = RTAB_BASE + '.8';    // mtxrWlRtabTxRate (Gauge32, bits/sec) -> tx_rate_mbps
 const cRxRate = RTAB_BASE + '.9';    // mtxrWlRtabRxRate (Gauge32, bits/sec) -> rx_rate_mbps
 const cUptime = RTAB_BASE + '.11';   // mtxrWlRtabUptime (TimeTicks) -> connected_since
+// .4/.5 (TxBytes/RxBytes) are MIB-verified to exist at these OIDs (MIKROTIK-MIB
+// SEQUENCE order, confirmed against the LibreNMS MIB mirror and oidref.com's
+// per-column OID pages) but the MIB's own DESCRIPTION fields are empty, so
+// direction is NOT MIB-text-confirmed and NOT live-verified against real
+// hardware. mtxrWlRtabTable is RouterOS's wireless *registration table* — the
+// router's own view of each connected station (device-centric), matching
+// Cisco's bsnMobileStationStatsTable, NOT a client-self-reported table like
+// Ruckus/HPE's "Sta*"/"aiClient*" columns. Per RouterOS's own documented
+// convention for this table ("Tx goes from router to client — so client
+// download is the Tx rate on the router"), Tx/Rx here are relative to the
+// ROUTER, the opposite of every other field in this struct (which are all
+// CLIENT-relative per emptyClient()'s convention) — so they must be swapped,
+// not read directly: mtxrWlRtabTxBytes (router -> client) is what the CLIENT
+// received -> rx_bytes; mtxrWlRtabRxBytes (client -> router) is what the
+// CLIENT sent -> tx_bytes. Both are Counter32 (not Counter64, matching HPE and
+// unlike Aruba/Cisco/Ruckus), decoded with counterNum() and reported with
+// byte_counter_bits = 32 so wirelessCollector.js's shared delta helper applies
+// Counter32 wraparound handling (these wrap at ~4.3GB, easily within an hour on
+// a busy client).
+//
+// NOTE (flagged, not fixed here — out of scope for this change): tx_rate_mbps/
+// rx_rate_mbps below (.8/.9) are read directly with NO such swap, even though
+// they're columns in this SAME router-relative table and the RouterOS
+// convention quoted above applies to "Tx rate" by name too — this may be a
+// pre-existing inversion of those two fields (predates this change, already
+// shipped). Left untouched here since fixing it needs its own dedicated
+// verification pass, not a side effect of the byte-counter fix.
+//
 // Deliberately skipped (no field in emptyClient() to hold them):
-//   .10 RouterOSVersion, .12 SignalToNoise, .13-.18 per-antenna-chain
-//   Tx/RxStrengthCh0/1/2, .19 TxStrength, .20 RadioName.
+//   .6/.7 TxPackets/RxPackets (packet counts, not bytes), .10 RouterOSVersion,
+//   .12 SignalToNoise, .13-.18 per-antenna-chain Tx/RxStrengthCh0/1/2,
+//   .19 TxStrength, .20 RadioName.
 
 // mtxrWlApTable: 1.3.6.1.4.1.14988.1.1.1.3.1 — sibling AP-level table (same
 // base + columns as collector/wireless/mikrotik.js). Walked here only for the
@@ -55,6 +86,8 @@ async function parseClients(session, apMap) {
   const out = [];
   try {
     const strength = columnMap(await walk(session, cStrength), cStrength);
+    const txBytes = columnMap(await walk(session, cTxBytes), cTxBytes);
+    const rxBytes = columnMap(await walk(session, cRxBytes), cRxBytes);
     const txRate = columnMap(await walk(session, cTxRate), cTxRate);
     const rxRate = columnMap(await walk(session, cRxRate), cRxRate);
     const uptime = columnMap(await walk(session, cUptime), cUptime);
@@ -76,7 +109,8 @@ async function parseClients(session, apMap) {
     const soleAp = aps.length === 1 ? aps[0] : null;
 
     const idxs = new Set();
-    [strength, txRate, rxRate, uptime].forEach((m) => Object.keys(m).forEach((k) => idxs.add(k)));
+    [strength, txBytes, rxBytes, txRate, rxRate, uptime]
+      .forEach((m) => Object.keys(m).forEach((k) => idxs.add(k)));
 
     for (const idx of idxs) {
       // INDEX { mtxrWlRtabAddr, mtxrWlRtabIface } — MAC (6 octets) first,
@@ -90,6 +124,11 @@ async function parseClients(session, apMap) {
       const c = emptyClient();
       c.mac_address = mac;
       c.rssi_dbm = num(strength[idx]);
+      // Swapped relative to the raw OID names — see the router-relative-vs-
+      // client-relative note above cTxBytes/cRxBytes.
+      c.rx_bytes = counterNum(txBytes[idx]);
+      c.tx_bytes = counterNum(rxBytes[idx]);
+      c.byte_counter_bits = 32;
 
       const t = num(txRate[idx]);
       c.tx_rate_mbps = t === null ? null : t / 1000000;

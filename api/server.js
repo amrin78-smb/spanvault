@@ -35,6 +35,10 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.72.0': [
+    'New: per-client bandwidth on the Wireless page. Every client\'s current download/upload rate now shows in the Clients table, the client detail panel, and a new "Top Clients by Bandwidth" card on the Wireless Overview dashboard, alongside the existing Top APs/Top SSIDs cards.',
+    'Works for Aruba, Cisco, Ruckus, HPE, and MikroTik controllers (Fortinet/Grandstream don\'t have per-client polling support at all yet, unrelated to this change) — each vendor\'s SNMP byte counters were individually identified and verified (one against live production hardware, the other four cross-checked against vendor MIB documentation) before wiring in, since a wrong OID or a reversed upload/download reading would silently show bad numbers rather than an obvious error.',
+  ],
   '1.71.7': [
     'SECURITY: closed a gap where a user explicitly denied access to SpanVault (per-user app-access) was correctly blocked from every page, but a valid session could still call the API directly and get full data — the API proxy never checked the app-access claim, only that a session existed. Found during a routine documentation review, not from an incident; fixed the same way the equivalent gap was already closed in every sibling app.',
   ],
@@ -5088,6 +5092,22 @@ async function wcHasSticky() {
   return _wcStickyCol;
 }
 
+// rx_bps/tx_bps are an even later migration than is_sticky — same probe-once
+// pattern, so the summary endpoint degrades (empty top_clients_by_bandwidth)
+// instead of 500ing the WHOLE endpoint (by_band, top_aps_by_clients, etc. too)
+// if schema.sql hasn't been re-applied yet on a given deploy.
+let _wcBandwidthCol = null;
+async function wcHasBandwidth() {
+  if (_wcBandwidthCol !== null) return _wcBandwidthCol;
+  try {
+    const r = await sv.query(
+      `SELECT EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_name='wireless_clients' AND column_name='rx_bps') AS x`);
+    _wcBandwidthCol = !!r.rows[0].x;
+  } catch (_e) { _wcBandwidthCol = false; }
+  return _wcBandwidthCol;
+}
+
 app.get('/api/wireless/clients', wrap(async (req, res) => {
   const where = [];
   const params = [];
@@ -5175,6 +5195,27 @@ app.get('/api/wireless/clients/summary', wrap(async (req, res) => {
     .sort((a, b) => b.count - a.count)
     .slice(0, 5);
 
+  // Top 10 clients by total bandwidth (rx_bps + tx_bps). Separate query (like the
+  // live-count query above) since it needs columns — mac_address, hostname,
+  // ip_address, ssid_name, rx_bps/tx_bps — that the main per-client SELECT above
+  // doesn't project. Excludes clients with no bandwidth data yet (both null).
+  let bwRows = [];
+  if (await wcHasBandwidth()) {
+    const bwWhere = ['(cl.rx_bps IS NOT NULL OR cl.tx_bps IS NOT NULL)'];
+    const bwParams = [];
+    const bwSc = siteFilterClause(getSiteFilter(req), bwParams, 'c.site_id');
+    if (bwSc) bwWhere.push(bwSc);
+    const bwRes = await sv.query(`
+      SELECT cl.mac_address, cl.hostname, cl.ip_address, cl.ap_name, cl.ssid_name,
+             cl.controller_id, cl.rx_bps, cl.tx_bps
+      FROM wireless_clients cl JOIN wireless_controllers c ON c.id = cl.controller_id
+      WHERE ${bwWhere.join(' AND ')}
+      ORDER BY (COALESCE(cl.rx_bps, 0) + COALESCE(cl.tx_bps, 0)) DESC
+      LIMIT 10
+    `, bwParams);
+    bwRows = bwRes.rows;
+  }
+
   res.json({
     total_clients: liveTotal,
     by_band: byBand,
@@ -5184,6 +5225,7 @@ app.get('/api/wireless/clients/summary', wrap(async (req, res) => {
     low_signal_clients: lowSignalClients,
     frequent_roamers: frequentRoamers,
     top_aps_by_clients: topApsByClients,
+    top_clients_by_bandwidth: bwRows,
   });
 }));
 
@@ -8414,6 +8456,7 @@ app.listen(PORT, '127.0.0.1', async () => {
   // Reset cached column-capability probes so they re-evaluate post-migration.
   alertCaps = null;
   _wcStickyCol = null;
+  _wcBandwidthCol = null;
   if (agentColExists._cache) agentColExists._cache = {};
   // Start the agent WebSocket server (bound to all interfaces so remote agents
   // can reach it; the API itself stays loopback-only).

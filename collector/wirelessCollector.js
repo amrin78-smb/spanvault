@@ -584,6 +584,15 @@ async function matchMonitoredDevice(pool, ap) {
 // other's deltas). { key -> { rx, tx, t(ms) } }
 const prevCounters = new Map();
 
+// Separate Map + prune cadence for per-CLIENT counters. Clients poll on their
+// own, slower interval (CLIENT_POLL_INTERVAL, 15 min) than APs (WIRELESS_POLL_
+// INTERVAL, 5 min) — reusing prevCounters would have it pruned by the AP loop's
+// 5-min-interval sweep (evicting anything idle 3*5=15 min), which is exactly a
+// client's own poll period, so a client's entry could be evicted moments before
+// its own next poll needs it, making rx_bps/tx_bps unreliably null. A dedicated
+// Map pruned on the client interval avoids that race.
+const prevClientCounters = new Map();
+
 // Delta between two cumulative counter readings, wrap-aware. A decrease from a
 // value still inside 32-bit range is most likely a Counter32 wrap (4.3 GB —
 // minutes on a busy AP), so compute the wrapped delta and accept it only when
@@ -604,10 +613,13 @@ function counterDeltaBps(cur, prev, elapsed, counterBits) {
 // Derive throughput in BITS per second from cumulative byte counters.
 // Returns { inBps, outBps } (either may be null when there is no usable delta,
 // e.g. first poll, counter reset/wrap, or the vendor did not expose the counter).
-function deriveThroughput(key, curRx, curTx, nowMs, counterBits) {
+// `map` selects which prevCounters store to read/write from — pass prevCounters
+// for APs, prevClientCounters for clients (see the comment on prevClientCounters
+// for why they must not share one Map/prune cadence).
+function deriveThroughput(map, key, curRx, curTx, nowMs, counterBits) {
   let inBps = null;
   let outBps = null;
-  const prev = prevCounters.get(key);
+  const prev = map.get(key);
   if (prev) {
     const elapsed = (nowMs - prev.t) / 1000;
     if (elapsed > 0) {
@@ -617,18 +629,20 @@ function deriveThroughput(key, curRx, curTx, nowMs, counterBits) {
   }
   // Only remember a reading when at least one counter is present.
   if (curRx !== null || curTx !== null) {
-    prevCounters.set(key, { rx: curRx, tx: curTx, t: nowMs });
+    map.set(key, { rx: curRx, tx: curTx, t: nowMs });
   }
   return { inBps, outBps };
 }
 
-// Evict prevCounters entries not refreshed for 3+ poll cycles (APs that were
+// Evict entries not refreshed for 3+ poll cycles (APs/clients that were
 // renamed, removed, or whose controller was deleted) so the Map can't grow
-// without bound over months of AP churn.
-function prunePrevCounters(nowMs, intervalMs) {
+// without bound over months of churn. Call with prevCounters + the AP interval
+// from the AP poll cycle, and with prevClientCounters + the client interval
+// from the client poll cycle — each Map must be pruned on ITS OWN cadence.
+function prunePrevCounters(map, nowMs, intervalMs) {
   const cutoff = nowMs - 3 * intervalMs;
-  for (const [key, entry] of prevCounters) {
-    if (entry.t < cutoff) prevCounters.delete(key);
+  for (const [key, entry] of map) {
+    if (entry.t < cutoff) map.delete(key);
   }
 }
 
@@ -660,7 +674,7 @@ async function upsertAp(pool, controller, ap) {
   // Keyed by the parser's stable _index (the AP MAC) when present, so duplicate
   // AP names on one controller can't interleave counters into bogus deltas.
   const { inBps, outBps } = deriveThroughput(
-    `${controller.id}::${ap._index != null ? ap._index : name}`,
+    prevCounters, `${controller.id}::${ap._index != null ? ap._index : name}`,
     numOrNull(ap.rx_bytes), numOrNull(ap.tx_bytes), Date.now(), ap.byte_counter_bits);
 
   const noise2g = intOrNull(ap.noise_floor_2g);
@@ -1139,7 +1153,7 @@ async function pollAll(pool) {
     // Flip no-longer-reported APs to offline so a failed-over-away / down-controller
     // AP doesn't stay a false "online".
     await ageOutStaleAps(pool);
-    prunePrevCounters(Date.now(), WIRELESS_POLL_INTERVAL);
+    prunePrevCounters(prevCounters, Date.now(), WIRELESS_POLL_INTERVAL);
     await runWirelessIntelligence(pool);
   } catch (err) {
     console.error('[wireless] poll cycle failed:', err.message);
@@ -1447,13 +1461,23 @@ async function pollClients(pool, controller, apList) {
     // failure mode from excessive roaming, so it's tracked separately.
     const isSticky = hasRssi && client.rssi_dbm <= -72 && roamCount <= 1;
 
+    // Convert cumulative rx/tx byte counters into a per-poll bits/sec rate, the
+    // same way AP throughput is derived (see upsertAp above) — but keyed by MAC
+    // on the dedicated prevClientCounters map/cadence, not prevCounters (which
+    // is pruned on the AP interval and would race a client's own slower poll
+    // cycle — see the comment on prevClientCounters for why they can't share).
+    // rx_bps here is what the CLIENT downloaded, tx_bps what it uploaded.
+    const { inBps: rxBps, outBps: txBps } = deriveThroughput(
+      prevClientCounters, `${controller.id}::${client.mac_address}`,
+      numOrNull(client.rx_bytes), numOrNull(client.tx_bytes), Date.now(), client.byte_counter_bits);
+
     try {
     await pool.query(`
       INSERT INTO wireless_clients
         (mac_address, ip_address, hostname, controller_id, ap_id, ap_name, ssid_name, band, channel,
          rssi_dbm, tx_rate_mbps, rx_rate_mbps, connected_since, last_seen_at, auth_type,
-         is_problem, roaming_count, vendor, is_sticky, phy_mode, vlan_id)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+         is_problem, roaming_count, vendor, is_sticky, phy_mode, vlan_id, rx_bps, tx_bps)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
       ON CONFLICT (controller_id, mac_address) DO UPDATE SET
         ip_address    = EXCLUDED.ip_address,
         hostname      = COALESCE(EXCLUDED.hostname, wireless_clients.hostname),
@@ -1472,14 +1496,16 @@ async function pollClients(pool, controller, apList) {
         roaming_count = EXCLUDED.roaming_count,
         is_sticky     = EXCLUDED.is_sticky,
         phy_mode      = EXCLUDED.phy_mode,
-        vlan_id       = EXCLUDED.vlan_id
+        vlan_id       = EXCLUDED.vlan_id,
+        rx_bps        = EXCLUDED.rx_bps,
+        tx_bps        = EXCLUDED.tx_bps
     `, [
       client.mac_address, client.ip_address || null, client.hostname || null, controller.id,
       client.ap_id || null, client.ap_name || null, client.ssid_name || null, client.band || null,
       intOrNull(client.channel), intOrNull(client.rssi_dbm),
       numOrNull(client.tx_rate_mbps), numOrNull(client.rx_rate_mbps), client.connected_since || null,
       now, client.auth_type || null, isProblem, roamCount, controller.vendor, isSticky,
-      client.phy_mode || null, intOrNull(client.vlan_id),
+      client.phy_mode || null, intOrNull(client.vlan_id), rxBps, txBps,
     ]);
     } catch (e) {
       // Isolate per-row failures so one bad client doesn't skip the rest of the
@@ -1544,6 +1570,7 @@ async function pollAllClients(pool) {
         console.error(`[wireless] client poll failed on ${c.name}:`, e.message);
       }
     }
+    prunePrevCounters(prevClientCounters, Date.now(), CLIENT_POLL_INTERVAL);
   } catch (err) {
     console.error('[wireless] client poll cycle failed:', err.message);
   } finally {

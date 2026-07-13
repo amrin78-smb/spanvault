@@ -8,7 +8,6 @@
 const path = require('path');
 const ROOT = path.join(__dirname, '..');
 const ruckusClients = require(path.join(ROOT, 'collector/wireless/clients/ruckus.js'));
-const { counterNum } = require(path.join(ROOT, 'collector/wireless/_util.js'));
 
 function c64(n) { // encode a number as an 8-byte BE buffer like net-snmp Counter64
   const b = Buffer.alloc(8);
@@ -47,8 +46,15 @@ const staWalked = [
   { oid: `${TABLE}.80.${MAC1}`, value: 'wpa2-psk' },
   { oid: `${TABLE}.81.${MAC1}`, value: -58 },     // StaSignalStrength, UNITS dBm — the real rssi_dbm source
   { oid: `${TABLE}.30.${MAC1}`, value: 20 },      // StaVlanID -> vlan_id
+  { oid: `${TABLE}.11.${MAC1}`, value: c64(9876543210) },     // StaRxBytes (Counter64) -> rx_bytes
+  { oid: `${TABLE}.13.${MAC1}`, value: c64(1234567890123) },  // StaTxBytes (Counter64) -> tx_bytes
 
   // ── Client 2 ──────────────────────────────────────────────────────────
+  // Deliberately has NO .11/.13 rows, so it also covers the "byte counter OID
+  // didn't answer for this row" case: rx_bytes/tx_bytes must stay null while
+  // byte_counter_bits is still set to 64 (matches the AP-level parser's
+  // unconditional ap.byte_counter_bits = 64 — the field describes the counter
+  // WIDTH this table uses, not whether this particular row answered).
   { oid: `${TABLE}.2.${MAC2}`, value: UNKNOWN_AP_MAC_BUF },
   { oid: `${TABLE}.3.${MAC2}`, value: BSSID2_BUF },
   { oid: `${TABLE}.4.${MAC2}`, value: 'Guest-WiFi' },
@@ -109,16 +115,16 @@ const apMap = {
   check('client2: rx_rate_mbps null', c2.rx_rate_mbps === null);
   check('client2: AP correlation falls back to .3 BSSID when .2 does not resolve', c2.ap_id === 5 && c2.ap_name === 'RuckusAP-Lobby');
 
-  // ── Counter64 handling for .11/.13 (StaRxBytes/StaTxBytes) ──────────────
-  // ruckus.js's client parser deliberately does NOT walk .11/.13 today
-  // (emptyClient() has no rx_bytes/tx_bytes field), but confirm the shared
-  // counterNum() helper it would use for them decodes an 8-byte BE Counter64
-  // buffer correctly and never throws, so the file wouldn't crash if that
-  // decoding is wired in later.
-  const rxBuf = c64(9876543210);
-  check('counterNum decodes an 8-byte BE Counter64 buffer (StaRxBytes shape)', counterNum(rxBuf) === 9876543210);
-  const txBuf = c64(1234567890123);
-  check('counterNum decodes a larger Counter64 buffer (StaTxBytes shape)', counterNum(txBuf) === 1234567890123);
+  // ── Counter64 handling for .11/.13 (StaRxBytes/StaTxBytes) — end-to-end ──
+  // ruckus.js's client parser now walks .11/.13 and decodes them via the
+  // shared counterNum() helper into emptyClient()'s rx_bytes/tx_bytes fields
+  // (client-relative: StaRxBytes = client's download, StaTxBytes = client's
+  // upload). Verify the full parse path, not just the decoder in isolation.
+  check('client1: rx_bytes decoded from .11 StaRxBytes (Counter64)', c1.rx_bytes === 9876543210);
+  check('client1: tx_bytes decoded from .13 StaTxBytes (Counter64)', c1.tx_bytes === 1234567890123);
+  check('client1: byte_counter_bits === 64', c1.byte_counter_bits === 64);
+  check('client2: rx_bytes/tx_bytes stay null when .11/.13 rows are absent', c2.rx_bytes === null && c2.tx_bytes === null);
+  check('client2: byte_counter_bits still 64 even when this row has no counter data', c2.byte_counter_bits === 64);
 
   // ── Resilience: never throws even on a broken/empty session ─────────────
   const brokenSession = { subtree(_base, _maxReps, _feed, done) { throw new Error('boom'); } };

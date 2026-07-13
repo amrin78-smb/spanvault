@@ -18,7 +18,7 @@
 // the sibling AP/radio-table fix this file now matches.
 
 const { walk } = require('../../snmp-session');
-const { columnMap } = require('../_util');
+const { columnMap, counterNum } = require('../_util');
 const {
   num, str, macFromTail, hexMac, bandFromCode, bandFromChannelNum,
   emptyClient, connectedSinceFromSeconds,
@@ -39,11 +39,19 @@ const staIp = TABLE + '.8';        // ruckusZDWLANStaIPAddr (IpAddress)
 // in the MIB — '.81' StaSignalStrength (below) is the only column with an
 // explicit "UNITS dBm" and is preferred for rssi_dbm.
 const staAssocTime = TABLE + '.15'; // ruckusZDWLANStaAssocTime (TimeTicks, 1/100s)
-// '.11' StaRxBytes / '.13' StaTxBytes (Counter64) exist and are available, but
-// emptyClient() has no rx_bytes/tx_bytes field to put them in today, so they
-// are deliberately not walked in this pass (same call as the Cisco client
-// parser's per-client byte counters) — future work if per-client throughput
-// is ever needed.
+// ruckusZDWLANStaRxBytes ('.11') / ruckusZDWLANStaTxBytes ('.13') — Counter64,
+// MIB descriptions "Received bytes." / "Transmitted bytes." respectively, both
+// documented relative to the STATION (i.e. the client) per the object name
+// (Sta...Rx.../Sta...Tx...) — so StaRxBytes is the client's download and maps
+// to rx_bytes, StaTxBytes is the client's upload and maps to tx_bytes, matching
+// emptyClient()'s client-relative convention. Decoded via the shared
+// counterNum() helper (8-byte BE Buffer -> Number), same as the AP-level
+// radio/SSID byte counters in ../ruckus.js. MIB-verified (RUCKUS-ZD-WLAN-MIB,
+// cross-checked against a second independent mirror) but not live-verified
+// against real Ruckus hardware — same caveat as this file's other MIB-
+// sourced-only columns.
+const staRxBytes = TABLE + '.11'; // ruckusZDWLANStaRxBytes (Counter64) -> rx_bytes
+const staTxBytes = TABLE + '.13'; // ruckusZDWLANStaTxBytes (Counter64) -> tx_bytes
 const staVlanId = TABLE + '.30';  // ruckusZDWLANStaVlanID (Unsigned32) -> vlan_id
 const staAuthMode = TABLE + '.80'; // ruckusZDWLANStaAuthMode (DisplayString) — ready-made auth label
 const staSignalStrength = TABLE + '.81'; // ruckusZDWLANStaSignalStrength (Integer32, UNITS dBm) → rssi_dbm
@@ -77,9 +85,11 @@ async function parseClients(session, apMap) {
     const authMode = columnMap(await walk(session, staAuthMode), staAuthMode);
     const signal = columnMap(await walk(session, staSignalStrength), staSignalStrength);
     const vlan = columnMap(await walk(session, staVlanId), staVlanId);
+    const rxBytes = columnMap(await walk(session, staRxBytes), staRxBytes);
+    const txBytes = columnMap(await walk(session, staTxBytes), staTxBytes);
 
     const idxs = new Set();
-    [apMacCol, bssidCol, ssid, radio, chan, ip, assocTime, authMode, signal, vlan].forEach((m) =>
+    [apMacCol, bssidCol, ssid, radio, chan, ip, assocTime, authMode, signal, vlan, rxBytes, txBytes].forEach((m) =>
       Object.keys(m).forEach((k) => idxs.add(k))
     );
 
@@ -94,6 +104,14 @@ async function parseClients(session, apMap) {
       c.channel = num(chan[idx]);
       c.auth_type = str(authMode[idx]); // ready-made label, no enum mapping needed
       c.vlan_id = num(vlan[idx]);
+
+      // Cumulative byte counters (Counter64), client-relative — see the '.11'/
+      // '.13' comment above. byte_counter_bits is set unconditionally (matches
+      // the AP-level parser's ap.byte_counter_bits = 64 convention) since this
+      // table's RxBytes/TxBytes are Counter64 for every row.
+      c.rx_bytes = counterNum(rxBytes[idx]);
+      c.tx_bytes = counterNum(txBytes[idx]);
+      c.byte_counter_bits = 64;
 
       // Prefer the explicitly dBm-labelled SignalStrength (.81) over the
       // unit-less AvgRSSI (.9) / SNR (.21).

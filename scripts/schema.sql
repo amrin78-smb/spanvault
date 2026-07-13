@@ -1089,6 +1089,13 @@ CREATE INDEX IF NOT EXISTS idx_wclient_rssi ON wireless_clients(rssi_dbm);
 CREATE INDEX IF NOT EXISTS idx_wclient_problem
   ON wireless_clients(is_problem) WHERE is_problem = TRUE;
 ALTER TABLE wireless_clients ADD COLUMN IF NOT EXISTS is_sticky BOOLEAN DEFAULT FALSE;
+-- Per-client bandwidth. Only the computed rate is persisted (mirrors wireless_aps'
+-- throughput_in_bps/throughput_out_bps) — the underlying cumulative byte counters
+-- and their bit-width live only on the in-memory parsed client object between
+-- polls (see emptyClient() in collector/wireless/clients/_util.js), converted to
+-- a rate via the shared deriveThroughput() delta helper in wirelessCollector.js.
+ALTER TABLE wireless_clients ADD COLUMN IF NOT EXISTS rx_bps BIGINT;
+ALTER TABLE wireless_clients ADD COLUMN IF NOT EXISTS tx_bps BIGINT;
 
 -- Rogue/unmanaged APs detected by a controller (from the vendor rogue SNMP table).
 -- Refreshed every poll; rows not seen in 24h are pruned by the collector.

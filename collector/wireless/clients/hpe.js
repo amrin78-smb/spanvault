@@ -29,28 +29,45 @@
 //     hostname field with a username.
 //   • OS fingerprint — aiClientOperatingSystem (.6) has no destination field
 //     in emptyClient() (collector/wireless/clients/_util.js).
-//   • tx/rx frame+byte counters and retry counts (.8-.10, .12-.14) —
-//     Counter32, but emptyClient() has no counter fields to hold them; not
-//     walked at all.
+//   • tx/rx frame and retry counts (.8, .10, .12, .14 — aiClientTxDataFrames,
+//     aiClientTxRetries, aiClientRxDataFrames, aiClientRxRetries) — no
+//     destination field in emptyClient() for frame/retry counts; not walked.
 //   • HT mode — aiClientHtMode (.18) has no destination field; not walked.
 //   • channel / auth_type — no OIDs for either in this table → stay null.
+//
+// aiClientTxDataBytes (.9) / aiClientRxDataBytes (.13) — WALKED (added
+// 2026-07, MIB-literature-verified across 4 independent sources: a web
+// search summary, LibreNMS's mirrored AI-AP-MIB text, a second GitHub MIB
+// mirror (Poil/MIBs), and mibbrowser.online's parsed OID database — all
+// agreeing exactly on names/OIDs/types, HIGH confidence — but, per this
+// file's no-hardware caveat above, still NOT live-verified against real
+// HPE/Aruba Instant hardware). DESCRIPTIONs: .9 "Total bytes transmitted by
+// the client" -> upload BY the client -> tx_bytes; .13 "Total bytes received
+// by the client" -> download BY the client -> rx_bytes (matches this
+// struct's client-relative convention — see emptyClient()'s comment). Both
+// are Counter32 (NOT Counter64 like Aruba/Cisco/Ruckus), so
+// byte_counter_bits is set to 32 — that tells wirelessCollector.js's shared
+// delta helper to apply Counter32-wraparound handling (wraps at ~4.3GB,
+// reachable well under an hour on a busy client).
 
 const { walk } = require('../../snmp-session');
-const { columnMap } = require('../_util');
+const { columnMap, counterNum } = require('../_util');
 const {
   num, str, macFromTail, hexMac, emptyClient, connectedSinceFromSeconds,
 } = require('./_util');
 
 // aiClientEntry — base 1.3.6.1.4.1.14823.2.3.3.1.2.4.1, INDEX = client MAC (6 octets).
 const TABLE = '1.3.6.1.4.1.14823.2.3.3.1.2.4.1';
-const cBssid   = TABLE + '.2';  // aiClientWlanMACAddress — BSSID of the AP the client is on
-const cIp      = TABLE + '.3';  // aiClientIPAddress
-const cApIp    = TABLE + '.4';  // aiClientAPIPAddress — fallback AP-correlation key
-const cSnr     = TABLE + '.7';  // aiClientSNR (signal-to-noise ratio, NOT raw dBm)
-const cTxRate  = TABLE + '.11'; // aiClientTxRate — DESCRIPTION: "Transmit rate of client in mbps"
-const cRxRate  = TABLE + '.15'; // aiClientRxRate — DESCRIPTION: "Receive rate of client in mbps"
-const cUptime  = TABLE + '.16'; // aiClientUptime (TimeTicks, hundredths of a second)
-const cPhyType = TABLE + '.17'; // aiClientPhyType (ArubaPhyType enum)
+const cBssid    = TABLE + '.2';  // aiClientWlanMACAddress — BSSID of the AP the client is on
+const cIp       = TABLE + '.3';  // aiClientIPAddress
+const cApIp     = TABLE + '.4';  // aiClientAPIPAddress — fallback AP-correlation key
+const cSnr      = TABLE + '.7';  // aiClientSNR (signal-to-noise ratio, NOT raw dBm)
+const cTxBytes  = TABLE + '.9';  // aiClientTxDataBytes — Counter32, "Total bytes transmitted by the client"
+const cRxBytes  = TABLE + '.13'; // aiClientRxDataBytes — Counter32, "Total bytes received by the client"
+const cTxRate   = TABLE + '.11'; // aiClientTxRate — DESCRIPTION: "Transmit rate of client in mbps"
+const cRxRate   = TABLE + '.15'; // aiClientRxRate — DESCRIPTION: "Receive rate of client in mbps"
+const cUptime   = TABLE + '.16'; // aiClientUptime (TimeTicks, hundredths of a second)
+const cPhyType  = TABLE + '.17'; // aiClientPhyType (ArubaPhyType enum)
 
 // ArubaPhyType (AI-AP-MIB): dot11a(1), dot11b(2), dot11g(3), dot11ag(4), wired(5).
 // dot11a is 5GHz-only and dot11b/dot11g are 2.4GHz-only, so those three map
@@ -86,13 +103,15 @@ async function parseClients(session, apMap) {
     const ipCol = columnMap(await walk(session, cIp), cIp);
     const apIpCol = columnMap(await walk(session, cApIp), cApIp);
     const snrCol = columnMap(await walk(session, cSnr), cSnr);
+    const txBytesCol = columnMap(await walk(session, cTxBytes), cTxBytes);
+    const rxBytesCol = columnMap(await walk(session, cRxBytes), cRxBytes);
     const txCol = columnMap(await walk(session, cTxRate), cTxRate);
     const rxCol = columnMap(await walk(session, cRxRate), cRxRate);
     const upCol = columnMap(await walk(session, cUptime), cUptime);
     const phyCol = columnMap(await walk(session, cPhyType), cPhyType);
 
     const idxs = new Set();
-    [bssidCol, ipCol, apIpCol, snrCol, txCol, rxCol, upCol, phyCol]
+    [bssidCol, ipCol, apIpCol, snrCol, txBytesCol, rxBytesCol, txCol, rxCol, upCol, phyCol]
       .forEach((m) => Object.keys(m).forEach((k) => idxs.add(k)));
 
     const apByIp = buildApIpMap(apMap);
@@ -126,6 +145,20 @@ async function parseClients(session, apMap) {
       // aiClientTxRate / aiClientRxRate are documented "in mbps" — used directly.
       c.tx_rate_mbps = num(txCol[idx]);
       c.rx_rate_mbps = num(rxCol[idx]);
+
+      // aiClientTxDataBytes / aiClientRxDataBytes — Counter32 (NOT Counter64
+      // like Aruba/Cisco/Ruckus), so byte_counter_bits must be 32 so
+      // wirelessCollector.js's shared delta helper applies Counter32-wrap
+      // handling. Direction is already client-relative (tx = uploaded BY the
+      // client, rx = downloaded BY the client), matching emptyClient()'s
+      // convention — no swap needed.
+      const txBytes = counterNum(txBytesCol[idx]);
+      const rxBytes = counterNum(rxBytesCol[idx]);
+      if (txBytes !== null || rxBytes !== null) {
+        c.tx_bytes = txBytes;
+        c.rx_bytes = rxBytes;
+        c.byte_counter_bits = 32;
+      }
 
       // aiClientUptime is TimeTicks (hundredths of a second).
       const ticks = num(upCol[idx]);

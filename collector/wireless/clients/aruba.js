@@ -11,9 +11,25 @@
 //
 // The old base (...2.2.1.1.2.1.1) was wlsxSwitchUserEntry — a generic user
 // table, not a station table — which is why it returned zero clients.
+//
+// Per-client byte counters (nUserEntry .42/.43) — LIVE-VERIFIED, not from
+// cached MIB text (none was available for WLSX-USER-MIB at the time). A live
+// SNMP walk against 3 real Aruba controllers (~1150 real clients) confirmed
+// both columns are Counter64 (8-byte values), growing monotonically at
+// byte-count rates roughly 200-470x the growth rate of the smaller-magnitude
+// .40/.41 pair sampled alongside them (packet counters), so: .40=TxPackets,
+// .41=RxPackets, .42=TxBytes, .43=RxBytes. The .42-vs-.43 direction mapping is
+// a WORKING HYPOTHESIS inferred from traffic-ratio statistics (12 real
+// clients polled twice, 39s apart: .43 > .42 in 11/12 samples, ratios ~1.4x-
+// 27x — consistent with typical download-heavy consumer WiFi, and with the
+// common MIB convention of ordering "Input" (into the network, i.e. client
+// TX) before "Output" (out to the client, i.e. client RX) in a matching pair)
+// — NOT confirmed against an actual MIB DESCRIPTION field. Should be spot-
+// checked again post-deploy (e.g. a client mid-large-download should show .43
+// increasing fastest).
 
 const { walk } = require('../../snmp-session');
-const { columnMap } = require('../_util');
+const { columnMap, counterNum } = require('../_util');
 const {
   num, str, macFromTail, macFromHead, hexMac, bandFromChannelNum,
   emptyClient, connectedSinceFromSeconds,
@@ -63,21 +79,33 @@ const HT_MODE_LABELS = {
 // wlsxUserTable / nUserEntry — base ...4.1.2.1, INDEX = station MAC(6) + IPv4(4).
 const USER_BASE = '1.3.6.1.4.1.14823.2.2.1.4.1.2.1';
 const nUserApName = USER_BASE + '.10'; // nUserApLocation (AP name)
+// Counter64 byte counters — see the byte-counter comment in the header above
+// for the empirical basis of this column-to-direction mapping.
+const nUserTxBytes = USER_BASE + '.42'; // client TX bytes (empirically inferred)
+const nUserRxBytes = USER_BASE + '.43'; // client RX bytes (empirically inferred)
 
 async function parseClients(session, apMap) {
   const out = [];
   try {
-    // Enrichment: station MAC -> { ip, apName } from the user table. Its index
-    // is MAC(6).IPv4(4); the MAC is the leading 6 octets, the IP the trailing 4.
+    // Enrichment: station MAC -> { ip, apName, txBytes, rxBytes } from the user
+    // table. Its index is MAC(6).IPv4(4); the MAC is the leading 6 octets, the
+    // IP the trailing 4.
     const userMap = new Map();
     const apNameCol = columnMap(await walk(session, nUserApName), nUserApName);
+    const txBytesCol = columnMap(await walk(session, nUserTxBytes), nUserTxBytes);
+    const rxBytesCol = columnMap(await walk(session, nUserRxBytes), nUserRxBytes);
     for (const idx of Object.keys(apNameCol)) {
       const parts = idx.split('.');
       if (parts.length < 10) continue;
       const mac = macFromHead(idx, 6);
       if (!mac) continue;
       const ip = parts.slice(parts.length - 4).join('.');
-      userMap.set(mac, { ip, apName: str(apNameCol[idx]) });
+      userMap.set(mac, {
+        ip,
+        apName: str(apNameCol[idx]),
+        txBytes: counterNum(txBytesCol[idx]),
+        rxBytes: counterNum(rxBytesCol[idx]),
+      });
     }
 
     // Station table — one row per associated client, indexed by the client MAC.
@@ -101,6 +129,11 @@ async function parseClients(session, apMap) {
 
       const u = userMap.get(mac);
       if (u && u.ip) c.ip_address = u.ip;
+      if (u && (u.txBytes !== null || u.rxBytes !== null)) {
+        c.tx_bytes = u.txBytes;
+        c.rx_bytes = u.rxBytes;
+        c.byte_counter_bits = 64; // nUserEntry .42/.43 are confirmed Counter64
+      }
 
       c.ssid_name = str(essid[idx]);
       c.channel = num(chan[idx]);
