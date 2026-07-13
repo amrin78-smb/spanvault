@@ -1281,7 +1281,11 @@ function OverviewTab({
           ) : <Empty message="No SSID data yet." />}
         </SectionCard>
 
-        <SectionCard title="Top Clients by Bandwidth" action={<DrillHint />} maxHeight={200} minWidth={240}>
+      </EqualRow>
+
+      {/* Row 3 — Top Clients by Bandwidth | Offline APs | High utilization APs */}
+      <EqualRow>
+        <SectionCard title="Top Clients by Bandwidth" action={<DrillHint />} maxHeight={160} minWidth={280}>
           {topClientsByBandwidth.length ? (
             <table className="sv-table">
               <thead><tr>
@@ -1300,10 +1304,7 @@ function OverviewTab({
             </table>
           ) : <Empty message="No client bandwidth data yet." />}
         </SectionCard>
-      </EqualRow>
 
-      {/* Row 3 — Offline APs | High utilization APs */}
-      <EqualRow>
         <SectionCard
           title="Offline APs"
           action={(

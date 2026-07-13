@@ -35,6 +35,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.72.1': [
+    'Wireless Overview layout: "Top Clients by Bandwidth" moved out of the crowded 4-card row into its own row alongside Offline APs / High Utilization APs, so both rows read as clean, evenly-sized groups again.',
+  ],
   '1.72.0': [
     'New: per-client bandwidth on the Wireless page. Every client\'s current download/upload rate now shows in the Clients table, the client detail panel, and a new "Top Clients by Bandwidth" card on the Wireless Overview dashboard, alongside the existing Top APs/Top SSIDs cards.',
     'Works for Aruba, Cisco, Ruckus, HPE, and MikroTik controllers (Fortinet/Grandstream don\'t have per-client polling support at all yet, unrelated to this change) — each vendor\'s SNMP byte counters were individually identified and verified (one against live production hardware, the other four cross-checked against vendor MIB documentation) before wiring in, since a wrong OID or a reversed upload/download reading would silently show bad numbers rather than an obvious error.',
