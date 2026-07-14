@@ -50,7 +50,20 @@
 // which reads the body before deciding whether to throw. Kept local rather
 // than changing _http.js's shared behavior, which every other API client
 // (omada/ubiquiti/grandstream) also depends on and has never needed this for.
-async function fetchJsonVerbose(url, options, timeoutMs) {
+// `opLabel` (e.g. "token refresh", "AP fetch") is prefixed onto every thrown
+// error from this function so a failure log line says WHICH of the two calls
+// failed, not just "aruba_central: HTTP 400" with no way to tell a bad
+// refresh_token from a bad group filter. The path included in that message is
+// always `new URL(url).pathname` — the pathname ONLY, never the query string
+// — since the token-refresh URL's query string carries client_id/
+// client_secret/refresh_token. This makes it structurally impossible for a
+// credential to end up in a log line here, rather than relying on every call
+// site to remember not to pass the full URL.
+async function fetchJsonVerbose(url, options, timeoutMs, opLabel) {
+  const label = opLabel || 'request';
+  let path;
+  try { path = new URL(url).pathname; } catch (_e) { path = '(unknown path)'; }
+
   const ms = Number(timeoutMs) > 0 ? Number(timeoutMs) : 15000;
   const abort = new AbortController();
   const timer = setTimeout(() => abort.abort(), ms);
@@ -59,9 +72,9 @@ async function fetchJsonVerbose(url, options, timeoutMs) {
     res = await fetch(url, Object.assign({}, options, { signal: abort.signal }));
   } catch (err) {
     if (err && err.name === 'AbortError') {
-      throw new Error('aruba_central: request timed out after ' + ms + 'ms');
+      throw new Error(`aruba_central: ${label} (${path}) timed out after ${ms}ms`);
     }
-    throw new Error('aruba_central: request failed: ' + (err && err.message ? err.message : String(err)));
+    throw new Error(`aruba_central: ${label} (${path}) failed: ${err && err.message ? err.message : String(err)}`);
   } finally {
     clearTimeout(timer);
   }
@@ -84,13 +97,15 @@ async function fetchJsonVerbose(url, options, timeoutMs) {
     const errCode = bodyJson && bodyJson.error;
     const errDesc = bodyJson && (bodyJson.error_description || bodyJson.message);
     const detail = (errCode || errDesc) ? [errCode, errDesc].filter(Boolean).join(' — ') : null;
-    const err = new Error('aruba_central: HTTP ' + res.status + ' from controller' + (detail ? ' — ' + detail : ''));
+    const err = new Error(
+      `aruba_central: ${label} (${path}) failed: HTTP ${res.status}` + (detail ? ' — ' + detail : '')
+    );
     err.status = res.status;
     throw err;
   }
 
   if (bodyJson === null) {
-    throw new Error('aruba_central: invalid JSON response from controller');
+    throw new Error(`aruba_central: ${label} (${path}) returned invalid JSON`);
   }
   return bodyJson;
 }
@@ -175,7 +190,7 @@ async function fetchAps(controller, accessToken) {
       'Authorization': 'Bearer ' + accessToken,
       'TenantID': str(controller.api_customer_id) || '',
     },
-  }, TIMEOUT_MS);
+  }, TIMEOUT_MS, 'AP fetch');
 }
 
 // Single UPDATE — writes the rotated tokens to the DB. See the module-level
@@ -218,13 +233,13 @@ async function refreshAndPersist(controller, pool) {
   const body = await fetchJsonVerbose(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-  }, TIMEOUT_MS);
+  }, TIMEOUT_MS, 'token refresh');
 
   const accessToken = str(pick(body, ['access_token']));
   const refreshToken = str(pick(body, ['refresh_token']));
   const expiresIn = num(pick(body, ['expires_in']));
   if (!accessToken || !refreshToken) {
-    throw new Error('aruba_central: refresh response missing access_token/refresh_token');
+    throw new Error('aruba_central: token refresh (/oauth2/token) response missing access_token/refresh_token');
   }
   // Central's own docs give expires_in in seconds; fall back to a conservative
   // 2h assumption only if the field is ever absent/malformed (never used to

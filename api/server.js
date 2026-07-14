@@ -35,6 +35,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.75.4': [
+    'Aruba Central error messages (token refresh / AP fetch) now say which of the two calls failed and its request path, instead of one generic "HTTP 400 from controller" for both — makes a misconfigured refresh token vs. a misconfigured group filter easy to tell apart. The path shown is always the endpoint path only, never the query string, since the token-refresh request carries the client secret and refresh token there.',
+  ],
   '1.75.3': [
     'Fixed: "Test Connection" on an Aruba Central controller failed with an opaque "HTTP 400 from controller" and no further detail. The client now reads Central\'s own JSON error body ({ "error": "invalid_grant", "error_description": "..." }) on any failed token refresh or AP-list call and includes it in the error message, so a misconfigured credential is actually diagnosable instead of a bare status code.',
     'Aruba Central credential fields (client ID/secret, customer ID, refresh token) are now trimmed before use — a stray leading/trailing space or newline from a copy-paste (invisible in the form) previously produced the same opaque failure as a genuinely wrong value.',
