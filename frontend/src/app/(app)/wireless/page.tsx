@@ -2244,7 +2244,18 @@ function movingAverage<T extends Record<string, any>>(
     const slice = rows.slice(Math.max(0, i - window + 1), i + 1);
     const out: Record<string, any> = { ...row };
     for (const k of keys) {
-      const vals = slice.map((r) => r[k]).filter((v) => v != null) as number[];
+      // The history endpoint's noise_floor_2g/5g columns are Postgres NUMERIC
+      // (ROUND(AVG(...)::numeric, 0) in api/server.js), which the pg driver
+      // returns as JS strings, not numbers — the same pitfall documented for
+      // BIGINT columns elsewhere in this file. Without Number(...) here,
+      // `+` on two such values does string concatenation ("−96" + "−97" ->
+      // "−96−97"), producing NaN once divided — Recharts then silently drops
+      // every point, rendering an empty chart with no error.
+      const vals = slice
+        .map((r) => r[k])
+        .filter((v) => v != null)
+        .map((v) => Number(v))
+        .filter((v) => !Number.isNaN(v));
       out[k] = vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
     }
     return out as T;

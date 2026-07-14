@@ -35,6 +35,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.74.4': [
+    'Hotfix: the 1.74.3 Noise Floor smoothing fix broke the chart entirely (blank, no data) for every AP. The history endpoint\'s noise floor columns are Postgres NUMERIC, which come back from the DB driver as strings, not numbers — the new averaging code summed them with plain `+`, which does string concatenation on two strings instead of addition, producing NaN, which the chart library silently drops. Fixed by converting to a number before averaging.',
+  ],
   '1.74.3': [
     'Fixed: the AP detail drawer\'s 24h Noise Floor chart still looked like a wall of spikes after the 1.74.0 fix. That fix only padded the Y-axis so values stopped touching the chart edges — the real cause is that noise floor readings genuinely jitter several dB from one 5-minute poll to the next, and the chart was plotting all ~288 raw daily readings unsmoothed. The chart now applies a 30-minute trailing moving average, matching how this kind of noisy RF telemetry is normally displayed.',
   ],
