@@ -160,8 +160,14 @@ let suppressedDevices = new Set();
 // ══════════════════════════════════════════════════════════════
 async function syncNetVaultDevices() {
   try {
+    // netvault.devices.ip_address is `character varying` on the live DB, NOT
+    // `inet` — confirmed directly against information_schema.columns. This
+    // used to be wrapped in host(...) (an inet-only function, presumably
+    // written against an older/assumed schema shape), which threw "function
+    // host(character varying) does not exist" on every single sync attempt.
+    // No cast needed now — the column already stores a plain address string.
     const r = await nv.query(`
-      SELECT d.id AS netvault_device_id, d.name, host(d.ip_address) AS ip_address,
+      SELECT d.id AS netvault_device_id, d.name, d.ip_address AS ip_address,
              dt.name AS device_type, d.site_id, s.name AS site_name
       FROM devices d
       LEFT JOIN device_types dt ON dt.id = d.device_type_id

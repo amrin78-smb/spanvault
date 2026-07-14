@@ -257,7 +257,11 @@ nv.on('error', (err) => console.error('[DB nv] Pool error:', err.message));
 ```
 
 ### NetVault schema (read-only reference)
-devices: id, name, ip_address (INET — use host() to cast to text), device_type_id,
+devices: id, name, ip_address (character varying — plain text, NOT inet;
+         confirmed 2026-07 against information_schema.columns after a
+         `host(d.ip_address)` cast broke NetVault sync/import in three places
+         with "function host(character varying) does not exist" — do NOT
+         re-add a host()/inet cast here), device_type_id,
          site_id, device_status ('Active'/'Decommed'/etc)
 device_types: id, name
 sites: id, name, code, city, site_status

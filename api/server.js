@@ -35,6 +35,10 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.75.5': [
+    'Fixed: NetVault device sync and the "Import from NetVault" feature were completely broken (failing on every attempt with "function host(character varying) does not exist"). The query assumed NetVault\'s ip_address column was an inet type; it\'s actually plain text, confirmed against the live database.',
+    'Aruba Central AP data now maps only the fields the live API actually returns (name, MAC, model, IP, status, firmware, serial number) instead of guessing at channel/utilization/tx-power/uptime field names that don\'t exist on this endpoint — those now show as an honest "no data" instead of a wrong value (client counts still show 0 for now, since that column can\'t hold "unknown" without a separate schema change). Also fixed the AP radio band encoding, which is a numeric index (0/1) on this endpoint, not a text label — the previous code never matched it, so no radio was ever attributed to a band.',
+  ],
   '1.75.4': [
     'Aruba Central error messages (token refresh / AP fetch) now say which of the two calls failed and its request path, instead of one generic "HTTP 400 from controller" for both — makes a misconfigured refresh token vs. a misconfigured group filter easy to tell apart. The path shown is always the endpoint path only, never the query string, since the token-refresh request carries the client secret and refresh token there.',
   ],
@@ -2804,10 +2808,13 @@ app.post('/api/snmp-test-adhoc', wrap(async (req, res) => {
 app.get('/api/netvault/devices', wrap(async (_req, res) => {
   const monitored = await sv.query(`SELECT netvault_device_id FROM monitored_devices WHERE netvault_device_id IS NOT NULL`);
   const existing = new Set(monitored.rows.map((r) => r.netvault_device_id));
+  // netvault.devices.ip_address is `character varying`, not `inet` — see the
+  // matching comment in collector/collector.js's syncNetVaultDevices() for
+  // how this was confirmed. No host(...) cast needed.
   const r = await nv.query(`
     SELECT d.id AS netvault_device_id,
            d.name,
-           host(d.ip_address) AS ip_address,
+           d.ip_address AS ip_address,
            dt.name AS device_type,
            d.site_id,
            s.name AS site_name
@@ -2825,8 +2832,10 @@ app.get('/api/netvault/devices', wrap(async (_req, res) => {
 app.post('/api/netvault/import', wrap(async (req, res) => {
   const ids = Array.isArray(req.body && req.body.device_ids) ? req.body.device_ids : [];
   if (ids.length === 0) return res.status(400).json({ error: 'device_ids array required' });
+  // netvault.devices.ip_address is `character varying`, not `inet` — see the
+  // matching comment in collector/collector.js's syncNetVaultDevices().
   const src = await nv.query(`
-    SELECT d.id AS netvault_device_id, d.name, host(d.ip_address) AS ip_address,
+    SELECT d.id AS netvault_device_id, d.name, d.ip_address AS ip_address,
            dt.name AS device_type, d.site_id, s.name AS site_name
     FROM devices d
     LEFT JOIN device_types dt ON dt.id = d.device_type_id

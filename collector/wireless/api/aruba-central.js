@@ -142,12 +142,18 @@ function pick(obj, keys) {
   return undefined;
 }
 
-// Tolerant band-name matcher. Central has been observed (and documented by
-// third parties) to report a radio's band as a human-readable string on some
-// API surfaces ("2.4GHz", "5GHz", "6GHz") and as an enum-style token on
-// others ("RADIO_TYPE_2_4GHZ", "5GHZ_RADIO", etc.) — normalise and match by
-// substring rather than assuming one exact shape.
+// Band matcher. LIVE-VERIFIED against production Aruba Central (curl'd
+// against GET /monitoring/v2/aps): radios[].band is a NUMERIC index, not a
+// string — 0 = 2.4GHz, 1 = 5GHz. No 6GHz value has been observed/confirmed on
+// this endpoint. Numeric match is checked FIRST and is authoritative for this
+// endpoint. The string-substring matching below is kept only as a fallback —
+// for forward-compatibility in case a different Central API surface, or a
+// future Central version, ever reports band as a human-readable string
+// ("2.4GHz", "5GHz", "6GHz") or enum-style token ("RADIO_TYPE_2_4GHZ") instead
+// of the numeric index this endpoint actually returns today.
 function bandOf(raw) {
+  if (raw === 0 || raw === '0') return '2g';
+  if (raw === 1 || raw === '1') return '5g';
   const s = str(raw);
   if (!s) return null;
   const low = s.toLowerCase().replace(/[\s_-]/g, '');
@@ -184,6 +190,11 @@ function apsUrl(controller) {
 }
 
 async function fetchAps(controller, accessToken) {
+  // Safe to log the FULL URL including its query string here: apsUrl()'s only
+  // possible query param is `group=<api_group_filter>`, never a secret (unlike
+  // the token-refresh URL below, which carries client_id/client_secret/
+  // refresh_token and is deliberately NOT logged in full — see that call site).
+  console.log('[wireless] aruba_central: GET', apsUrl(controller));
   return fetchJsonVerbose(apsUrl(controller), {
     method: 'GET',
     headers: {
@@ -225,6 +236,20 @@ async function refreshAndPersist(controller, pool) {
   ].join('&');
   const url = String(controller.controller_url).replace(/\/+$/, '') + '/oauth2/token?' + qs;
 
+  // DEVIATION from a literal "log the request path + query string before each
+  // fetch" instruction: this call's real query string carries client_id,
+  // client_secret, and refresh_token as literal values (see `qs` above) — this
+  // is not a hypothetical risk, log files from this exact server were
+  // downloaded and shared in a support conversation earlier today, a real
+  // leak vector for live OAuth2 credentials. So instead of the full query
+  // string, log only the request path plus a REDACTED query string that shows
+  // the parameter names/order/count (useful for confirming the request shape)
+  // and never their values.
+  console.log(
+    '[wireless] aruba_central: POST', new URL(url).pathname +
+    '?client_id=[REDACTED]&client_secret=[REDACTED]&grant_type=refresh_token&refresh_token=[REDACTED]'
+  );
+
   // POST with the four OAuth2 params in the QUERY STRING and an EMPTY body —
   // this is Aruba Central's refresh_token grant specifically. Don't
   // "normalise" this to send a JSON body: Central's authorization_code grant
@@ -255,61 +280,75 @@ async function refreshAndPersist(controller, pool) {
 }
 
 // Map one Central AP object + its radios[] into the shared wireless_aps
-// contract (matches omada.js's field set exactly). Returns { ap, radios } —
-// radios is passed back out so collectSsidsFromAp() can also inspect it
-// without re-deriving the array.
+// contract. Returns { ap, radios } — radios is passed back out so
+// collectSsidsFromAp() can also inspect it without re-deriving the array.
+//
+// LIVE-VERIFIED (curl'd against production GET /monitoring/v2/aps): this
+// endpoint's AP objects/radios[] carry ONLY: name, macaddr, model,
+// ip_address, status, firmware_version, serial — plus, per radio: band,
+// index, macaddr, radio_name, radio_type, spatial_stream, status. It does
+// NOT return channel, utilization, client counts, tx power, or uptime at any
+// level. Every field below that isn't backed by one of those confirmed keys
+// is set to an explicit `null` rather than a guessed/fabricated value.
 function mapAp(apRaw) {
   const radios = Array.isArray(apRaw.radios) ? apRaw.radios : [];
   const out = {
-    name: str(pick(apRaw, ['name', 'ap_name', 'hostname'])),
-    mac_address: str(pick(apRaw, ['macaddr', 'mac_address', 'mac'])),
-    model: str(pick(apRaw, ['model', 'ap_model'])),
-    ip_address: str(pick(apRaw, ['ip_address', 'ip'])),
-    status: mapStatus(pick(apRaw, ['status', 'ap_status', 'state'])),
+    // 'name' is the only confirmed field name; 'hostname' kept as a single
+    // low-risk fallback for minor API variance, not a guessed candidate list.
+    name: str(pick(apRaw, ['name', 'hostname'])),
+    mac_address: str(pick(apRaw, ['macaddr'])),
+    model: str(pick(apRaw, ['model'])),
+    ip_address: str(pick(apRaw, ['ip_address'])),
+    status: mapStatus(pick(apRaw, ['status'])),
+    firmware_version: str(pick(apRaw, ['firmware_version'])),
+    serial_number: str(pick(apRaw, ['serial'])),
+    // None of these are present anywhere in the verified /monitoring/v2/aps
+    // response (per-AP or per-radio) — explicit null, never a computed/
+    // fabricated value.
     radio_2g_channel: null,
     radio_5g_channel: null,
     radio_6g_channel: null,
     radio_2g_util_pct: null,
     radio_5g_util_pct: null,
-    clients_2g: 0,
-    clients_5g: 0,
-    clients_6g: 0,
-    clients_total: null,
     tx_power_2g: null,
     tx_power_5g: null,
-    uptime_seconds: num(pick(apRaw, ['uptime', 'uptime_seconds'])),
-    firmware_version: str(pick(apRaw, ['firmware_version', 'swversion', 'sw_version'])),
+    uptime_seconds: null,
+    // Client counts are explicit `null`, NOT `0` — deliberately different from
+    // the int0()-based 0-default other vendor parsers in this directory use
+    // when they DO have real client-count data. This endpoint returns no
+    // client-count field at all, per-radio or per-AP, so there's no data to
+    // report. Writing `0` here would read on the dashboard as "confirmed
+    // nobody connected", which actively misleads an operator when the truth
+    // is "we don't have this data from this endpoint." Populating real client
+    // counts requires a separate RF/client-enrichment Central API call this
+    // integration does NOT make in this patch — that's a future phase, and it
+    // needs its own rate-limit budget worked out against Central's
+    // ~5000-calls/day cap (see the poll_interval_seconds warning above)
+    // before it's added.
+    clients_2g: null,
+    clients_5g: null,
+    clients_6g: null,
+    clients_total: null,
   };
 
+  // Still walk radios[] with the now-fixed numeric-aware bandOf() — not to
+  // extract any per-band value (there is currently nothing numeric to pull
+  // from a radio entry on this endpoint), but to surface a diagnostic if
+  // Central ever reports a band value this parser doesn't recognise. That's
+  // real signal (a schema change worth investigating, or a 6GHz radio, which
+  // has never been observed on this endpoint) rather than a silently-dropped
+  // radio, and it keeps this loop a useful hook for a future enrichment phase
+  // instead of dead code that computes something nothing reads.
   for (const radio of radios) {
     const band = bandOf(pick(radio, ['band', 'radio_type', 'radio_band', 'type']));
-    if (!band) continue;
-    const channel = num(pick(radio, ['channel', 'curr_channel', 'channel_number']));
-    const util = num(pick(radio, ['utilization', 'channel_utilization', 'util']));
-    const clients = int0(pick(radio, ['client_count', 'num_clients', 'clients']));
-    const txPower = num(pick(radio, ['tx_power', 'eirp', 'power_level']));
-
-    if (band === '2g') {
-      out.radio_2g_channel = channel;
-      out.radio_2g_util_pct = util;
-      out.clients_2g = clients;
-      out.tx_power_2g = txPower;
-    } else if (band === '5g') {
-      out.radio_5g_channel = channel;
-      out.radio_5g_util_pct = util;
-      out.clients_5g = clients;
-      out.tx_power_5g = txPower;
-    } else if (band === '6g') {
-      out.radio_6g_channel = channel;
-      out.clients_6g = clients;
-      // The shared AP contract has no radio_6g_util_pct/tx_power_6g columns
-      // (see omada.js/ubiquiti.js — 6g never carried them either), so there
-      // is nothing further to map for this band.
+    if (!band) {
+      console.warn(
+        `[wireless] aruba_central: AP "${out.name || '?'}" has a radio with an unrecognised band value ` +
+        `(${JSON.stringify(pick(radio, ['band', 'radio_type', 'radio_band', 'type']))}) — no per-band data ` +
+        'is extracted from this endpoint yet, but this is worth checking.'
+      );
     }
   }
-
-  let total = num(pick(apRaw, ['client_count', 'clients', 'num_clients']));
-  out.clients_total = total === null ? (out.clients_2g + out.clients_5g + out.clients_6g) : Math.trunc(total);
 
   return { ap: out, radios };
 }
