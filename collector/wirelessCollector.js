@@ -617,34 +617,54 @@ const CLIENT_BANDWIDTH_THRESHOLD_BPS = 500_000_000;
 // clients rather than growing over the life of the process.
 const clientBandwidthBreaches = new Map();
 
-// Delta between two cumulative counter readings, wrap-aware. A decrease from a
-// value still inside 32-bit range is most likely a Counter32 wrap (4.3 GB —
-// minutes on a busy AP), so compute the wrapped delta and accept it only when
-// the implied rate is sane (< 2 Gbps for one AP); anything else is treated as a
-// counter reset (null delta, sample skipped).
+// Wrap-aware delta between two cumulative counter readings, UNIT-AGNOSTIC (no
+// sanity cap, no rate conversion — just the raw delta in whatever unit cur/prev
+// are). A decrease from a value still inside 32-bit range is most likely a
+// Counter32 wrap (4.3 billion — minutes on a busy AP for a byte counter, much
+// longer for a packet-error counter), so return the wrapped delta; a decrease
+// from a value at/above that range is a genuine counter reset (null, sample
+// skipped). Shared by counterDeltaBps (bandwidth, bits/sec) below and
+// errorCountDelta (error packets/sec, see deriveErrorDeltas) — each caller
+// converts to its own unit and applies its own unit-appropriate sanity cap.
 const COUNTER32_WRAP = 2 ** 32;
+function wrapAwareDelta(cur, prev, counterBits) {
+  if (cur === null || prev === null) return null;
+  if (cur >= prev) return cur - prev;
+  if (counterBits !== 64 && prev < COUNTER32_WRAP) return cur + COUNTER32_WRAP - prev;
+  return null;
+}
+
+// Delta between two cumulative byte-counter readings, converted to bits/sec.
 const MAX_SANE_BPS = 2e9;
 function counterDeltaBps(cur, prev, elapsed, counterBits) {
-  if (cur === null || prev === null) return null;
+  const delta = wrapAwareDelta(cur, prev, counterBits);
+  if (delta == null) return null;
   // The MAX_SANE_BPS cap below was previously applied only on the wrap-
   // recovery branch (a wrapped Counter32 producing an implausible rate is
-  // easy to hit deliberately). This "normal" cur>=prev branch had no such
+  // easy to hit deliberately). The "normal" cur>=prev branch had no such
   // cap at all — in practice a transient timing artifact around a collector
   // restart (prevCounters/prevClientCounters is in-memory only, so any
   // restart mid-cycle can leave `elapsed` abnormally small relative to a
   // real byte delta) produced a one-off multi-hundred-Gbps client bandwidth
   // reading that looked absurd on the wireless page before self-correcting
-  // on the next clean poll. Apply the same sanity cap here too, rather than
-  // relying on every future timing edge case to self-correct on its own.
-  if (cur >= prev) {
-    const bps = Math.round(((cur - prev) * 8) / elapsed);
-    return bps < MAX_SANE_BPS ? bps : null;
-  }
-  if (counterBits !== 64 && prev < COUNTER32_WRAP) {
-    const bps = Math.round(((cur + COUNTER32_WRAP - prev) * 8) / elapsed);
-    if (bps < MAX_SANE_BPS) return bps;
-  }
-  return null;
+  // on the next clean poll. Apply the same sanity cap regardless of which
+  // branch produced the delta, rather than relying on every future timing
+  // edge case to self-correct on its own.
+  const bps = Math.round((delta * 8) / elapsed);
+  return bps < MAX_SANE_BPS ? bps : null;
+}
+
+// Delta between two cumulative error-packet-counter readings, in packets/sec.
+// Sanity cap mirrors counterDeltaBps's MAX_SANE_BPS guard against the same
+// collector-restart timing artifact (abnormally small `elapsed` vs a real
+// delta) — 10M error packets/sec is comfortably above any physically
+// plausible sustained AP frame-error rate, so a spurious huge delta from a
+// bad `elapsed` reading is rejected (null) rather than shown as a spike.
+const MAX_SANE_ERR_PKTS_PER_SEC = 10_000_000;
+function errorCountDelta(cur, prev, elapsed, counterBits) {
+  const delta = wrapAwareDelta(cur, prev, counterBits);
+  if (delta == null) return null;
+  return (delta / elapsed) < MAX_SANE_ERR_PKTS_PER_SEC ? delta : null;
 }
 
 // Derive throughput in BITS per second from cumulative byte counters.
@@ -669,6 +689,44 @@ function deriveThroughput(map, key, curRx, curTx, nowMs, counterBits) {
     map.set(key, { rx: curRx, tx: curTx, t: nowMs });
   }
   return { inBps, outBps };
+}
+
+// Error-packet counters mirror the throughput-counter pattern above (cumulative
+// SNMP counter -> per-poll delta), but are kept in their OWN Map rather than
+// reusing prevCounters: prevCounters' entry shape is a single { rx, tx, t }
+// throughput reading, while an AP reports FOUR independent error counters
+// (rx/tx x 2g/5g) — folding them into the same entry would make prevCounters'
+// shape ambiguous between "byte reading" and "error-packet reading". Same key
+// format (`${controller.id}::${ap._index || name}`) and pruned on the same
+// AP-poll cadence via prunePrevCounters (see pollAll), so its lifecycle exactly
+// mirrors prevCounters.
+const prevErrorCounters = new Map();
+
+// Derive a per-poll error-packet delta for one AP's four error counters
+// (rx/tx x 2g/5g). Returns { rxErr2g, txErr2g, rxErr5g, txErr5g }, each null
+// when there is no usable delta — first poll for this AP (no previous reading
+// yet), a counter reset, or the vendor not exposing that counter — mirroring
+// deriveThroughput's null-on-first-poll behavior. Error counters are ordinary
+// SNMP Counter32s on every vendor parser that reports them (see cisco.js/
+// aruba.js — FCS error counts, not high-capacity 64-bit interface counters),
+// so counterBits is always treated as 32.
+function deriveErrorDeltas(key, curRxErr2g, curTxErr2g, curRxErr5g, curTxErr5g, nowMs) {
+  const prev = prevErrorCounters.get(key);
+  let rxErr2g = null, txErr2g = null, rxErr5g = null, txErr5g = null;
+  if (prev) {
+    const elapsed = (nowMs - prev.t) / 1000;
+    if (elapsed > 0) {
+      rxErr2g = errorCountDelta(curRxErr2g, prev.rxErr2g, elapsed, 32);
+      txErr2g = errorCountDelta(curTxErr2g, prev.txErr2g, elapsed, 32);
+      rxErr5g = errorCountDelta(curRxErr5g, prev.rxErr5g, elapsed, 32);
+      txErr5g = errorCountDelta(curTxErr5g, prev.txErr5g, elapsed, 32);
+    }
+  }
+  // Only remember a reading when at least one counter is present.
+  if (curRxErr2g !== null || curTxErr2g !== null || curRxErr5g !== null || curTxErr5g !== null) {
+    prevErrorCounters.set(key, { rxErr2g: curRxErr2g, txErr2g: curTxErr2g, rxErr5g: curRxErr5g, txErr5g: curTxErr5g, t: nowMs });
+  }
+  return { rxErr2g, txErr2g, rxErr5g, txErr5g };
 }
 
 // Evict entries not refreshed for 3+ poll cycles (APs/clients that were
@@ -726,18 +784,33 @@ async function upsertAp(pool, controller, ap) {
   const clients5g = intOrNull(ap.clients_5g) || 0;
   const clients6g = intOrNull(ap.clients_6g) || 0;
 
-  // Convert cumulative rx/tx byte counters into a per-poll bits/sec rate.
   // Keyed by the parser's stable _index (the AP MAC) when present, so duplicate
   // AP names on one controller can't interleave counters into bogus deltas.
+  // Shared by both the throughput delta (bandwidth) and the error-count delta
+  // (below) — same AP, same poll cycle, same identity.
+  const counterKey = `${controller.id}::${ap._index != null ? ap._index : name}`;
+  const pollTime = Date.now();
+
+  // Convert cumulative rx/tx byte counters into a per-poll bits/sec rate.
   const { inBps, outBps } = deriveThroughput(
-    prevCounters, `${controller.id}::${ap._index != null ? ap._index : name}`,
-    numOrNull(ap.rx_bytes), numOrNull(ap.tx_bytes), Date.now(), ap.byte_counter_bits);
+    prevCounters, counterKey,
+    numOrNull(ap.rx_bytes), numOrNull(ap.tx_bytes), pollTime, ap.byte_counter_bits);
+
+  // Convert cumulative rx/tx error-packet counters into a per-poll delta (see
+  // deriveErrorDeltas for why this uses its own Map rather than prevCounters).
+  // rx_errors_2g/tx_errors_2g/rx_errors_5g/tx_errors_5g on the row stay the raw
+  // lifetime totals (unchanged, still useful as a "since last reboot" diagnostic)
+  // — these deltas are additive columns, not a replacement.
+  const { rxErr2g: rxErrDelta2g, txErr2g: txErrDelta2g, rxErr5g: rxErrDelta5g, txErr5g: txErrDelta5g } =
+    deriveErrorDeltas(
+      counterKey, intOrNull(ap.rx_errors_2g), intOrNull(ap.tx_errors_2g),
+      intOrNull(ap.rx_errors_5g), intOrNull(ap.tx_errors_5g), pollTime);
 
   const noise2g = intOrNull(ap.noise_floor_2g);
   const noise5g = intOrNull(ap.noise_floor_5g);
   const authFailures = intOrNull(ap.auth_failures);
 
-  // $1..$38 — the full ordered column value set, written identically by the
+  // $1..$42 — the full ordered column value set, written identically by the
   // INSERT and by the (site_id, name) in-place UPDATE below. Keep this array and
   // both column lists in lock-step so no field is ever dropped from a write.
   const vals = [
@@ -754,6 +827,7 @@ async function upsertAp(pool, controller, ap) {
     inBps, outBps, ap.serial_number || null, authFailures,
     numOrNull(ap.interference_pct_2g), numOrNull(ap.interference_pct_5g),
     intOrNull(ap.reboot_count), intOrNull(ap.bootstrap_count),
+    rxErrDelta2g, txErrDelta2g, rxErrDelta5g, txErrDelta5g,
   ];
 
   let apId = null;
@@ -810,9 +884,13 @@ async function upsertAp(pool, controller, ap) {
           interference_pct_5g = $36,
           reboot_count        = $37,
           bootstrap_count     = $38,
+          rx_errors_delta_2g  = $39,
+          tx_errors_delta_2g  = $40,
+          rx_errors_delta_5g  = $41,
+          tx_errors_delta_5g  = $42,
           last_seen_at        = NOW(),
           updated_at          = NOW()
-        WHERE id = $39
+        WHERE id = $43
         RETURNING id
       `, [...vals, existing.rows[0].id]);
       apId = u.rows[0].id;
@@ -833,9 +911,10 @@ async function upsertAp(pool, controller, ap) {
          rx_errors_2g, tx_errors_2g, rx_errors_5g, tx_errors_5g,
          throughput_in_bps, throughput_out_bps, serial_number, auth_failures,
          interference_pct_2g, interference_pct_5g, reboot_count, bootstrap_count,
+         rx_errors_delta_2g, tx_errors_delta_2g, rx_errors_delta_5g, tx_errors_delta_5g,
          last_seen_at, updated_at)
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,
-              $23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,NOW(),NOW())
+              $23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,NOW(),NOW())
       ON CONFLICT (controller_id, name) DO UPDATE SET
         monitored_device_id = EXCLUDED.monitored_device_id,
         mac_address      = EXCLUDED.mac_address,
@@ -873,6 +952,10 @@ async function upsertAp(pool, controller, ap) {
         interference_pct_5g = EXCLUDED.interference_pct_5g,
         reboot_count     = EXCLUDED.reboot_count,
         bootstrap_count  = EXCLUDED.bootstrap_count,
+        rx_errors_delta_2g = EXCLUDED.rx_errors_delta_2g,
+        tx_errors_delta_2g = EXCLUDED.tx_errors_delta_2g,
+        rx_errors_delta_5g = EXCLUDED.rx_errors_delta_5g,
+        tx_errors_delta_5g = EXCLUDED.tx_errors_delta_5g,
         last_seen_at     = NOW(),
         updated_at       = NOW()
       RETURNING id
@@ -1210,6 +1293,7 @@ async function pollAll(pool) {
     // AP doesn't stay a false "online".
     await ageOutStaleAps(pool);
     prunePrevCounters(prevCounters, Date.now(), WIRELESS_POLL_INTERVAL);
+    prunePrevCounters(prevErrorCounters, Date.now(), WIRELESS_POLL_INTERVAL);
     await runWirelessIntelligence(pool);
   } catch (err) {
     console.error('[wireless] poll cycle failed:', err.message);

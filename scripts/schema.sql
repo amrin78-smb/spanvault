@@ -1004,6 +1004,19 @@ ALTER TABLE wireless_history ADD COLUMN IF NOT EXISTS interference_pct_5g NUMERI
 ALTER TABLE wireless_aps ADD COLUMN IF NOT EXISTS reboot_count    INTEGER;
 ALTER TABLE wireless_aps ADD COLUMN IF NOT EXISTS bootstrap_count INTEGER;
 
+-- Per-poll error-packet DELTA (packets since the previous poll), computed by the
+-- collector from the raw rx_errors_2g/tx_errors_2g/rx_errors_5g/tx_errors_5g
+-- lifetime cumulative counters above via a wrap-aware Counter32 delta (same
+-- pattern as throughput_in_bps/throughput_out_bps, see deriveErrorDeltas in
+-- wirelessCollector.js) — additive, NOT a replacement for the lifetime columns,
+-- which stay as-is for a future "since last reboot" view. NULL on an AP's first
+-- poll (no previous reading yet) or after a collector restart until the AP's
+-- next poll re-seeds the in-memory reading.
+ALTER TABLE wireless_aps ADD COLUMN IF NOT EXISTS rx_errors_delta_2g BIGINT;
+ALTER TABLE wireless_aps ADD COLUMN IF NOT EXISTS tx_errors_delta_2g BIGINT;
+ALTER TABLE wireless_aps ADD COLUMN IF NOT EXISTS rx_errors_delta_5g BIGINT;
+ALTER TABLE wireless_aps ADD COLUMN IF NOT EXISTS tx_errors_delta_5g BIGINT;
+
 -- Per-SSID security/encryption type (e.g. "WPA2-PSK (AES)", "Open"), from the
 -- vendor's ESSID table where available.
 ALTER TABLE wireless_ssids ADD COLUMN IF NOT EXISTS encryption_type TEXT;

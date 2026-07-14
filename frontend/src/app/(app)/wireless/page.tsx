@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend,
   BarChart, Bar, ReferenceLine, Cell,
@@ -133,6 +134,14 @@ interface AccessPoint {
   tx_errors_2g: number | null;
   rx_errors_5g: number | null;
   tx_errors_5g: number | null;
+  // Per-poll error-packet delta (packets since the previous poll), derived by
+  // the collector from the raw lifetime counters above via a wrap-aware
+  // Counter32 delta — null on an AP's first poll or right after a collector
+  // restart until the AP's next poll re-seeds the in-memory reading.
+  rx_errors_delta_2g: number | null;
+  tx_errors_delta_2g: number | null;
+  rx_errors_delta_5g: number | null;
+  tx_errors_delta_5g: number | null;
   throughput_in_bps: number | null;
   throughput_out_bps: number | null;
   serial_number: string | null;
@@ -1821,6 +1830,22 @@ function statusToDot(status: string): string {
   return 'unknown';
 }
 
+// Fixed-position overlays (drawers/modals) in this file are rendered inside
+// .sv-content-col, which establishes its own stacking context (position:
+// relative + z-index:0 in globals.css) specifically to keep page content from
+// painting over .sv-topbar (z-index:50). That traps any inline
+// position:'fixed' + high zIndex element painted below the topbar no matter
+// how high its own zIndex is — visually hiding anything an overlay renders in
+// roughly the top 72px (e.g. a drawer's name/status header). Portal the
+// overlay straight into document.body so its stacking context is a sibling of
+// .sv-topbar's ancestor instead of a descendant confined under it. document
+// doesn't exist during SSR, so only portal once mounted client-side.
+function useMountedPortal(): boolean {
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => { setMounted(true); }, []);
+  return mounted;
+}
+
 // ── AP detail side drawer (top-level component) ───────────────
 function ApDetailDrawer({
   ap, onClose, onFilterController, onViewAllClients,
@@ -1830,6 +1855,7 @@ function ApDetailDrawer({
   onFilterController: (controllerId: number | null) => void;
   onViewAllClients: (apId: number) => void;
 }) {
+  const mounted = useMountedPortal();
   const [history, setHistory] = useState<ApHistoryRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
@@ -1855,7 +1881,8 @@ function ApDetailDrawer({
     return () => { cancelled = true; };
   }, [ap.id]);
 
-  return (
+  if (!mounted) return null;
+  return createPortal(
     <div className="sv-modal-backdrop" onMouseDown={onClose}>
       <div
         onMouseDown={(e) => e.stopPropagation()}
@@ -1949,8 +1976,8 @@ function ApDetailDrawer({
             utilPct={ap.radio_2g_util_pct}
             retryRate={ap.retry_rate_2g}
             interference={ap.interference_pct_2g}
-            rxErrors={ap.rx_errors_2g}
-            txErrors={ap.tx_errors_2g}
+            rxErrors={ap.rx_errors_delta_2g}
+            txErrors={ap.tx_errors_delta_2g}
           />
           <RadioBandStats
             band="5 GHz"
@@ -1958,8 +1985,8 @@ function ApDetailDrawer({
             utilPct={ap.radio_5g_util_pct}
             retryRate={ap.retry_rate_5g}
             interference={ap.interference_pct_5g}
-            rxErrors={ap.rx_errors_5g}
-            txErrors={ap.tx_errors_5g}
+            rxErrors={ap.rx_errors_delta_5g}
+            txErrors={ap.tx_errors_delta_5g}
           />
         </div>
 
@@ -2057,7 +2084,11 @@ function ApDetailDrawer({
               <LineChart data={history}>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
                 <XAxis dataKey="bucket" tickFormatter={fmtBucket} fontSize={11} />
-                <YAxis fontSize={11} />
+                {/* Noise floor dBm values normally cluster within a few dB — an
+                    unpadded auto-domain ([dataMin, dataMax]) puts every point
+                    right at the top/bottom edge, making a flat line look like
+                    constant spikes. Pad 4dB above/below the actual range. */}
+                <YAxis fontSize={11} domain={['dataMin - 4', 'dataMax + 4']} />
                 <Tooltip {...CHART_TOOLTIP} />
                 <Legend />
                 <Line type="monotone" dataKey="noise_floor_2g" name="2.4GHz" stroke={CHART_COLORS.g2} dot={false} connectNulls />
@@ -2070,7 +2101,7 @@ function ApDetailDrawer({
               <LineChart data={history}>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
                 <XAxis dataKey="bucket" tickFormatter={fmtBucket} fontSize={11} />
-                <YAxis fontSize={11} />
+                <YAxis fontSize={11} domain={[0, 100]} />
                 <Tooltip {...CHART_TOOLTIP} />
                 <Legend />
                 <Line type="monotone" dataKey="retry_rate_2g" name="2.4GHz %" stroke={CHART_COLORS.g2} dot={false} connectNulls />
@@ -2093,13 +2124,16 @@ function ApDetailDrawer({
           </>
         )}
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 
-// Compact packet-count formatter (39104189 -> "39.1M") — these error counters
-// are raw cumulative lifetime packet counts (since the radio's last counter
-// reset), not a rate, so a wall of unformatted digits reads as meaningless.
+// Compact packet-count formatter (39104189 -> "39.1M") — error counts shown
+// here are the per-poll delta (packets since the previous poll, computed by
+// the collector from the raw cumulative SNMP counters), not a lifetime total,
+// but a busy/erroring radio can still rack up a large count between polls, so
+// a wall of unformatted digits still reads as meaningless without this.
 function fmtPktCount(n: number | null | undefined): string {
   if (n == null || !Number.isFinite(Number(n))) return '—';
   const v = Number(n);
@@ -2168,9 +2202,9 @@ function RadioBandStats({
       }}>
         <span
           style={{ color: 'var(--text-muted)', cursor: 'help' }}
-          title="Cumulative error packet count since the radio's counters were last reset (e.g. a reboot) — a lifetime total, not a per-second rate."
-        >Errors (lifetime pkts)</span>
-        <span title={rxErrors != null || txErrors != null ? `${rxErrors ?? 0} RX / ${txErrors ?? 0} TX packets` : undefined}>
+          title="Error packets recorded since the previous poll of this radio — a current/instantaneous count, not the lifetime total since the radio's last reboot."
+        >Errors (since last poll)</span>
+        <span title={rxErrors != null || txErrors != null ? `${rxErrors ?? 0} RX / ${txErrors ?? 0} TX packets since last poll` : 'No reading yet (first poll after this AP was added, or the collector recently restarted)'}>
           {fmtPktCount(rxErrors)} RX / {fmtPktCount(txErrors)} TX
         </span>
       </div>
@@ -2456,6 +2490,7 @@ function ScoreBar({ label, value }: { label: string; value: number }) {
 
 // ── Worst-AP drawer loader (top-level component) ──────────────
 function IntelApDrawer({ apId, onClose, onViewAllClients }: { apId: number; onClose: () => void; onViewAllClients: (apId: number) => void }) {
+  const mounted = useMountedPortal();
   const [ap, setAp] = useState<AccessPoint | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
@@ -2471,7 +2506,8 @@ function IntelApDrawer({ apId, onClose, onViewAllClients }: { apId: number; onCl
   }, [apId]);
 
   if (err) {
-    return (
+    if (!mounted) return null;
+    return createPortal(
       <div className="sv-modal-backdrop" onMouseDown={onClose}>
         <div
           onMouseDown={(e) => e.stopPropagation()}
@@ -2484,7 +2520,8 @@ function IntelApDrawer({ apId, onClose, onViewAllClients }: { apId: number; onCl
           <button className="sv-btn ghost sm" onClick={onClose}>Close</button>
           <ErrorBox message={err} />
         </div>
-      </div>
+      </div>,
+      document.body
     );
   }
   if (!ap) return null;
@@ -3358,6 +3395,7 @@ function fmtClientHistTick(ts: string, range: '24h' | '7d'): string {
 
 // ── Client detail slide-in panel (top-level component) ────────
 function ClientDetailPanel({ mac, onClose }: { mac: string; onClose: () => void }) {
+  const mounted = useMountedPortal();
   const [detail, setDetail] = useState<ClientDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
@@ -3411,7 +3449,8 @@ function ClientDetailPanel({ mac, onClose }: { mac: string; onClose: () => void 
   const events = detail?.events || [];
   const stats = detail?.stats;
 
-  return (
+  if (!mounted) return null;
+  return createPortal(
     <div className="sv-modal-backdrop" onMouseDown={onClose}>
       <div
         onMouseDown={(e) => e.stopPropagation()}
@@ -3568,7 +3607,8 @@ function ClientDetailPanel({ mac, onClose }: { mac: string; onClose: () => void 
           <Empty message="No client data." />
         ) : null}
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 

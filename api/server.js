@@ -35,6 +35,11 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.74.0': [
+    'Fixed: the AP detail drawer on the Wireless page never showed the access point\'s name or status — it was rendering behind the top navigation bar due to a CSS stacking issue, so the "AP Info" section appeared to be the very first thing in the panel. Also fixed the same bug on the wireless client detail panel and the Intelligence tab\'s AP error view.',
+    'Fixed: the 24h Noise Floor and Retry Rate charts on the AP detail drawer looked like solid walls of spikes instead of smooth lines — their Y-axis auto-scaled with no padding, so small, normal fluctuations touched the top/bottom of the chart on every reading.',
+    'Changed the AP detail drawer\'s "Errors" stat from a lifetime cumulative packet count (confusing next to all the other current/instantaneous radio stats) to an error count since the previous poll, computed the same way wireless throughput already is.',
+  ],
   '1.73.2': [
     'Standardized the updater script (installer/Update-SpanVault.ps1) to self-locate its app folder from the script\'s own location, instead of deriving it from the -InstallDir parameter\'s default value. LogVault and DDIVault already worked this way; NetVault (fixed alongside this) had the same gap. The script can now be run with no parameters at all, from any correctly-placed copy of the script, regardless of what folder name or casing was used to get there.',
   ],
@@ -4687,6 +4692,7 @@ app.get('/api/wireless/aps', wrap(async (req, res) => {
            a.tx_power_2g, a.tx_power_5g, a.uptime_seconds, a.last_seen_at,
            a.noise_floor_2g, a.noise_floor_5g, a.retry_rate_2g, a.retry_rate_5g,
            a.rx_errors_2g, a.tx_errors_2g, a.rx_errors_5g, a.tx_errors_5g,
+           a.rx_errors_delta_2g, a.tx_errors_delta_2g, a.rx_errors_delta_5g, a.tx_errors_delta_5g,
            a.throughput_in_bps, a.throughput_out_bps, a.serial_number, a.auth_failures,
            a.interference_pct_2g, a.interference_pct_5g,
            a.reboot_count, a.bootstrap_count
