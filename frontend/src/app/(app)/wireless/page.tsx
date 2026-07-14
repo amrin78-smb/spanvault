@@ -171,6 +171,13 @@ interface Controller {
   vendor: string;
   controller_url: string | null;
   api_username: string | null;
+  // Aruba Central non-secret fields (present on GET responses, pre-fillable
+  // on edit — same convention as api_username). api_client_secret and
+  // api_refresh_token are write-only secrets and are never returned by the
+  // API, so they are deliberately NOT part of this response contract.
+  api_client_id?: string | null;
+  api_customer_id?: string | null;
+  api_group_filter?: string | null;
   snmp_device_id: number | null;
   site_id: number | null;
   site_name: string | null;
@@ -290,6 +297,15 @@ interface ControllerForm {
   api_username: string;
   api_password: string;
   api_key: string;
+  // Aruba Central (vendor === 'aruba_central') API fields. Client ID,
+  // Customer ID, and Group filter are plain text (pre-fillable on edit);
+  // Client secret and Refresh token are write-only secrets (always start
+  // blank, same convention as api_password).
+  api_client_id: string;
+  api_client_secret: string;
+  api_customer_id: string;
+  api_refresh_token: string;
+  api_group_filter: string;
   snmp_device_id: number | null;
   site_id: number | null;
   site_name: string | null;
@@ -609,8 +625,14 @@ function fmtRate(mbps: number | null): string {
 
 const VENDOR_OPTIONS = [
   'aruba', 'cisco', 'fortinet', 'ruckus', 'mikrotik',
-  'hpe', 'grandstream', 'ubiquiti', 'omada',
+  'hpe', 'grandstream', 'ubiquiti', 'omada', 'aruba_central',
 ];
+
+// Only aruba_central needs a display label distinct from its raw value —
+// every other option is already rendered as-is (lowercase vendor id).
+function vendorLabel(v: string): string {
+  return v === 'aruba_central' ? 'Aruba Central' : v;
+}
 
 const CHART_COLORS = {
   total: 'var(--primary)',
@@ -4487,6 +4509,11 @@ function ControllerModal({
     api_username: existing?.api_username || '',
     api_password: '',
     api_key: '',
+    api_client_id: existing?.api_client_id || '',
+    api_client_secret: '',
+    api_customer_id: existing?.api_customer_id || '',
+    api_refresh_token: '',
+    api_group_filter: existing?.api_group_filter || '',
     snmp_device_id: existing?.snmp_device_id ?? null,
     site_id: existing?.site_id ?? null,
     site_name: existing?.site_name ?? null,
@@ -4571,6 +4598,13 @@ function ControllerModal({
       body.api_username = form.api_username.trim() || null;
       if (form.api_password) body.api_password = form.api_password;
       if (form.api_key) body.api_key = form.api_key;
+      if (form.vendor === 'aruba_central') {
+        body.api_client_id = form.api_client_id.trim() || null;
+        if (form.api_client_secret) body.api_client_secret = form.api_client_secret;
+        body.api_customer_id = form.api_customer_id.trim() || null;
+        if (form.api_refresh_token) body.api_refresh_token = form.api_refresh_token;
+        body.api_group_filter = form.api_group_filter.trim() || null;
+      }
     }
     try {
       if (existing) {
@@ -4606,7 +4640,7 @@ function ControllerModal({
           <label className="sv-field">Vendor
             <select className="sv-select" value={form.vendor}
               onChange={(e) => patch({ vendor: e.target.value })}>
-              {VENDOR_OPTIONS.map((v: string) => <option key={v} value={v}>{v}</option>)}
+              {VENDOR_OPTIONS.map((v: string) => <option key={v} value={v}>{vendorLabel(v)}</option>)}
             </select>
           </label>
           <label className="sv-field">Connection type
@@ -4764,11 +4798,20 @@ function ControllerModal({
             </>
           ) : (
             <>
-              <label className="sv-field" style={{ gridColumn: '1 / -1' }}>Controller URL
+              <label className="sv-field" style={{ gridColumn: '1 / -1' }}>
+                {form.vendor === 'aruba_central' ? 'Base URL' : 'Controller URL'}
                 <input className="sv-input" value={form.controller_url}
                   onChange={(e) => patch({ controller_url: e.target.value })}
-                  placeholder="https://wlc.example.local" />
+                  placeholder={form.vendor === 'aruba_central'
+                    ? 'https://apigw-prod2.central.arubanetworks.com'
+                    : 'https://wlc.example.local'} />
               </label>
+              {form.vendor === 'aruba_central' && (
+                <span className="sv-muted" style={{ gridColumn: '1 / -1', fontSize: 'var(--text-xs)', marginTop: -6 }}>
+                  Use the regional API gateway URL from your Central account (Account Home → Global
+                  Settings → API Gateway) — not the Central login/UI URL.
+                </span>
+              )}
               <label className="sv-field">API username
                 <input className="sv-input" value={form.api_username}
                   onChange={(e) => patch({ api_username: e.target.value })} />
@@ -4782,6 +4825,45 @@ function ControllerModal({
                 <input className="sv-input" value={form.api_key}
                   onChange={(e) => patch({ api_key: e.target.value })} />
               </label>
+              {form.vendor === 'aruba_central' && (
+                <>
+                  <label className="sv-field">Client ID
+                    <input className="sv-input" value={form.api_client_id}
+                      onChange={(e) => patch({ api_client_id: e.target.value })} />
+                  </label>
+                  <label className="sv-field">Client Secret
+                    <input className="sv-input" type="password" value={form.api_client_secret}
+                      onChange={(e) => patch({ api_client_secret: e.target.value })}
+                      placeholder={existing ? '(unchanged)' : ''} />
+                  </label>
+                  <label className="sv-field">Customer ID
+                    <input className="sv-input" value={form.api_customer_id}
+                      onChange={(e) => patch({ api_customer_id: e.target.value })} />
+                  </label>
+                  <span className="sv-muted" style={{ gridColumn: '1 / -1', fontSize: 'var(--text-xs)', marginTop: -6 }}>
+                    Sent as the TenantID header.
+                  </span>
+                  <label className="sv-field" style={{ gridColumn: '1 / -1' }}>Refresh Token
+                    <input className="sv-input" type="password" value={form.api_refresh_token}
+                      onChange={(e) => patch({ api_refresh_token: e.target.value })}
+                      placeholder={existing ? '(unchanged)' : ''} />
+                  </label>
+                  <span className="sv-muted" style={{ gridColumn: '1 / -1', fontSize: 'var(--text-xs)', marginTop: -6 }}>
+                    One-time bootstrap value downloaded from the Central UI when the API application
+                    was created. After the first successful poll, SpanVault manages token rotation
+                    automatically — you won&apos;t need this again unless the integration must be
+                    re-authorized from scratch.
+                  </span>
+                  <label className="sv-field" style={{ gridColumn: '1 / -1' }}>Group filter (optional)
+                    <input className="sv-input" value={form.api_group_filter}
+                      onChange={(e) => patch({ api_group_filter: e.target.value })}
+                      placeholder="e.g. TU-HQ" />
+                  </label>
+                  <span className="sv-muted" style={{ gridColumn: '1 / -1', fontSize: 'var(--text-xs)', marginTop: -6 }}>
+                    Optional AP group name to scope polling to. Leave blank to poll all groups.
+                  </span>
+                </>
+              )}
             </>
           )}
         </div>

@@ -808,7 +808,7 @@ GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO spanvault_user;
 CREATE TABLE IF NOT EXISTS wireless_controllers (
   id              SERIAL PRIMARY KEY,
   name            TEXT NOT NULL,
-  vendor          TEXT NOT NULL,  -- aruba/cisco/fortinet/ruckus/mikrotik/hpe/grandstream/ubiquiti/omada
+  vendor          TEXT NOT NULL,  -- aruba/cisco/fortinet/ruckus/mikrotik/hpe/grandstream/ubiquiti/omada/aruba_central
   controller_url  TEXT,           -- for API-based polling
   api_key         TEXT,           -- or username:password base64 for basic auth
   api_username    TEXT,
@@ -880,6 +880,28 @@ ALTER TABLE wireless_controllers ADD COLUMN IF NOT EXISTS ha_ap_hbt_tunnels INTE
 -- hardware across all three controllers in this deployment, so they are not
 -- captured — see collector/wirelessCollector.js pollHaPeers).
 ALTER TABLE wireless_controllers ADD COLUMN IF NOT EXISTS ha_peers JSONB DEFAULT '[]';
+-- Aruba Central OAuth2 API state. Central's auth model is fundamentally
+-- different from this table's other API-based vendors (omada/ubiquiti/
+-- grandstream), whose api_key/api_username/api_password columns are used for
+-- stateless per-poll logins with no state to persist between polls. Central's
+-- refresh_token ROTATES on every use: each refresh call returns a NEW
+-- access_token AND a NEW refresh_token, and the new refresh_token must be
+-- persisted and used for the next refresh — if a rotated refresh_token is
+-- lost, the integration is permanently bricked and requires manual
+-- re-authorization via the Central UI. api_access_token/api_refresh_token/
+-- api_token_expires_at are therefore persisted, collector-managed state,
+-- written by collector/wireless/api/aruba-central.js on every token refresh
+-- (unlike the other API vendors, which never persist a session token).
+-- api_customer_id is sent as Central's required TenantID header.
+-- api_group_filter is an optional AP-group scope (e.g. sent as ?group=TU-HQ
+-- on the AP-list call).
+ALTER TABLE wireless_controllers ADD COLUMN IF NOT EXISTS api_client_id        TEXT;
+ALTER TABLE wireless_controllers ADD COLUMN IF NOT EXISTS api_client_secret    TEXT;
+ALTER TABLE wireless_controllers ADD COLUMN IF NOT EXISTS api_customer_id      TEXT;
+ALTER TABLE wireless_controllers ADD COLUMN IF NOT EXISTS api_refresh_token    TEXT;
+ALTER TABLE wireless_controllers ADD COLUMN IF NOT EXISTS api_access_token     TEXT;
+ALTER TABLE wireless_controllers ADD COLUMN IF NOT EXISTS api_token_expires_at TIMESTAMPTZ;
+ALTER TABLE wireless_controllers ADD COLUMN IF NOT EXISTS api_group_filter     TEXT;
 -- Auto-created SNMP controllers are keyed on their device so they aren't dup'd.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_wctl_snmp_device
   ON wireless_controllers(snmp_device_id) WHERE snmp_device_id IS NOT NULL;

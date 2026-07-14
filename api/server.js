@@ -35,6 +35,11 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.75.0': [
+    'Added an Aruba Central (cloud) wireless controller integration — APs and SSIDs only (per-client visibility is a future phase). Central uses a rotating OAuth2 refresh token rather than a stateless login like the other API-based vendors, so SpanVault now persists and automatically rotates its access/refresh tokens between polls.',
+    'The Wireless > Controllers form has a new "Aruba Central" vendor option with its own fields (base URL, client ID/secret, customer ID, one-time bootstrap refresh token, optional AP group filter) — secrets are write-only and are never shown back after saving.',
+    'Aruba Central polling is capped at a minimum 120-second interval to stay within its ~5,000-calls/day API limit; a too-aggressive interval is automatically clamped up rather than risking the account getting rate-limited until midnight GMT.',
+  ],
   '1.74.4': [
     'Hotfix: the 1.74.3 Noise Floor smoothing fix broke the chart entirely (blank, no data) for every AP. The history endpoint\'s noise floor columns are Postgres NUMERIC, which come back from the DB driver as strings, not numbers — the new averaging code summed them with plain `+`, which does string concatenation on two strings instead of addition, producing NaN, which the chart library silently drops. Fixed by converting to a number before averaging.',
   ],
@@ -4163,6 +4168,7 @@ app.get('/api/wireless/controllers', wrap(async (_req, res) => {
            c.ha_active_aps, c.ha_standby_aps, c.ha_total_aps,
            c.ha_active_vap_tunnels, c.ha_standby_vap_tunnels, c.ha_total_vap_tunnels, c.ha_ap_hbt_tunnels,
            c.ha_peers,
+           c.api_client_id, c.api_customer_id, c.api_group_filter, c.api_token_expires_at,
            ${hp},
            (c.capabilities IS NOT NULL AND c.capabilities <> '{}') AS has_capabilities,
            d.snmp_community AS snmp_community,
@@ -4207,6 +4213,7 @@ app.get('/api/wireless/controllers/overview', wrap(async (_req, res) => {
            c.ha_active_aps, c.ha_standby_aps, c.ha_total_aps,
            c.ha_active_vap_tunnels, c.ha_standby_vap_tunnels, c.ha_total_vap_tunnels, c.ha_ap_hbt_tunnels,
            c.ha_peers,
+           c.api_client_id, c.api_customer_id, c.api_group_filter, c.api_token_expires_at,
            ${hp},
            (SELECT COUNT(*)::int FROM wireless_aps a WHERE a.controller_id = c.id) AS ap_count,
            (SELECT COALESCE(SUM(a.clients_total), 0)::int FROM wireless_aps a WHERE a.controller_id = c.id) AS client_count,
@@ -4310,6 +4317,12 @@ app.get('/api/wireless/controllers/overview', wrap(async (_req, res) => {
       // Aruba cluster/peer roster (WLSX-SYSTEMEXT-MIB wlsxNSysExtSwitchListTable) —
       // see collector/wirelessCollector.js pollHaPeers for how this is populated.
       ha_peers: Array.isArray(row.ha_peers) ? row.ha_peers : [],
+      // Aruba Central API-mode config (non-secret only — never api_client_secret/
+      // api_refresh_token/api_access_token).
+      api_client_id: row.api_client_id ?? null,
+      api_customer_id: row.api_customer_id ?? null,
+      api_group_filter: row.api_group_filter ?? null,
+      api_token_expires_at: row.api_token_expires_at ?? null,
     };
   });
 
@@ -4411,17 +4424,29 @@ app.post('/api/wireless/controllers', wrap(async (req, res) => {
 
   // Modes (1) and (2): no device provisioning — single insert, unchanged behavior.
   if (b.controller_url || b.snmp_device_id) {
+    // Aruba Central's cloud API is rate-limited to ~5000 calls/day — enforce a
+    // 120s floor on poll_interval_seconds so a too-aggressive interval can't
+    // burn through the daily quota.
+    let pollInterval = safeInt(b.poll_interval_seconds, 300);
+    if (b.vendor === 'aruba_central' && pollInterval < 120) {
+      console.warn(`[wireless] aruba_central poll_interval_seconds ${pollInterval} below minimum; clamping to 120 (5000-calls/day API rate limit)`);
+      pollInterval = 120;
+    }
     const r = await sv.query(`
       INSERT INTO wireless_controllers
         (name, vendor, controller_url, api_key, api_username, api_password,
-         snmp_device_id, site_id, site_name, poll_interval_seconds, active)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+         snmp_device_id, site_id, site_name, poll_interval_seconds, active,
+         api_client_id, api_client_secret, api_customer_id, api_refresh_token, api_group_filter)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
       RETURNING id, name, vendor, controller_url, api_username, snmp_device_id,
-                site_id, site_name, active, last_polled_at, status
+                site_id, site_name, active, last_polled_at, status,
+                api_client_id, api_customer_id, api_group_filter
     `, [
       b.name, b.vendor, b.controller_url || null, b.api_key || null, b.api_username || null,
       b.api_password || null, b.snmp_device_id || null, b.site_id || null, b.site_name || null,
-      safeInt(b.poll_interval_seconds, 300), b.active === undefined ? true : !!b.active,
+      pollInterval, b.active === undefined ? true : !!b.active,
+      b.api_client_id || null, b.api_client_secret || null, b.api_customer_id || null,
+      b.api_refresh_token || null, b.api_group_filter || null,
     ]);
     return res.status(201).json(r.rows[0]);
   }
@@ -4516,11 +4541,18 @@ app.put('/api/wireless/controllers/:id', wrap(async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const b = req.body || {};
   const allowed = ['name', 'vendor', 'controller_url', 'api_key', 'api_username', 'api_password',
-                   'snmp_device_id', 'site_id', 'site_name', 'poll_interval_seconds', 'active'];
+                   'snmp_device_id', 'site_id', 'site_name', 'poll_interval_seconds', 'active',
+                   'api_client_id', 'api_client_secret', 'api_customer_id', 'api_refresh_token',
+                   'api_group_filter'];
   const sets = [];
   const params = [];
+  let pollIntervalParamIdx = -1;
   for (const k of allowed) {
-    if (b[k] !== undefined) { params.push(b[k]); sets.push(`${k} = $${params.length}`); }
+    if (b[k] !== undefined) {
+      params.push(b[k]);
+      sets.push(`${k} = $${params.length}`);
+      if (k === 'poll_interval_seconds') pollIntervalParamIdx = params.length - 1;
+    }
   }
 
   // SNMP credentials live on the linked monitored_devices row, not on the
@@ -4543,13 +4575,29 @@ app.put('/api/wireless/controllers/:id', wrap(async (req, res) => {
   try {
     await client.query('BEGIN');
 
-    // Always look up snmp_device_id so we can route SNMP updates to the device.
-    const cur = await client.query(`SELECT snmp_device_id FROM wireless_controllers WHERE id = $1`, [id]);
+    // Always look up snmp_device_id + vendor (the vendor lookup is reused below
+    // to clamp poll_interval_seconds for aruba_central when the request doesn't
+    // include vendor itself — costs nothing extra since this row is already fetched).
+    const cur = await client.query(`SELECT snmp_device_id, vendor FROM wireless_controllers WHERE id = $1`, [id]);
     if (!cur.rows[0]) {
       await client.query('ROLLBACK');
       return res.status(404).json({ error: 'Controller not found' });
     }
     const snmpDeviceId = cur.rows[0].snmp_device_id;
+
+    // Aruba Central's cloud API is rate-limited to ~5000 calls/day — enforce a
+    // 120s floor on poll_interval_seconds so a too-aggressive interval can't
+    // burn through the daily quota.
+    if (pollIntervalParamIdx !== -1) {
+      const effectiveVendor = b.vendor !== undefined ? b.vendor : cur.rows[0].vendor;
+      if (effectiveVendor === 'aruba_central') {
+        const requested = safeInt(params[pollIntervalParamIdx], 300);
+        if (requested < 120) {
+          console.warn(`[wireless] aruba_central poll_interval_seconds ${requested} below minimum; clamping to 120 (5000-calls/day API rate limit)`);
+        }
+        params[pollIntervalParamIdx] = Math.max(120, requested);
+      }
+    }
 
     if (sets.length) {
       const p = params.slice();
@@ -4557,14 +4605,16 @@ app.put('/api/wireless/controllers/:id', wrap(async (req, res) => {
       const r = await client.query(
         `UPDATE wireless_controllers SET ${sets.join(', ')} WHERE id = $${p.length}
          RETURNING id, name, vendor, controller_url, api_username, snmp_device_id,
-                   site_id, site_name, active, last_polled_at, status`,
+                   site_id, site_name, active, last_polled_at, status,
+                   api_client_id, api_customer_id, api_group_filter, api_token_expires_at`,
         p
       );
       controllerRow = r.rows[0];
     } else {
       const r = await client.query(
         `SELECT id, name, vendor, controller_url, api_username, snmp_device_id,
-                site_id, site_name, active, last_polled_at, status
+                site_id, site_name, active, last_polled_at, status,
+                api_client_id, api_customer_id, api_group_filter, api_token_expires_at
          FROM wireless_controllers WHERE id = $1`,
         [id]
       );

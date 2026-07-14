@@ -35,9 +35,10 @@ const { runWirelessIntelligence } = require('./wirelessIntelligence');
 
 // Vendor HTTP API clients (controller_url based).
 const apiClients = {
-  grandstream: require('./wireless/api/grandstream'),
-  ubiquiti:    require('./wireless/api/ubiquiti'),
-  omada:       require('./wireless/api/omada'),
+  grandstream:    require('./wireless/api/grandstream'),
+  ubiquiti:       require('./wireless/api/ubiquiti'),
+  omada:          require('./wireless/api/omada'),
+  aruba_central:  require('./wireless/api/aruba-central'),
 };
 
 const log = (...a) => console.log(`[${new Date().toISOString()}] [wireless]`, ...a);
@@ -542,10 +543,13 @@ async function pollSnmpController(pool, controller) {
 }
 
 // ── API polling ───────────────────────────────────────────────
-async function pollApiController(controller) {
+// `pool` is passed through so an API client can persist rotated OAuth tokens
+// (see wireless/api/aruba-central.js) — it must PERSIST a refreshed token
+// before using it, so it needs a live DB handle, not just the controller row.
+async function pollApiController(controller, pool) {
   const client = apiClients[controller.vendor];
   if (!client) throw new Error(`no wireless API client for vendor "${controller.vendor}"`);
-  const result = (await client.poll(controller)) || [];
+  const result = (await client.poll(controller, pool)) || [];
   // API clients return a bare AP array; normalise to the { aps, ssids } shape.
   if (Array.isArray(result)) return { aps: result, ssids: [] };
   return { aps: result.aps || [], ssids: result.ssids || [] };
@@ -1140,7 +1144,7 @@ async function pollController(pool, controller) {
       }
       ({ aps, ssids, rogues = [], metadata = {}, haPeers = [] } = await pollSnmpController(pool, controller));
     } else if (controller.controller_url) {
-      ({ aps, ssids } = await pollApiController(controller));
+      ({ aps, ssids } = await pollApiController(controller, pool));
     } else {
       throw new Error('controller has neither an SNMP device nor an API URL');
     }

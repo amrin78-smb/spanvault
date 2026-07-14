@@ -33,7 +33,15 @@ async function httpFetch(url, options, timeoutMs) {
     clearTimeout(timer);
   }
   if (!res.ok) {
-    throw new Error('HTTP ' + res.status + ' from controller');
+    // .status is attached (additive — every existing caller that only reads
+    // .message is unaffected) so a caller can reliably branch on err.status
+    // === 401 instead of string-matching .message. Added for
+    // aruba-central.js's refresh-once-and-retry-on-401 flow, but available to
+    // any future API client that needs to distinguish auth failures from
+    // other HTTP errors.
+    const err = new Error('HTTP ' + res.status + ' from controller');
+    err.status = res.status;
+    throw err;
   }
   return res;
 }
