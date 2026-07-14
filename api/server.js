@@ -35,6 +35,10 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.75.3': [
+    'Fixed: "Test Connection" on an Aruba Central controller failed with an opaque "HTTP 400 from controller" and no further detail. The client now reads Central\'s own JSON error body ({ "error": "invalid_grant", "error_description": "..." }) on any failed token refresh or AP-list call and includes it in the error message, so a misconfigured credential is actually diagnosable instead of a bare status code.',
+    'Aruba Central credential fields (client ID/secret, customer ID, refresh token) are now trimmed before use — a stray leading/trailing space or newline from a copy-paste (invisible in the form) previously produced the same opaque failure as a genuinely wrong value.',
+  ],
   '1.75.2': [
     'Hardened the in-app "Update" button (Settings > Updates): it now registers this repo as a git safe.directory for the SYSTEM account it runs under (Git refuses to operate in a repo it doesn\'t consider "owned" by the current account, which SYSTEM never is on an existing install) and writes a full transcript of the update run to installer\\logs\\ — previously a failed in-app-triggered update left no record of what happened, since that button runs fully in the background with no live output.',
   ],

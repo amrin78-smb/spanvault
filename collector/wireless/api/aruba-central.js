@@ -38,7 +38,62 @@
 // Central's cloud endpoint uses a publicly-trusted TLS cert, so none of the
 // self-signed-cert caveats in ./_http.js's TLS NOTE apply here.
 
-const { httpJson } = require('./_http');
+// _http.js's httpFetch throws away the response body on any non-2xx status —
+// its `if (!res.ok) throw ...` fires before anything ever calls res.json()/
+// res.text(). That's fine for vendors that don't return a useful error body,
+// but Aruba Central's OAuth2 endpoint (and its data endpoints) return a JSON
+// body on failure — { "error": "invalid_grant", "error_description": "..." }
+// — and without it, every failure collapses to an opaque "HTTP 400 from
+// controller" with no way to tell invalid_grant from invalid_client from a
+// malformed request. This client therefore does NOT use httpJson for its two
+// calls (token refresh, AP list) — it uses fetchJsonVerbose below instead,
+// which reads the body before deciding whether to throw. Kept local rather
+// than changing _http.js's shared behavior, which every other API client
+// (omada/ubiquiti/grandstream) also depends on and has never needed this for.
+async function fetchJsonVerbose(url, options, timeoutMs) {
+  const ms = Number(timeoutMs) > 0 ? Number(timeoutMs) : 15000;
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), ms);
+  let res;
+  try {
+    res = await fetch(url, Object.assign({}, options, { signal: abort.signal }));
+  } catch (err) {
+    if (err && err.name === 'AbortError') {
+      throw new Error('aruba_central: request timed out after ' + ms + 'ms');
+    }
+    throw new Error('aruba_central: request failed: ' + (err && err.message ? err.message : String(err)));
+  } finally {
+    clearTimeout(timer);
+  }
+
+  let bodyText = null;
+  try { bodyText = await res.text(); } catch (_e) { /* no readable body */ }
+  let bodyJson = null;
+  if (bodyText) { try { bodyJson = JSON.parse(bodyText); } catch (_e) { /* not JSON */ } }
+
+  if (!res.ok) {
+    // Only fold PARSED error/error_description/message fields from Central's
+    // own JSON error body into the message — deliberately NOT a raw-text
+    // fallback. The token/data-call query string carries client_secret and
+    // refresh_token, and while Central's own OAuth2 JSON errors never echo
+    // credentials back, a malformed-enough request can get rejected by a
+    // gateway/WAF layer in front of Central instead, whose generic HTML/text
+    // error page could echo the raw request line — URL and all — back in the
+    // body. Only ever surface fields we've explicitly parsed out of a JSON
+    // body, never the body text itself.
+    const errCode = bodyJson && bodyJson.error;
+    const errDesc = bodyJson && (bodyJson.error_description || bodyJson.message);
+    const detail = (errCode || errDesc) ? [errCode, errDesc].filter(Boolean).join(' — ') : null;
+    const err = new Error('aruba_central: HTTP ' + res.status + ' from controller' + (detail ? ' — ' + detail : ''));
+    err.status = res.status;
+    throw err;
+  }
+
+  if (bodyJson === null) {
+    throw new Error('aruba_central: invalid JSON response from controller');
+  }
+  return bodyJson;
+}
 
 const TIMEOUT_MS = 20000;
 // Treat a stored token as needing refresh once it is within 5 minutes of its
@@ -114,11 +169,11 @@ function apsUrl(controller) {
 }
 
 async function fetchAps(controller, accessToken) {
-  return httpJson(apsUrl(controller), {
+  return fetchJsonVerbose(apsUrl(controller), {
     method: 'GET',
     headers: {
       'Authorization': 'Bearer ' + accessToken,
-      'TenantID': controller.api_customer_id || '',
+      'TenantID': str(controller.api_customer_id) || '',
     },
   }, TIMEOUT_MS);
 }
@@ -141,15 +196,26 @@ async function persistTokens(pool, controllerId, accessToken, refreshToken, expi
 // DB write has resolved — see the module-level "PERSIST FIRST, USE SECOND"
 // comment for why.
 async function refreshAndPersist(controller, pool) {
+  // .trim() every stored credential — a trailing newline from a UI copy-paste
+  // (or a value typed with trailing whitespace) is invisible in the form but
+  // produces the exact same "invalid_grant"-style 400 as a genuinely wrong
+  // value, and is easy to rule out here for free. str() already trims and
+  // collapses '' to null, so `|| ''` after it is still needed for the actual
+  // request (Central must see an empty string, not the literal text "null").
   const qs = [
-    'client_id=' + encodeURIComponent(controller.api_client_id || ''),
-    'client_secret=' + encodeURIComponent(controller.api_client_secret || ''),
+    'client_id=' + encodeURIComponent(str(controller.api_client_id) || ''),
+    'client_secret=' + encodeURIComponent(str(controller.api_client_secret) || ''),
     'grant_type=refresh_token',
-    'refresh_token=' + encodeURIComponent(controller.api_refresh_token || ''),
+    'refresh_token=' + encodeURIComponent(str(controller.api_refresh_token) || ''),
   ].join('&');
   const url = String(controller.controller_url).replace(/\/+$/, '') + '/oauth2/token?' + qs;
 
-  const body = await httpJson(url, {
+  // POST with the four OAuth2 params in the QUERY STRING and an EMPTY body —
+  // this is Aruba Central's refresh_token grant specifically. Don't
+  // "normalise" this to send a JSON body: Central's authorization_code grant
+  // DOES take one, but the refresh_token grant does not, and sending one here
+  // produces the same opaque 400 this function exists to stop guessing at.
+  const body = await fetchJsonVerbose(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
   }, TIMEOUT_MS);
