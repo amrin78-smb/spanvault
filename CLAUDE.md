@@ -194,6 +194,31 @@ agent WebSocket — leave blank for plain `ws://` on a trusted LAN/behind a
 proxy), `SV_NSSM_PATH` (nssm.exe path the server hands to the agent installer,
 defaults to NetVault's bundled copy).
 
+### `testController`'s "dry run" is NOT write-free for API controllers with rotating credentials
+`collector/wirelessCollector.js`'s `testController(pool, controller)` (the
+"Test Connection" button's handler) is commented as a dry-run — no DB writes —
+which is true for SNMP controllers, but **deliberately false for API
+controllers whose vendor client can rotate a stored credential**, currently
+just `aruba_central`. Aruba Central's refresh_token rotates on every use: the
+instant a refresh request lands, Central issues a new access_token AND a new
+refresh_token and invalidates the one that was sent. If `testController` used
+that new token without persisting it (to stay "pure"), the only refresh_token
+left in the DB would be the old, now-invalidated one — permanently bricking
+the integration, recoverable only by a human re-authorizing it from scratch in
+the Central UI. That's why `testController` still takes `pool` and forwards it
+into `pollApiController(controller, pool)` exactly like a real poll, even
+though its own comment calls it a dry run. **Don't "fix" this by dropping the
+`pool` argument to make the dry-run description literally true** — that
+reads as a harmless cleanup (builds clean, passes every static check) and
+bricks the integration on the next "Test Connection" click. This bit us for
+real: `pollApiController`'s signature was updated to take `pool` for exactly
+this reason, but its second call site — inside `testController` — was missed,
+so testing an aruba_central controller failed outright with `"aruba_central:
+pool is required for token persistence"` (the client's own defensive guard
+against running without persistence, working as intended) until the missed
+call site was fixed. If a future API vendor is added with its own rotating
+credential, the same rule applies to it too.
+
 ### After any change
 Run `npm run build` inside frontend/ to verify before committing.
 Commit message format: `feat: <short description>` or `fix: <short description>`

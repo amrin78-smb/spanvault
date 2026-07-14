@@ -35,6 +35,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.75.1': [
+    'Fixed: "Test Connection" on an Aruba Central controller always failed with "aruba_central: pool is required for token persistence". The 1.75.0 change that threaded a DB handle through the real polling path so Aruba Central could persist its rotating tokens missed the "Test Connection" button\'s own, separate code path.',
+  ],
   '1.75.0': [
     'Added an Aruba Central (cloud) wireless controller integration — APs and SSIDs only (per-client visibility is a future phase). Central uses a rotating OAuth2 refresh token rather than a stateless login like the other API-based vendors, so SpanVault now persists and automatically rotates its access/refresh tokens between polls.',
     'The Wireless > Controllers form has a new "Aruba Central" vendor option with its own fields (base URL, client ID/secret, customer ID, one-time bootstrap refresh token, optional AP group filter) — secrets are write-only and are never shown back after saving.',

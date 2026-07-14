@@ -1306,12 +1306,22 @@ async function pollAll(pool) {
   }
 }
 
-// Dry-run a controller (no DB writes) for the "Test Connection" button.
+// "Dry-run" a controller for the "Test Connection" button — but that's only
+// true (no DB writes) for SNMP controllers. For API controllers with rotating
+// credentials (currently just aruba_central), this is NOT write-free: a
+// refresh triggered during the test rotates the refresh token on the
+// vendor's side the instant the request lands, so the newly-issued token
+// MUST be persisted here too, exactly like a real poll — a token used but not
+// saved is a token Central has already invalidated, permanently bricking the
+// integration with no automated recovery. That's why this function still
+// takes `pool` and forwards it into pollApiController(controller, pool) below
+// — do NOT drop that argument to "purify" this into a true no-write dry run;
+// see the matching warning in CLAUDE.md.
 async function testController(pool, controller) {
   try {
     let result;
     if (controller.snmp_device_id) result = await pollSnmpController(pool, controller);
-    else if (controller.controller_url) result = await pollApiController(controller);
+    else if (controller.controller_url) result = await pollApiController(controller, pool);
     else return { ok: false, message: 'No SNMP device or API URL configured' };
     const aps = result.aps || [];
     const ssids = result.ssids || [];
