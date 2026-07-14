@@ -1881,6 +1881,20 @@ function ApDetailDrawer({
     return () => { cancelled = true; };
   }, [ap.id]);
 
+  // Noise floor readings genuinely jitter several dB poll-to-poll (confirmed
+  // against live production history) — and the 24h bucket size in
+  // rangeToBucket() (api/server.js) is 5 minutes, matching the AP poll
+  // interval almost 1:1, so the history endpoint's AVG() bucketing barely
+  // smooths it at all. Padding the Y-axis domain (done separately) only stops
+  // values hard-clipping at the chart edges; it can't turn ~288 genuinely
+  // volatile raw points crammed into one chart width into a readable trend.
+  // A trailing moving average does that instead, without touching the shared
+  // history endpoint/bucket size the other 4 charts on this panel also use.
+  const smoothedNoiseHistory = useMemo(
+    () => movingAverage(history, ['noise_floor_2g', 'noise_floor_5g'], 6),
+    [history]
+  );
+
   if (!mounted) return null;
   return createPortal(
     <div className="sv-modal-backdrop" onMouseDown={onClose}>
@@ -2081,7 +2095,7 @@ function ApDetailDrawer({
 
             <h3 style={{ marginBottom: 6 }}>24h Noise Floor (dBm)</h3>
             <ResponsiveContainer width="100%" height={200}>
-              <LineChart data={history}>
+              <LineChart data={smoothedNoiseHistory}>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
                 <XAxis dataKey="bucket" tickFormatter={fmtBucket} fontSize={11} />
                 {/* Noise floor dBm values normally cluster within a few dB — an
@@ -2216,6 +2230,25 @@ function fmtBucket(ts: string): string {
   const d = new Date(ts);
   if (isNaN(d.getTime())) return String(ts);
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+// Trailing moving average over the given numeric keys, computed independently
+// per key (each ignores the OTHER key's nulls, so one radio missing data
+// doesn't widen or shift the other's window). Used to smooth naturally-jittery
+// per-poll telemetry (see the Noise Floor chart) without changing the
+// underlying bucket size the history endpoint returns.
+function movingAverage<T extends Record<string, any>>(
+  rows: T[], keys: string[], window: number
+): T[] {
+  return rows.map((row, i) => {
+    const slice = rows.slice(Math.max(0, i - window + 1), i + 1);
+    const out: Record<string, any> = { ...row };
+    for (const k of keys) {
+      const vals = slice.map((r) => r[k]).filter((v) => v != null) as number[];
+      out[k] = vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+    }
+    return out as T;
+  });
 }
 
 // ════════════════════════════════════════════════════════════
