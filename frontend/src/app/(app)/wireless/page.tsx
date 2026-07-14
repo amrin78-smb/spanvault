@@ -426,6 +426,21 @@ interface ClientDetail {
   };
 }
 
+// One row per ~10-min poll from wireless_client_history (pruned at 7 days).
+// rx_bps/tx_bps are nullable per-point (e.g. right after a collector restart
+// the byte-counter delta can't be computed yet) — a gap, not a zero.
+interface ClientHistoryPoint {
+  ts: string;
+  rx_bps: number | string | null;
+  tx_bps: number | string | null;
+  rssi_dbm: number | null;
+}
+
+interface ClientHistory {
+  range: '24h' | '7d';
+  points: ClientHistoryPoint[];
+}
+
 interface ClientSummary {
   total_clients: number;
   by_band: Record<string, number>;
@@ -593,6 +608,12 @@ const CHART_COLORS = {
   g2: '#0ea5e9',
   g5: '#16a34a',
 };
+
+// Client bandwidth trend colours — mirrors devices/[id] page's interface
+// traffic chart convention (download/rx = blue "In", upload/tx = orange "Out"),
+// and the same "↓ rx · ↑ tx" pairing already used in the client table tooltip.
+const CLIENT_BW_RX_COLOR = '#3b82f6';
+const CLIENT_BW_TX_COLOR = '#f97316';
 
 // ════════════════════════════════════════════════════════════
 // Shared compact UI primitives (top-level — design-rule sized)
@@ -3315,11 +3336,32 @@ function clientEventMeta(ev: ClientEvent): { color: string; text: string | JSX.E
   }
 }
 
+// ── Client bandwidth-history helpers (top-level) ───────────────
+// Small pill-style range tabs — mirrors devices/[id] page's RangeTabs
+// (TAB_BTN_BASE/TAB_BTN_ACTIVE) sizing/styling for a compact slide-over.
+const CLIENT_RANGE_BTN_BASE: React.CSSProperties = {
+  fontSize: 'var(--text-xs)', padding: '2px 8px', borderRadius: 6, border: '1px solid var(--border)',
+  background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', lineHeight: 1.4,
+};
+const CLIENT_RANGE_BTN_ACTIVE: React.CSSProperties = {
+  ...CLIENT_RANGE_BTN_BASE, background: 'var(--primary)', borderColor: 'var(--primary)', color: '#fff',
+};
+
+// 7d history spans multiple days, so ticks need a date — 24h only needs time.
+function fmtClientHistTick(ts: string, range: '24h' | '7d'): string {
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return String(ts);
+  return range === '7d'
+    ? d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+    : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
 // ── Client detail slide-in panel (top-level component) ────────
 function ClientDetailPanel({ mac, onClose }: { mac: string; onClose: () => void }) {
   const [detail, setDetail] = useState<ClientDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
+  const [bwRange, setBwRange] = useState<'24h' | '7d'>('24h');
 
   useEffect(() => {
     let cancelled = false;
@@ -3332,6 +3374,20 @@ function ClientDetailPanel({ mac, onClose }: { mac: string; onClose: () => void 
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [mac]);
+
+  // Path includes both mac and bwRange, so useApi's own effect refetches on
+  // either changing (switching clients or flipping the 24h/7d toggle).
+  const historyApi = useApi<ClientHistory>(
+    `/api/wireless/clients/${encodeURIComponent(mac)}/history?range=${bwRange}`, 0
+  );
+  const bwChartData = useMemo(
+    () => (historyApi.data?.points || []).map((p) => ({
+      ts: p.ts,
+      rx: p.rx_bps != null ? Number(p.rx_bps) : null,
+      tx: p.tx_bps != null ? Number(p.tx_bps) : null,
+    })),
+    [historyApi.data]
+  );
 
   const c = detail?.client;
   const events = detail?.events || [];
@@ -3401,6 +3457,53 @@ function ClientDetailPanel({ mac, onClose }: { mac: string; onClose: () => void 
             <h3 style={{ marginBottom: 6 }}>Signal Quality</h3>
             <div style={{ marginBottom: 12 }}>
               <SignalQualityBar rssi={c.rssi_dbm} />
+            </div>
+
+            <h3 style={{ marginBottom: 6, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+              <span>Bandwidth</span>
+              <span style={{ display: 'flex', gap: 4 }}>
+                {(['24h', '7d'] as const).map((r) => (
+                  <button
+                    key={r}
+                    type="button"
+                    onClick={() => setBwRange(r)}
+                    style={bwRange === r ? CLIENT_RANGE_BTN_ACTIVE : CLIENT_RANGE_BTN_BASE}
+                  >
+                    {r}
+                  </button>
+                ))}
+              </span>
+            </h3>
+            <div style={{ marginBottom: 12 }}>
+              {historyApi.error ? (
+                <ErrorBox message={historyApi.error} />
+              ) : historyApi.loading && !historyApi.data ? (
+                <Loading />
+              ) : bwChartData.length ? (
+                <ResponsiveContainer width="100%" height={170}>
+                  <LineChart data={bwChartData} margin={{ top: 4, right: 8, bottom: 0, left: -8 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                    <XAxis dataKey="ts" tickFormatter={(v) => fmtClientHistTick(v, bwRange)} fontSize={11} minTickGap={30} />
+                    <YAxis fontSize={11} width={54} tickFormatter={(v) => fmtBps(v)} />
+                    <Tooltip
+                      {...CHART_TOOLTIP}
+                      labelFormatter={(v: any) => fmtClientHistTick(String(v), bwRange)}
+                      formatter={(v: any, name: any) => [fmtBps(v), name]}
+                    />
+                    <Legend wrapperStyle={{ fontSize: 'var(--text-xs)' }} />
+                    {/* connectNulls intentionally omitted (default false): a null
+                        rx_bps/tx_bps point (delta couldn't be computed, e.g. right
+                        after a collector restart) should show as a gap, not be
+                        bridged into a fake continuous line or a fake zero. */}
+                    <Line type="monotone" name="↓ Download" dataKey="rx" stroke={CLIENT_BW_RX_COLOR} strokeWidth={2} dot={false} />
+                    <Line type="monotone" name="↑ Upload" dataKey="tx" stroke={CLIENT_BW_TX_COLOR} strokeWidth={2} dot={false} />
+                  </LineChart>
+                </ResponsiveContainer>
+              ) : (
+                <div style={{ fontSize: 'var(--text-base)', color: 'var(--text-muted)' }}>
+                  No bandwidth history yet
+                </div>
+              )}
             </div>
 
             <h3 style={{ marginBottom: 6 }}>Roaming History (24h)</h3>

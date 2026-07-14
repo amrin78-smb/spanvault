@@ -2408,6 +2408,140 @@ function renderWirelessSecurity(doc, data, layout) {
   }, layout, { continueOnPage: true });
 }
 
+// ── Wireless Bandwidth — mirror of GET /api/reports/wireless-bandwidth ──
+// Top bandwidth-consuming clients over the window, from wireless_client_history
+// (pruned at 7 days by the collector — any '30d'/'90d' request is capped down
+// to '7d', mirroring the same cap in server.js).
+function wlBandwidthEffectiveRange(range) {
+  return (range === '30d' || range === '90d') ? '7d' : (range || '24h');
+}
+function wlBandwidthIntervalSql(range) {
+  return range === '7d' ? '7 days' : '24 hours';
+}
+// Mirrors fmtBps() in frontend/src/app/(app)/wireless/page.tsx exactly so the
+// PDF and on-screen figures never disagree.
+function fmtBpsPdf(v) {
+  if (v == null) return '—';
+  const n = Number(v);
+  if (isNaN(n)) return '—';
+  return Math.abs(n) < 1e6 ? `${(n / 1e3).toFixed(1)} Kbps` : `${(n / 1e6).toFixed(1)} Mbps`;
+}
+
+async function gatherWirelessBandwidth(db, params) {
+  const q = params || {};
+  const scope = wlScope(q);
+  const runQ = mkRunQ(db, 'wireless-bandwidth');
+  const requestedRange = q.range || '24h';
+  const effRange = wlBandwidthEffectiveRange(requestedRange);
+  const cappedTo7d = requestedRange !== effRange;
+  const win = getDateRange({ ...q, range: effRange });
+  const intervalSql = wlBandwidthIntervalSql(effRange);
+  const limit = Math.min(50, Math.max(1, parseInt(q.limit, 10) || 15));
+
+  const wp = [intervalSql];
+  const wparts = ['wch.ts >= NOW() - $1::interval'];
+  if (scope.hasCtrl) { wp.push(scope.ctrlId); wparts.push(`wch.controller_id = $${wp.length}`); }
+  const sc = siteClause(scope.siteFilter, wp, 'c.site_id'); if (sc) wparts.push(sc);
+  const where = 'WHERE ' + wparts.join(' AND ');
+
+  const summary = await runQ('summary', `
+    SELECT COUNT(DISTINCT (wch.mac_address, wch.controller_id))::int AS client_count,
+           ROUND(AVG(COALESCE(wch.rx_bps, 0) + COALESCE(wch.tx_bps, 0))::numeric, 0) AS avg_total_bps
+    FROM wireless_client_history wch
+    JOIN wireless_controllers c ON c.id = wch.controller_id
+    ${where}`, wp, [{}]);
+
+  const topP = [...wp, limit];
+  const top = await runQ('top_clients', `
+    SELECT wch.mac_address, wch.controller_id, c.name AS controller_name, c.site_name,
+           cl.hostname, cl.ip_address, cl.ap_name, cl.ssid_name,
+           ROUND(AVG(wch.rx_bps)::numeric, 0) AS avg_rx_bps,
+           ROUND(AVG(wch.tx_bps)::numeric, 0) AS avg_tx_bps,
+           ROUND(AVG(COALESCE(wch.rx_bps, 0) + COALESCE(wch.tx_bps, 0))::numeric, 0) AS avg_total_bps,
+           MAX(wch.rx_bps) AS peak_rx_bps,
+           MAX(wch.tx_bps) AS peak_tx_bps,
+           MAX(COALESCE(wch.rx_bps, 0) + COALESCE(wch.tx_bps, 0)) AS peak_total_bps,
+           COUNT(*)::int AS sample_count
+    FROM wireless_client_history wch
+    JOIN wireless_controllers c ON c.id = wch.controller_id
+    LEFT JOIN wireless_clients cl
+      ON cl.controller_id = wch.controller_id AND cl.mac_address = wch.mac_address
+    ${where}
+    GROUP BY wch.mac_address, wch.controller_id, c.name, c.site_name,
+             cl.hostname, cl.ip_address, cl.ap_name, cl.ssid_name
+    ORDER BY avg_total_bps DESC NULLS LAST
+    LIMIT $${topP.length}`, topP, []);
+
+  const s = summary.rows[0] || {};
+  const clients = top.rows.map((r) => ({
+    ...r,
+    avg_rx_bps: r.avg_rx_bps != null ? Number(r.avg_rx_bps) : null,
+    avg_tx_bps: r.avg_tx_bps != null ? Number(r.avg_tx_bps) : null,
+    avg_total_bps: r.avg_total_bps != null ? Number(r.avg_total_bps) : null,
+    peak_rx_bps: r.peak_rx_bps != null ? Number(r.peak_rx_bps) : null,
+    peak_tx_bps: r.peak_tx_bps != null ? Number(r.peak_tx_bps) : null,
+    peak_total_bps: r.peak_total_bps != null ? Number(r.peak_total_bps) : null,
+  }));
+  const avgTotalBps = s.avg_total_bps != null ? Number(s.avg_total_bps) : null;
+
+  return {
+    title: 'Wireless Bandwidth',
+    dateRange: win.label + (cappedTo7d ? ' (capped to 7d - client history retention)' : ''),
+    headline: `${clients.length} client(s) ranked by bandwidth over ${win.label.toLowerCase()}`,
+    summary_stats: {
+      client_count: s.client_count || 0,
+      avg_total_bps: avgTotalBps,
+    },
+    clients,
+    summary: [
+      { label: 'Clients w/ Data', value: String(s.client_count || 0), color: NAVY },
+      { label: 'Avg Bandwidth', value: fmtBpsPdf(avgTotalBps), color: RED },
+      { label: 'Top Client', value: clients[0] ? fmtBpsPdf(clients[0].avg_total_bps) : '—', color: GREEN },
+    ],
+  };
+}
+
+function renderWirelessBandwidth(doc, data, layout) {
+  const { left, contentW } = layout;
+  doc.addPage();
+  let y = doc.page.margins.top;
+  doc.fillColor(NAVY).fontSize(20).font('Helvetica-Bold').text(data.title, left, y, { width: contentW });
+  y = doc.y + 2;
+  doc.fillColor(MUTED).fontSize(11).font('Helvetica').text(data.headline || '', left, y, { width: contentW });
+  y = doc.y + 4;
+  doc.moveTo(left, y).lineTo(left + 90, y).lineWidth(2).stroke(RED);
+  y += 14;
+
+  const s = data.summary_stats || {};
+  y = drawKpiTiles(doc, layout, y, [
+    { value: String(s.client_count || 0), label: 'Clients w/ Data', color: NAVY },
+    { value: fmtBpsPdf(s.avg_total_bps), label: 'Avg Bandwidth', color: RED },
+  ]);
+  doc.y = y + 22;
+
+  sectionTitle(doc, layout, 'Top Clients by Bandwidth');
+  drawTable(doc, {
+    columns: [
+      { key: 'client', label: 'Client', width: 130 },
+      { key: 'ap_name', label: 'AP', width: 90 },
+      { key: 'ssid_name', label: 'SSID', width: 90 },
+      { key: 'controller_name', label: 'Controller', width: 90 },
+      { key: 'avg_down', label: 'Avg Down', width: 75, align: 'right' },
+      { key: 'avg_up', label: 'Avg Up', width: 75, align: 'right' },
+      { key: 'peak_total', label: 'Peak Total', width: 80, align: 'right' },
+    ],
+    rows: (data.clients || []).map((c) => ({
+      client: c.hostname || c.mac_address || '—',
+      ap_name: c.ap_name || '—',
+      ssid_name: c.ssid_name || '—',
+      controller_name: c.controller_name || '—',
+      avg_down: fmtBpsPdf(c.avg_rx_bps),
+      avg_up: fmtBpsPdf(c.avg_tx_bps),
+      peak_total: fmtBpsPdf(c.peak_total_bps),
+    })),
+  }, layout, { continueOnPage: true });
+}
+
 // ════════════════════════════════════════════════════════════
 // TOP N WORST — mirror of GET /api/reports/top-worst
 // KPIs + the ranked table. The on-screen TopWorstReport has NO trend chart,
@@ -3132,6 +3266,7 @@ const RENDERERS = {
   'wireless-rf': { title: 'Wireless RF', gather: gatherWirelessRf, render: renderWirelessRf },
   'wireless-capacity': { title: 'Wireless Capacity', gather: gatherWirelessCapacity, render: renderWirelessCapacity },
   'wireless-security': { title: 'Wireless Security', gather: gatherWirelessSecurity, render: renderWirelessSecurity },
+  'wireless-bandwidth': { title: 'Wireless Bandwidth', gather: gatherWirelessBandwidth, render: renderWirelessBandwidth },
   'top-worst': { title: 'Top 10 Worst', gather: gatherTopWorst, render: renderTopWorst },
   'alert-analysis': { title: 'Alerts & Anomalies', gather: gatherAlertAnalysis, render: renderAlertAnalysis },
   'device-detail': { title: 'Device Detail', gather: gatherDeviceDetail, render: renderDeviceDetail },
@@ -3159,6 +3294,10 @@ const ALIASES = {
   'wireless-rogue': 'wireless-security',
   'wireless-rogues': 'wireless-security',
   'wireless-encryption': 'wireless-security',
+  'wireless-bandwidth-report': 'wireless-bandwidth',
+  'wireless-client-bandwidth': 'wireless-bandwidth',
+  'client-bandwidth': 'wireless-bandwidth',
+  'top-bandwidth-clients': 'wireless-bandwidth',
   'rogue-aps': 'wireless-security',
   // Aggregate + granular detail aliases (canonical keys mirror the frontend
   // TEMPLATES list + the /api/reports/* endpoints).

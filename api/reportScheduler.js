@@ -217,6 +217,7 @@ function buildReportUrl(report) {
     case 'wireless-rf':
     case 'wireless-capacity':
     case 'wireless-security':
+    case 'wireless-bandwidth':
       if (report.scope_type === 'controller' && scopeId) p.set('controller_id', String(scopeId));
       return `/api/reports/${report.template}?${p}`;
     case 'network-summary':
@@ -277,6 +278,7 @@ function buildReportParams(report) {
     case 'wireless-rf':
     case 'wireless-capacity':
     case 'wireless-security':
+    case 'wireless-bandwidth':
       if (report.scope_type === 'controller' && scopeId) params.controller_id = scopeId;
       break;
     case 'executive':

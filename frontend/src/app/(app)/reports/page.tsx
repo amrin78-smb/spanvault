@@ -20,6 +20,7 @@ import WirelessClientReport from '@/components/reports/WirelessClientReport';
 import WirelessRFReport from '@/components/reports/WirelessRFReport';
 import WirelessCapacityReport from '@/components/reports/WirelessCapacityReport';
 import WirelessSecurityReport from '@/components/reports/WirelessSecurityReport';
+import WirelessBandwidthReport from '@/components/reports/WirelessBandwidthReport';
 import ReportsCatalog, { CatalogReport } from '@/components/reports/ReportsCatalog';
 
 // ── Types ──────────────────────────────────────────────────────
@@ -85,6 +86,7 @@ const TEMPLATES: Template[] = [
   { key: 'wireless-rf', icon: '📻', label: 'Wireless RF', desc: 'Co-channel interference, band steering and RF scores', scope: 'all', wireless: true, category: 'Wireless' },
   { key: 'wireless-capacity', icon: '📊', label: 'Wireless Capacity', desc: 'AP capacity usage and client growth trends', scope: 'all', wireless: true, category: 'Wireless' },
   { key: 'wireless-security', icon: '🛡️', label: 'Wireless Security', desc: 'Rogue AP detections and SSID encryption posture', scope: 'all', wireless: true, category: 'Wireless' },
+  { key: 'wireless-bandwidth', icon: '⚡', label: 'Wireless Bandwidth', desc: 'Top bandwidth-consuming clients over time', scope: 'all', wireless: true, category: 'Wireless' },
   { key: 'device-detail', icon: '🖥', label: 'Device Detail', desc: 'Time-series charts, history and metrics for one or more devices', scope: 'deviceMulti', granular: true, category: 'Detail' },
   { key: 'ap-detail', icon: '📡', label: 'AP Detail', desc: 'Time-series charts, clients, RF and throughput for one or more access points', scope: 'apMulti', granular: true, category: 'Detail' },
   { key: 'service-detail', icon: '🔌', label: 'Service Detail', desc: 'Status history, response time and alerts for one or more service checks', scope: 'serviceMulti', granular: true, category: 'Detail' },
@@ -271,6 +273,7 @@ function isEmptyReport(template: string, data: any): boolean {
     case 'wireless-rf':        return false; // always renders score/recommendations
     case 'wireless-capacity':  return !data || (data.used_aps === 0 && (!data.client_trend || data.client_trend.length === 0));
     case 'wireless-security':  return false; // always renders summary KPI tiles, even at zero
+    case 'wireless-bandwidth': return !data.clients || data.clients.length === 0;
     default: return false;
   }
 }
@@ -1015,6 +1018,7 @@ function ReportBody({ template, data }: { template: string; data: any }) {
     case 'wireless-rf':        return <WirelessRFReport data={data} />;
     case 'wireless-capacity':  return <WirelessCapacityReport data={data} />;
     case 'wireless-security':  return <WirelessSecurityReport data={data} />;
+    case 'wireless-bandwidth': return <WirelessBandwidthReport data={data} />;
     default: return null;
   }
 }

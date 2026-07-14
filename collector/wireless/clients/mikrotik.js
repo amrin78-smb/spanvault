@@ -27,8 +27,8 @@ const RTAB_BASE = '1.3.6.1.4.1.14988.1.1.1.2.1';
 const cStrength = RTAB_BASE + '.3';  // mtxrWlRtabStrength (Integer32, dBm) -> rssi_dbm
 const cTxBytes = RTAB_BASE + '.4';   // mtxrWlRtabTxBytes (Counter32) -> rx_bytes (client's download — see note below)
 const cRxBytes = RTAB_BASE + '.5';   // mtxrWlRtabRxBytes (Counter32) -> tx_bytes (client's upload — see note below)
-const cTxRate = RTAB_BASE + '.8';    // mtxrWlRtabTxRate (Gauge32, bits/sec) -> tx_rate_mbps
-const cRxRate = RTAB_BASE + '.9';    // mtxrWlRtabRxRate (Gauge32, bits/sec) -> rx_rate_mbps
+const cTxRate = RTAB_BASE + '.8';    // mtxrWlRtabTxRate (Gauge32, bits/sec) -> rx_rate_mbps (client's download rate — see note below)
+const cRxRate = RTAB_BASE + '.9';    // mtxrWlRtabRxRate (Gauge32, bits/sec) -> tx_rate_mbps (client's upload rate — see note below)
 const cUptime = RTAB_BASE + '.11';   // mtxrWlRtabUptime (TimeTicks) -> connected_since
 // .4/.5 (TxBytes/RxBytes) are MIB-verified to exist at these OIDs (MIKROTIK-MIB
 // SEQUENCE order, confirmed against the LibreNMS MIB mirror and oidref.com's
@@ -50,13 +50,32 @@ const cUptime = RTAB_BASE + '.11';   // mtxrWlRtabUptime (TimeTicks) -> connecte
 // Counter32 wraparound handling (these wrap at ~4.3GB, easily within an hour on
 // a busy client).
 //
-// NOTE (flagged, not fixed here — out of scope for this change): tx_rate_mbps/
-// rx_rate_mbps below (.8/.9) are read directly with NO such swap, even though
-// they're columns in this SAME router-relative table and the RouterOS
-// convention quoted above applies to "Tx rate" by name too — this may be a
-// pre-existing inversion of those two fields (predates this change, already
-// shipped). Left untouched here since fixing it needs its own dedicated
-// verification pass, not a side effect of the byte-counter fix.
+// .8/.9 (TxRate/RxRate) follow-up (was flagged, now investigated and FIXED):
+// re-verified specifically for the rate columns, not just extrapolated from
+// the byte counters above. The forum quote already used to justify the
+// TxBytes/RxBytes swap ("Tx goes from router to client. So client download is
+// Tx rate on router." — user pukkita, MikroTik community forum, "how to read
+// wireless registration table") turns out to be a direct answer to a question
+// that was literally about the Tx-rate/Rx-rate columns themselves ("in the
+// wireless registration on the router I can see two rows Tx rate, Rx rate,
+// what does[] that mean?" — OP David1234, same thread) — i.e. this source is
+// primary evidence for the RATE columns, not just an extrapolation from the
+// byte-counter convention onto them. A second, independent MikroTik community
+// thread ("How to monitor the Upload/download rate of clients?") states the
+// same mapping explicitly: "when the router transfers data the client is
+// downloading (tx) ... rx-rate/tx-rate means upload/download respectively"
+// (router transmits = client downloads = tx; router receives = client
+// uploads = rx). Both sources agree, both are about the rate columns
+// specifically, and the columns sit in the same MtxrWlRtabEntry SEQUENCE
+// immediately after TxBytes/RxBytes/TxPackets/RxPackets with the same
+// Tx/Rx naming convention, so the same router-relative frame applies. Like
+// the byte counters, the MIB's own DESCRIPTION for these two ("bits per
+// second") states units but not direction, so this is community-source
+// confirmed, not MIB-text-confirmed — but two independent, mutually
+// consistent, named-poster sources answering the exact question asked here
+// is enough to be confident. Swapped the same way: mtxrWlRtabTxRate (router ->
+// client) is the CLIENT's download rate -> rx_rate_mbps; mtxrWlRtabRxRate
+// (client -> router) is the CLIENT's upload rate -> tx_rate_mbps.
 //
 // Deliberately skipped (no field in emptyClient() to hold them):
 //   .6/.7 TxPackets/RxPackets (packet counts, not bytes), .10 RouterOSVersion,
@@ -130,10 +149,12 @@ async function parseClients(session, apMap) {
       c.tx_bytes = counterNum(rxBytes[idx]);
       c.byte_counter_bits = 32;
 
+      // Swapped relative to the raw OID names — see the router-relative-vs-
+      // client-relative note above cTxRate/cRxRate.
       const t = num(txRate[idx]);
-      c.tx_rate_mbps = t === null ? null : t / 1000000;
+      c.rx_rate_mbps = t === null ? null : t / 1000000;
       const r = num(rxRate[idx]);
-      c.rx_rate_mbps = r === null ? null : r / 1000000;
+      c.tx_rate_mbps = r === null ? null : r / 1000000;
 
       // mtxrWlRtabUptime is TimeTicks (hundredths of a second).
       const ticks = num(uptime[idx]);

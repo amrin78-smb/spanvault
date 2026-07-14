@@ -595,6 +595,28 @@ const prevCounters = new Map();
 // race regardless of how the two intervals relate going forward.
 const prevClientCounters = new Map();
 
+// Sustained-high-bandwidth client alerting — see raiseClientBandwidthAlert/
+// resolveClientBandwidthAlert in collector.js (injected here as `alertHooks`,
+// see startWirelessCollector below) for the alert-row plumbing. 500 Mbps
+// sustained on a SINGLE client is deliberately generous: real-world sustained
+// single-client throughput essentially never approaches even Wi-Fi 6's
+// theoretical link-layer max (~9.6 Gbps) in practice, let alone the fraction
+// of that one station could realistically sustain — this is meant to catch a
+// genuinely abnormal sustained transfer (compromised host, runaway backup/
+// sync job, etc.), not to flag "this client looks a bit busy". Comfortably
+// inside deriveThroughput()'s own MAX_SANE_BPS cap (2 Gbps) above, so a real
+// breach is never itself squashed as an implausible reading.
+const CLIENT_BANDWIDTH_THRESHOLD_BPS = 500_000_000;
+// Consecutive-poll breach counter, keyed the same way as prevClientCounters
+// (`${controller.id}::${mac}`). A single poll over threshold (e.g. one large
+// file transfer) must not raise an alert — this requires TWO consecutive
+// polls over threshold first (simple in-memory debounce; a restart just
+// resets the count, delaying a raise by at most one extra poll, never causing
+// a false one). Entries are deleted as soon as a client drops back under
+// threshold or disconnects, so this stays bounded to currently-breaching
+// clients rather than growing over the life of the process.
+const clientBandwidthBreaches = new Map();
+
 // Delta between two cumulative counter readings, wrap-aware. A decrease from a
 // value still inside 32-bit range is most likely a Counter32 wrap (4.3 GB —
 // minutes on a busy AP), so compute the wrapped delta and accept it only when
@@ -1383,7 +1405,11 @@ async function walkOid(pool, controller, oid) {
 // low-signal events vs the previous snapshot, upsert the current client set,
 // and prune stale clients + old events. Never throws; a client-poll failure is
 // isolated and never affects AP polling.
-async function pollClients(pool, controller, apList) {
+// `alertHooks` (optional — { raise(mac, controllerId, siteId, message), resolve(mac,
+// controllerId) }) is how wireless_client_bandwidth_high alerts get raised/resolved;
+// see the CLIENT_BANDWIDTH_THRESHOLD_BPS comment above and startWirelessCollector
+// below for why it's injected rather than required from collector.js directly.
+async function pollClients(pool, controller, apList, alertHooks) {
   const parser = getClientParser(controller.vendor);
   if (!parser || !controller.snmp_device_id) return; // unsupported vendor or no SNMP device
 
@@ -1406,11 +1432,38 @@ async function pollClients(pool, controller, apList) {
     return;
   }
 
-  // Previous snapshot for roaming/leave detection.
+  // Previous snapshot for roaming/leave detection. Also carries the persisted
+  // byte-counter baseline (rx_bytes_raw/tx_bytes_raw/byte_counter_bits/
+  // bw_sampled_at) so a collector restart can resume computing rx_bps/tx_bps
+  // from the LAST poll instead of losing the in-memory prevClientCounters
+  // baseline and going blank for a full extra poll cycle — see the seeding
+  // step right before the upsert loop below.
   const prev = await pool.query(
-    `SELECT mac_address, ap_id, ap_name, rssi_dbm FROM wireless_clients WHERE controller_id = $1`,
+    `SELECT mac_address, ap_id, ap_name, rssi_dbm,
+            rx_bytes_raw, tx_bytes_raw, byte_counter_bits, bw_sampled_at
+       FROM wireless_clients WHERE controller_id = $1`,
     [controller.id]);
   const prevMap = new Map(prev.rows.map((c) => [c.mac_address, c]));
+
+  // Warm-start prevClientCounters from the DB-persisted baseline for any
+  // client this in-memory process has no entry for yet (a fresh collector
+  // process — every restart clears the Map, but not the DB). Only seeds when
+  // BOTH raw counters were actually persisted (an older row from before this
+  // feature existed, or a vendor/firmware with no byte-counter support at
+  // all, correctly stays unseeded — deriveThroughput() already treats "no
+  // prev entry" as "first sample, no rate yet" exactly as intended).
+  const clientCounterKey = (mac) => `${controller.id}::${mac}`;
+  for (const p of prevMap.values()) {
+    const key = clientCounterKey(p.mac_address);
+    if (prevClientCounters.has(key)) continue; // in-memory value is always fresher
+    if (p.rx_bytes_raw == null && p.tx_bytes_raw == null) continue;
+    if (!p.bw_sampled_at) continue;
+    prevClientCounters.set(key, {
+      rx: p.rx_bytes_raw == null ? null : Number(p.rx_bytes_raw),
+      tx: p.tx_bytes_raw == null ? null : Number(p.tx_bytes_raw),
+      t: new Date(p.bw_sampled_at).getTime(),
+    });
+  }
 
   const now = new Date();
   const oneHourAgo = new Date(now.getTime() - 3600000);
@@ -1445,13 +1498,24 @@ async function pollClients(pool, controller, apList) {
     }
   }
 
-  // Clients that left (in previous snapshot, not in current).
+  // Clients that left (in previous snapshot, not in current). A client that
+  // disconnects must not leave a dangling active wireless_client_bandwidth_high
+  // alert behind forever — resolve it here alongside the leave event, and drop
+  // its breach counter (a later reconnect starts the debounce fresh).
   for (const [mac, p] of prevMap) {
     if (!seen.has(mac)) {
       events.push({
         mac_address: mac, controller_id: controller.id, event_type: 'leave',
         from_ap_id: p.ap_id, from_ap_name: p.ap_name, ts: now,
       });
+      if (alertHooks) {
+        clientBandwidthBreaches.delete(`${controller.id}::${mac}`);
+        try {
+          await alertHooks.resolve(mac, controller.id);
+        } catch (e) {
+          console.error(`[wireless] client bandwidth alert resolve (disconnect) failed on ${controller.name} (${mac}):`, e.message);
+        }
+      }
     }
   }
 
@@ -1486,13 +1550,53 @@ async function pollClients(pool, controller, apList) {
       prevClientCounters, `${controller.id}::${client.mac_address}`,
       numOrNull(client.rx_bytes), numOrNull(client.tx_bytes), Date.now(), client.byte_counter_bits);
 
+    // Sustained-high-bandwidth alerting (wireless_client_bandwidth_high) — see
+    // CLIENT_BANDWIDTH_THRESHOLD_BPS above for the threshold rationale and the
+    // consecutive-poll debounce. rx+tx combined, since either direction alone
+    // sustained at/near the threshold is equally abnormal for one client.
+    if (alertHooks) {
+      const bwKey = `${controller.id}::${client.mac_address}`;
+      const totalBps = (rxBps || 0) + (txBps || 0);
+      if (totalBps > CLIENT_BANDWIDTH_THRESHOLD_BPS) {
+        const breaches = (clientBandwidthBreaches.get(bwKey) || 0) + 1;
+        clientBandwidthBreaches.set(bwKey, breaches);
+        if (breaches >= 2) {
+          const label = client.hostname || client.mac_address;
+          const mbps = Math.round(totalBps / 1e6);
+          const thresholdMbps = Math.round(CLIENT_BANDWIDTH_THRESHOLD_BPS / 1e6);
+          try {
+            await alertHooks.raise(
+              client.mac_address, controller.id, controller.site_id,
+              `Wireless client ${label} on ${controller.name} sustained ${mbps} Mbps (>= ${thresholdMbps} Mbps)`);
+          } catch (e) {
+            console.error(`[wireless] client bandwidth alert raise failed on ${controller.name} (${client.mac_address}):`, e.message);
+          }
+        }
+      } else {
+        clientBandwidthBreaches.delete(bwKey);
+        try {
+          await alertHooks.resolve(client.mac_address, controller.id);
+        } catch (e) {
+          console.error(`[wireless] client bandwidth alert resolve failed on ${controller.name} (${client.mac_address}):`, e.message);
+        }
+      }
+    }
+
+    // Persist the raw counters + sample time alongside the computed rate, so a
+    // collector restart can warm-start prevClientCounters from the DB instead
+    // of losing the baseline (see the seeding step earlier in this function).
+    const rawRx = numOrNull(client.rx_bytes);
+    const rawTx = numOrNull(client.tx_bytes);
+    const bwSampledAt = (rawRx !== null || rawTx !== null) ? now : null;
+
     try {
     await pool.query(`
       INSERT INTO wireless_clients
         (mac_address, ip_address, hostname, controller_id, ap_id, ap_name, ssid_name, band, channel,
          rssi_dbm, tx_rate_mbps, rx_rate_mbps, connected_since, last_seen_at, auth_type,
-         is_problem, roaming_count, vendor, is_sticky, phy_mode, vlan_id, rx_bps, tx_bps)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
+         is_problem, roaming_count, vendor, is_sticky, phy_mode, vlan_id, rx_bps, tx_bps,
+         rx_bytes_raw, tx_bytes_raw, byte_counter_bits, bw_sampled_at)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)
       ON CONFLICT (controller_id, mac_address) DO UPDATE SET
         ip_address    = EXCLUDED.ip_address,
         hostname      = COALESCE(EXCLUDED.hostname, wireless_clients.hostname),
@@ -1513,7 +1617,11 @@ async function pollClients(pool, controller, apList) {
         phy_mode      = EXCLUDED.phy_mode,
         vlan_id       = EXCLUDED.vlan_id,
         rx_bps        = EXCLUDED.rx_bps,
-        tx_bps        = EXCLUDED.tx_bps
+        tx_bps        = EXCLUDED.tx_bps,
+        rx_bytes_raw  = EXCLUDED.rx_bytes_raw,
+        tx_bytes_raw  = EXCLUDED.tx_bytes_raw,
+        byte_counter_bits = EXCLUDED.byte_counter_bits,
+        bw_sampled_at = EXCLUDED.bw_sampled_at
     `, [
       client.mac_address, client.ip_address || null, client.hostname || null, controller.id,
       client.ap_id || null, client.ap_name || null, client.ssid_name || null, client.band || null,
@@ -1521,7 +1629,12 @@ async function pollClients(pool, controller, apList) {
       numOrNull(client.tx_rate_mbps), numOrNull(client.rx_rate_mbps), client.connected_since || null,
       now, client.auth_type || null, isProblem, roamCount, controller.vendor, isSticky,
       client.phy_mode || null, intOrNull(client.vlan_id), rxBps, txBps,
+      rawRx, rawTx, client.byte_counter_bits || null, bwSampledAt,
     ]);
+    await pool.query(
+      `INSERT INTO wireless_client_history (mac_address, controller_id, ts, rx_bps, tx_bps, rssi_dbm)
+       VALUES ($1,$2,$3,$4,$5,$6)`,
+      [client.mac_address, controller.id, now, rxBps, txBps, intOrNull(client.rssi_dbm)]);
     } catch (e) {
       // Isolate per-row failures so one bad client doesn't skip the rest of the
       // controller's clients / all events / the prune.
@@ -1559,6 +1672,11 @@ async function pollClients(pool, controller, apList) {
       `DELETE FROM wireless_clients WHERE controller_id = $1 AND last_seen_at < NOW() - INTERVAL '15 minutes'`,
       [controller.id]);
     await pool.query(`DELETE FROM wireless_client_events WHERE ts < NOW() - INTERVAL '7 days'`);
+    // Same 7-day retention as events above — one history row per client per
+    // poll adds up fast (1000+ clients x every 10 min), so this is bounded
+    // rather than left to grow indefinitely the way wireless_history (AP-level)
+    // currently is.
+    await pool.query(`DELETE FROM wireless_client_history WHERE ts < NOW() - INTERVAL '7 days'`);
   } catch (e) {
     // A prune failure must not abort the poll.
     console.error(`[wireless] client prune failed on ${controller.name}:`, e.message);
@@ -1569,7 +1687,7 @@ async function pollClients(pool, controller, apList) {
 
 // Client poll cycle — separate (slower) cadence than the AP poll.
 let clientsBusy = false;
-async function pollAllClients(pool) {
+async function pollAllClients(pool, alertHooks) {
   if (clientsBusy) return;
   clientsBusy = true;
   try {
@@ -1579,7 +1697,7 @@ async function pollAllClients(pool) {
       try {
         const apq = await pool.query(
           `SELECT id, name, mac_address FROM wireless_aps WHERE controller_id = $1`, [c.id]);
-        await pollClients(pool, c, apq.rows);
+        await pollClients(pool, c, apq.rows, alertHooks);
       } catch (e) {
         // Client polling never affects AP polling — isolate per-controller failures.
         console.error(`[wireless] client poll failed on ${c.name}:`, e.message);
@@ -1608,7 +1726,12 @@ const CLIENT_POLL_INTERVAL = 10 * 60 * 1000;
 
 // Start the wireless collector on a 5-minute cadence (first pass after 20s so
 // the initial NetVault sync + vendor detection has a chance to populate).
-function startWirelessCollector(pool) {
+// `alertHooks` (optional — { raise(mac, controllerId, siteId, message), resolve(mac,
+// controllerId) }) is passed straight through to pollAllClients/pollClients so they
+// can raise/resolve wireless_client_bandwidth_high alerts via collector.js's
+// raiseClientBandwidthAlert/resolveClientBandwidthAlert without this module
+// requiring collector.js back (collector.js already requires this module).
+function startWirelessCollector(pool, alertHooks) {
   // One-shot startup cleanup of previously mis-detected (non-wireless) controllers.
   cleanupBadAutoControllers(pool).catch((e) => console.error('[wireless] startup cleanup:', e.message));
   // One-shot startup cleanup of stale decimal-MAC AP records (old bad SNMP parsing).
@@ -1616,8 +1739,8 @@ function startWirelessCollector(pool) {
   setTimeout(() => pollAll(pool), 20 * 1000);
   setInterval(() => pollAll(pool), WIRELESS_POLL_INTERVAL);
   // Client polling on its own (slower) schedule, separate from the AP poll.
-  setTimeout(() => pollAllClients(pool), 30 * 1000);
-  setInterval(() => pollAllClients(pool), CLIENT_POLL_INTERVAL);
+  setTimeout(() => pollAllClients(pool, alertHooks), 30 * 1000);
+  setInterval(() => pollAllClients(pool, alertHooks), CLIENT_POLL_INTERVAL);
   log('wireless collector started (APs every 5 min, clients every 10 min)');
 }
 

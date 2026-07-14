@@ -1761,6 +1761,50 @@ async function resolveWirelessAlert(idCol, id, alertType) {
   } catch (e) { console.error('[wireless-alert] resolve failed:', e.message); }
 }
 
+// Sustained-high-bandwidth client alerts (wireless_client_bandwidth_high) are
+// a hardcoded-threshold check, deliberately NOT a user-configurable alert_rule
+// like the device/service rule engine (getEffectiveRules/getEffectiveServiceRules
+// below) — a wireless_clients row is a live 15-min snapshot with a fresh SERIAL
+// id on every reconnect, not the stable permanent entity that engine is built
+// for. This mirrors wireless_ap_down/wireless_high_util above instead.
+//
+// A wireless client has no single stable id column the way an AP/controller
+// does, so it can't reuse raiseWirelessAlert/resolveWirelessAlert's single-
+// idCol shape — it's keyed by the composite (mac_address, controller_id)
+// identity already established by wireless_client_events/wireless_client_history
+// (see scripts/schema.sql's wireless_client_mac/wireless_controller_id columns
+// and idx_alerts_active_wclient_unique). The actual threshold check + the
+// consecutive-poll debounce live in wirelessCollector.js's pollClients(); these
+// two functions are injected into it as `alertHooks` via startWirelessCollector()
+// below (not required back into this module) to avoid a require() cycle between
+// collector.js and wirelessCollector.js (collector.js already requires
+// wirelessCollector.js at the top of the file).
+async function raiseClientBandwidthAlert(mac, controllerId, siteId, message) {
+  try {
+    const r = await sv.query(
+      `INSERT INTO alerts (wireless_client_mac, wireless_controller_id, alert_type, severity, message, status)
+       VALUES ($1,$2,'wireless_client_bandwidth_high','warning',$3,'active')
+       ON CONFLICT (wireless_client_mac, wireless_controller_id, alert_type)
+         WHERE status = 'active' AND wireless_client_mac IS NOT NULL DO NOTHING
+       RETURNING id`,
+      [mac, controllerId, message]);
+    if (r.rows[0]) {
+      log(`[alert] RAISED wireless_client_bandwidth_high on ${mac}`);
+      const to = await recipientsFor(siteId, 'warning', 'wireless_client_bandwidth_high');
+      if (to) await sendAlertEmail(`[SpanVault] WARNING: ${message}`, message, to);
+    }
+  } catch (e) { console.error('[wireless-alert] raise client bandwidth failed:', e.message); }
+}
+async function resolveClientBandwidthAlert(mac, controllerId) {
+  try {
+    await sv.query(
+      `UPDATE alerts SET status='resolved', resolved_at=NOW()
+        WHERE wireless_client_mac=$1 AND wireless_controller_id=$2
+          AND alert_type='wireless_client_bandwidth_high' AND status <> 'resolved'`,
+      [mac, controllerId]);
+  } catch (e) { console.error('[wireless-alert] resolve client bandwidth failed:', e.message); }
+}
+
 async function evaluateWirelessAlerts() {
   try {
     const utilThreshold = settingInt('wireless_util_threshold_pct', 90);
@@ -2036,7 +2080,10 @@ async function main() {
   setInterval(topologyTick, 6 * 60 * 60 * 1000);
 
   // Wireless controller polling (SNMP + API) on its own 5-minute cadence.
-  startWirelessCollector(sv);
+  // The alertHooks object is how pollClients() (in wirelessCollector.js) raises/
+  // resolves wireless_client_bandwidth_high without requiring collector.js back
+  // (see the comment on raiseClientBandwidthAlert above).
+  startWirelessCollector(sv, { raise: raiseClientBandwidthAlert, resolve: resolveClientBandwidthAlert });
 
   // Kick off an immediate first pass.
   pingTick();

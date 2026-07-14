@@ -10,7 +10,10 @@
 //   INDEX { mtxrWlRtabAddr, mtxrWlRtabIface }
 // i.e. the index is the 6 MAC octets FIRST, then the interface index LAST (7
 // components total). This locks in macFromHead(idx, 6) as the fix, and the
-// corrected column mapping (.3 Strength -> rssi_dbm, .8/.9 Tx/RxRate -> mbps).
+// corrected column mapping (.3 Strength -> rssi_dbm; .4/.5 Tx/RxBytes and
+// .8/.9 Tx/RxRate are both router-relative in this table and swapped onto
+// the client-relative rx_bytes/tx_bytes and rx_rate_mbps/tx_rate_mbps
+// fields, respectively — see the comments in the parser itself for sources).
 const path = require('path');
 const ROOT = path.join(__dirname, '..');
 const mikrotikClients = require(path.join(ROOT, 'collector/wireless/clients/mikrotik.js'));
@@ -41,16 +44,16 @@ const rtabWalked = [
                                                          // also doubles as the pre-existing decoy proving this
                                                          // value is NOT read as rssi_dbm (Bug 2 regression check).
   { oid: `${RTAB_BASE}.7.${IDX1}`, value: 424242 },     // RxPackets (decoy — must NOT be read as a rate)
-  { oid: `${RTAB_BASE}.8.${IDX1}`, value: 866700000 },  // TxRate (bits/sec) -> tx_rate_mbps
-  { oid: `${RTAB_BASE}.9.${IDX1}`, value: 400000000 },  // RxRate (bits/sec) -> rx_rate_mbps
+  { oid: `${RTAB_BASE}.8.${IDX1}`, value: 866700000 },  // TxRate (router->client, bits/sec) -> rx_rate_mbps (client's download)
+  { oid: `${RTAB_BASE}.9.${IDX1}`, value: 400000000 },  // RxRate (client->router, bits/sec) -> tx_rate_mbps (client's upload)
   { oid: `${RTAB_BASE}.11.${IDX1}`, value: 360000 },    // Uptime (TimeTicks) -> 3600s
 
   // Client 2 — different values, no AP-table match for its interface.
   { oid: `${RTAB_BASE}.3.${IDX2}`, value: -70 },
   { oid: `${RTAB_BASE}.4.${IDX2}`, value: 5555555 },    // TxBytes -> rx_bytes
   { oid: `${RTAB_BASE}.5.${IDX2}`, value: 7777777 },    // RxBytes -> tx_bytes
-  { oid: `${RTAB_BASE}.8.${IDX2}`, value: 54000000 },   // 54 Mbps
-  { oid: `${RTAB_BASE}.9.${IDX2}`, value: 24000000 },   // 24 Mbps
+  { oid: `${RTAB_BASE}.8.${IDX2}`, value: 54000000 },   // TxRate -> rx_rate_mbps: 54 Mbps
+  { oid: `${RTAB_BASE}.9.${IDX2}`, value: 24000000 },   // RxRate -> tx_rate_mbps: 24 Mbps
   { oid: `${RTAB_BASE}.11.${IDX2}`, value: 72000 },     // 720s
 ];
 
@@ -101,15 +104,16 @@ const apMap = {
 
     // ── Bug 2: column mapping ──────────────────────────────────────────
     ['rssi_dbm from .3 (-55), not .5 (RxBytes decoy)', c1.rssi_dbm === -55],
-    ['tx_rate_mbps from .8 ÷ 1e6 = 866.7, not from .7/.8 swapped', c1.tx_rate_mbps === 866.7],
-    ['rx_rate_mbps from .9 ÷ 1e6 = 400, not swapped with tx', c1.rx_rate_mbps === 400],
-    ['tx_rate_mbps not derived from RxPackets decoy (.7)', c1.tx_rate_mbps !== 424242 / 1000000],
+    ['rx_rate_mbps from .8 TxRate (router->client = client download) ÷ 1e6 = 866.7', c1.rx_rate_mbps === 866.7],
+    ['tx_rate_mbps from .9 RxRate (client->router = client upload) ÷ 1e6 = 400', c1.tx_rate_mbps === 400],
+    ['rate fields not derived from RxPackets decoy (.7)',
+      c1.tx_rate_mbps !== 424242 / 1000000 && c1.rx_rate_mbps !== 424242 / 1000000],
     ['uptime/connected_since still works (.11 ÷100 = 3600s)',
       c1.connected_since instanceof Date &&
       Math.abs((Date.now() - c1.connected_since.getTime()) - 3600 * 1000) < 5000],
     ['client 2 rssi_dbm from .3 (-70)', c2.rssi_dbm === -70],
-    ['client 2 tx_rate_mbps = 54', c2.tx_rate_mbps === 54],
-    ['client 2 rx_rate_mbps = 24', c2.rx_rate_mbps === 24],
+    ['client 2 rx_rate_mbps (from .8 TxRate) = 54', c2.rx_rate_mbps === 54],
+    ['client 2 tx_rate_mbps (from .9 RxRate) = 24', c2.tx_rate_mbps === 24],
 
     // ── New: per-client bandwidth (.4 TxBytes / .5 RxBytes, Counter32) ──
     // mtxrWlRtabTable is router-relative (like Cisco's stats table), the

@@ -35,6 +35,13 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.73.0': [
+    'Wireless client bandwidth now persists 24h/7d history and survives collector restarts (the baseline used to reset to blank on every restart) — the client detail panel on the Wireless page shows a new Bandwidth trend chart, and a new "Wireless Bandwidth" report ranks top consumers by average/peak throughput.',
+    'Added a sustained-high-bandwidth alert for wireless clients (>=500 Mbps combined rx+tx across two consecutive polls), surfaced alongside the existing AP/controller wireless alerts.',
+    'Extended per-client wireless polling to Fortinet FortiAP and Grandstream GWN controllers — previously only Aruba/Cisco/Ruckus/MikroTik/HPE clients showed up in per-client bandwidth, signal, and roaming views.',
+    'Fixed a MikroTik client bug where the download/upload rate columns (not just the byte counters, fixed earlier) were reported backwards, since mtxrWlRtabTable reports rates from the router\'s point of view rather than the client\'s.',
+    'Agents page: added search/status filtering and bulk restart/rotate-key actions, plus a fleet health summary (offline, high disk usage, outdated agent version) at the top of the list.',
+  ],
   '1.72.5': [
     'Corrected a stale comment and startup log line in the wireless collector that still said client polling ran every 15 minutes — it was tightened to 10 minutes back in 1.72.2, the code was already correct, just the wording wasn\'t updated at the time. No behavior change.',
     'Added an offline structural test for the Cisco wireless client parser (OID mapping, upload/download direction, Counter64 decoding), matching the existing HPE/MikroTik/Ruckus parser tests — guards against future accidental regressions; does not validate against real Cisco hardware (none in the lab).',
@@ -5319,6 +5326,22 @@ app.get('/api/wireless/clients/:mac', wrap(async (req, res) => {
   });
 }));
 
+// Bandwidth trend for one client — wireless_client_history is pruned at 7 days
+// (collector/wirelessCollector.js), so only '24h' (default) and '7d' are
+// meaningful here; anything else falls back to 24h same as rangeToInterval()'s
+// own default. Returned oldest-first (chart-ready).
+app.get('/api/wireless/clients/:mac/history', wrap(async (req, res) => {
+  const mac = decodeURIComponent(req.params.mac);
+  const range = req.query.range === '7d' ? '7d' : '24h';
+  const r = await sv.query(`
+    SELECT ts, rx_bps, tx_bps, rssi_dbm
+    FROM wireless_client_history
+    WHERE mac_address = $1 AND ts >= NOW() - $2::interval
+    ORDER BY ts ASC
+  `, [mac, rangeToInterval(range)]);
+  res.json({ range, points: r.rows });
+}));
+
 // ══════════════════════════════════════════════════════════════
 // Reports (?format=csv supported)
 // ══════════════════════════════════════════════════════════════
@@ -7170,6 +7193,81 @@ app.get('/api/reports/wireless-security', wrap(async (req, res) => {
     rogue_aps: rogueDetail.rows,
     ssids,
     recommendations,
+  });
+}));
+
+// ── Wireless Bandwidth — top bandwidth-consuming clients ───────
+// wireless_client_history is pruned at 7 days (collector/wirelessCollector.js),
+// so any '30d'/'90d' request is capped down to '7d' here — the query window
+// must never imply more history than the table actually retains.
+function wlBandwidthRange(range) {
+  return (range === '30d' || range === '90d') ? '7d' : (range || '24h');
+}
+app.get('/api/reports/wireless-bandwidth', wrap(async (req, res) => {
+  const wlc = wlCtrl(req);
+  const requestedRange = req.query.range || '24h';
+  const effRange = wlBandwidthRange(requestedRange);
+  const interval = rangeToInterval(effRange);
+  const siteFilter = getSiteFilter(req);
+  const limit = Math.min(50, Math.max(1, parseInt(req.query.limit, 10) || 15));
+
+  const params = [interval];
+  const parts = ['wch.ts >= NOW() - $1::interval'];
+  if (wlc.has) { params.push(wlc.id); parts.push(`wch.controller_id = $${params.length}`); }
+  const siteClause = siteFilterClause(siteFilter, params, 'c.site_id');
+  if (siteClause) parts.push(siteClause);
+  const where = 'WHERE ' + parts.join(' AND ');
+
+  const summaryQ = await sv.query(`
+    SELECT COUNT(DISTINCT (wch.mac_address, wch.controller_id))::int AS client_count,
+           ROUND(AVG(COALESCE(wch.rx_bps, 0) + COALESCE(wch.tx_bps, 0))::numeric, 0) AS avg_total_bps
+    FROM wireless_client_history wch
+    JOIN wireless_controllers c ON c.id = wch.controller_id
+    ${where}
+  `, params);
+
+  const topParams = [...params, limit];
+  const topQ = await sv.query(`
+    SELECT wch.mac_address, wch.controller_id, c.name AS controller_name, c.site_name,
+           cl.hostname, cl.ip_address, cl.ap_name, cl.ssid_name,
+           ROUND(AVG(wch.rx_bps)::numeric, 0) AS avg_rx_bps,
+           ROUND(AVG(wch.tx_bps)::numeric, 0) AS avg_tx_bps,
+           ROUND(AVG(COALESCE(wch.rx_bps, 0) + COALESCE(wch.tx_bps, 0))::numeric, 0) AS avg_total_bps,
+           MAX(wch.rx_bps) AS peak_rx_bps,
+           MAX(wch.tx_bps) AS peak_tx_bps,
+           MAX(COALESCE(wch.rx_bps, 0) + COALESCE(wch.tx_bps, 0)) AS peak_total_bps,
+           COUNT(*)::int AS sample_count
+    FROM wireless_client_history wch
+    JOIN wireless_controllers c ON c.id = wch.controller_id
+    LEFT JOIN wireless_clients cl
+      ON cl.controller_id = wch.controller_id AND cl.mac_address = wch.mac_address
+    ${where}
+    GROUP BY wch.mac_address, wch.controller_id, c.name, c.site_name,
+             cl.hostname, cl.ip_address, cl.ap_name, cl.ssid_name
+    ORDER BY avg_total_bps DESC NULLS LAST
+    LIMIT $${topParams.length}
+  `, topParams);
+
+  const numOrNull = (v) => (v == null ? null : Number(v));
+  const s = summaryQ.rows[0] || {};
+
+  res.json({
+    period: effRange,
+    requested_range: requestedRange,
+    capped_to_7d: requestedRange !== effRange,
+    summary: {
+      client_count: s.client_count || 0,
+      avg_total_bps: numOrNull(s.avg_total_bps),
+    },
+    clients: topQ.rows.map((r) => ({
+      ...r,
+      avg_rx_bps: numOrNull(r.avg_rx_bps),
+      avg_tx_bps: numOrNull(r.avg_tx_bps),
+      avg_total_bps: numOrNull(r.avg_total_bps),
+      peak_rx_bps: numOrNull(r.peak_rx_bps),
+      peak_tx_bps: numOrNull(r.peak_tx_bps),
+      peak_total_bps: numOrNull(r.peak_total_bps),
+    })),
   });
 }));
 

@@ -12,6 +12,8 @@ exports.getClientParser = function (vendor) {
     ruckus:   require('./ruckus'),
     mikrotik: require('./mikrotik'),
     hpe:      require('./hpe'),
+    fortinet: require('./fortinet'),
+    grandstream: require('./grandstream'),
   };
   return parsers[vendor] || null;
 };

@@ -1089,13 +1089,56 @@ CREATE INDEX IF NOT EXISTS idx_wclient_rssi ON wireless_clients(rssi_dbm);
 CREATE INDEX IF NOT EXISTS idx_wclient_problem
   ON wireless_clients(is_problem) WHERE is_problem = TRUE;
 ALTER TABLE wireless_clients ADD COLUMN IF NOT EXISTS is_sticky BOOLEAN DEFAULT FALSE;
--- Per-client bandwidth. Only the computed rate is persisted (mirrors wireless_aps'
--- throughput_in_bps/throughput_out_bps) — the underlying cumulative byte counters
--- and their bit-width live only on the in-memory parsed client object between
--- polls (see emptyClient() in collector/wireless/clients/_util.js), converted to
--- a rate via the shared deriveThroughput() delta helper in wirelessCollector.js.
+-- Per-client bandwidth: rx_bps/tx_bps are the computed rate (mirrors wireless_aps'
+-- throughput_in_bps/throughput_out_bps), converted from cumulative byte counters
+-- via the shared deriveThroughput() delta helper in wirelessCollector.js.
 ALTER TABLE wireless_clients ADD COLUMN IF NOT EXISTS rx_bps BIGINT;
 ALTER TABLE wireless_clients ADD COLUMN IF NOT EXISTS tx_bps BIGINT;
+-- The raw cumulative counters + when they were sampled, persisted (not just kept
+-- in the collector's in-memory prevClientCounters Map) so a collector restart
+-- can resume computing a rate from the LAST poll instead of losing the baseline
+-- and going blank for a full extra poll cycle. Written on every poll alongside
+-- rx_bps/tx_bps; read back into prevClientCounters on the first poll after a
+-- restart finds no in-memory entry for a given client. byte_counter_bits (32 or
+-- 64) must travel with the raw values so wraparound handling stays correct
+-- across the restart boundary too.
+ALTER TABLE wireless_clients ADD COLUMN IF NOT EXISTS rx_bytes_raw BIGINT;
+ALTER TABLE wireless_clients ADD COLUMN IF NOT EXISTS tx_bytes_raw BIGINT;
+ALTER TABLE wireless_clients ADD COLUMN IF NOT EXISTS byte_counter_bits SMALLINT;
+ALTER TABLE wireless_clients ADD COLUMN IF NOT EXISTS bw_sampled_at TIMESTAMPTZ;
+
+-- Per-client bandwidth history — one row per client per poll, for a trend chart
+-- on the client detail panel and future bandwidth-threshold alerting. NOT keyed
+-- by wireless_clients.id: that row gets deleted and re-inserted (a fresh id)
+-- whenever a client goes quiet for 15+ min and later reconnects, so mac_address
+-- + controller_id (the same stable-identity convention already used by
+-- wireless_client_events above) is the correct key, not a FK to the transient
+-- snapshot row.
+CREATE TABLE IF NOT EXISTS wireless_client_history (
+  id            BIGSERIAL PRIMARY KEY,
+  mac_address   TEXT NOT NULL,
+  controller_id INTEGER NOT NULL REFERENCES wireless_controllers(id) ON DELETE CASCADE,
+  ts            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  rx_bps        BIGINT,
+  tx_bps        BIGINT,
+  rssi_dbm      INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_wclient_hist_mac
+  ON wireless_client_history(mac_address, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_wclient_hist_ctrl_ts
+  ON wireless_client_history(controller_id, ts DESC);
+
+-- Sustained-high-bandwidth client alerts (wireless_client_bandwidth_high) key off
+-- the client's stable identity (mac_address + controller_id) — same reasoning as
+-- wireless_client_history above: a wireless_clients row is hard-deleted after 15
+-- min of inactivity and gets a brand-new id if the same client reconnects, so an
+-- FK to it would silently drop alert history the moment the client goes quiet.
+-- wireless_controller_id already exists on alerts (added above for controller-
+-- level alerts) and is reused here rather than adding a duplicate column.
+ALTER TABLE alerts ADD COLUMN IF NOT EXISTS wireless_client_mac TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_alerts_active_wclient_unique
+  ON alerts(wireless_client_mac, wireless_controller_id, alert_type)
+  WHERE status = 'active' AND wireless_client_mac IS NOT NULL;
 
 -- Rogue/unmanaged APs detected by a controller (from the vendor rogue SNMP table).
 -- Refreshed every poll; rows not seen in 24h are pruned by the collector.

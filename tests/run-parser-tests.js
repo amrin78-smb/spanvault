@@ -21,6 +21,9 @@ const SUITES = [
   'test-mikrotik-client-parser.js', // MIB-verified (MIKROTIK-MIB mtxrWlRtabTable client parser)
   'test-ruckus-client-parser.js', // MIB-verified client table (RUCKUS-ZD-WLAN-MIB ruckusZDWLANStaTable)
   'test-hpe-client-parser.js', // MIB-verified (AI-AP-MIB aiClientTable) — no HPE hardware in lab
+  'test-cisco-client-parser.js', // MIB-verified (AIRESPACE-WIRELESS-MIB bsnMobileStationStatsTable) — was never registered here
+  'test-fortinet-client-parser.js', // MIB-verified (FORTINET-FORTIGATE-MIB fgWcStaTable) — no Fortinet hardware in lab
+  'test-grandstream-client-parser.js', // MIB-verified (GRANDSTREAM-GWN-MIB gwnClientTable) — no Grandstream GWN hardware in lab
 ];
 
 let failed = 0;
