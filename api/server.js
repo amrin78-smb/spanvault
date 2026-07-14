@@ -35,6 +35,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.73.2': [
+    'Standardized the updater script (installer/Update-SpanVault.ps1) to self-locate its app folder from the script\'s own location, instead of deriving it from the -InstallDir parameter\'s default value. LogVault and DDIVault already worked this way; NetVault (fixed alongside this) had the same gap. The script can now be run with no parameters at all, from any correctly-placed copy of the script, regardless of what folder name or casing was used to get there.',
+  ],
   '1.73.1': [
     'Fixed: a wireless client bandwidth alert now shows which client triggered it (badge + MAC address) on the Alerts page and dashboard event feed — it previously only showed the controller name, with no way to tell which client was involved.',
     'Fixed: switching between 24h/7d or between clients on the Wireless page\'s bandwidth chart could briefly show the previous selection\'s stale data instead of a loading state.',

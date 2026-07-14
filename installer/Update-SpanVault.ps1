@@ -69,6 +69,14 @@ Start-Sleep -Seconds 5
 # ($InstallDir) holds top-level artifacts (logs, nssm), while the application
 # code lives in the 'app' subfolder. All git/npm/build/file operations and the
 # NSSM working directories target $AppRoot / $Frontend, not $InstallDir.
+#
+# Self-locate $AppRoot instead of deriving it from -InstallDir. This script lives at
+# <appRoot>\installer\Update-SpanVault.ps1, so the real app root is the PARENT of the
+# script's own folder — correct on BOTH the suite install (C:\Apps\SpanVault\app) and a
+# standalone install, regardless of what -InstallDir is (or isn't) passed. -InstallDir is
+# kept for backward-compat (nssm resolution still falls back to it - see Resolve-Nssm
+# below) but no longer drives the app/git/npm path. (Mirrors LogVault/DDIVault/NetVault's
+# fix for this exact class of bug - see their installer/Update-*.ps1.)
 # Resolve a path to its TRUE on-disk casing (walking each parent for the real component
 # name). Get-Item().FullName only echoes the TYPED casing, which is not enough here.
 function Get-TrueCasePath([string]$p) {
@@ -84,10 +92,10 @@ function Get-TrueCasePath([string]$p) {
         return $root + ($parts -join '\')
     } catch { return $p }
 }
-$AppRoot  = Join-Path $InstallDir 'app'
+$AppRoot  = Split-Path -Parent $PSScriptRoot
 # Normalize the build directory to its true on-disk casing. `next build` caches absolute
 # module paths in .next; if a later run's cwd casing differs (e.g. C:\Apps\SpanVault vs
-# ...\spanvault, depending on how -InstallDir / the invocation path was typed), webpack
+# ...\spanvault, depending on how the invocation path was typed), webpack
 # treats the two casings as different modules and loads React twice -> the build crashes
 # with "Cannot read properties of null (reading 'useContext')". Pin to on-disk casing.
 $AppRoot  = Get-TrueCasePath $AppRoot
