@@ -20,6 +20,7 @@ type Alert = {
   agent_id?: number | null; agent_name?: string | null;
   service_check_id?: number | null; service_name?: string | null;
   wireless_ap_id?: number | null; wireless_controller_id?: number | null; wireless_name?: string | null;
+  wireless_client_mac?: string | null;
 };
 
 // ── style tokens (kept inline since globals.css is not editable here) ──
@@ -323,8 +324,13 @@ export default function AlertsPage() {
                   {a.wireless_name}
                 </Link>
                 <span className="sv-type-badge" style={{ fontSize: 'var(--text-xs)' }}>
-                  {a.wireless_controller_id ? 'Controller' : 'AP'}
+                  {a.wireless_client_mac ? 'Client' : a.wireless_controller_id ? 'Controller' : 'AP'}
                 </span>
+                {a.wireless_client_mac && (
+                  <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)' }}>
+                    {a.wireless_client_mac}
+                  </span>
+                )}
               </span>
             ) : (
               <Link href={`/devices/${a.device_id}`} style={{ color: 'var(--sv-crimson)', fontWeight: 600 }}>

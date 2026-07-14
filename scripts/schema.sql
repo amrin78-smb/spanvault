@@ -1098,10 +1098,12 @@ ALTER TABLE wireless_clients ADD COLUMN IF NOT EXISTS tx_bps BIGINT;
 -- in the collector's in-memory prevClientCounters Map) so a collector restart
 -- can resume computing a rate from the LAST poll instead of losing the baseline
 -- and going blank for a full extra poll cycle. Written on every poll alongside
--- rx_bps/tx_bps; read back into prevClientCounters on the first poll after a
--- restart finds no in-memory entry for a given client. byte_counter_bits (32 or
--- 64) must travel with the raw values so wraparound handling stays correct
--- across the restart boundary too.
+-- rx_bps/tx_bps; rx_bytes_raw/tx_bytes_raw/bw_sampled_at are read back into
+-- prevClientCounters on the first poll after a restart finds no in-memory entry
+-- for a given client. byte_counter_bits (32 or 64) is written every poll for
+-- diagnostic/potential-future-use purposes only — it is NOT threaded through
+-- the warm-start Map; every poll (warm-started or not) re-reads the vendor
+-- parser's current byte_counter_bits directly instead.
 ALTER TABLE wireless_clients ADD COLUMN IF NOT EXISTS rx_bytes_raw BIGINT;
 ALTER TABLE wireless_clients ADD COLUMN IF NOT EXISTS tx_bytes_raw BIGINT;
 ALTER TABLE wireless_clients ADD COLUMN IF NOT EXISTS byte_counter_bits SMALLINT;

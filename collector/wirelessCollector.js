@@ -683,6 +683,25 @@ function prunePrevCounters(map, nowMs, intervalMs) {
   }
 }
 
+// clientBandwidthBreaches (see the comment above CLIENT_BANDWIDTH_THRESHOLD_BPS)
+// is normally kept bounded by the "clients that left" loop in pollClients, which
+// deletes an entry as soon as a client disconnects or drops back under
+// threshold. But that loop only runs from a controller's OWN poll — if a
+// wireless_controllers row is deleted/deactivated while one of its clients has
+// an in-flight breach count, pollClients never runs for it again and that
+// entry leaks for the life of the process. This is a membership-based sweep
+// (not age-based like prunePrevCounters above, since a legitimately-still-
+// breaching client's entry must never be pruned just for being "old"): call
+// once per client poll cycle with the set of controller ids that are still
+// active, and drop any entry whose `${controllerId}::${mac}` key's controller
+// isn't in that set.
+function pruneBreachesForInactiveControllers(activeControllerIds) {
+  for (const key of clientBandwidthBreaches.keys()) {
+    const controllerId = key.slice(0, key.indexOf('::'));
+    if (!activeControllerIds.has(controllerId)) clientBandwidthBreaches.delete(key);
+  }
+}
+
 // Upsert one AP (keyed by controller_id + name) and append a history sample.
 // Decimal-MAC AP name guard (e.g. "108.196.159.202.125.210"). Aruba's parser
 // already rejects these, but this protects the shared write path for ALL vendors.
@@ -1438,9 +1457,15 @@ async function pollClients(pool, controller, apList, alertHooks) {
   // from the LAST poll instead of losing the in-memory prevClientCounters
   // baseline and going blank for a full extra poll cycle — see the seeding
   // step right before the upsert loop below.
+  // byte_counter_bits is intentionally NOT selected here: the warm-start seed
+  // below only carries rx/tx/t into prevClientCounters (see deriveThroughput's
+  // `map` param), and every poll — warm-started or not — always uses the
+  // CURRENT live poll's client.byte_counter_bits from the vendor parser, never
+  // a value threaded through this Map. See the schema.sql comment on this
+  // column for the same clarification.
   const prev = await pool.query(
     `SELECT mac_address, ap_id, ap_name, rssi_dbm,
-            rx_bytes_raw, tx_bytes_raw, byte_counter_bits, bw_sampled_at
+            rx_bytes_raw, tx_bytes_raw, bw_sampled_at
        FROM wireless_clients WHERE controller_id = $1`,
     [controller.id]);
   const prevMap = new Map(prev.rows.map((c) => [c.mac_address, c]));
@@ -1704,6 +1729,9 @@ async function pollAllClients(pool, alertHooks) {
       }
     }
     prunePrevCounters(prevClientCounters, Date.now(), CLIENT_POLL_INTERVAL);
+    // Sweep any clientBandwidthBreaches entry left behind by a controller that
+    // was deleted/deactivated mid-breach — see pruneBreachesForInactiveControllers.
+    pruneBreachesForInactiveControllers(new Set(r.rows.map((c) => String(c.id))));
   } catch (err) {
     console.error('[wireless] client poll cycle failed:', err.message);
   } finally {

@@ -1429,7 +1429,7 @@ function OverviewTab({
 
       {/* Client detail panel (opened from Top Clients by Bandwidth rows) */}
       {selectedClientMac != null && (
-        <ClientDetailPanel mac={selectedClientMac} onClose={() => setSelectedClientMac(null)} />
+        <ClientDetailPanel key={selectedClientMac} mac={selectedClientMac} onClose={() => setSelectedClientMac(null)} />
       )}
     </div>
   );
@@ -3282,7 +3282,7 @@ function ClientsTab({
       )}
 
       {selectedMac && (
-        <ClientDetailPanel mac={selectedMac} onClose={() => setSelectedMac(null)} />
+        <ClientDetailPanel key={selectedMac} mac={selectedMac} onClose={() => setSelectedMac(null)} />
       )}
     </div>
   );
@@ -3380,13 +3380,31 @@ function ClientDetailPanel({ mac, onClose }: { mac: string; onClose: () => void 
   const historyApi = useApi<ClientHistory>(
     `/api/wireless/clients/${encodeURIComponent(mac)}/history?range=${bwRange}`, 0
   );
+
+  // useApi never clears `data` when its key (mac/bwRange) changes — it only
+  // flips `loading` back to true and leaves the previous response in place
+  // until the new one lands. Track which key the currently-held `data` is
+  // actually FOR, and only trust `historyApi.data` when it matches the key
+  // we're rendering for right now; otherwise show the loading state instead
+  // of the stale previous client/range's chart. (`key={mac}` on the two
+  // <ClientDetailPanel> call sites already forces a remount — and a fresh
+  // renderedHistoryKey — when the selected client changes, so in practice
+  // this mainly guards the 24h/7d toggle, which flips bwRange without a
+  // remount.)
+  const historyReqKey = `${mac}/${bwRange}`;
+  const [renderedHistoryKey, setRenderedHistoryKey] = useState<string | null>(null);
+  useEffect(() => {
+    if (!historyApi.loading && historyApi.data) setRenderedHistoryKey(historyReqKey);
+  }, [historyApi.loading, historyApi.data, historyReqKey]);
+  const historyReady = renderedHistoryKey === historyReqKey;
+
   const bwChartData = useMemo(
-    () => (historyApi.data?.points || []).map((p) => ({
+    () => (historyReady ? (historyApi.data?.points || []) : []).map((p) => ({
       ts: p.ts,
       rx: p.rx_bps != null ? Number(p.rx_bps) : null,
       tx: p.tx_bps != null ? Number(p.tx_bps) : null,
     })),
-    [historyApi.data]
+    [historyApi.data, historyReady]
   );
 
   const c = detail?.client;
@@ -3477,7 +3495,7 @@ function ClientDetailPanel({ mac, onClose }: { mac: string; onClose: () => void 
             <div style={{ marginBottom: 12 }}>
               {historyApi.error ? (
                 <ErrorBox message={historyApi.error} />
-              ) : historyApi.loading && !historyApi.data ? (
+              ) : !historyReady ? (
                 <Loading />
               ) : bwChartData.length ? (
                 <ResponsiveContainer width="100%" height={170}>

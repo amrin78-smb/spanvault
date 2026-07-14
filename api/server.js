@@ -35,6 +35,12 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.73.1': [
+    'Fixed: a wireless client bandwidth alert now shows which client triggered it (badge + MAC address) on the Alerts page and dashboard event feed — it previously only showed the controller name, with no way to tell which client was involved.',
+    'Fixed: switching between 24h/7d or between clients on the Wireless page\'s bandwidth chart could briefly show the previous selection\'s stale data instead of a loading state.',
+    'Fixed a narrow memory leak where a wireless client\'s in-flight bandwidth-alert breach counter was never cleaned up if its controller was deleted mid-breach.',
+    'Removed a dead DB read and corrected an inaccurate code comment left over from the 1.73.0 bandwidth-history work — no behavior change.',
+  ],
   '1.73.0': [
     'Wireless client bandwidth now persists 24h/7d history and survives collector restarts (the baseline used to reset to blank on every restart) — the client detail panel on the Wireless page shows a new Bandwidth trend chart, and a new "Wireless Bandwidth" report ranks top consumers by average/peak throughput.',
     'Added a sustained-high-bandwidth alert for wireless clients (>=500 Mbps combined rx+tx across two consecutive polls), surfaced alongside the existing AP/controller wireless alerts.',
@@ -1620,8 +1626,13 @@ app.get('/api/dashboard/events', wrap(async (req, res) => {
   const svcNameSel = caps.has_service_check_id ? 'sc2.name AS service_name' : 'NULL::text AS service_name';
   const svcJoin = caps.has_service_check_id ? 'LEFT JOIN service_checks sc2 ON sc2.id = a.service_check_id' : '';
   const wlSel = caps.has_wireless
-    ? 'a.wireless_ap_id, a.wireless_controller_id, COALESCE(wap.name, wctl.name) AS wireless_name'
-    : 'NULL::int AS wireless_ap_id, NULL::int AS wireless_controller_id, NULL::text AS wireless_name';
+    // wireless_client_mac carries which wireless client (not AP/controller)
+    // triggered a wireless_client_bandwidth_high alert (223eba6, 1.73.0) —
+    // reuses the same has_wireless probe since both columns ship in the same
+    // schema.sql pass (wireless_ap_id predates it, but a DB new enough to
+    // write wireless_client_mac rows already has both).
+    ? 'a.wireless_ap_id, a.wireless_controller_id, a.wireless_client_mac, COALESCE(wap.name, wctl.name) AS wireless_name'
+    : 'NULL::int AS wireless_ap_id, NULL::int AS wireless_controller_id, NULL::text AS wireless_client_mac, NULL::text AS wireless_name';
   const wlJoin = caps.has_wireless
     ? 'LEFT JOIN wireless_aps wap ON wap.id = a.wireless_ap_id LEFT JOIN wireless_controllers wctl ON wctl.id = a.wireless_controller_id'
     : '';
@@ -3309,8 +3320,13 @@ app.get('/api/alerts', wrap(async (req, res) => {
   const svcNameSel = caps.has_service_check_id ? 'sc2.name AS service_name' : 'NULL::text AS service_name';
   const svcJoin = caps.has_service_check_id ? 'LEFT JOIN service_checks sc2 ON sc2.id = a.service_check_id' : '';
   const wlSel = caps.has_wireless
-    ? 'a.wireless_ap_id, a.wireless_controller_id, COALESCE(wap.name, wctl.name) AS wireless_name'
-    : 'NULL::int AS wireless_ap_id, NULL::int AS wireless_controller_id, NULL::text AS wireless_name';
+    // wireless_client_mac carries which wireless client (not AP/controller)
+    // triggered a wireless_client_bandwidth_high alert (223eba6, 1.73.0) —
+    // reuses the same has_wireless probe since both columns ship in the same
+    // schema.sql pass (wireless_ap_id predates it, but a DB new enough to
+    // write wireless_client_mac rows already has both).
+    ? 'a.wireless_ap_id, a.wireless_controller_id, a.wireless_client_mac, COALESCE(wap.name, wctl.name) AS wireless_name'
+    : 'NULL::int AS wireless_ap_id, NULL::int AS wireless_controller_id, NULL::text AS wireless_client_mac, NULL::text AS wireless_name';
   const wlJoin = caps.has_wireless
     ? 'LEFT JOIN wireless_aps wap ON wap.id = a.wireless_ap_id LEFT JOIN wireless_controllers wctl ON wctl.id = a.wireless_controller_id'
     : '';

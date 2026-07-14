@@ -50,6 +50,7 @@ type EventRow = {
   triggered_at: string; resolved_at: string | null; event_at: string;
   service_check_id?: number | null; service_name?: string | null;
   wireless_ap_id?: number | null; wireless_controller_id?: number | null; wireless_name?: string | null;
+  wireless_client_mac?: string | null;
 };
 // ── Enterprise panel types ─────────────────────────────────────
 type OpsSummary = {
@@ -1064,6 +1065,9 @@ function RecentEvents({ api }: { api: Api<EventRow[]> }) {
               <span style={{ color: 'var(--text-primary)' }}>{text}</span>
             </span>
             <span style={{ flex: 1 }} />
+            {e.wireless_client_mac && (
+              <span title={e.wireless_client_mac} style={{ color: 'var(--text-muted)', whiteSpace: 'nowrap', flexShrink: 0 }}>{e.wireless_client_mac}</span>
+            )}
             {e.site_name && <span style={{ color: 'var(--text-muted)', whiteSpace: 'nowrap', flexShrink: 0 }}>{e.site_name}</span>}
           </div>
         );
