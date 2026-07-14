@@ -729,6 +729,30 @@ The password is **never** stored in this repo — it lives in Claude Code's proj
 memory and is provided at the start of each session. Never log it or commit it to
 any repo.
 
+### `wireless_controllers` secrets are deliberately EXCLUDED from claude_readonly/nocvault_readonly — do NOT blanket-regrant
+`wireless_controllers` holds live, rotating third-party API credentials
+(`api_key`, `api_password`, `api_client_secret`, `api_refresh_token`,
+`api_access_token` — the last two are Aruba Central's OAuth2 tokens, which
+actively rotate on every refresh). Both readonly roles used to have plain
+table-wide `SELECT` on this table (inherited from the suite's own blanket
+`GRANT SELECT ON ALL TABLES IN SCHEMA public`), which meant every diagnostic
+query — including an innocuous `SELECT *` — could read a live customer's
+cloud API secret. Fixed 2026-07 with a **column-level** grant instead: both
+roles can read every column on this table EXCEPT those five. This is a
+deliberate, narrower exception to the suite's normal blanket-grant pattern —
+**never re-run a blanket `GRANT SELECT ON ALL TABLES IN SCHEMA public TO
+claude_readonly / nocvault_readonly` in a way that touches this table** (e.g.
+a fresh-install/suite-installer grant step, or a "just re-grant everything"
+troubleshooting command) — that silently re-widens it back to table-wide
+SELECT, undoing this fix with no error or warning. If a NEW secret-bearing
+column is ever added to this table (or the same pattern is used for another
+vendor's credentials elsewhere), it must be explicitly excluded from the next
+grant the same way — a column-level grant fails closed (a new column is
+simply invisible to diagnostics until explicitly granted), which is the
+correct trade: a missing column in a debug query is a far smaller problem
+than a newly-added secret silently becoming world-readable to every readonly
+role.
+
 ## Live Server Verification (Diagnostics)
 
 The suite runs on the production server **192.168.6.111**. Verify the *running*
