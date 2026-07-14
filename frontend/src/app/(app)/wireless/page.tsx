@@ -553,9 +553,11 @@ interface IntelRow {
   band_2g_pct: number;
   band_5g_pct: number;
   band_steering_score: number;
-  high_util_ap_count: number;
-  critical_util_count: number;
-  capacity_score: number;
+  // null when the controller's vendor reports no channel utilization at all
+  // (e.g. aruba_central) — see UTIL_UNAVAILABLE_VENDORS in wirelessIntelligence.js.
+  high_util_ap_count: number | null;
+  critical_util_count: number | null;
+  capacity_score: number | null;
   overall_score: number;
   overall_grade: string;
   recommendations: Recommendation[];
@@ -642,6 +644,19 @@ function vendorLabel(v: string): string {
 // for this vendor and must still render normally; only the per-band figures
 // need to be suppressed.
 function perBandUnavailable(vendor: string | null | undefined): boolean {
+  return vendor === 'aruba_central';
+}
+
+// wireless_aps.radio_2g/5g_util_pct are genuinely nullable columns (unlike
+// clients_2g/5g/6g's NOT NULL DEFAULT 0 above) — Central's polled AP endpoint
+// just doesn't report a channel-utilization figure at all (see aruba-central.js's
+// mapAp, which explicitly nulls these rather than guess). The API already passes
+// that null straight through, so the bug is purely in call sites here that do
+// `ap.radio_2g_util_pct || 0` — a real value of "unknown" rendering as a
+// confident, green "0.0% — all clear" bar. uptime_seconds is nullable the same
+// way, but uptime_formatted is already server-derived and every call site here
+// already does `ap.uptime_formatted || '—'`, so it needs no separate suppression.
+function utilUnavailable(vendor: string | null | undefined): boolean {
   return vendor === 'aruba_central';
 }
 
@@ -1157,8 +1172,14 @@ function IntelBanner({ onView, coChannel, band5Pct }: {
   );
 }
 
-function apUtil(ap: AccessPoint): number {
+function apUtil(ap: AccessPoint): number | null {
+  if (utilUnavailable(ap.vendor)) return null;
   return Math.max(ap.radio_2g_util_pct || 0, ap.radio_5g_util_pct || 0);
+}
+
+function apUtilColor(ap: AccessPoint): string {
+  const u = apUtil(ap);
+  return u == null ? 'var(--text-muted)' : pctColor(u);
 }
 
 // ── Controller status strip (Insights tab) (top-level) ────────
@@ -1237,7 +1258,9 @@ function OverviewTab({
   );
   const offlineAps = useMemo(() => aps.filter((a) => a.status === 'offline'), [aps]);
   const highUtilAps = useMemo(
-    () => aps.filter((a) => apUtil(a) > 70).sort((a, b) => apUtil(b) - apUtil(a)),
+    // Vendors with unknown util (utilUnavailable) yield apUtil()===null, and
+    // null > 70 is false — they're naturally excluded, never falsely flagged.
+    () => aps.filter((a) => (apUtil(a) ?? -1) > 70).sort((a, b) => (apUtil(b) ?? 0) - (apUtil(a) ?? 0)),
     [aps],
   );
 
@@ -1277,8 +1300,14 @@ function OverviewTab({
   if (!summary.data) return <Empty message="No wireless data available." />;
 
   const s = summary.data;
-  const avgUtil = s.by_site.length
-    ? s.by_site.reduce((acc, r) => acc + (r.avg_util ?? 0), 0) / s.by_site.length
+  // A site's avg_util is null when every AP there is a vendor with no util
+  // data at all (see utilUnavailable) — the backend already excludes those
+  // APs from its own AVG rather than coercing them to 0 (see /api/wireless/
+  // summary's bySite query). Exclude such sites here too instead of letting
+  // a null-as-0 site drag the fleet-wide figure down.
+  const utilSites = s.by_site.filter((r) => r.avg_util != null);
+  const avgUtil = utilSites.length
+    ? utilSites.reduce((acc, r) => acc + (r.avg_util as number), 0) / utilSites.length
     : 0;
   const ctlCount = controllers.data ? controllers.data.length : (s.by_controller?.length ?? 0);
 
@@ -1315,7 +1344,7 @@ function OverviewTab({
                     <td>{row.aps}</td>
                     <td>{row.online}</td>
                     <td>{row.clients}</td>
-                    <td style={{ color: pctColor(row.avg_util ?? 0), fontWeight: 600 }}>{fmtPct(row.avg_util ?? 0)}</td>
+                    <td style={{ color: row.avg_util == null ? 'var(--text-muted)' : pctColor(row.avg_util), fontWeight: 600 }}>{fmtPct(row.avg_util)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -1335,7 +1364,7 @@ function OverviewTab({
                     onClick={() => setSelectedApId(ap.id)} title="View access point details">
                     <td style={{ fontWeight: 600 }}>{ap.name}</td>
                     <td>{ap.clients_total}</td>
-                    <td style={{ color: pctColor(apUtil(ap)), fontWeight: 600 }}>{fmtPct(apUtil(ap))}</td>
+                    <td style={{ color: apUtilColor(ap), fontWeight: 600 }}>{fmtPct(apUtil(ap))}</td>
                   </tr>
                 ))}
               </tbody>
@@ -1442,7 +1471,7 @@ function OverviewTab({
                   <tr key={ap.id} style={{ cursor: 'pointer' }}
                     onClick={() => setSelectedApId(ap.id)} title="View access point details">
                     <td style={{ fontWeight: 600 }}>{ap.name}</td>
-                    <td style={{ color: pctColor(apUtil(ap)), fontWeight: 600 }}>{fmtPct(apUtil(ap))}</td>
+                    <td style={{ color: apUtilColor(ap), fontWeight: 600 }}>{fmtPct(apUtil(ap))}</td>
                     <td>{ap.clients_total}</td>
                   </tr>
                 ))}
@@ -1559,7 +1588,11 @@ type ApSort = { key: string; dir: 'asc' | 'desc' };
 // columns push missing values to the bottom (ascending) so blanks don't lead.
 // Missing values return null so the comparator can pin them LAST in BOTH sort
 // directions (see sortAps) — instead of a low sentinel that a plain reverse()
-// would flip to the top. clients/util keep 0 for "none" (a real value, not blank).
+// would flip to the top. clients keeps 0 for "none" (a real, confirmed value).
+// util uses apUtil(), which is itself null for a vendor with no util data at
+// all (utilUnavailable) — that's genuinely unknown, not a confirmed 0%, so it
+// gets pinned last like the other missing-value columns instead of sorting as
+// the lowest (best) utilization.
 const AP_SORT_ACCESSORS: Record<string, (a: AccessPoint) => string | number | null> = {
   name: (a) => (a.name || '').toLowerCase() || null,
   site: (a) => (a.site_name || '').toLowerCase() || null,
@@ -1567,7 +1600,7 @@ const AP_SORT_ACCESSORS: Record<string, (a: AccessPoint) => string | number | nu
   clients: (a) => a.clients_total || 0,
   ch2g: (a) => a.radio_2g_channel ?? null,
   ch5g: (a) => a.radio_5g_channel ?? null,
-  util: (a) => Math.max(a.radio_2g_util_pct || 0, a.radio_5g_util_pct || 0),
+  util: (a) => apUtil(a),
   uptime: (a) => a.uptime_seconds ?? null,
   lastseen: (a) => (a.last_seen_at ? Date.parse(a.last_seen_at) : null),
 };
@@ -1694,7 +1727,11 @@ function ApControllerGroup({
                     <td>{ap.radio_2g_channel != null ? `Ch ${ap.radio_2g_channel}` : '—'}</td>
                     <td>{ap.radio_5g_channel != null ? `Ch ${ap.radio_5g_channel}` : '—'}</td>
                     <td style={{ minWidth: 140 }}>
-                      <UtilBar pct={Math.max(ap.radio_2g_util_pct || 0, ap.radio_5g_util_pct || 0)} />
+                      {utilUnavailable(ap.vendor) ? (
+                        <span style={{ color: 'var(--text-muted)' }} title="Channel utilization not available for this vendor">—</span>
+                      ) : (
+                        <UtilBar pct={Math.max(ap.radio_2g_util_pct || 0, ap.radio_5g_util_pct || 0)} />
+                      )}
                     </td>
                     <td>{ap.uptime_formatted || '—'}</td>
                     <td>{fmtRel(ap.last_seen_at)}</td>
@@ -2020,14 +2057,22 @@ function ApDetailDrawer({
             2.4GHz {ap.radio_2g_channel != null ? `(Ch ${ap.radio_2g_channel}` : '(Ch —'}
             {ap.tx_power_2g != null ? `, ${ap.tx_power_2g} dBm)` : ')'}
           </div>
-          <UtilBar pct={ap.radio_2g_util_pct || 0} />
+          {utilUnavailable(ap.vendor) ? (
+            <span style={{ color: 'var(--text-muted)' }} title="Channel utilization not available for this vendor">—</span>
+          ) : (
+            <UtilBar pct={ap.radio_2g_util_pct || 0} />
+          )}
         </div>
         <div style={{ marginBottom: 12 }}>
           <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', marginBottom: 4 }}>
             5GHz {ap.radio_5g_channel != null ? `(Ch ${ap.radio_5g_channel}` : '(Ch —'}
             {ap.tx_power_5g != null ? `, ${ap.tx_power_5g} dBm)` : ')'}
           </div>
-          <UtilBar pct={ap.radio_5g_util_pct || 0} />
+          {utilUnavailable(ap.vendor) ? (
+            <span style={{ color: 'var(--text-muted)' }} title="Channel utilization not available for this vendor">—</span>
+          ) : (
+            <UtilBar pct={ap.radio_5g_util_pct || 0} />
+          )}
         </div>
 
         <h3 style={{ marginBottom: 6 }}>Radio Performance</h3>
@@ -2138,17 +2183,23 @@ function ApDetailDrawer({
             </ResponsiveContainer>
 
             <h3 style={{ marginBottom: 6 }}>24h Channel Utilization</h3>
-            <ResponsiveContainer width="100%" height={200}>
-              <LineChart data={history}>
-                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-                <XAxis dataKey="bucket" tickFormatter={fmtBucket} fontSize={11} />
-                <YAxis fontSize={11} domain={[0, 100]} />
-                <Tooltip {...CHART_TOOLTIP} />
-                <Legend />
-                <Line type="monotone" dataKey="radio_2g_util" name="2.4GHz %" stroke={CHART_COLORS.g2} dot={false} />
-                <Line type="monotone" dataKey="radio_5g_util" name="5GHz %" stroke={CHART_COLORS.g5} dot={false} />
-              </LineChart>
-            </ResponsiveContainer>
+            {utilUnavailable(ap.vendor) ? (
+              <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', marginBottom: 8 }}>
+                Channel utilization not reported by this vendor.
+              </div>
+            ) : (
+              <ResponsiveContainer width="100%" height={200}>
+                <LineChart data={history}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                  <XAxis dataKey="bucket" tickFormatter={fmtBucket} fontSize={11} />
+                  <YAxis fontSize={11} domain={[0, 100]} />
+                  <Tooltip {...CHART_TOOLTIP} />
+                  <Legend />
+                  <Line type="monotone" dataKey="radio_2g_util" name="2.4GHz %" stroke={CHART_COLORS.g2} dot={false} />
+                  <Line type="monotone" dataKey="radio_5g_util" name="5GHz %" stroke={CHART_COLORS.g5} dot={false} />
+                </LineChart>
+              </ResponsiveContainer>
+            )}
 
             <h3 style={{ marginBottom: 6 }}>24h Noise Floor (dBm)</h3>
             <ResponsiveContainer width="100%" height={200}>
@@ -2568,7 +2619,27 @@ function isDismissed(rec: Recommendation, dismissed: Record<string, number>): bo
 }
 
 // ── Score bar (top-level component) ───────────────────────────
-function ScoreBar({ label, value }: { label: string; value: number }) {
+function ScoreBar({ label, value }: { label: string; value: number | null }) {
+  if (value == null) {
+    // e.g. Capacity for a controller whose vendor reports no util at all
+    // (aruba_central) — an empty/zero bar here would read as "0% capacity
+    // score", the opposite of the truth ("we don't know").
+    return (
+      <div style={{ marginBottom: 8 }}>
+        <div style={{
+          display: 'flex', justifyContent: 'space-between', fontSize: 'var(--text-sm)',
+          color: 'var(--text-muted)', marginBottom: 3,
+        }}>
+          <span>{label}</span>
+          <span style={{ fontWeight: 600 }}>N/A</span>
+        </div>
+        <div style={{
+          height: 8, borderRadius: 4, background: 'var(--bg-primary)',
+          border: '1px solid var(--border)',
+        }} title="Not available for this vendor" />
+      </div>
+    );
+  }
   const v = Math.max(0, Math.min(100, Math.round(value)));
   return (
     <div style={{ marginBottom: 8 }}>
@@ -2731,7 +2802,7 @@ function ControllerMiniScoreCard({ row }: { row: IntelRow }) {
         <GradeBadge grade={row.overall_grade} />
       </div>
       <ScoreBar label="Load Balance" value={Number(row.load_balance_score)} />
-      <ScoreBar label="Capacity" value={Number(row.capacity_score)} />
+      <ScoreBar label="Capacity" value={row.capacity_score == null ? null : Number(row.capacity_score)} />
       <ScoreBar label="Band Steering" value={Number(row.band_steering_score)} />
     </div>
   );
@@ -2819,8 +2890,12 @@ function IntelligenceTab({ onViewApClients }: { onViewApClients?: (apId: number)
   const loadAvg = rows.length
     ? rows.reduce((s, r) => s + Number(r.load_balance_score), 0) / rows.length
     : 0;
-  const capacityAvg = rows.length
-    ? rows.reduce((s, r) => s + Number(r.capacity_score), 0) / rows.length
+  // Exclude controllers with no capacity data (capacity_score null — a vendor
+  // with no util_pct at all) instead of letting them count as a fake 0 and
+  // drag the fleet-wide average down.
+  const capacityRows = rows.filter((r) => r.capacity_score != null);
+  const capacityAvg = capacityRows.length
+    ? capacityRows.reduce((s, r) => s + Number(r.capacity_score), 0) / capacityRows.length
     : 0;
   const criticalCount = recommendations.filter((r) => r.priority === 'critical').length;
   const highCount = recommendations.filter((r) => r.priority === 'high').length;

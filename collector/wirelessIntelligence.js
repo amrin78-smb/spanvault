@@ -1,6 +1,17 @@
 'use strict';
 const { Pool } = require('pg');
 
+// Vendors whose polled endpoints report no channel-utilization figure at all
+// (see collector/wireless/api/aruba-central.js's mapAp, which explicitly nulls
+// radio_2g/5g_util_pct rather than guess — Central's /monitoring/v2/aps just
+// doesn't have the field). Every AP on such a controller has util_pct = NULL,
+// so computing Algorithm 4 (Capacity Analysis) from Math.max(util||0, ...)
+// would score every one of them a perfect 100 — not because there's spare
+// capacity, but because there's no data. Mirrors the frontend's
+// utilUnavailable() in wireless/page.tsx; extend both if a future vendor has
+// the same gap.
+const UTIL_UNAVAILABLE_VENDORS = new Set(['aruba_central']);
+
 async function computeWirelessIntelligence(pool, controllerId) {
   const aps = await pool.query(`
     SELECT * FROM wireless_aps
@@ -9,6 +20,9 @@ async function computeWirelessIntelligence(pool, controllerId) {
 
   if (aps.rows.length === 0) return;
   const apList = aps.rows;
+
+  const ctrlRow = await pool.query(`SELECT vendor FROM wireless_controllers WHERE id = $1`, [controllerId]);
+  const utilAvailable = !UTIL_UNAVAILABLE_VENDORS.has(ctrlRow.rows[0] && ctrlRow.rows[0].vendor);
 
   // ── ALGORITHM 1: CO-CHANNEL INTERFERENCE DETECTION ──────────
   const channels2g = apList.map(a => a.radio_2g_channel).filter(Boolean);
@@ -74,21 +88,26 @@ async function computeWirelessIntelligence(pool, controllerId) {
   const bandScore = totalBandClients === 0 ? 100 : Math.min(100, (pct5g / 60) * 100);
 
   // ── ALGORITHM 4: CAPACITY ANALYSIS ──────────────────────────
-  const utilValues = apList
-    .map(a => Math.max(
-      a.radio_2g_util_pct || 0,
-      a.radio_5g_util_pct || 0
-    ));
-  const highUtilAps = utilValues.filter(u => u > 70).length;
-  const criticalUtilAps = utilValues.filter(u => u > 90).length;
-  const avgUtil = utilValues.length > 0 ?
-    utilValues.reduce((s,v) => s+v, 0) / utilValues.length : 0;
+  // Skipped entirely (nulls, not fabricated zeros) for a controller whose
+  // vendor reports no util_pct at all — see UTIL_UNAVAILABLE_VENDORS above.
+  let highUtilAps = null, criticalUtilAps = null, avgUtil = null, capacityScore = null;
+  if (utilAvailable) {
+    const utilValues = apList
+      .map(a => Math.max(
+        a.radio_2g_util_pct || 0,
+        a.radio_5g_util_pct || 0
+      ));
+    highUtilAps = utilValues.filter(u => u > 70).length;
+    criticalUtilAps = utilValues.filter(u => u > 90).length;
+    avgUtil = utilValues.length > 0 ?
+      utilValues.reduce((s,v) => s+v, 0) / utilValues.length : 0;
 
-  const capacityScore = Math.max(0, 100
-    - (highUtilAps / apList.length) * 40
-    - (criticalUtilAps / apList.length) * 40
-    - (avgUtil > 60 ? (avgUtil - 60) * 2 : 0)
-  );
+    capacityScore = Math.max(0, 100
+      - (highUtilAps / apList.length) * 40
+      - (criticalUtilAps / apList.length) * 40
+      - (avgUtil > 60 ? (avgUtil - 60) * 2 : 0)
+    );
+  }
 
   // ── ALGORITHM 5: CHANNEL REUSE EFFICIENCY ───────────────────
   const uniqueChannels5g = new Set(channels5g).size;
@@ -96,12 +115,20 @@ async function computeWirelessIntelligence(pool, controllerId) {
     Math.min(100, (uniqueChannels5g / channels5g.length) * 100 * 2) : 100;
 
   // ── OVERALL SCORE ────────────────────────────────────────────
-  const overallScore = Math.round(
-    loadBalanceScore * 0.30 +
-    capacityScore    * 0.30 +
-    bandScore        * 0.20 +
-    Math.max(0, 100 - interferenceScore) * 0.20
-  );
+  // capacityScore's 30% weight is dropped, not zeroed, when it's unavailable
+  // (utilAvailable === false) — renormalized across the remaining components
+  // so a controller with no util data isn't scored as if it had 0% capacity.
+  const interferenceComponent = Math.max(0, 100 - interferenceScore);
+  const overallScore = capacityScore != null
+    ? Math.round(
+        loadBalanceScore * 0.30 +
+        capacityScore    * 0.30 +
+        bandScore        * 0.20 +
+        interferenceComponent * 0.20
+      )
+    : Math.round(
+        (loadBalanceScore * 0.30 + bandScore * 0.20 + interferenceComponent * 0.20) / 0.70
+      );
 
   const grade = overallScore >= 90 ? 'A' :
                 overallScore >= 80 ? 'B' :
@@ -156,6 +183,8 @@ async function computeWirelessIntelligence(pool, controllerId) {
     metric: `${Math.round(pct5g)}% on 5GHz, target >60%`
   });
 
+  // criticalUtilAps is null (not 0) when utilAvailable is false — null > 0 is
+  // false, so this naturally skips rather than needing an explicit guard.
   if (criticalUtilAps > 0) recommendations.push({
     priority: 'critical',
     category: 'Capacity',
@@ -186,8 +215,9 @@ async function computeWirelessIntelligence(pool, controllerId) {
     const ch2g = ap.radio_2g_channel;
     const ch5g = ap.radio_5g_channel;
     const clients = ap.clients_total || 0;
-    const util = Math.max(ap.radio_2g_util_pct||0,
-                          ap.radio_5g_util_pct||0);
+    // null (not a fabricated 0) when this vendor reports no util at all — the
+    // util > 90 / util > 70 checks below naturally no-op on null.
+    const util = utilAvailable ? Math.max(ap.radio_2g_util_pct||0, ap.radio_5g_util_pct||0) : null;
 
     if (ch2g && ![1,6,11].includes(ch2g)) {
       apIssues.push(`Non-standard 2.4GHz channel ${ch2g}`);

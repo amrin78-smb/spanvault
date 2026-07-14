@@ -35,6 +35,10 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.77.1': [
+    'Fixed: Aruba Central APs showed a green "0.0%" Channel Utilization bar (Access Points tab, AP detail drawer, and the 24h Channel Utilization chart) even though Central\'s API reports no utilization figure at all for this vendor -- those now show "--" like the per-band client counts already do.',
+    'Fixed: Wireless Insights\' per-site and fleet-wide "Avg Utilization", and the Intelligence tab\'s Capacity score/bar, were silently averaging in a fake 0% for every Aruba Central AP/controller, dragging real numbers down. Aruba Central APs/controllers are now excluded from those averages instead of counted as confirmed-idle.',
+  ],
   '1.77.0': [
     'New alert: an Aruba Central controller whose stored API credential is confirmed rejected by Central (not just unreachable) now raises a dedicated "API Token Invalid" alert telling you to re-authorize the integration in Central\'s UI, instead of the generic "Controller unreachable" message that could just as easily mean a network/firewall issue.',
     'Fixed: the Wireless > Controllers page showed a red "Not probed" warning for API-based controllers (Aruba Central) even while they were polling successfully — capability probing is an SNMP-only concept (there are no OIDs to probe on an API vendor), so it now shows a neutral "N/A" there instead of a misleading warning.',
@@ -4884,7 +4888,12 @@ app.get('/api/wireless/summary', wrap(async (req, res) => {
            COUNT(*)::int AS aps,
            COUNT(*) FILTER (WHERE a.status = 'online')::int AS online,
            COALESCE(SUM(a.clients_total), 0)::int AS clients,
-           ROUND(AVG(GREATEST(COALESCE(a.radio_2g_util_pct,0), COALESCE(a.radio_5g_util_pct,0)))::numeric, 1) AS avg_util
+           -- GREATEST(x,y) ignores NULL args (only NULL if BOTH are NULL) and
+           -- AVG() ignores NULL rows — so an AP whose vendor reports no util
+           -- at all (e.g. aruba_central; see utilUnavailable in wireless/
+           -- page.tsx) is correctly excluded from this average instead of
+           -- silently contributing a fake 0% that drags the site average down.
+           ROUND(AVG(GREATEST(a.radio_2g_util_pct, a.radio_5g_util_pct))::numeric, 1) AS avg_util
     FROM wireless_aps a${scWhere}
     GROUP BY 1, 2 ORDER BY site_name
   `, params);
@@ -4900,13 +4909,17 @@ app.get('/api/wireless/summary', wrap(async (req, res) => {
     ORDER BY c.name
   `, cParams);
 
+  // A NULL GREATEST() (both bands unavailable, e.g. aruba_central) fails the
+  // > 80 comparison the same way a false condition would, so it's already
+  // naturally excluded here — no COALESCE-to-0 needed (and none wanted: that
+  // would only matter for the AVG case above, not a threshold filter).
   const highUtil = await sv.query(`
     SELECT a.id, a.name, a.site_name,
            COALESCE(a.radio_5g_channel, a.radio_2g_channel) AS channel,
-           GREATEST(COALESCE(a.radio_2g_util_pct,0), COALESCE(a.radio_5g_util_pct,0)) AS util_pct,
+           GREATEST(a.radio_2g_util_pct, a.radio_5g_util_pct) AS util_pct,
            a.clients_total
     FROM wireless_aps a
-    WHERE GREATEST(COALESCE(a.radio_2g_util_pct,0), COALESCE(a.radio_5g_util_pct,0)) > 80${sc ? ` AND ${sc}` : ''}
+    WHERE GREATEST(a.radio_2g_util_pct, a.radio_5g_util_pct) > 80${sc ? ` AND ${sc}` : ''}
     ORDER BY util_pct DESC LIMIT 20
   `, params);
 
@@ -4935,7 +4948,7 @@ app.get('/api/wireless/summary', wrap(async (req, res) => {
            COUNT(*)::int AS aps,
            ROUND(((COALESCE(SUM(a.noise_floor_2g),0) + COALESCE(SUM(a.noise_floor_5g),0))::numeric
                   / NULLIF(COUNT(a.noise_floor_2g) + COUNT(a.noise_floor_5g), 0)), 1) AS avg_noise_floor,
-           COUNT(*) FILTER (WHERE GREATEST(COALESCE(a.radio_2g_util_pct,0), COALESCE(a.radio_5g_util_pct,0)) > 80)::int AS high_util_aps,
+           COUNT(*) FILTER (WHERE GREATEST(a.radio_2g_util_pct, a.radio_5g_util_pct) > 80)::int AS high_util_aps,
            ROUND(((COALESCE(SUM(a.retry_rate_2g),0) + COALESCE(SUM(a.retry_rate_5g),0))::numeric
                   / NULLIF(COUNT(a.retry_rate_2g) + COUNT(a.retry_rate_5g), 0)), 1) AS avg_retry_rate,
            COALESCE(SUM(a.auth_failures), 0)::int AS auth_failures
