@@ -55,6 +55,19 @@ $env:PATH = @(
     $env:PATH
 ) -join ";"
 
+# The in-app updater (Settings -> Updates) is fire-and-forget: it schedules this
+# script as a SYSTEM task and immediately returns { started: true } to the
+# browser, with no live output stream. Without a transcript, a run triggered
+# that way leaves NO durable record of what happened — every Write-Host/
+# Write-Step/Write-Warn line below is otherwise lost the moment the scheduled
+# task's process exits, which is exactly the case that most needs diagnosing.
+# Start it as early as possible (before pre-flight) so even a pre-flight
+# failure is captured. Best-effort: a transcript that fails to start (e.g. one
+# is already open in this session) must never block the actual update.
+New-Item -ItemType Directory -Force -Path (Join-Path $InstallDir 'logs') | Out-Null
+$transcriptPath = Join-Path $InstallDir "logs\update-$(Get-Date -Format 'yyyyMMdd-HHmmss').log"
+try { Start-Transcript -Path $transcriptPath -Append | Out-Null } catch { Write-Warning "Could not start transcript: $($_.Exception.Message)" }
+
 # Give the API a moment to return its { started: true } response to the frontend
 # before we start stopping services.
 Write-Host "=== Update starting in 5 seconds ==="
@@ -225,6 +238,18 @@ Push-Location $AppRoot
 # 'git reset --hard origin/$Branch' force-advances HEAD regardless of local
 # changes; 'git clean -fd' drops untracked cruft while preserving env files and
 # node_modules. This mirrors the DDIVault / LogVault / NetVault update scripts.
+# SYSTEM has never run git in this repo before (only whichever interactive
+# account originally cloned it has), and Git >= 2.35.2 (CVE-2022-24765)
+# refuses to operate in a repo it doesn't consider "owned" by the current
+# account: "fatal: detected dubious ownership in repository at '...'". That
+# fetch/reset failure was previously only WARNED about below (never fatal to
+# the whole script), so this wasn't why services stayed down — but it did mean
+# an in-app-triggered update silently kept redeploying the OLD checkout while
+# reporting "OK". Register this repo as safe for whichever account is running
+# right now (idempotent — safe to add the same path twice) so this class of
+# failure can't happen at all, rather than just being tolerated.
+try { $null = & $git config --global --add safe.directory $AppRoot 2>&1 } catch {}
+
 $prevEAP = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
 $null = & $git fetch origin 2>&1
@@ -456,7 +481,8 @@ foreach ($svc in $Services) {
     $null = & $nssm set $svc.Name Start             SERVICE_AUTO_START   2>&1
     $null = & $nssm set $svc.Name AppExit Default   Restart              2>&1
 }
-New-Item -ItemType Directory -Force -Path (Join-Path $InstallDir 'logs') | Out-Null
+# logs\ is already created near the top of the script (transcript setup) —
+# no need to re-create it here.
 
 Write-Step 'Starting services'
 foreach ($svc in $Services) {
@@ -491,3 +517,7 @@ if (-not $displayIp) { $displayIp = 'localhost' }
 Write-Host "`nSpanVault update complete." -ForegroundColor Green
 Write-Host "  Frontend:  http://$($displayIp):3008" -ForegroundColor Green
 Write-Host "  API:       http://127.0.0.1:3009 (loopback only)" -ForegroundColor Green
+
+# Best-effort — if Start-Transcript never succeeded (see top of script), this
+# throws harmlessly; never let it mask the update's own success/failure.
+try { Stop-Transcript | Out-Null } catch {}

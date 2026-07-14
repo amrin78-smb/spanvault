@@ -35,6 +35,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.75.2': [
+    'Hardened the in-app "Update" button (Settings > Updates): it now registers this repo as a git safe.directory for the SYSTEM account it runs under (Git refuses to operate in a repo it doesn\'t consider "owned" by the current account, which SYSTEM never is on an existing install) and writes a full transcript of the update run to installer\\logs\\ — previously a failed in-app-triggered update left no record of what happened, since that button runs fully in the background with no live output.',
+  ],
   '1.75.1': [
     'Fixed: "Test Connection" on an Aruba Central controller always failed with "aruba_central: pool is required for token persistence". The 1.75.0 change that threaded a DB handle through the real polling path so Aruba Central could persist its rotating tokens missed the "Test Connection" button\'s own, separate code path.',
   ],
