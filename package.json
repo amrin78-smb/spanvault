@@ -1,6 +1,6 @@
 {
   "name": "spanvault",
-  "version": "1.75.6",
+  "version": "1.76.0",
   "private": true,
   "description": "SpanVault - Network Monitoring System (NocVault suite)",
   "scripts": {

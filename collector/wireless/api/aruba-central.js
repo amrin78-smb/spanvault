@@ -127,11 +127,6 @@ function num(v) {
   return Number.isFinite(n) ? n : null;
 }
 
-function int0(v) {
-  const n = num(v);
-  return n === null ? 0 : Math.trunc(n);
-}
-
 function str(v) {
   if (v === null || v === undefined) return null;
   const s = String(v).trim();
@@ -190,13 +185,21 @@ function apArray(body) {
 function apsUrl(controller) {
   const base = String(controller.controller_url).replace(/\/+$/, '') + '/monitoring/v2/aps';
   const group = str(controller.api_group_filter);
-  return group ? (base + '?group=' + encodeURIComponent(group)) : base;
+  // calculate_client_count / calculate_ssid_count are UNCONDITIONAL (always
+  // sent) — LIVE-VERIFIED to add two AP-level fields (client_count,
+  // ssid_count) at zero extra API cost on this same call. `group` keeps the
+  // existing conditional-omission rule: omitted entirely when
+  // api_group_filter is blank, never sent as `group=`.
+  const params = ['calculate_client_count=true', 'calculate_ssid_count=true'];
+  if (group) params.push('group=' + encodeURIComponent(group));
+  return base + '?' + params.join('&');
 }
 
 async function fetchAps(controller, accessToken) {
   // Safe to log the FULL URL including its query string here: apsUrl()'s only
-  // possible query param is `group=<api_group_filter>`, never a secret (unlike
-  // the token-refresh URL below, which carries client_id/client_secret/
+  // possible query params are the two unconditional `calculate_*` flags and
+  // `group=<api_group_filter>`, none of them a secret (unlike the
+  // token-refresh URL below, which carries client_id/client_secret/
   // refresh_token and is deliberately NOT logged in full — see that call site).
   console.log('[wireless] aruba_central: GET', apsUrl(controller));
   // TenantID is OPTIONAL — only needed for an MSP-structured Central account
@@ -301,16 +304,31 @@ async function refreshAndPersist(controller, pool) {
 }
 
 // Map one Central AP object + its radios[] into the shared wireless_aps
-// contract. Returns { ap, radios } — radios is passed back out so
-// collectSsidsFromAp() can also inspect it without re-deriving the array.
+// contract. Returns { ap, radios }.
 //
 // LIVE-VERIFIED (curl'd against production GET /monitoring/v2/aps): this
 // endpoint's AP objects/radios[] carry ONLY: name, macaddr, model,
-// ip_address, status, firmware_version, serial — plus, per radio: band,
-// index, macaddr, radio_name, radio_type, spatial_stream, status. It does
-// NOT return channel, utilization, client counts, tx power, or uptime at any
-// level. Every field below that isn't backed by one of those confirmed keys
-// is set to an explicit `null` rather than a guessed/fabricated value.
+// ip_address, status, firmware_version, serial, plus (with
+// calculate_client_count=true / calculate_ssid_count=true, see apsUrl())
+// client_count and ssid_count — plus, per radio: band, index, macaddr,
+// radio_name, radio_type, spatial_stream, status. It does NOT return
+// channel, utilization, tx power, uptime, or any per-band client breakdown
+// at any level. Every field below that isn't backed by one of those
+// confirmed keys is set to an explicit `null` rather than a guessed/
+// fabricated value.
+//
+// RF data (channel/utilization/noise_floor/tx_power) is OUT OF SCOPE for
+// this bulk endpoint — LIVE-VERIFIED: GET /monitoring/v2/aps?fields=radios
+// returns radios[] with ONLY band, index, macaddr, radio_name, radio_type,
+// spatial_stream, status; channel/utilization/noise_floor/tx_power are
+// marked optional in Central's schema and are NOT populated for these APs.
+// The only real RF source found is GET /monitoring/v3/aps/{serial}/
+// rf_summary — but that's PER-AP: 8 APs x 288 polls/day (5-min interval)
+// is ~2300 calls/day against Central's ~5000/day cap, on top of everything
+// else this integration already calls. If this is ever added, it MUST run
+// on its own slower cycle (15-30 min), never the main poll interval. Future
+// phase — not built here, this comment exists so a future implementer
+// doesn't have to re-derive the finding.
 function mapAp(apRaw) {
   const radios = Array.isArray(apRaw.radios) ? apRaw.radios : [];
   const out = {
@@ -334,22 +352,28 @@ function mapAp(apRaw) {
     tx_power_2g: null,
     tx_power_5g: null,
     uptime_seconds: null,
-    // Client counts are explicit `null`, NOT `0` — deliberately different from
-    // the int0()-based 0-default other vendor parsers in this directory use
-    // when they DO have real client-count data. This endpoint returns no
-    // client-count field at all, per-radio or per-AP, so there's no data to
-    // report. Writing `0` here would read on the dashboard as "confirmed
-    // nobody connected", which actively misleads an operator when the truth
-    // is "we don't have this data from this endpoint." Populating real client
-    // counts requires a separate RF/client-enrichment Central API call this
-    // integration does NOT make in this patch — that's a future phase, and it
-    // needs its own rate-limit budget worked out against Central's
-    // ~5000-calls/day cap (see the poll_interval_seconds warning above)
-    // before it's added.
+    // clients_total: LIVE-VERIFIED — passing calculate_client_count=true on
+    // GET /monitoring/v2/aps (see apsUrl()) adds an AP-level `client_count`
+    // integer field at zero extra API cost. Mapped via num() below: real
+    // integer when present, explicit `null` (not 0) if the key is ever
+    // absent, so a genuinely-missing value never reads as "confirmed nobody
+    // connected" on the dashboard.
+    //
+    // clients_2g / clients_5g / clients_6g are STILL explicit `null` — this
+    // is NOT the same situation as clients_total. LIVE-VERIFIED TWICE:
+    // Central provides NO per-band client breakdown anywhere on this
+    // endpoint (per-AP or per-radio), only the single AP-level total above.
+    // Do NOT divide, estimate, or apportion clients_total across bands here
+    // — that would fabricate data this endpoint does not provide. Populating
+    // real per-band client counts would require a separate RF/client-
+    // enrichment Central API call this integration does NOT make in this
+    // patch — that's a future phase, and it needs its own rate-limit budget
+    // worked out against Central's ~5000-calls/day cap (see the
+    // poll_interval_seconds warning above) before it's added.
     clients_2g: null,
     clients_5g: null,
     clients_6g: null,
-    clients_total: null,
+    clients_total: num(pick(apRaw, ['client_count'])),
   };
 
   // Still walk radios[] with the now-fixed numeric-aware bandOf() — not to
@@ -374,33 +398,72 @@ function mapAp(apRaw) {
   return { ap: out, radios };
 }
 
-// Fold whatever per-AP / per-radio SSID info Central exposes into `ssidMap`
-// (ssid_name -> accumulated clients_total). SSID membership isn't part of
-// the exact response shape this client was written against, so this checks
-// several plausible array locations/field names, matching the tolerant
-// pick()-based style used for AP fields above.
-function collectSsidsFromAp(ssidMap, apRaw, radios) {
-  const arrays = [];
-  if (Array.isArray(apRaw.ssids)) arrays.push(apRaw.ssids);
-  if (Array.isArray(apRaw.wlans)) arrays.push(apRaw.wlans);
-  for (const radio of radios) {
-    const arr = pick(radio, ['ssids', 'essids', 'wlans', 'ssid_list']);
-    if (Array.isArray(arr)) arrays.push(arr);
-  }
-  for (const arr of arrays) {
-    for (const entry of arr) {
-      let name = null;
-      let clients = 0;
-      if (typeof entry === 'string') {
-        name = str(entry);
-      } else if (entry && typeof entry === 'object') {
-        name = str(pick(entry, ['ssid', 'ssid_name', 'name', 'essid']));
-        clients = int0(pick(entry, ['clients', 'client_count', 'num_clients', 'clients_total']));
-      }
-      if (!name) continue;
-      ssidMap.set(name, (ssidMap.get(name) || 0) + clients);
-    }
-  }
+// Central's SSID/network-list response is { count, networks: [...] } per the
+// verified GET /monitoring/v2/networks shape — tolerate a bare array or a
+// { data: [...] } wrapper too, mirroring apArray() above.
+function networksArray(body) {
+  if (Array.isArray(body)) return body;
+  if (!body || typeof body !== 'object') return [];
+  if (Array.isArray(body.networks)) return body.networks;
+  if (Array.isArray(body.data)) return body.data;
+  return [];
+}
+
+function networksUrl(controller) {
+  const base = String(controller.controller_url).replace(/\/+$/, '') + '/monitoring/v2/networks';
+  const group = str(controller.api_group_filter);
+  // Same conditional-omission rule as apsUrl(): `group` is a supported param
+  // on this endpoint too (confirmed in Central's Swagger), but must be
+  // omitted entirely when api_group_filter is blank — never sent as `group=`.
+  const params = ['calculate_client_count=true'];
+  if (group) params.push('group=' + encodeURIComponent(group));
+  return base + '?' + params.join('&');
+}
+
+// Bulk SSID/network fetch — ONE call per poll (not per-AP). v1 of this
+// endpoint 404s; v2 only. LIVE-VERIFIED shape:
+//   { count, networks: [ { essid, security, type, client_count }, ... ] }
+// SSID name is `essid` (NOT `ssid`, NOT `name`). Same header rules as
+// fetchAps(): TenantID is OMITTED ENTIRELY when api_customer_id is blank
+// (never sent with an empty value — see fetchAps()'s comment for the
+// production HTTP 500 this exact mistake caused earlier).
+async function fetchNetworks(controller, accessToken) {
+  // Safe to log the full URL: networksUrl()'s only params are the
+  // unconditional calculate_client_count flag and `group=<api_group_filter>`
+  // — never a secret.
+  console.log('[wireless] aruba_central: GET', networksUrl(controller));
+  const headers = {
+    'Authorization': 'Bearer ' + accessToken,
+    'Content-Type': 'application/json',
+  };
+  const tenantId = str(controller.api_customer_id);
+  if (tenantId) headers.TenantID = tenantId;
+
+  return fetchJsonVerbose(networksUrl(controller), { method: 'GET', headers }, TIMEOUT_MS, 'SSID fetch');
+}
+
+// Map one Central network object (from GET /monitoring/v2/networks) into the
+// fields wirelessCollector.js's upsertSsid() actually consumes. Only fields
+// with real, verified data are mapped — status/bytes_in/bytes_out/
+// auth_successes/auth_failures are left unset; upsertSsid() already
+// defaults/null-coalesces those sensibly (`ssid.status || 'up'`,
+// `intOrNull(ssid.bytes_in)`, etc).
+function mapNetwork(netRaw) {
+  return {
+    ssid_name: str(pick(netRaw, ['essid'])),
+    // clients_total: real integer via num(), null (not 0) if the key is
+    // absent — same known limitation as mapAp()'s clients_total: upsertSsid()
+    // itself does `intOrNull(ssid.clients_total) || 0`, coercing an honest
+    // null back to 0 before the actual INSERT/UPDATE (wireless_ssids.
+    // clients_total is NOT NULL DEFAULT 0). That DB-layer coercion is a
+    // pre-existing architectural limitation, not something to fix here.
+    clients_total: num(pick(netRaw, ['client_count'])),
+    // encryption_type has a real destination column (wireless_ssids.
+    // encryption_type TEXT, added via ALTER TABLE in scripts/schema.sql).
+    // Central's `type` field ("Employee" etc.) has no matching column and is
+    // deliberately NOT mapped — adding one is a schema change, out of scope.
+    encryption_type: str(pick(netRaw, ['security'])),
+  };
 }
 
 module.exports = {
@@ -476,14 +539,29 @@ module.exports = {
     }
 
     const apsRaw = apArray(body);
-    const aps = [];
-    const ssidMap = new Map();
-    for (const apRaw of apsRaw) {
-      const { ap, radios } = mapAp(apRaw);
-      aps.push(ap);
-      collectSsidsFromAp(ssidMap, apRaw, radios);
+    const aps = apsRaw.map((apRaw) => mapAp(apRaw).ap);
+
+    // SSID fetch is a SEPARATE bulk call and must NOT fail the whole poll —
+    // the AP list above is the primary, must-succeed payload; SSIDs are a
+    // best-effort addition. Reuses the SAME accessToken already resolved
+    // above (which may have been reactively refreshed by fetchAps()'s own
+    // 401-retry logic) rather than requesting its own token. On any failure
+    // here — including a 401 — log and fall back to an empty SSID list; do
+    // NOT attempt a refresh-and-retry of our own (that logic is owned
+    // exclusively by the fetchAps() 401 handler above, and duplicating it
+    // here would risk a second refresh within one poll() call, which the
+    // module-level "at most one refresh per poll()" rule forbids).
+    let ssids = [];
+    try {
+      const networksBody = await fetchNetworks(controller, accessToken);
+      ssids = networksArray(networksBody).map(mapNetwork).filter((s) => s.ssid_name);
+    } catch (e) {
+      console.warn(
+        `[wireless] aruba_central: SSID fetch failed for controller "${controller.name}" — ` +
+        `continuing with AP data only (no SSIDs this poll): ${e && e.message ? e.message : String(e)}`
+      );
+      ssids = [];
     }
-    const ssids = Array.from(ssidMap.entries()).map(([ssid_name, clients_total]) => ({ ssid_name, clients_total }));
 
     // Object shape (not a bare array) — this is the first API client to also
     // report SSIDs; pollApiController() in wirelessCollector.js normalises

@@ -634,6 +634,17 @@ function vendorLabel(v: string): string {
   return v === 'aruba_central' ? 'Aruba Central' : v;
 }
 
+// Aruba Central's API never returns a per-band (2.4/5/6GHz) client split —
+// wireless_aps.clients_2g/5g/6g are NOT NULL DEFAULT 0 columns, so a genuine
+// "we don't have this" comes back as 0, not null. Once clients_total is real
+// for this vendor, rendering "8 clients, 0 on 2.4GHz, 0 on 5GHz" reads as
+// "8 clients connected to neither band" — misleading. clients_total IS real
+// for this vendor and must still render normally; only the per-band figures
+// need to be suppressed.
+function perBandUnavailable(vendor: string | null | undefined): boolean {
+  return vendor === 'aruba_central';
+}
+
 const CHART_COLORS = {
   total: 'var(--primary)',
   g2: '#0ea5e9',
@@ -1246,10 +1257,16 @@ function OverviewTab({
     return n;
   }, [aps]);
 
-  // % of clients on 5GHz (derived from AP clients_5g vs total).
+  // % of clients on 5GHz (derived from AP clients_5g vs total). Vendors with
+  // no per-band breakdown (see perBandUnavailable) are excluded entirely —
+  // their clients_total is real but clients_5g is always 0 (not a confirmed
+  // zero), so including them would silently drag this percentage down.
   const band5Pct = useMemo(() => {
     let total = 0, g5 = 0;
-    aps.forEach((a) => { total += a.clients_total || 0; g5 += a.clients_5g || 0; });
+    aps.forEach((a) => {
+      if (perBandUnavailable(a.vendor)) return;
+      total += a.clients_total || 0; g5 += a.clients_5g || 0;
+    });
     return total > 0 ? (g5 / total) * 100 : null;
   }, [aps]);
 
@@ -1673,7 +1690,7 @@ function ApControllerGroup({
                         {ap.status}
                       </span>
                     </td>
-                    <td title={`${ap.clients_2g} on 2.4GHz, ${ap.clients_5g} on 5GHz`}>{ap.clients_total}</td>
+                    <td title={perBandUnavailable(ap.vendor) ? 'Per-band breakdown not available for this vendor' : `${ap.clients_2g} on 2.4GHz, ${ap.clients_5g} on 5GHz`}>{ap.clients_total}</td>
                     <td>{ap.radio_2g_channel != null ? `Ch ${ap.radio_2g_channel}` : '—'}</td>
                     <td>{ap.radio_5g_channel != null ? `Ch ${ap.radio_5g_channel}` : '—'}</td>
                     <td style={{ minWidth: 140 }}>
@@ -1973,19 +1990,28 @@ function ApDetailDrawer({
             <div style={{ fontSize: 'var(--text-xl)', fontWeight: 800 }}>{ap.clients_total}</div>
             <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>Total Clients</div>
           </div>
-          <div>
-            <div style={{ fontSize: 'var(--text-xl)', fontWeight: 800 }}>{ap.clients_2g}</div>
-            <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>2.4GHz</div>
-          </div>
-          <div>
-            <div style={{ fontSize: 'var(--text-xl)', fontWeight: 800 }}>{ap.clients_5g}</div>
-            <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>5GHz</div>
-          </div>
-          {ap.clients_6g > 0 && (
+          {perBandUnavailable(ap.vendor) ? (
             <div>
-              <div style={{ fontSize: 'var(--text-xl)', fontWeight: 800 }}>{ap.clients_6g}</div>
-              <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>6GHz</div>
+              <div style={{ fontSize: 'var(--text-xl)', fontWeight: 800, color: 'var(--text-muted)' }}>—</div>
+              <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>Per-band breakdown not available</div>
             </div>
+          ) : (
+            <>
+              <div>
+                <div style={{ fontSize: 'var(--text-xl)', fontWeight: 800 }}>{ap.clients_2g}</div>
+                <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>2.4GHz</div>
+              </div>
+              <div>
+                <div style={{ fontSize: 'var(--text-xl)', fontWeight: 800 }}>{ap.clients_5g}</div>
+                <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>5GHz</div>
+              </div>
+              {ap.clients_6g > 0 && (
+                <div>
+                  <div style={{ fontSize: 'var(--text-xl)', fontWeight: 800 }}>{ap.clients_6g}</div>
+                  <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>6GHz</div>
+                </div>
+              )}
+            </>
           )}
         </div>
 
@@ -2089,6 +2115,11 @@ function ApDetailDrawer({
         ) : (
           <>
             <h3 style={{ marginBottom: 6 }}>24h Client Count</h3>
+            {perBandUnavailable(ap.vendor) && (
+              <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', marginBottom: 4 }}>
+                Per-band (2.4/5GHz) breakdown not reported by this vendor — showing total only.
+              </div>
+            )}
             <ResponsiveContainer width="100%" height={200}>
               <LineChart data={history}>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
@@ -2097,8 +2128,12 @@ function ApDetailDrawer({
                 <Tooltip {...CHART_TOOLTIP} />
                 <Legend />
                 <Line type="monotone" dataKey="clients_total" name="Total" stroke={CHART_COLORS.total} dot={false} />
-                <Line type="monotone" dataKey="clients_2g" name="2.4GHz" stroke={CHART_COLORS.g2} dot={false} />
-                <Line type="monotone" dataKey="clients_5g" name="5GHz" stroke={CHART_COLORS.g5} dot={false} />
+                {!perBandUnavailable(ap.vendor) && (
+                  <>
+                    <Line type="monotone" dataKey="clients_2g" name="2.4GHz" stroke={CHART_COLORS.g2} dot={false} />
+                    <Line type="monotone" dataKey="clients_5g" name="5GHz" stroke={CHART_COLORS.g5} dot={false} />
+                  </>
+                )}
               </LineChart>
             </ResponsiveContainer>
 

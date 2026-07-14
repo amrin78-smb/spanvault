@@ -35,6 +35,10 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.76.0': [
+    'Aruba Central APs now report real client counts and SSID names, at no extra API cost for the client count (piggybacked on the existing AP poll) and one additional bulk call per poll for SSIDs. Per-band (2.4/5GHz) client breakdown still isn\'t available from Aruba Central\'s API — the Wireless page now shows "not available for this vendor" there instead of a misleading 0.',
+    'A failed SSID lookup for an Aruba Central controller no longer affects AP polling — APs still update normally on their own schedule even if the SSID call has a transient failure.',
+  ],
   '1.75.6': [
     'Fixed: Aruba Central AP polling still failed with "HTTP 500 — An unexpected error occurred" for a direct (non-MSP) Central account. The AP-list request always sent a TenantID header — even with a blank Customer ID, it sent one with an empty value rather than leaving it out — and Central errors out trying to resolve an empty tenant. TenantID is now only sent when a Customer ID is actually configured, which is the normal case for a direct account.',
   ],

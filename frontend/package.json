@@ -1,6 +1,6 @@
 {
   "name": "spanvault-frontend",
-  "version": "1.75.6",
+  "version": "1.76.0",
   "private": true,
   "scripts": {
     "dev": "next dev -p 3008",
