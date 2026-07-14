@@ -48,6 +48,7 @@ function prettyType(t: string): string {
   if (t === 'ssl_expiring') return 'SSL Expiring';
   if (t === 'wireless_ap_down') return 'AP Down';
   if (t === 'wireless_controller_down') return 'Controller Down';
+  if (t === 'wireless_api_token_invalid') return 'API Token Invalid';
   if (t === 'wireless_high_util') return 'High Channel Util';
   if (t === 'wireless_ap_rebooted') return 'AP Rebooted';
   return t.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());

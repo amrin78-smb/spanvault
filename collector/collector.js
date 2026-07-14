@@ -1816,13 +1816,36 @@ async function evaluateWirelessAlerts() {
     const utilThreshold = settingInt('wireless_util_threshold_pct', 90);
     // Controllers — offline when the last poll errored.
     const ctrls = (await sv.query(
-      `SELECT id, name, status, site_id FROM wireless_controllers WHERE active = TRUE`)).rows;
+      `SELECT id, name, status, site_id, vendor, last_error FROM wireless_controllers WHERE active = TRUE`)).rows;
     for (const c of ctrls) {
       if (c.status === 'error') {
         await raiseWirelessAlert('wireless_controller_id', c, 'wireless_controller_down', 'critical',
           `Wireless controller ${c.name} is unreachable`);
       } else if (c.status === 'ok') {
         await resolveWirelessAlert('wireless_controller_id', c.id, 'wireless_controller_down');
+      }
+      // API vendors with a rotating OAuth2 credential (currently just
+      // aruba_central — see the CLAUDE.md testController note) can fail in a
+      // way wireless_controller_down's generic "unreachable" message hides:
+      // Central confirming the stored refresh_token itself is dead (HTTP 4xx
+      // from the /oauth2/token call, not a timeout/network/5xx that might
+      // self-resolve next poll). That needs a human to re-authorize in
+      // Central's UI, not a firewall/connectivity check — a materially
+      // different remediation, so it gets its own alert type layered on top
+      // of (not replacing) wireless_controller_down. No new plumbing: the
+      // full, already-redacted error message (see aruba-central.js's
+      // fetchJsonVerbose) is already persisted to last_error by
+      // wirelessCollector.js's pollController() on every failed poll — this
+      // just classifies what's already stored. If a future API vendor gains
+      // its own rotating credential, extend this same match rather than
+      // adding a parallel per-vendor alert type.
+      const tokenDead = c.vendor === 'aruba_central' && typeof c.last_error === 'string' &&
+        c.last_error.startsWith('aruba_central: token refresh') && /HTTP 4\d\d/.test(c.last_error);
+      if (tokenDead) {
+        await raiseWirelessAlert('wireless_controller_id', c, 'wireless_api_token_invalid', 'critical',
+          `Wireless controller ${c.name}'s Aruba Central API credential was rejected — re-authorize the integration in Central's UI (${c.last_error})`);
+      } else if (c.status === 'ok') {
+        await resolveWirelessAlert('wireless_controller_id', c.id, 'wireless_api_token_invalid');
       }
     }
     // APs — down / high utilization / reboot.

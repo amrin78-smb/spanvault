@@ -35,6 +35,10 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.77.0': [
+    'New alert: an Aruba Central controller whose stored API credential is confirmed rejected by Central (not just unreachable) now raises a dedicated "API Token Invalid" alert telling you to re-authorize the integration in Central\'s UI, instead of the generic "Controller unreachable" message that could just as easily mean a network/firewall issue.',
+    'Fixed: the Wireless > Controllers page showed a red "Not probed" warning for API-based controllers (Aruba Central) even while they were polling successfully — capability probing is an SNMP-only concept (there are no OIDs to probe on an API vendor), so it now shows a neutral "N/A" there instead of a misleading warning.',
+  ],
   '1.76.0': [
     'Aruba Central APs now report real client counts and SSID names, at no extra API cost for the client count (piggybacked on the existing AP poll) and one additional bulk call per poll for SSIDs. Per-band (2.4/5GHz) client breakdown still isn\'t available from Aruba Central\'s API — the Wireless page now shows "not available for this vendor" there instead of a misleading 0.',
     'A failed SSID lookup for an Aruba Central controller no longer affects AP polling — APs still update normally on their own schedule even if the SSID call has a transient failure.',

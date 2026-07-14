@@ -3760,7 +3760,7 @@ function reportedCountMismatch(reported: number | null, local: number): boolean 
 // ── Controller inventory table (top-level) ────────────────────
 function ControllerInventoryTable({ controllers, capsById, onShowPeers }: {
   controllers: OverviewController[];
-  capsById: Map<number, boolean>;
+  capsById: Map<number, { probed: boolean; isSnmp: boolean }>;
   onShowPeers: (c: OverviewController) => void;
 }) {
   return (
@@ -3776,17 +3776,25 @@ function ControllerInventoryTable({ controllers, capsById, onShowPeers }: {
             const hasLic = c.licensed_aps != null && Number(c.licensed_aps) > 0;
             const cap = c.ap_capacity_pct;
             const ha = haCellLabel(c.ha_mode, c.ha_sync_status);
-            const probed = capsById.get(c.id) === true;
+            const capsEntry = capsById.get(c.id);
+            const isSnmp = capsEntry?.isSnmp === true;
+            const probed = capsEntry?.probed === true;
             return (
               <tr key={c.id}>
                 <td style={{ fontWeight: 600 }}>
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                     <StatusDot status={c.status === 'ok' ? 'up' : c.status === 'error' ? 'down' : 'unknown'} />
                     {c.name}
-                    <span
-                      title={probed ? 'Capabilities probed' : 'Capabilities not probed'}
-                      style={{ display: 'inline-flex', alignItems: 'center', color: probed ? 'var(--text-muted)' : 'var(--orange)', fontWeight: 700 }}
-                    >{probed ? <IconCheck width={12} height={12} /> : <IconWarning width={12} height={12} />}</span>
+                    {/* SNMP-only concept (OID capability probing) — API-based
+                        vendors like aruba_central have nothing to probe, so
+                        showing this at all (let alone as an orange warning)
+                        reads as a broken integration when it isn't. */}
+                    {isSnmp && (
+                      <span
+                        title={probed ? 'Capabilities probed' : 'Capabilities not probed'}
+                        style={{ display: 'inline-flex', alignItems: 'center', color: probed ? 'var(--text-muted)' : 'var(--orange)', fontWeight: 700 }}
+                      >{probed ? <IconCheck width={12} height={12} /> : <IconWarning width={12} height={12} />}</span>
+                    )}
                   </span>
                 </td>
                 <td>{c.site_name || '—'}</td>
@@ -4298,7 +4306,13 @@ function CapabilitiesAccordion({
                       <td style={{ fontWeight: 600 }}>{c.name}</td>
                       <td>{c.vendor}</td>
                       <td>
-                        {probed ? (
+                        {!isSnmp ? (
+                          // OID capability probing is an SNMP-only concept — API
+                          // vendors (aruba_central) have nothing to probe, so this
+                          // must read as neutral, not as a warning that something's
+                          // broken (the controller can be polling fine regardless).
+                          <span style={{ color: 'var(--text-muted)' }} title="Capability probing applies to SNMP controllers only">N/A</span>
+                        ) : probed ? (
                           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: 'var(--text-muted)' }}>
                             <IconCheck width={12} height={12} /> Probed{c.capabilities_probed_at ? ` ${fmtRel(c.capabilities_probed_at)}` : ''}
                           </span>
@@ -4418,8 +4432,8 @@ function ControllersTab({ onViewEvents }: { onViewEvents?: () => void }) {
 
   // has_capabilities map (overview rows don't carry it — join by controller id).
   const capsById = useMemo(() => {
-    const m = new Map<number, boolean>();
-    ctlList.forEach((c) => m.set(c.id, c.has_capabilities === true));
+    const m = new Map<number, { probed: boolean; isSnmp: boolean }>();
+    ctlList.forEach((c) => m.set(c.id, { probed: c.has_capabilities === true, isSnmp: c.snmp_device_id != null }));
     return m;
   }, [ctlList]);
 
