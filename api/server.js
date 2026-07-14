@@ -35,6 +35,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.75.6': [
+    'Fixed: Aruba Central AP polling still failed with "HTTP 500 — An unexpected error occurred" for a direct (non-MSP) Central account. The AP-list request always sent a TenantID header — even with a blank Customer ID, it sent one with an empty value rather than leaving it out — and Central errors out trying to resolve an empty tenant. TenantID is now only sent when a Customer ID is actually configured, which is the normal case for a direct account.',
+  ],
   '1.75.5': [
     'Fixed: NetVault device sync and the "Import from NetVault" feature were completely broken (failing on every attempt with "function host(character varying) does not exist"). The query assumed NetVault\'s ip_address column was an inet type; it\'s actually plain text, confirmed against the live database.',
     'Aruba Central AP data now maps only the fields the live API actually returns (name, MAC, model, IP, status, firmware, serial number) instead of guessing at channel/utilization/tx-power/uptime field names that don\'t exist on this endpoint — those now show as an honest "no data" instead of a wrong value (client counts still show 0 for now, since that column can\'t hold "unknown" without a separate schema change). Also fixed the AP radio band encoding, which is a numeric index (0/1) on this endpoint, not a text label — the previous code never matched it, so no radio was ever attributed to a band.',

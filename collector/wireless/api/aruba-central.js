@@ -34,7 +34,11 @@
 //   POST {controller_url}/oauth2/token?client_id=...&client_secret=...&grant_type=refresh_token&refresh_token=...
 //     -> { access_token, refresh_token, expires_in, ... }
 //   GET  {controller_url}/monitoring/v2/aps[?group=<api_group_filter>]
-//     Bearer token + TenantID header -> AP inventory with per-radio detail.
+//     Bearer token -> AP inventory with per-radio detail. TenantID header is
+//     OPTIONAL and only sent when api_customer_id is set — it's an MSP-only
+//     concern (querying a specific downstream customer's tenant); a direct
+//     (non-MSP) Central account has none to send, and sending it with an
+//     empty value (rather than omitting it) makes Central 500. See fetchAps().
 // Central's cloud endpoint uses a publicly-trusted TLS cert, so none of the
 // self-signed-cert caveats in ./_http.js's TLS NOTE apply here.
 
@@ -195,13 +199,30 @@ async function fetchAps(controller, accessToken) {
   // the token-refresh URL below, which carries client_id/client_secret/
   // refresh_token and is deliberately NOT logged in full — see that call site).
   console.log('[wireless] aruba_central: GET', apsUrl(controller));
-  return fetchJsonVerbose(apsUrl(controller), {
-    method: 'GET',
-    headers: {
-      'Authorization': 'Bearer ' + accessToken,
-      'TenantID': str(controller.api_customer_id) || '',
-    },
-  }, TIMEOUT_MS, 'AP fetch');
+  // TenantID is OPTIONAL — only needed for an MSP-structured Central account
+  // querying a specific downstream customer's tenant; a direct (non-MSP)
+  // Central account has no TenantID to send at all. Build the headers object
+  // CONDITIONALLY and never include the key at all when api_customer_id is
+  // blank. `'TenantID': str(controller.api_customer_id) || ''` (the previous
+  // code) does NOT omit the header when blank — it sends a real HTTP header
+  // with an EMPTY VALUE, which is a different thing entirely: Node's fetch
+  // transmits an empty-valued header exactly as given, whereas curl's `-H
+  // "TenantID:"` shorthand (which was used to sanity-check this endpoint
+  // earlier) silently drops an empty header instead of sending it — so that
+  // earlier manual test never actually exercised this case, and passed by
+  // accident. Confirmed live against production Central: sending TenantID
+  // with an empty value makes Central try to resolve tenant "" and return
+  // HTTP 500 ("An unexpected error occurred") — the exact 500 already seen in
+  // this server's own production logs. Omitting the header entirely (the
+  // correct behavior for a direct, non-MSP tenant) returns 200.
+  const headers = {
+    'Authorization': 'Bearer ' + accessToken,
+    'Content-Type': 'application/json',
+  };
+  const tenantId = str(controller.api_customer_id);
+  if (tenantId) headers.TenantID = tenantId;
+
+  return fetchJsonVerbose(apsUrl(controller), { method: 'GET', headers }, TIMEOUT_MS, 'AP fetch');
 }
 
 // Single UPDATE — writes the rotated tokens to the DB. See the module-level
