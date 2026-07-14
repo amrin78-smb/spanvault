@@ -647,15 +647,14 @@ function perBandUnavailable(vendor: string | null | undefined): boolean {
   return vendor === 'aruba_central';
 }
 
-// wireless_aps.radio_2g/5g_util_pct are genuinely nullable columns (unlike
-// clients_2g/5g/6g's NOT NULL DEFAULT 0 above) — Central's polled AP endpoint
-// just doesn't report a channel-utilization figure at all (see aruba-central.js's
-// mapAp, which explicitly nulls these rather than guess). The API already passes
-// that null straight through, so the bug is purely in call sites here that do
-// `ap.radio_2g_util_pct || 0` — a real value of "unknown" rendering as a
-// confident, green "0.0% — all clear" bar. uptime_seconds is nullable the same
-// way, but uptime_formatted is already server-derived and every call site here
-// already does `ap.uptime_formatted || '—'`, so it needs no separate suppression.
+// A separate per-AP RF-enrichment collector pass now populates real, current
+// radio_2g/5g_util_pct on the wireless_aps row for aruba_central APs, so the
+// CURRENT-AP-row util suppression this helper used to gate is gone — see the
+// reverted apUtil()/AP table/detail-drawer call sites. The one place this is
+// still genuinely true is the 24h HISTORICAL chart below: wireless_history is
+// populated only by the main 5-min poll, which still writes null util for
+// this vendor (the RF-enrichment pass runs on its own slower cycle and does
+// not backfill history), so that chart alone still gates on this helper.
 function utilUnavailable(vendor: string | null | undefined): boolean {
   return vendor === 'aruba_central';
 }
@@ -1172,14 +1171,8 @@ function IntelBanner({ onView, coChannel, band5Pct }: {
   );
 }
 
-function apUtil(ap: AccessPoint): number | null {
-  if (utilUnavailable(ap.vendor)) return null;
+function apUtil(ap: AccessPoint): number {
   return Math.max(ap.radio_2g_util_pct || 0, ap.radio_5g_util_pct || 0);
-}
-
-function apUtilColor(ap: AccessPoint): string {
-  const u = apUtil(ap);
-  return u == null ? 'var(--text-muted)' : pctColor(u);
 }
 
 // ── Controller status strip (Insights tab) (top-level) ────────
@@ -1258,9 +1251,7 @@ function OverviewTab({
   );
   const offlineAps = useMemo(() => aps.filter((a) => a.status === 'offline'), [aps]);
   const highUtilAps = useMemo(
-    // Vendors with unknown util (utilUnavailable) yield apUtil()===null, and
-    // null > 70 is false — they're naturally excluded, never falsely flagged.
-    () => aps.filter((a) => (apUtil(a) ?? -1) > 70).sort((a, b) => (apUtil(b) ?? 0) - (apUtil(a) ?? 0)),
+    () => aps.filter((a) => apUtil(a) > 70).sort((a, b) => apUtil(b) - apUtil(a)),
     [aps],
   );
 
@@ -1364,7 +1355,7 @@ function OverviewTab({
                     onClick={() => setSelectedApId(ap.id)} title="View access point details">
                     <td style={{ fontWeight: 600 }}>{ap.name}</td>
                     <td>{ap.clients_total}</td>
-                    <td style={{ color: apUtilColor(ap), fontWeight: 600 }}>{fmtPct(apUtil(ap))}</td>
+                    <td style={{ color: pctColor(apUtil(ap)), fontWeight: 600 }}>{fmtPct(apUtil(ap))}</td>
                   </tr>
                 ))}
               </tbody>
@@ -1471,7 +1462,7 @@ function OverviewTab({
                   <tr key={ap.id} style={{ cursor: 'pointer' }}
                     onClick={() => setSelectedApId(ap.id)} title="View access point details">
                     <td style={{ fontWeight: 600 }}>{ap.name}</td>
-                    <td style={{ color: apUtilColor(ap), fontWeight: 600 }}>{fmtPct(apUtil(ap))}</td>
+                    <td style={{ color: pctColor(apUtil(ap)), fontWeight: 600 }}>{fmtPct(apUtil(ap))}</td>
                     <td>{ap.clients_total}</td>
                   </tr>
                 ))}
@@ -1588,11 +1579,7 @@ type ApSort = { key: string; dir: 'asc' | 'desc' };
 // columns push missing values to the bottom (ascending) so blanks don't lead.
 // Missing values return null so the comparator can pin them LAST in BOTH sort
 // directions (see sortAps) — instead of a low sentinel that a plain reverse()
-// would flip to the top. clients keeps 0 for "none" (a real, confirmed value).
-// util uses apUtil(), which is itself null for a vendor with no util data at
-// all (utilUnavailable) — that's genuinely unknown, not a confirmed 0%, so it
-// gets pinned last like the other missing-value columns instead of sorting as
-// the lowest (best) utilization.
+// would flip to the top. clients/util keep 0 for "none" (a real value, not blank).
 const AP_SORT_ACCESSORS: Record<string, (a: AccessPoint) => string | number | null> = {
   name: (a) => (a.name || '').toLowerCase() || null,
   site: (a) => (a.site_name || '').toLowerCase() || null,
@@ -1600,7 +1587,7 @@ const AP_SORT_ACCESSORS: Record<string, (a: AccessPoint) => string | number | nu
   clients: (a) => a.clients_total || 0,
   ch2g: (a) => a.radio_2g_channel ?? null,
   ch5g: (a) => a.radio_5g_channel ?? null,
-  util: (a) => apUtil(a),
+  util: (a) => Math.max(a.radio_2g_util_pct || 0, a.radio_5g_util_pct || 0),
   uptime: (a) => a.uptime_seconds ?? null,
   lastseen: (a) => (a.last_seen_at ? Date.parse(a.last_seen_at) : null),
 };
@@ -1727,11 +1714,7 @@ function ApControllerGroup({
                     <td>{ap.radio_2g_channel != null ? `Ch ${ap.radio_2g_channel}` : '—'}</td>
                     <td>{ap.radio_5g_channel != null ? `Ch ${ap.radio_5g_channel}` : '—'}</td>
                     <td style={{ minWidth: 140 }}>
-                      {utilUnavailable(ap.vendor) ? (
-                        <span style={{ color: 'var(--text-muted)' }} title="Channel utilization not available for this vendor">—</span>
-                      ) : (
-                        <UtilBar pct={Math.max(ap.radio_2g_util_pct || 0, ap.radio_5g_util_pct || 0)} />
-                      )}
+                      <UtilBar pct={Math.max(ap.radio_2g_util_pct || 0, ap.radio_5g_util_pct || 0)} />
                     </td>
                     <td>{ap.uptime_formatted || '—'}</td>
                     <td>{fmtRel(ap.last_seen_at)}</td>
@@ -2057,22 +2040,14 @@ function ApDetailDrawer({
             2.4GHz {ap.radio_2g_channel != null ? `(Ch ${ap.radio_2g_channel}` : '(Ch —'}
             {ap.tx_power_2g != null ? `, ${ap.tx_power_2g} dBm)` : ')'}
           </div>
-          {utilUnavailable(ap.vendor) ? (
-            <span style={{ color: 'var(--text-muted)' }} title="Channel utilization not available for this vendor">—</span>
-          ) : (
-            <UtilBar pct={ap.radio_2g_util_pct || 0} />
-          )}
+          <UtilBar pct={ap.radio_2g_util_pct || 0} />
         </div>
         <div style={{ marginBottom: 12 }}>
           <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', marginBottom: 4 }}>
             5GHz {ap.radio_5g_channel != null ? `(Ch ${ap.radio_5g_channel}` : '(Ch —'}
             {ap.tx_power_5g != null ? `, ${ap.tx_power_5g} dBm)` : ')'}
           </div>
-          {utilUnavailable(ap.vendor) ? (
-            <span style={{ color: 'var(--text-muted)' }} title="Channel utilization not available for this vendor">—</span>
-          ) : (
-            <UtilBar pct={ap.radio_5g_util_pct || 0} />
-          )}
+          <UtilBar pct={ap.radio_5g_util_pct || 0} />
         </div>
 
         <h3 style={{ marginBottom: 6 }}>Radio Performance</h3>

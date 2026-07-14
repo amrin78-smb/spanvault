@@ -35,6 +35,10 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.78.0': [
+    'Aruba Central APs now report real channel, utilization, tx power, and noise floor data, via a new per-AP RF lookup that runs on its own 15-minute cycle (separate from the main 5-minute poll, to stay within Aruba Central\'s API rate limit).',
+    'The Access Points tab, AP detail drawer, Wireless Insights, and Intelligence tab (capacity/co-channel scoring) now show real Channel Utilization for Aruba Central instead of "--" -- reverting the temporary suppression added in 1.77.1 now that the data is genuine. Per-band (2.4/5GHz) client counts remain unavailable for this vendor and stay suppressed.',
+  ],
   '1.77.1': [
     'Fixed: Aruba Central APs showed a green "0.0%" Channel Utilization bar (Access Points tab, AP detail drawer, and the 24h Channel Utilization chart) even though Central\'s API reports no utilization figure at all for this vendor -- those now show "--" like the per-band client counts already do.',
     'Fixed: Wireless Insights\' per-site and fleet-wide "Avg Utilization", and the Intelligence tab\'s Capacity score/bar, were silently averaging in a fake 0% for every Aruba Central AP/controller, dragging real numbers down. Aruba Central APs/controllers are now excluded from those averages instead of counted as confirmed-idle.',

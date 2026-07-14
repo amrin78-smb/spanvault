@@ -466,8 +466,178 @@ function mapNetwork(netRaw) {
   };
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// RF ENRICHMENT — independent, slower cycle. Read before editing.
+//
+// The main poll() above (5-min cycle) cannot get channel/utilization/tx
+// power/noise floor from Central's bulk /monitoring/v2/aps endpoint — see
+// mapAp()'s comment. LIVE-VERIFIED: GET /monitoring/v1/aps/{serial} DOES
+// carry that data, one call per AP, no query params needed:
+//   { "band": 0, "channel": "6", "noise_floor": 88, "tx_power": 9,
+//     "utilization": 10, "radio_type": "2.4 GHz", ... }
+// (GET /monitoring/v3/aps/{serial}/rf_summary was also tried — it requires a
+// mandatory `band` query param, 400s without it, so it costs 2 calls/AP plus
+// a time-series to collapse for the same point-in-time snapshot. Strictly
+// worse than v1/aps/{serial}. Do not switch to it.)
+//
+// This is why pollRf() below is a SEPARATE entry point from poll(), driven by
+// its own timer in wirelessCollector.js (NOT the 5-min wireless poll cycle):
+// 8 APs x 1 call every 15 min is ~770 calls/day on top of the ~890/day the
+// main poll + SSID call already cost. On the 5-min cycle it would be ~2300/
+// day — unsafe stacked against Central's ~5000/day cap. Channel/noise/tx
+// power change slowly; 15-min granularity loses nothing operationally.
+//
+// pollRf() deliberately does NOT refresh the OAuth token — it reuses
+// whatever access token the main poll() most recently persisted. Central
+// only allows a refresh roughly once per 15 minutes (see the module-level
+// comment at the top of this file); running a second, independent refresher
+// on this pass would risk two refreshes racing within that window, and this
+// integration already has exactly one place responsible for the
+// PERSIST-FIRST-USE-SECOND refresh contract (poll(), above). If the stored
+// token is missing or already expired, this pass skips the controller
+// entirely for this cycle — the next main poll (within 5 min) will refresh
+// it, and the next RF cycle (15 min later) will find a valid token.
+// ─────────────────────────────────────────────────────────────────────────
+
+function apRfUrl(controller, serial) {
+  return String(controller.controller_url).replace(/\/+$/, '') + '/monitoring/v1/aps/' + encodeURIComponent(serial);
+}
+
+async function fetchApRf(controller, accessToken, serial) {
+  const headers = {
+    'Authorization': 'Bearer ' + accessToken,
+    'Content-Type': 'application/json',
+  };
+  const tenantId = str(controller.api_customer_id);
+  if (tenantId) headers.TenantID = tenantId;
+  return fetchJsonVerbose(apRfUrl(controller, serial), { method: 'GET', headers }, TIMEOUT_MS, 'RF fetch');
+}
+
+// `channel` on this endpoint is a STRING (e.g. "44E" — the "E" suffix marks a
+// 40MHz channel extension, per Aruba's convention). parseInt() stops at the
+// first non-digit character ("44E" -> 44, "6" -> 6) and never throws; a
+// wholly non-numeric value parses to NaN, mapped to null here rather than a
+// garbage channel number.
+function parseChannel(v) {
+  const s = str(v);
+  if (s === null) return null;
+  const n = parseInt(s, 10);
+  return Number.isFinite(n) ? n : null;
+}
+
+// Same sign convention as the SNMP Aruba parser (collector/wireless/aruba.js:
+// `const dbm = nf > 0 ? -nf : nf;`) — stored as negative dBm. Central
+// LIVE-VERIFIED returns noise_floor as a POSITIVE integer (magnitude only,
+// e.g. 88 meaning -88 dBm), so without this conversion the same physical AP
+// would read +88 via Central and -88 via SNMP depending on which integration
+// polled it.
+function noiseFloorDbm(v) {
+  const n = num(v);
+  if (n === null) return null;
+  return n > 0 ? -n : n;
+}
+
+// Map one GET /monitoring/v1/aps/{serial} response into the wireless_aps RF
+// columns this pass writes. Tolerates a bare `radios` array or an array body
+// (mirrors apArray()'s tolerance above) since the exact top-level wrapper
+// wasn't pinned down during verification. Any band not present in the
+// response stays null here — the caller COALESCEs against the existing DB
+// row rather than wiping a known-good value with a transient miss (see
+// wirelessCollector.js's pollRf loop).
+function mapApRf(body) {
+  const radios = Array.isArray(body && body.radios) ? body.radios
+    : Array.isArray(body) ? body : [];
+  const out = {
+    radio_2g_channel: null, radio_5g_channel: null,
+    radio_2g_util_pct: null, radio_5g_util_pct: null,
+    tx_power_2g: null, tx_power_5g: null,
+    noise_floor_2g: null, noise_floor_5g: null,
+  };
+  for (const radio of radios) {
+    const band = bandOf(pick(radio, ['band', 'radio_type', 'radio_band', 'type']));
+    if (band === '2g') {
+      out.radio_2g_channel = parseChannel(pick(radio, ['channel']));
+      out.radio_2g_util_pct = num(pick(radio, ['utilization']));
+      out.tx_power_2g = num(pick(radio, ['tx_power']));
+      out.noise_floor_2g = noiseFloorDbm(pick(radio, ['noise_floor']));
+    } else if (band === '5g') {
+      out.radio_5g_channel = parseChannel(pick(radio, ['channel']));
+      out.radio_5g_util_pct = num(pick(radio, ['utilization']));
+      out.tx_power_5g = num(pick(radio, ['tx_power']));
+      out.noise_floor_5g = noiseFloorDbm(pick(radio, ['noise_floor']));
+    }
+    // 6GHz: wireless_aps has no tx_power_6g/noise_floor_6g columns, and no
+    // 6GHz radio has been observed on this vendor yet (see bandOf() above) —
+    // skip rather than guess a column mapping that doesn't exist.
+  }
+  return out;
+}
+
+// One controller's RF enrichment pass. Never throws — a failure here (token
+// unusable, DB error, etc.) is logged and swallowed so it can't take down the
+// caller's loop over other controllers, matching pollController()'s own
+// never-throws contract in wirelessCollector.js.
+async function pollRf(controller, pool) {
+  try {
+    const accessToken = controller.api_access_token;
+    const expiresAt = controller.api_token_expires_at ? new Date(controller.api_token_expires_at).getTime() : NaN;
+    if (!accessToken || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+      console.warn(
+        `[wireless-rf] aruba_central "${controller.name}": no valid stored access token — ` +
+        'skipping this RF cycle (the next main poll will refresh it)'
+      );
+      return;
+    }
+
+    const apRows = (await pool.query(
+      `SELECT id, serial_number FROM wireless_aps WHERE controller_id = $1 AND serial_number IS NOT NULL`,
+      [controller.id]
+    )).rows;
+
+    for (const apRow of apRows) {
+      try {
+        const body = await fetchApRf(controller, accessToken, apRow.serial_number);
+        const rf = mapApRf(body);
+        // COALESCE: a band missing from this response (radio briefly not
+        // reporting) must not wipe the last known-good value — mirrors the
+        // same precedent in wirelessCollector.js's pollController() for
+        // controller-level metadata.
+        await pool.query(
+          `UPDATE wireless_aps SET
+             radio_2g_channel  = COALESCE($2, radio_2g_channel),
+             radio_5g_channel  = COALESCE($3, radio_5g_channel),
+             radio_2g_util_pct = COALESCE($4, radio_2g_util_pct),
+             radio_5g_util_pct = COALESCE($5, radio_5g_util_pct),
+             tx_power_2g       = COALESCE($6, tx_power_2g),
+             tx_power_5g       = COALESCE($7, tx_power_5g),
+             noise_floor_2g    = COALESCE($8, noise_floor_2g),
+             noise_floor_5g    = COALESCE($9, noise_floor_5g)
+           WHERE id = $1`,
+          [apRow.id, rf.radio_2g_channel, rf.radio_5g_channel,
+            rf.radio_2g_util_pct, rf.radio_5g_util_pct,
+            rf.tx_power_2g, rf.tx_power_5g,
+            rf.noise_floor_2g, rf.noise_floor_5g]);
+      } catch (e) {
+        // Per-AP isolation: one AP's RF call failing (timeout, a
+        // decommissioned serial returning 404, etc.) must never abort the
+        // rest of this controller's APs.
+        console.warn(
+          `[wireless-rf] aruba_central "${controller.name}" AP ${apRow.serial_number}: ` +
+          (e && e.message ? e.message : String(e))
+        );
+      }
+    }
+  } catch (e) {
+    console.error(
+      `[wireless-rf] aruba_central "${controller.name}" RF cycle failed:`,
+      e && e.message ? e.message : String(e)
+    );
+  }
+}
+
 module.exports = {
   name: 'aruba_central',
+  pollRf,
   async poll(controller, pool) {
     if (!controller || !controller.controller_url) {
       throw new Error('aruba_central: missing controller_url');

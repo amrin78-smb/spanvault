@@ -848,6 +848,18 @@ async function upsertAp(pool, controller, ap) {
       `SELECT id FROM wireless_aps WHERE site_id = $1 AND name = $2 LIMIT 1`,
       [controller.site_id, name]);
     if (existing.rows[0]) {
+      // radio_2g/5g_channel, radio_2g/5g_util_pct, tx_power_2g/5g, and
+      // noise_floor_2g/5g are COALESCEd against the existing row, not
+      // overwritten outright — a vendor whose main poll never populates these
+      // (aruba_central's mapAp() explicitly nulls them; see aruba-central.js)
+      // relies on a SEPARATE, slower RF-enrichment pass (aruba-central.js's
+      // pollRf(), on its own ~15-min cycle — see wirelessCollector.js's
+      // pollAllArubaCentralRf) to fill them in directly on wireless_aps. Without
+      // this COALESCE, the NEXT main poll (5 min later, always contributing
+      // null for this vendor) would silently wipe that enrichment straight back
+      // out. This mirrors the same "partial poll must never wipe known-good
+      // data" precedent already used for controller-level metadata below in
+      // pollController()'s own UPDATE.
       const u = await pool.query(`
         UPDATE wireless_aps SET
           controller_id       = $1,
@@ -859,21 +871,21 @@ async function upsertAp(pool, controller, ap) {
           site_id             = $7,
           site_name           = $8,
           status              = $9,
-          radio_2g_channel    = $10,
-          radio_5g_channel    = $11,
+          radio_2g_channel    = COALESCE($10, radio_2g_channel),
+          radio_5g_channel    = COALESCE($11, radio_5g_channel),
           radio_6g_channel    = $12,
-          radio_2g_util_pct   = $13,
-          radio_5g_util_pct   = $14,
+          radio_2g_util_pct   = COALESCE($13, radio_2g_util_pct),
+          radio_5g_util_pct   = COALESCE($14, radio_5g_util_pct),
           clients_2g          = $15,
           clients_5g          = $16,
           clients_6g          = $17,
           clients_total       = $18,
-          tx_power_2g         = $19,
-          tx_power_5g         = $20,
+          tx_power_2g         = COALESCE($19, tx_power_2g),
+          tx_power_5g         = COALESCE($20, tx_power_5g),
           uptime_seconds      = $21,
           firmware_version    = $22,
-          noise_floor_2g      = $23,
-          noise_floor_5g      = $24,
+          noise_floor_2g      = COALESCE($23, noise_floor_2g),
+          noise_floor_5g      = COALESCE($24, noise_floor_5g),
           retry_rate_2g       = $25,
           retry_rate_5g       = $26,
           rx_errors_2g        = $27,
@@ -927,21 +939,25 @@ async function upsertAp(pool, controller, ap) {
         site_id          = EXCLUDED.site_id,
         site_name        = EXCLUDED.site_name,
         status           = EXCLUDED.status,
-        radio_2g_channel = EXCLUDED.radio_2g_channel,
-        radio_5g_channel = EXCLUDED.radio_5g_channel,
+        -- See the matching COALESCE comment on the (site_id, name) UPDATE
+        -- above — same reason: don't let a vendor whose main poll never
+        -- reports these (aruba_central) wipe out the separate RF-enrichment
+        -- pass's data every 5 minutes.
+        radio_2g_channel = COALESCE(EXCLUDED.radio_2g_channel, wireless_aps.radio_2g_channel),
+        radio_5g_channel = COALESCE(EXCLUDED.radio_5g_channel, wireless_aps.radio_5g_channel),
         radio_6g_channel = EXCLUDED.radio_6g_channel,
-        radio_2g_util_pct = EXCLUDED.radio_2g_util_pct,
-        radio_5g_util_pct = EXCLUDED.radio_5g_util_pct,
+        radio_2g_util_pct = COALESCE(EXCLUDED.radio_2g_util_pct, wireless_aps.radio_2g_util_pct),
+        radio_5g_util_pct = COALESCE(EXCLUDED.radio_5g_util_pct, wireless_aps.radio_5g_util_pct),
         clients_2g       = EXCLUDED.clients_2g,
         clients_5g       = EXCLUDED.clients_5g,
         clients_6g       = EXCLUDED.clients_6g,
         clients_total    = EXCLUDED.clients_total,
-        tx_power_2g      = EXCLUDED.tx_power_2g,
-        tx_power_5g      = EXCLUDED.tx_power_5g,
+        tx_power_2g      = COALESCE(EXCLUDED.tx_power_2g, wireless_aps.tx_power_2g),
+        tx_power_5g      = COALESCE(EXCLUDED.tx_power_5g, wireless_aps.tx_power_5g),
         uptime_seconds   = EXCLUDED.uptime_seconds,
         firmware_version = EXCLUDED.firmware_version,
-        noise_floor_2g   = EXCLUDED.noise_floor_2g,
-        noise_floor_5g   = EXCLUDED.noise_floor_5g,
+        noise_floor_2g   = COALESCE(EXCLUDED.noise_floor_2g, wireless_aps.noise_floor_2g),
+        noise_floor_5g   = COALESCE(EXCLUDED.noise_floor_5g, wireless_aps.noise_floor_5g),
         retry_rate_2g    = EXCLUDED.retry_rate_2g,
         retry_rate_5g    = EXCLUDED.retry_rate_5g,
         rx_errors_2g     = EXCLUDED.rx_errors_2g,
@@ -1850,6 +1866,37 @@ async function pollAllClients(pool, alertHooks) {
 // the API instead.)
 const CLIENT_POLL_INTERVAL = 10 * 60 * 1000;
 
+// Aruba Central RF enrichment — its own, much slower cycle than the 5-min AP
+// poll. See the module-level comment on aruba-central.js's pollRf() for why
+// this MUST stay independent of WIRELESS_POLL_INTERVAL: on the main 5-min
+// cycle, one RF call per AP would cost ~2300 calls/day for 8 APs, unsafe
+// against Central's ~5000/day cap on top of what the main poll already
+// costs. Default 900s (15 min); override with SV_ARUBA_RF_POLL_INTERVAL_SECONDS
+// (see .env.local.example) if a deployment's AP count needs a slower cadence.
+const ARUBA_RF_POLL_INTERVAL = (() => {
+  const envSec = parseInt(process.env.SV_ARUBA_RF_POLL_INTERVAL_SECONDS, 10);
+  return (Number.isFinite(envSec) && envSec > 0 ? envSec : 900) * 1000;
+})();
+
+// Never throws — mirrors pollAll()'s own top-level try/catch/finally shape,
+// with the same re-entrancy guard (a slow cycle must not overlap the next).
+let rfBusy = false;
+async function pollAllArubaCentralRf(pool) {
+  if (rfBusy) return;
+  rfBusy = true;
+  try {
+    const r = await pool.query(
+      `SELECT * FROM wireless_controllers WHERE active = TRUE AND vendor = 'aruba_central'`);
+    for (const c of r.rows) {
+      await apiClients.aruba_central.pollRf(c, pool);
+    }
+  } catch (err) {
+    console.error('[wireless-rf] poll cycle failed:', err.message);
+  } finally {
+    rfBusy = false;
+  }
+}
+
 // Start the wireless collector on a 5-minute cadence (first pass after 20s so
 // the initial NetVault sync + vendor detection has a chance to populate).
 // `alertHooks` (optional — { raise(mac, controllerId, siteId, message), resolve(mac,
@@ -1867,11 +1914,18 @@ function startWirelessCollector(pool, alertHooks) {
   // Client polling on its own (slower) schedule, separate from the AP poll.
   setTimeout(() => pollAllClients(pool, alertHooks), 30 * 1000);
   setInterval(() => pollAllClients(pool, alertHooks), CLIENT_POLL_INTERVAL);
-  log('wireless collector started (APs every 5 min, clients every 10 min)');
+  // Aruba Central RF enrichment on its own (slower still) schedule — see
+  // ARUBA_RF_POLL_INTERVAL above. First pass at 60s so it runs after the
+  // first main AP poll (20s) has had a chance to create the AP rows this
+  // pass enriches.
+  setTimeout(() => pollAllArubaCentralRf(pool), 60 * 1000);
+  setInterval(() => pollAllArubaCentralRf(pool), ARUBA_RF_POLL_INTERVAL);
+  log(`wireless collector started (APs every 5 min, clients every 10 min, aruba_central RF every ${Math.round(ARUBA_RF_POLL_INTERVAL / 60000)} min)`);
 }
 
 module.exports = {
   startWirelessCollector, pollAll, pollController, upsertAp, upsertSsid, upsertRogueAp,
   autoDetectControllers, cleanupBadAutoControllers, cleanupDecimalMacAps, testController, debugWalk,
   walkOid, pollClients, pollAllClients, probeControllerCapabilities, probeControllerCapabilitiesDetailed,
+  pollAllArubaCentralRf,
 };

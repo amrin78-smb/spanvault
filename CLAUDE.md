@@ -219,6 +219,36 @@ against running without persistence, working as intended) until the missed
 call site was fixed. If a future API vendor is added with its own rotating
 credential, the same rule applies to it too.
 
+### Aruba Central RF enrichment runs on its own slower cycle — never fold it into the 5-min AP poll
+Central's bulk AP endpoint (`/monitoring/v2/aps`, the main 5-min poll) carries
+no channel/utilization/tx-power/noise-floor data — only a PER-AP call (`GET
+/monitoring/v1/aps/{serial}`) has it. `collector/wireless/api/aruba-central.js`'s
+`pollRf(controller, pool)` does that per-AP call, but it's driven by its OWN
+timer in `wirelessCollector.js` (`ARUBA_RF_POLL_INTERVAL`, default 900s / 15
+min, overridable via `SV_ARUBA_RF_POLL_INTERVAL_SECONDS`) — **not** the 5-min
+`WIRELESS_POLL_INTERVAL`. On the main cycle this would cost ~2300 calls/day
+for 8 APs; on its own 15-min cycle it's ~770/day. Stacked on the ~890/day the
+main poll + SSID call already cost, only the slower cycle stays safely under
+Central's ~5000/day cap. **Don't "simplify" this back onto the main poll** —
+it looks like harmless deduplication but silently reintroduces the rate-limit
+risk this split exists to avoid. `pollRf` also deliberately does NOT refresh
+the OAuth token itself — it reuses whatever `poll()` last persisted, and skips
+the cycle entirely if the stored token is missing/expired (the next main poll
+refreshes it within 5 min). Adding a second independent refresher here would
+risk two refreshes racing within Central's ~15-min refresh window.
+
+**Corollary — `wirelessCollector.js`'s `upsertAp()` COALESCEs the RF columns
+for exactly this reason.** `radio_2g/5g_channel`, `radio_2g/5g_util_pct`,
+`tx_power_2g/5g`, and `noise_floor_2g/5g` are written as `COALESCE($n,
+existing_column)` in both of `upsertAp()`'s write paths (the `(site_id,
+name)`-matched UPDATE and the `ON CONFLICT` fallback), not a plain overwrite.
+aruba_central's main poll always contributes `null` for these (see `mapAp()`'s
+comment in aruba-central.js) — without the COALESCE, the very next main poll
+(5 min later) would silently wipe out whatever `pollRf`'s 15-min cycle had
+just written. **Don't "clean up" these COALESCEs into plain assignments** —
+same failure shape as the `testController` note above: builds clean, passes
+every static check, and quietly breaks RF enrichment in production.
+
 ### After any change
 Run `npm run build` inside frontend/ to verify before committing.
 Commit message format: `feat: <short description>` or `fix: <short description>`
