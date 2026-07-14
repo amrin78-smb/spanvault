@@ -479,6 +479,15 @@ try {
     Write-Warn "Check logs in $InstallDir\logs\"
 }
 
+# Prefer the actually-configured SERVER_IP from .env.local over the -ServerIp param —
+# now that self-location means -ServerIp is routinely omitted on a routine update, this
+# summary line used to print a blank "http://:3008" instead of the real address.
+$displayIp = $ServerIp
+if (-not $displayIp -and (Test-Path $rootEnv)) {
+    $m = Select-String -Path $rootEnv -Pattern '^\s*SERVER_IP\s*=\s*(.+?)\s*$' | Select-Object -First 1
+    if ($m) { $displayIp = $m.Matches[0].Groups[1].Value }
+}
+if (-not $displayIp) { $displayIp = 'localhost' }
 Write-Host "`nSpanVault update complete." -ForegroundColor Green
-Write-Host "  Frontend:  http://$($ServerIp):3008" -ForegroundColor Green
+Write-Host "  Frontend:  http://$($displayIp):3008" -ForegroundColor Green
 Write-Host "  API:       http://127.0.0.1:3009 (loopback only)" -ForegroundColor Green

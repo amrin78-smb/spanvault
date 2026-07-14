@@ -35,6 +35,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.74.2': [
+    'Fixed the updater\'s final "Update complete" summary printing a blank "http://:3008" for the frontend address whenever -ServerIp wasn\'t passed on the command line — since the self-location fix (1.73.2) means it\'s now routinely omitted on a routine update. It now reads the actually-configured address from .env.local instead.',
+  ],
   '1.74.0': [
     'Fixed: the AP detail drawer on the Wireless page never showed the access point\'s name or status — it was rendering behind the top navigation bar due to a CSS stacking issue, so the "AP Info" section appeared to be the very first thing in the panel. Also fixed the same bug on the wireless client detail panel and the Intelligence tab\'s AP error view.',
     'Fixed: the 24h Noise Floor and Retry Rate charts on the AP detail drawer looked like solid walls of spikes instead of smooth lines — their Y-axis auto-scaled with no padding, so small, normal fluctuations touched the top/bottom of the chart on every reading.',
