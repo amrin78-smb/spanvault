@@ -35,6 +35,11 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.78.1': [
+    'Security fix: a site_admin could read another site\'s wireless client data (bandwidth/RSSI history, connection events) by MAC address or by AP ID, since three wireless API routes -- GET /api/wireless/clients/:mac, /api/wireless/clients/:mac/history, and /api/wireless/aps/:id/clients -- had no site-scoping check at all, unlike the already-scoped client list page. All three now 403 if the client/AP resolves to a site outside the caller\'s assigned sites.',
+    'Redacted 3 more secret columns (Aruba Central\'s OAuth2 client secret, refresh token, and access token) from the admin-only /api/wireless/debug diagnostic dump -- it previously only redacted the older api_key/api_password fields, so it leaked live, rotating Aruba Central credentials in cleartext to any admin who hit it.',
+    'Fixed: an Aruba Central AP whose per-AP RF data hadn\'t been polled yet (new controller, within the first ~15-minute cycle) or whose per-AP RF fetch failed that cycle showed a confident, green "0%" Channel Utilization instead of "N/A" -- on the Access Points tab, the AP detail drawer, and Wireless Insights\' High Utilization list. Same underlying bug class as 1.77.1, re-found in the 5 spots 1.78.0\'s legitimate revert of the old vendor-wide suppression left unguarded against this per-AP timing gap.',
+  ],
   '1.78.0': [
     'Aruba Central APs now report real channel, utilization, tx power, and noise floor data, via a new per-AP RF lookup that runs on its own 15-minute cycle (separate from the main 5-minute poll, to stay within Aruba Central\'s API rate limit).',
     'The Access Points tab, AP detail drawer, Wireless Insights, and Intelligence tab (capacity/co-channel scoring) now show real Channel Utilization for Aruba Central instead of "--" -- reverting the temporary suppression added in 1.77.1 now that the data is genuine. Per-band (2.4/5GHz) client counts remain unavailable for this vendor and stay suppressed.',
@@ -5055,8 +5060,18 @@ app.get('/api/wireless/debug', wrap(async (req, res) => {
   const histCount = await sv.query('SELECT COUNT(*)::int AS n FROM wireless_history');
   const lastPoll = await sv.query('SELECT MAX(updated_at) AS last_poll FROM wireless_aps');
   // Redact controller credentials before returning (never expose secrets, even to admins).
+  // Every secret-bearing column on wireless_controllers must be listed here — this predates
+  // the aruba_central OAuth2 columns (api_client_secret/api_refresh_token/api_access_token)
+  // added in 1.75.0 and was not updated to cover them, which leaked live rotating OAuth
+  // tokens in cleartext through this route. Check this list against schema.sql whenever a
+  // new API-vendor credential column is added.
   const controllerRows = controllers.rows.map((c) => ({
-    ...c, api_key: c.api_key ? '***' : null, api_password: c.api_password ? '***' : null,
+    ...c,
+    api_key: c.api_key ? '***' : null,
+    api_password: c.api_password ? '***' : null,
+    api_client_secret: c.api_client_secret ? '***' : null,
+    api_refresh_token: c.api_refresh_token ? '***' : null,
+    api_access_token: c.api_access_token ? '***' : null,
   }));
   res.json({
     controllers: controllerRows,
@@ -5416,6 +5431,16 @@ app.get('/api/wireless/rogues', wrap(async (req, res) => {
 
 app.get('/api/wireless/aps/:id/clients', wrap(async (req, res) => {
   const id = parseInt(req.params.id, 10);
+
+  // RBAC site scoping — enforced server-side so a site_admin cannot bypass it by
+  // calling the API directly. An unscoped (admin/viewer) caller passes through.
+  const apQ = await sv.query(`SELECT site_id FROM wireless_aps WHERE id = $1`, [id]);
+  if (!apQ.rows[0]) return res.status(404).json({ error: 'AP not found' });
+  const siteFilter = getSiteFilter(req);
+  if (siteFilter && siteFilter.length && !siteFilter.includes(apQ.rows[0].site_id)) {
+    return res.status(403).json({ error: 'forbidden: AP outside your assigned sites' });
+  }
+
   const r = await sv.query(`
     SELECT cl.*, c.name AS controller_name
     FROM wireless_clients cl JOIN wireless_controllers c ON c.id = cl.controller_id
@@ -5428,12 +5453,20 @@ app.get('/api/wireless/aps/:id/clients', wrap(async (req, res) => {
 app.get('/api/wireless/clients/:mac', wrap(async (req, res) => {
   const mac = decodeURIComponent(req.params.mac);
   const cr = await sv.query(`
-    SELECT cl.*, c.name AS controller_name, c.site_name
+    SELECT cl.*, c.name AS controller_name, c.site_name, c.site_id
     FROM wireless_clients cl JOIN wireless_controllers c ON c.id = cl.controller_id
     WHERE cl.mac_address = $1
     ORDER BY cl.last_seen_at DESC LIMIT 1
   `, [mac]);
   if (!cr.rows[0]) return res.status(404).json({ error: 'Client not found' });
+
+  // RBAC site scoping — enforced server-side so a site_admin cannot bypass it by
+  // calling the API directly. An unscoped (admin/viewer) caller passes through.
+  const siteFilter = getSiteFilter(req);
+  if (siteFilter && siteFilter.length && !siteFilter.includes(cr.rows[0].site_id)) {
+    return res.status(403).json({ error: 'forbidden: client outside your assigned sites' });
+  }
+
   const client = { ...cr.rows[0], signal_quality: signalQuality(cr.rows[0].rssi_dbm) };
   const ev = await sv.query(`
     SELECT event_type, from_ap_name, to_ap_name, rssi_dbm, ssid_name, ts
@@ -5467,6 +5500,21 @@ app.get('/api/wireless/clients/:mac', wrap(async (req, res) => {
 app.get('/api/wireless/clients/:mac/history', wrap(async (req, res) => {
   const mac = decodeURIComponent(req.params.mac);
   const range = req.query.range === '7d' ? '7d' : '24h';
+
+  // RBAC site scoping — enforced server-side so a site_admin cannot bypass it by
+  // calling the API directly. An unscoped (admin/viewer) caller passes through.
+  const clQ = await sv.query(`
+    SELECT c.site_id
+    FROM wireless_clients cl JOIN wireless_controllers c ON c.id = cl.controller_id
+    WHERE cl.mac_address = $1
+    ORDER BY cl.last_seen_at DESC LIMIT 1
+  `, [mac]);
+  if (!clQ.rows[0]) return res.status(404).json({ error: 'Client not found' });
+  const siteFilter = getSiteFilter(req);
+  if (siteFilter && siteFilter.length && !siteFilter.includes(clQ.rows[0].site_id)) {
+    return res.status(403).json({ error: 'forbidden: client outside your assigned sites' });
+  }
+
   const r = await sv.query(`
     SELECT ts, rx_bps, tx_bps, rssi_dbm
     FROM wireless_client_history
