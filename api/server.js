@@ -35,6 +35,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.80.1': [
+    'Fixed: the Aruba Central events feed added in 1.80.0 was reading nonexistent field names (id/type instead of the real event_uuid/event_type), so every event silently fell through to a degraded fallback dedup key and every stored row had a blank event type. Corrected against a live-verified sample event; every row inserted since the 1.80.0 deploy is purged on this update so the table starts clean under the fixed mapper.',
+  ],
   '1.80.0': [
     'Aruba Central APs now report real CPU and memory usage (at zero extra API cost, piggybacked on the existing poll) -- shown in the AP detail drawer alongside the already-working Uptime.',
     'New: Aruba Central\'s native event feed (AP up/down, radio changes, auth failures, config changes) is now collected on its own 5-minute cycle and stored for future surfacing -- a separate source from the roam/join/leave events already synthesised from client snapshots, not a replacement.',

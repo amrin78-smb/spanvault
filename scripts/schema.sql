@@ -1270,6 +1270,14 @@ CREATE INDEX IF NOT EXISTS idx_wcentral_events_ctrl_ts
 CREATE INDEX IF NOT EXISTS idx_wcentral_events_ts
   ON wireless_central_events(ts DESC);
 
+-- One-time cleanup: the 1.80.0 mapper read nonexistent `id`/`type` fields
+-- instead of the real `event_uuid`/`event_type` (fixed in 1.80.1), so every
+-- row inserted between those two releases has a null central_event_id and
+-- null type. Deletes them so the table starts clean under the fixed mapper.
+-- Safe to leave permanently: the WHERE clause matches nothing once this has
+-- run once, so this is a harmless no-op on every subsequent schema apply.
+DELETE FROM wireless_central_events WHERE central_event_id IS NULL OR type IS NULL;
+
 -- Latest top-N AP bandwidth snapshot from Aruba Central (GET /monitoring/v2/
 -- aps/bandwidth_usage/topn) -- a "top talkers" widget data source, ONE row
 -- per (controller, AP serial), overwritten each poll rather than accumulated

@@ -982,44 +982,41 @@ function eventArray(body) {
   return [];
 }
 
-// Two-attempt plausibility guard (seconds first — matches from_timestamp/
-// to_timestamp's documented unit on this same endpoint — falling back to
-// milliseconds), same defensive spirit as parseConnectedSince() above, which
-// hit exactly this kind of per-field unit inconsistency on the client
-// endpoint. Returns null (never a fabricated "now") if neither
-// interpretation is plausible — an unparseable timestamp is stored as null.
+// LIVE-VERIFIED against a real GET /monitoring/v2/events object: `timestamp`
+// is epoch MILLISECONDS (e.g. 1784085024000) — a straight `new Date(n)`, no
+// guessing needed (this field's unit is confirmed, unlike the two-attempt
+// heuristic parseConnectedSince() still needs for the client endpoint's
+// last_connection_time). Do NOT read `ts_ms` — LIVE-VERIFIED to be 0 on every
+// real event, a trap field that looks plausible but is always garbage.
 function parseEventTimestamp(raw) {
   if (raw === null || raw === undefined || raw === '') return null;
   const n = Number(raw);
   if (!Number.isFinite(n)) return null;
-  const year2000Ms = Date.UTC(2000, 0, 1);
-  const oneDayFutureMs = Date.now() + 24 * 60 * 60 * 1000;
-  const asSeconds = new Date(n * 1000);
-  if (asSeconds.getTime() >= year2000Ms && asSeconds.getTime() <= oneDayFutureMs) return asSeconds;
-  const asMillis = new Date(n);
-  if (asMillis.getTime() >= year2000Ms && asMillis.getTime() <= oneDayFutureMs) return asMillis;
-  return null;
+  return new Date(n);
 }
 
-// Field names inferred from GET /monitoring/v2/events's documented query
-// parameters (macaddr, bssid, device_mac, hostname, device_type, serial,
-// level, description, type; `sort=-timestamp` confirms the event's own time
-// field is named `timestamp`) — this endpoint's RESPONSE shape, unlike
-// mapAp()/mapClient()'s, was NOT independently confirmed against a live
-// sample event object. Every field is pick()ed against plausible candidate
-// keys and left null if none match, same discipline as the rest of this
-// file. If the mapped output ever looks systematically wrong (e.g. every
-// event has a null description), that's the first place to check.
+// LIVE-VERIFIED against a real GET /monitoring/v2/events object (previous
+// version of this mapper read `id`/`event_id`/`uuid` and a bare `type` —
+// WRONG on both counts, neither field exists on the real response; see the
+// module-level history in git blame if ever curious). Confirmed field names:
+// event_uuid (a real GUID — the ONLY dedup key that matters, see pollEvents()
+// below), event_type (classification, e.g. "Client Roaming Success" — NOT
+// `type`), description, level (e.g. "positive"), device_mac, device_serial,
+// device_type ("CLIENT"/"ACCESS POINT"/etc), hostname, timestamp (epoch ms,
+// see parseEventTimestamp() above). group_name/sites[] are also present but
+// unused — nothing here needs them yet.
 function mapEvent(eventRaw) {
-  const centralEventId = str(pick(eventRaw, ['id', 'event_id', 'uuid']));
-  const ts = parseEventTimestamp(pick(eventRaw, ['timestamp', 'ts', 'event_timestamp', 'occurred_at']));
-  const deviceMac = str(pick(eventRaw, ['device_mac', 'macaddr', 'bssid']));
-  const type = str(pick(eventRaw, ['type', 'event_type']));
-  // Dedup key: prefer Central's own event id (stable, unique) so overlapping
-  // poll windows never double-insert the same event; fall back to a
-  // timestamp+device_mac+type composite when no id is present — only as
-  // reliable as `ts` itself, a known/accepted edge case for an event with
-  // neither a real id nor a parseable timestamp, not solved here.
+  const centralEventId = str(pick(eventRaw, ['event_uuid']));
+  const ts = parseEventTimestamp(pick(eventRaw, ['timestamp']));
+  const deviceMac = str(pick(eventRaw, ['device_mac']));
+  const type = str(pick(eventRaw, ['event_type']));
+  // Dedup key: event_uuid is a real GUID, always present on a genuine Central
+  // event — the fallback composite below exists only for a malformed/partial
+  // response missing it, not the normal case. (The PREVIOUS version of this
+  // mapper read a nonexistent `id` field, so central_event_id was always
+  // null and EVERY event silently fell through to this fallback — which was
+  // itself degraded, since `type` was also misread — see pollEvents()'s
+  // purge-on-deploy comment for the cleanup this required.)
   const dedupeKey = centralEventId
     || `${ts ? ts.toISOString() : 'unknown'}::${deviceMac || 'unknown'}::${type || 'unknown'}`;
   return {
@@ -1028,11 +1025,11 @@ function mapEvent(eventRaw) {
     ts,
     device_type: str(pick(eventRaw, ['device_type'])),
     device_mac: deviceMac,
-    serial: str(pick(eventRaw, ['serial'])),
+    serial: str(pick(eventRaw, ['device_serial'])),
     hostname: str(pick(eventRaw, ['hostname'])),
     level: str(pick(eventRaw, ['level'])),
     type,
-    description: str(pick(eventRaw, ['description', 'message'])),
+    description: str(pick(eventRaw, ['description'])),
   };
 }
 
