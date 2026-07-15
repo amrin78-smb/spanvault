@@ -35,6 +35,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.79.2': [
+    'Fixed: Aruba Central clients were entirely missing from the Clients tab\'s default view (though correctly counted in the Total Clients card) whenever total clients across all controllers exceeded the 500-row page cap. Root cause: the query sorted by signal strength with weakest-last, and this vendor\'s API never reports signal strength at all, so its clients sorted as one solid block past the cutoff. The query now guarantees every controller a fair, round-robin share of the row budget instead of one global sort -- verified against production data.',
+  ],
   '1.79.1': [
     'Aruba Central APs now show real Uptime (was always "--") -- added show_resource_details=true to the existing AP poll call, at no extra API cost. The same call also now returns per-AP CPU/memory and mesh info from Central, which isn\'t mapped yet since there\'s no wireless_aps column or UI for per-AP CPU/Mem today (only per-controller); that\'s a separate follow-up if wanted.',
   ],
@@ -5301,12 +5304,35 @@ app.get('/api/wireless/clients', wrap(async (req, res) => {
   const sc = siteFilterClause(getSiteFilter(req), params, 'c.site_id');
   if (sc) where.push(sc);
   const limit = Math.min(500, Math.max(1, parseInt(req.query.limit, 10) || 50));
+  // ROW_NUMBER() PARTITION BY controller_id, then ORDER BY that rank FIRST in
+  // the outer query — this interleaves controllers round-robin (every
+  // controller's #1 client, then every controller's #2, ...) before LIMIT
+  // cuts off, instead of one global severity sort + LIMIT. That distinction
+  // matters when total clients exceed the cap AND one controller's clients
+  // all share the same sort-key value: aruba_central's API never reports
+  // rssi_dbm (see aruba-central.js's mapClient()), so under a single global
+  // `ORDER BY rssi_dbm ASC NULLS LAST` its clients sort as one solid block at
+  // the very bottom — once the OTHER controllers' real-rssi clients alone
+  // exceed the limit, aruba_central's clients never appear in the result at
+  // all (not merely under-represented — zero rows), so the frontend's
+  // groupByController() renders no accordion section for that controller at
+  // all, even though /api/wireless/clients/summary (a separate, uncapped
+  // query) correctly counts them in the Total Clients card. Round-robin
+  // guarantees every controller with clients gets a fair share of the row
+  // budget regardless of what its clients' sort-key values look like.
   const r = await sv.query(`
-    SELECT cl.*, c.name AS controller_name, c.site_name
-    FROM wireless_clients cl
-    JOIN wireless_controllers c ON c.id = cl.controller_id
-    ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
-    ORDER BY cl.is_problem DESC, cl.rssi_dbm ASC NULLS LAST
+    SELECT sub.*
+    FROM (
+      SELECT cl.*, c.name AS controller_name, c.site_name,
+             ROW_NUMBER() OVER (
+               PARTITION BY cl.controller_id
+               ORDER BY cl.is_problem DESC, cl.rssi_dbm ASC NULLS LAST
+             ) AS rn
+      FROM wireless_clients cl
+      JOIN wireless_controllers c ON c.id = cl.controller_id
+      ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+    ) sub
+    ORDER BY sub.rn ASC, sub.is_problem DESC, sub.rssi_dbm ASC NULLS LAST
     LIMIT ${limit}
   `, params);
   res.json(r.rows.map((row) => ({ ...row, signal_quality: signalQuality(row.rssi_dbm) })));
