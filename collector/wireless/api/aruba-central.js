@@ -185,12 +185,20 @@ function apArray(body) {
 function apsUrl(controller) {
   const base = String(controller.controller_url).replace(/\/+$/, '') + '/monitoring/v2/aps';
   const group = str(controller.api_group_filter);
-  // calculate_client_count / calculate_ssid_count are UNCONDITIONAL (always
-  // sent) — LIVE-VERIFIED to add two AP-level fields (client_count,
-  // ssid_count) at zero extra API cost on this same call. `group` keeps the
+  // calculate_client_count / calculate_ssid_count / show_resource_details are
+  // UNCONDITIONAL (always sent) — LIVE-VERIFIED to add extra AP-level fields
+  // (client_count, ssid_count, and — per show_resource_details — uptime,
+  // cpu_utilization, mem_total, mem_free, mesh_role, mode) at zero extra API
+  // cost on this same call. Only `uptime` is currently mapped below (see
+  // mapAp()) — it has an existing wireless_aps.uptime_seconds column and
+  // existing UI that already renders it. cpu_utilization/mem_total/mem_free/
+  // mesh_role/mode have no wireless_aps columns or UI surface today (per-AP
+  // CPU/Mem doesn't exist anywhere in the frontend, only per-CONTROLLER does)
+  // — deliberately not mapped here; that's a separate, slightly bigger
+  // addition (schema + UI) if ever wanted, not a silent gap. `group` keeps the
   // existing conditional-omission rule: omitted entirely when
   // api_group_filter is blank, never sent as `group=`.
-  const params = ['calculate_client_count=true', 'calculate_ssid_count=true'];
+  const params = ['calculate_client_count=true', 'calculate_ssid_count=true', 'show_resource_details=true'];
   if (group) params.push('group=' + encodeURIComponent(group));
   return base + '?' + params.join('&');
 }
@@ -306,29 +314,26 @@ async function refreshAndPersist(controller, pool) {
 // Map one Central AP object + its radios[] into the shared wireless_aps
 // contract. Returns { ap, radios }.
 //
-// LIVE-VERIFIED (curl'd against production GET /monitoring/v2/aps): this
-// endpoint's AP objects/radios[] carry ONLY: name, macaddr, model,
-// ip_address, status, firmware_version, serial, plus (with
-// calculate_client_count=true / calculate_ssid_count=true, see apsUrl())
-// client_count and ssid_count — plus, per radio: band, index, macaddr,
-// radio_name, radio_type, spatial_stream, status. It does NOT return
-// channel, utilization, tx power, uptime, or any per-band client breakdown
-// at any level. Every field below that isn't backed by one of those
-// confirmed keys is set to an explicit `null` rather than a guessed/
-// fabricated value.
+// LIVE-VERIFIED (curl'd against production GET /monitoring/v2/aps): with
+// calculate_client_count=true / calculate_ssid_count=true / show_resource_
+// details=true (see apsUrl()), this endpoint's AP objects carry: name,
+// macaddr, model, ip_address, status, firmware_version, serial, client_count,
+// ssid_count, uptime (plus cpu_utilization/mem_total/mem_free/mesh_role/mode,
+// not currently mapped — see apsUrl()'s comment for why), and per radio:
+// band, index, macaddr, radio_name, radio_type, spatial_stream, status. It
+// does NOT return channel, utilization, tx power, or any per-band client
+// breakdown at any level — those are OUT OF SCOPE for this bulk endpoint no
+// matter which flags are passed (LIVE-VERIFIED separately: GET /monitoring/
+// v2/aps?fields=radios returns radios[] with ONLY band, index, macaddr,
+// radio_name, radio_type, spatial_stream, status). Every field below that
+// isn't backed by one of those confirmed keys is set to an explicit `null`
+// rather than a guessed/fabricated value.
 //
-// RF data (channel/utilization/noise_floor/tx_power) is OUT OF SCOPE for
-// this bulk endpoint — LIVE-VERIFIED: GET /monitoring/v2/aps?fields=radios
-// returns radios[] with ONLY band, index, macaddr, radio_name, radio_type,
-// spatial_stream, status; channel/utilization/noise_floor/tx_power are
-// marked optional in Central's schema and are NOT populated for these APs.
-// The only real RF source found is GET /monitoring/v3/aps/{serial}/
-// rf_summary — but that's PER-AP: 8 APs x 288 polls/day (5-min interval)
-// is ~2300 calls/day against Central's ~5000/day cap, on top of everything
-// else this integration already calls. If this is ever added, it MUST run
-// on its own slower cycle (15-30 min), never the main poll interval. Future
-// phase — not built here, this comment exists so a future implementer
-// doesn't have to re-derive the finding.
+// RF data (channel/utilization/noise_floor/tx_power) comes from a SEPARATE,
+// PER-AP endpoint instead — see pollRf() further down this file (its own
+// slower ~15-min cycle, not the main poll interval — 8 APs x 1 call/15min
+// stays well under Central's ~5000/day cap; the same data on the 5-min main
+// cycle would not).
 function mapAp(apRaw) {
   const radios = Array.isArray(apRaw.radios) ? apRaw.radios : [];
   const out = {
@@ -341,9 +346,11 @@ function mapAp(apRaw) {
     status: mapStatus(pick(apRaw, ['status'])),
     firmware_version: str(pick(apRaw, ['firmware_version'])),
     serial_number: str(pick(apRaw, ['serial'])),
-    // None of these are present anywhere in the verified /monitoring/v2/aps
-    // response (per-AP or per-radio) — explicit null, never a computed/
-    // fabricated value.
+    // Channel/util/tx power are NOT present on this bulk endpoint even with
+    // show_resource_details=true (that flag adds uptime/cpu/mem/mesh info,
+    // not RF detail) — explicit null here, never a computed/fabricated
+    // value. Real values for these come from the separate pollRf() pass
+    // below (its own slower cycle, see the RF-enrichment section).
     radio_2g_channel: null,
     radio_5g_channel: null,
     radio_6g_channel: null,
@@ -351,7 +358,12 @@ function mapAp(apRaw) {
     radio_5g_util_pct: null,
     tx_power_2g: null,
     tx_power_5g: null,
-    uptime_seconds: null,
+    // uptime: LIVE-VERIFIED — show_resource_details=true (see apsUrl()) adds
+    // an AP-level `uptime` field at zero extra API cost. Unit not spelled out
+    // in Central's schema; treated as seconds (matches this column's name and
+    // every other vendor's convention) via num() — real integer when present,
+    // explicit null (not 0) if the key is ever absent.
+    uptime_seconds: num(pick(apRaw, ['uptime'])),
     // clients_total: LIVE-VERIFIED — passing calculate_client_count=true on
     // GET /monitoring/v2/aps (see apsUrl()) adds an AP-level `client_count`
     // integer field at zero extra API cost. Mapped via num() below: real

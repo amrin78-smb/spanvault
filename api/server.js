@@ -35,6 +35,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.79.1': [
+    'Aruba Central APs now show real Uptime (was always "--") -- added show_resource_details=true to the existing AP poll call, at no extra API cost. The same call also now returns per-AP CPU/memory and mesh info from Central, which isn\'t mapped yet since there\'s no wireless_aps column or UI for per-AP CPU/Mem today (only per-controller); that\'s a separate follow-up if wanted.',
+  ],
   '1.79.0': [
     'Aruba Central now collects wireless client details (hostname, AP, SSID, band, channel, connected-since, OS type, VLAN, auth type) via a new bulk API call each poll cycle -- joining the existing SNMP-based client tracking used by other controllers. Per-client signal strength (RSSI) and live tx/rx rate are not available from this vendor\'s API and stay blank.',
     'Refactored the wireless client-polling pipeline to separate data acquisition (vendor-specific) from event detection/alerting/upsert (shared, one copy for every vendor) -- the existing SNMP client path is functionally unchanged, just reorganized so a new source could be added without duplicating the roam/join/leave logic.',
