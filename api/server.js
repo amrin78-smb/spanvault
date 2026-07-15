@@ -35,6 +35,10 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.80.2': [
+    'Hardening: the wireless collector now logs a warning whenever an Aruba Central client\'s AP association can\'t be matched to a known AP, instead of silently leaving it unresolved. This catches a whole class of "one field name wrong" bug early (this integration has shipped a few of those already) rather than only noticing it once someone asks why roam events aren\'t firing.',
+    'Corrected an internal code comment that inaccurately described Aruba Central\'s client polling as sharing the same 5-minute cycle as AP polling — it actually runs on its own independent 10-minute timer. No behavior change; this was a documentation-only mix-up that could have misled future work in that area.',
+  ],
   '1.80.1': [
     'Fixed: the Aruba Central events feed added in 1.80.0 was reading nonexistent field names (id/type instead of the real event_uuid/event_type), so every event silently fell through to a degraded fallback dedup key and every stored row had a blank event type. Corrected against a live-verified sample event; every row inserted since the 1.80.0 deploy is purged on this update so the table starts clean under the fixed mapper.',
   ],

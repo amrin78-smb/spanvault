@@ -689,8 +689,18 @@ async function pollRf(controller, pool) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// CLIENT ACQUISITION — bulk call, MAIN 5-min poll cycle (not a separate
-// timer like RF enrichment above). Read before editing.
+// CLIENT ACQUISITION. Read before editing.
+//
+// CORRECTION (2026-07-15): this section previously claimed fetchClients() runs
+// "as part of the SAME main poll cycle as poll() itself, right after AP
+// acquisition." That was never true of the actual wiring: wirelessCollector.js
+// calls this via pollClients()/pollAllClients(), which run on their OWN
+// independent CLIENT_POLL_INTERVAL timer (10 min), decoupled from poll()'s
+// 5-min WIRELESS_POLL_INTERVAL — architecturally the same shape as pollRf()'s
+// independent timer, which this comment used to explicitly contrast itself
+// against. Because the two timers are decoupled, poll() having refreshed the
+// token on ITS most recent cycle does not guarantee the token is still valid
+// by the time a given client-poll cycle runs.
 //
 // LIVE-VERIFIED against production Central (not assumed from Swagger docs):
 //   GET /monitoring/v1/clients/wireless?group=<g>&limit=1000
@@ -700,18 +710,19 @@ async function pollRf(controller, pool) {
 // clients), so pagination is not exercised today, but fetchClients() below
 // still implements the offset loop defensively for a larger future fleet.
 //
-// fetchClients() deliberately does NOT refresh the OAuth token — same rule
-// as pollRf() above: exactly one place in this file (poll()) owns the
-// PERSIST-FIRST-USE-SECOND refresh contract. Unlike pollRf() (which has its
-// own independent timer and therefore tolerates/skips a missing-or-expired
-// token gracefully), fetchClients() is called as part of the SAME main poll
-// cycle as poll() itself, right after AP acquisition — by the time it runs,
-// poll() has already guaranteed a valid, possibly-just-refreshed
-// controller.api_access_token exists for this cycle. So a missing token
-// here is treated as a real error (thrown), not a "skip this cycle"
-// no-op — don't "fix" this to silently return [] on a missing token like
-// pollRf() does; that's the right behavior for pollRf()'s independent timer,
-// not for this call site.
+// fetchClients() still deliberately does NOT refresh the OAuth token itself —
+// same rule as pollRf() above: exactly one place in this file (poll()) owns
+// the PERSIST-FIRST-USE-SECOND refresh contract. A missing/expired token here
+// is thrown, not silently skipped — this is NOT because the token is
+// guaranteed fresh (see the correction above), but because the caller
+// (pollClients() in wirelessCollector.js) already wraps this call in a
+// try/catch that logs a console.warn and skips just that one poll cycle —
+// functionally equivalent to pollRf()'s graceful skip, just implemented at
+// the call site instead of inside this function. The next main poll (within
+// 5 min) refreshes the token, so a stale-token cycle here self-heals within
+// one client-poll interval and has not been observed to cause a real gap in
+// practice. If this call site's try/catch is ever removed, revisit whether
+// fetchClients() should skip-and-return-[] internally instead of throwing.
 // ─────────────────────────────────────────────────────────────────────────
 
 // Same conditional-omission style as apsUrl()/networksUrl(): `group` is only

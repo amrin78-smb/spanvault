@@ -1619,11 +1619,36 @@ async function processClientSnapshot(pool, controller, apList, clients, alertHoo
   // is the fallback for a source that doesn't know the AP's display name.
   const apByName = new Map(apList.map((a) => [a.name, a]));
   const apBySerial = new Map(apList.filter((a) => a.serial_number).map((a) => [a.serial_number, a]));
+  // Clients that arrive with a name/serial but still fail to resolve are a signal
+  // worth surfacing, not silently swallowing: for a non-SNMP source (aruba_central
+  // today), ap_name/ap_serial are unverified-against-live-data field-name guesses
+  // (see aruba-central.js's mapClient() header comment) — if either field name is
+  // wrong, EVERY client from that source permanently fails resolution here with no
+  // other symptom (no error, just ap_id staying null forever and roam events never
+  // firing for that vendor). One aggregate warning per poll — not per-client — so a
+  // systematic mapping bug is visible without spamming the log for ordinary cases
+  // like a genuinely offline/decommissioned AP.
+  let unresolvedWithHint = 0;
+  let unresolvedExample = null;
   for (const client of clients) {
     if (client.ap_id != null) continue;
     const matched = (client.ap_name && apByName.get(client.ap_name))
       || (client.ap_serial && apBySerial.get(client.ap_serial));
-    if (matched) client.ap_id = matched.id;
+    if (matched) {
+      client.ap_id = matched.id;
+    } else if (client.ap_name || client.ap_serial) {
+      unresolvedWithHint++;
+      if (!unresolvedExample) unresolvedExample = { mac: client.mac_address, ap_name: client.ap_name, ap_serial: client.ap_serial };
+    }
+  }
+  if (unresolvedWithHint > 0) {
+    console.warn(
+      `[wireless] ${controller.name}: ${unresolvedWithHint} client(s) had an ap_name/ap_serial ` +
+      `that matched no known AP (e.g. ${JSON.stringify(unresolvedExample)}) — ap_id stays null for ` +
+      'these, so roam-event detection cannot fire for them. If this is happening for EVERY client ' +
+      'from a given controller, suspect a wrong field name in that vendor\'s client mapper rather ' +
+      'than genuinely offline APs.'
+    );
   }
 
   // Previous snapshot for roaming/leave detection. Also carries the persisted
