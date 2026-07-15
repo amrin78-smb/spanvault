@@ -222,15 +222,14 @@ function apsUrl(controller) {
   // UNCONDITIONAL (always sent) — LIVE-VERIFIED to add extra AP-level fields
   // (client_count, ssid_count, and — per show_resource_details — uptime,
   // cpu_utilization, mem_total, mem_free, mesh_role, mode) at zero extra API
-  // cost on this same call. Only `uptime` is currently mapped below (see
-  // mapAp()) — it has an existing wireless_aps.uptime_seconds column and
-  // existing UI that already renders it. cpu_utilization/mem_total/mem_free/
-  // mesh_role/mode have no wireless_aps columns or UI surface today (per-AP
-  // CPU/Mem doesn't exist anywhere in the frontend, only per-CONTROLLER does)
-  // — deliberately not mapped here; that's a separate, slightly bigger
-  // addition (schema + UI) if ever wanted, not a silent gap. `group` keeps the
-  // existing conditional-omission rule: omitted entirely when
-  // api_group_filter is blank, never sent as `group=`.
+  // cost on this same call. uptime/cpu_utilization/mem_total/mem_free are
+  // mapped below (see mapAp()) onto wireless_aps.uptime_seconds/cpu_pct/
+  // mem_total/mem_free. mesh_role/mode have no wireless_aps columns or UI
+  // surface and are NOT mapped — deliberately, not a silent gap: neither has
+  // an obvious destination column, and adding one without a concrete use
+  // wouldn't be worth the schema churn. `group` keeps the existing
+  // conditional-omission rule: omitted entirely when api_group_filter is
+  // blank, never sent as `group=`.
   const params = ['calculate_client_count=true', 'calculate_ssid_count=true', 'show_resource_details=true'];
   if (group) params.push('group=' + encodeURIComponent(group));
   return base + '?' + params.join('&');
@@ -351,9 +350,9 @@ async function refreshAndPersist(controller, pool) {
 // calculate_client_count=true / calculate_ssid_count=true / show_resource_
 // details=true (see apsUrl()), this endpoint's AP objects carry: name,
 // macaddr, model, ip_address, status, firmware_version, serial, client_count,
-// ssid_count, uptime (plus cpu_utilization/mem_total/mem_free/mesh_role/mode,
-// not currently mapped — see apsUrl()'s comment for why), and per radio:
-// band, index, macaddr, radio_name, radio_type, spatial_stream, status. It
+// ssid_count, uptime, cpu_utilization, mem_total, mem_free (plus mesh_role/
+// mode, not mapped — see apsUrl()'s comment for why), and per radio: band,
+// index, macaddr, radio_name, radio_type, spatial_stream, status. It
 // does NOT return channel, utilization, tx power, or any per-band client
 // breakdown at any level — those are OUT OF SCOPE for this bulk endpoint no
 // matter which flags are passed (LIVE-VERIFIED separately: GET /monitoring/
@@ -397,6 +396,15 @@ function mapAp(apRaw) {
     // every other vendor's convention) via num() — real integer when present,
     // explicit null (not 0) if the key is ever absent.
     uptime_seconds: num(pick(apRaw, ['uptime'])),
+    // cpu_pct/mem_total/mem_free: LIVE-VERIFIED — also added by
+    // show_resource_details=true, same call, zero extra cost. cpu_utilization
+    // maps straight to cpu_pct (matches the wireless_controllers.cpu_pct
+    // naming convention). mem_total/mem_free are stored as the raw values
+    // Central reports (unit not converted) rather than a computed mem_pct —
+    // see the wireless_aps.mem_total/mem_free column comments in schema.sql.
+    cpu_pct: num(pick(apRaw, ['cpu_utilization'])),
+    mem_total: num(pick(apRaw, ['mem_total'])),
+    mem_free: num(pick(apRaw, ['mem_free'])),
     // clients_total: LIVE-VERIFIED — passing calculate_client_count=true on
     // GET /monitoring/v2/aps (see apsUrl()) adds an AP-level `client_count`
     // integer field at zero extra API cost. Mapped via num() below: real
@@ -891,10 +899,341 @@ async function fetchClients(controller, pool) {
   return rawClients.map(mapClient).filter((c) => c.mac_address);
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// TIME WINDOWS — shared by the events feed and top-N bandwidth below.
+// CRITICAL — READ BEFORE EDITING.
+//
+// Central's time-series endpoints (GET /monitoring/v2/events, GET
+// /monitoring/v2/aps/bandwidth_usage/topn) take from_timestamp/to_timestamp
+// as epoch SECONDS in UTC, and REJECT any to_timestamp in the future
+// ("to_timestamp cannot be greater than current time", error 0002).
+//
+// Date.now() is ALREADY UTC (epoch milliseconds since 1970 UTC, independent
+// of the server's local timezone) — Math.floor(Date.now() / 1000) is
+// correct and is the ONLY way this function builds a timestamp. NEVER derive
+// one from a Date object's LOCAL-time accessors (getHours(), toString(),
+// toLocaleString(), etc.) or from any local-time library call — this exact
+// mistake costs real debugging time: a local-time epoch is 7 hours AHEAD for
+// this tenant (UTC+7), so to_timestamp lands in Central's future and every
+// call 400s with error 0002.
+//
+// `marginSec` is subtracted from "now" before it becomes to_timestamp, to
+// absorb client/server clock skew — without it, even a few seconds of drift
+// alone can trigger the same rejection.
+function timeWindow(windowSec, marginSec) {
+  const nowSec = Math.floor(Date.now() / 1000);
+  const margin = Number.isFinite(marginSec) && marginSec >= 0 ? marginSec : 300;
+  const toTimestamp = nowSec - margin;
+  const fromTimestamp = toTimestamp - windowSec;
+  return { from_timestamp: fromTimestamp, to_timestamp: toTimestamp };
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// EVENTS FEED — independent, own cycle. Read before editing.
+//
+// VERIFIED endpoint: GET /monitoring/v2/events. This is Central's NATIVE
+// event stream (AP up/down, radio changes, client auth failures, config
+// events) — a DIFFERENT source from the roam/join/leave/low_signal events
+// processClientSnapshot() in wirelessCollector.js already SYNTHESISES from
+// client-snapshot diffs. This section ADDS a source; it does not touch that
+// synthesis.
+//
+// Same token-reuse rule as pollRf(): this runs on its OWN independent timer
+// (SV_ARUBA_EVENTS_POLL_INTERVAL_SECONDS in wirelessCollector.js, default
+// 300s), so it reuses whatever token poll() most recently persisted and
+// never refreshes itself — skip the cycle entirely on a missing/expired
+// token rather than risk a second refresh racing the main poll's within
+// Central's ~15-min refresh window.
+// ─────────────────────────────────────────────────────────────────────────
+
+function eventsUrl(controller, window, offset) {
+  const base = String(controller.controller_url).replace(/\/+$/, '') + '/monitoring/v2/events';
+  const group = str(controller.api_group_filter);
+  const params = [
+    'from_timestamp=' + window.from_timestamp,
+    'to_timestamp=' + window.to_timestamp,
+    'sort=-timestamp',
+  ];
+  if (group) params.push('group=' + encodeURIComponent(group));
+  if (offset > 0) params.push('offset=' + offset);
+  return base + '?' + params.join('&');
+}
+
+// Same header rules as fetchAps()/fetchClientsPage(). Safe to log the full
+// URL — no secrets in eventsUrl()'s params.
+async function fetchEventsPage(controller, accessToken, window, offset) {
+  const url = eventsUrl(controller, window, offset);
+  console.log('[wireless] aruba_central: GET', url);
+  const headers = {
+    'Authorization': 'Bearer ' + accessToken,
+    'Content-Type': 'application/json',
+  };
+  const tenantId = str(controller.api_customer_id);
+  if (tenantId) headers.TenantID = tenantId;
+  return fetchJsonVerbose(url, { method: 'GET', headers }, TIMEOUT_MS, 'events fetch');
+}
+
+// Tolerant extraction, mirroring apArray()/clientArray()'s exact pattern.
+function eventArray(body) {
+  if (Array.isArray(body)) return body;
+  if (!body || typeof body !== 'object') return [];
+  if (Array.isArray(body.events)) return body.events;
+  if (Array.isArray(body.data)) return body.data;
+  return [];
+}
+
+// Two-attempt plausibility guard (seconds first — matches from_timestamp/
+// to_timestamp's documented unit on this same endpoint — falling back to
+// milliseconds), same defensive spirit as parseConnectedSince() above, which
+// hit exactly this kind of per-field unit inconsistency on the client
+// endpoint. Returns null (never a fabricated "now") if neither
+// interpretation is plausible — an unparseable timestamp is stored as null.
+function parseEventTimestamp(raw) {
+  if (raw === null || raw === undefined || raw === '') return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return null;
+  const year2000Ms = Date.UTC(2000, 0, 1);
+  const oneDayFutureMs = Date.now() + 24 * 60 * 60 * 1000;
+  const asSeconds = new Date(n * 1000);
+  if (asSeconds.getTime() >= year2000Ms && asSeconds.getTime() <= oneDayFutureMs) return asSeconds;
+  const asMillis = new Date(n);
+  if (asMillis.getTime() >= year2000Ms && asMillis.getTime() <= oneDayFutureMs) return asMillis;
+  return null;
+}
+
+// Field names inferred from GET /monitoring/v2/events's documented query
+// parameters (macaddr, bssid, device_mac, hostname, device_type, serial,
+// level, description, type; `sort=-timestamp` confirms the event's own time
+// field is named `timestamp`) — this endpoint's RESPONSE shape, unlike
+// mapAp()/mapClient()'s, was NOT independently confirmed against a live
+// sample event object. Every field is pick()ed against plausible candidate
+// keys and left null if none match, same discipline as the rest of this
+// file. If the mapped output ever looks systematically wrong (e.g. every
+// event has a null description), that's the first place to check.
+function mapEvent(eventRaw) {
+  const centralEventId = str(pick(eventRaw, ['id', 'event_id', 'uuid']));
+  const ts = parseEventTimestamp(pick(eventRaw, ['timestamp', 'ts', 'event_timestamp', 'occurred_at']));
+  const deviceMac = str(pick(eventRaw, ['device_mac', 'macaddr', 'bssid']));
+  const type = str(pick(eventRaw, ['type', 'event_type']));
+  // Dedup key: prefer Central's own event id (stable, unique) so overlapping
+  // poll windows never double-insert the same event; fall back to a
+  // timestamp+device_mac+type composite when no id is present — only as
+  // reliable as `ts` itself, a known/accepted edge case for an event with
+  // neither a real id nor a parseable timestamp, not solved here.
+  const dedupeKey = centralEventId
+    || `${ts ? ts.toISOString() : 'unknown'}::${deviceMac || 'unknown'}::${type || 'unknown'}`;
+  return {
+    central_event_id: centralEventId,
+    dedupe_key: dedupeKey,
+    ts,
+    device_type: str(pick(eventRaw, ['device_type'])),
+    device_mac: deviceMac,
+    serial: str(pick(eventRaw, ['serial'])),
+    hostname: str(pick(eventRaw, ['hostname'])),
+    level: str(pick(eventRaw, ['level'])),
+    type,
+    description: str(pick(eventRaw, ['description', 'message'])),
+  };
+}
+
+// Runaway-pagination backstop — a misbehaving response that always reports
+// count < total would otherwise loop indefinitely. 20 pages is generous
+// headroom over anything this integration's event volume should produce in
+// one poll window.
+const EVENTS_MAX_PAGES = 20;
+
+// One controller's events pass. Never throws — mirrors pollRf()'s
+// never-throws contract; a failure here must not affect AP/RF/client
+// polling. windowSec/marginSec let the caller (wirelessCollector.js) control
+// the poll window + overlap without this function needing to know about
+// timers.
+async function pollEvents(controller, pool, windowSec, marginSec) {
+  try {
+    const accessToken = controller.api_access_token;
+    const expiresAt = controller.api_token_expires_at ? new Date(controller.api_token_expires_at).getTime() : NaN;
+    if (!accessToken || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+      console.warn(
+        `[wireless-events] aruba_central "${controller.name}": no valid stored access token — ` +
+        'skipping this events cycle (the next main poll will refresh it)'
+      );
+      return;
+    }
+
+    const window = timeWindow(windowSec, marginSec);
+    const rawEvents = [];
+    let offset = 0;
+    for (let page = 0; page < EVENTS_MAX_PAGES; page++) {
+      const body = await fetchEventsPage(controller, accessToken, window, offset);
+      const pageEvents = eventArray(body);
+      rawEvents.push(...pageEvents);
+
+      const count = num(pick(body, ['count']));
+      const total = num(pick(body, ['total']));
+      if (count === null || total === null || count >= total || pageEvents.length === 0) break;
+      offset += pageEvents.length;
+    }
+
+    for (const eventRaw of rawEvents) {
+      const ev = mapEvent(eventRaw);
+      try {
+        await pool.query(
+          `INSERT INTO wireless_central_events
+             (controller_id, central_event_id, dedupe_key, ts, device_type,
+              device_mac, serial, hostname, level, type, description)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+           ON CONFLICT (controller_id, dedupe_key) DO NOTHING`,
+          [controller.id, ev.central_event_id, ev.dedupe_key, ev.ts, ev.device_type,
+            ev.device_mac, ev.serial, ev.hostname, ev.level, ev.type, ev.description]);
+      } catch (e) {
+        // Per-event isolation: one bad row must never abort the rest of this
+        // controller's events.
+        console.warn(
+          `[wireless-events] aruba_central "${controller.name}" event insert failed: ` +
+          (e && e.message ? e.message : String(e))
+        );
+      }
+    }
+
+    if (rawEvents.length) {
+      console.log(`[wireless-events] aruba_central "${controller.name}": ${rawEvents.length} event(s) fetched`);
+    }
+  } catch (e) {
+    console.error(
+      `[wireless-events] aruba_central "${controller.name}" events cycle failed:`,
+      e && e.message ? e.message : String(e)
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// TOP-N AP BANDWIDTH — independent cycle. Read before editing.
+//
+// VERIFIED returning real data: GET /monitoring/v2/aps/bandwidth_usage/topn
+// -> { count, aps: [{ name, serial, rx_data_bytes, tx_data_bytes }] }. ONE
+// bulk call (no per-AP fan-out) — cheap. This is the endpoint that surfaced
+// the local-time-vs-UTC timestamp bug during verification, so it is the
+// canonical test that timeWindow() above is being used correctly: a wrong
+// (local-time) to_timestamp 400s here immediately with Central's
+// "to_timestamp cannot be greater than current time" (error 0002).
+// ─────────────────────────────────────────────────────────────────────────
+
+function topBandwidthUrl(controller, window, count) {
+  const base = String(controller.controller_url).replace(/\/+$/, '') + '/monitoring/v2/aps/bandwidth_usage/topn';
+  const group = str(controller.api_group_filter);
+  const params = [
+    'count=' + count,
+    'from_timestamp=' + window.from_timestamp,
+    'to_timestamp=' + window.to_timestamp,
+  ];
+  if (group) params.push('group=' + encodeURIComponent(group));
+  return base + '?' + params.join('&');
+}
+
+async function fetchTopBandwidth(controller, accessToken, window, count) {
+  const url = topBandwidthUrl(controller, window, count);
+  console.log('[wireless] aruba_central: GET', url);
+  const headers = {
+    'Authorization': 'Bearer ' + accessToken,
+    'Content-Type': 'application/json',
+  };
+  const tenantId = str(controller.api_customer_id);
+  if (tenantId) headers.TenantID = tenantId;
+  return fetchJsonVerbose(url, { method: 'GET', headers }, TIMEOUT_MS, 'top bandwidth fetch');
+}
+
+// Tolerant extraction, mirroring apArray()/clientArray()'s pattern.
+function topBandwidthArray(body) {
+  if (Array.isArray(body)) return body;
+  if (!body || typeof body !== 'object') return [];
+  if (Array.isArray(body.aps)) return body.aps;
+  if (Array.isArray(body.data)) return body.data;
+  return [];
+}
+
+// LIVE-VERIFIED response shape: { name, serial, rx_data_bytes, tx_data_bytes }.
+function mapTopBandwidthAp(raw) {
+  return {
+    ap_name: str(pick(raw, ['name'])),
+    serial: str(pick(raw, ['serial'])),
+    rx_bytes: num(pick(raw, ['rx_data_bytes'])),
+    tx_bytes: num(pick(raw, ['tx_data_bytes'])),
+  };
+}
+
+// One controller's top-N bandwidth pass. Never throws, same contract as
+// pollRf()/pollEvents() above.
+async function pollTopBandwidth(controller, pool, windowSec, marginSec, count) {
+  try {
+    const accessToken = controller.api_access_token;
+    const expiresAt = controller.api_token_expires_at ? new Date(controller.api_token_expires_at).getTime() : NaN;
+    if (!accessToken || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+      console.warn(
+        `[wireless-bw] aruba_central "${controller.name}": no valid stored access token — ` +
+        'skipping this bandwidth cycle (the next main poll will refresh it)'
+      );
+      return;
+    }
+
+    const window = timeWindow(windowSec, marginSec);
+    const body = await fetchTopBandwidth(controller, accessToken, window, count);
+    const topAps = topBandwidthArray(body).map(mapTopBandwidthAp).filter((a) => a.serial);
+
+    // Resolve ap_id by serial, same join strategy as the RF-enrichment pass.
+    const apRows = (await pool.query(
+      `SELECT id, serial_number FROM wireless_aps WHERE controller_id = $1 AND serial_number IS NOT NULL`,
+      [controller.id]
+    )).rows;
+    const apBySerial = new Map(apRows.map((a) => [a.serial_number, a.id]));
+
+    for (const ap of topAps) {
+      try {
+        await pool.query(
+          `INSERT INTO wireless_ap_bandwidth_topn
+             (controller_id, ap_id, ap_name, serial, rx_bytes, tx_bytes, window_start, window_end, updated_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())
+           ON CONFLICT (controller_id, serial) DO UPDATE SET
+             ap_id        = EXCLUDED.ap_id,
+             ap_name      = EXCLUDED.ap_name,
+             rx_bytes     = EXCLUDED.rx_bytes,
+             tx_bytes     = EXCLUDED.tx_bytes,
+             window_start = EXCLUDED.window_start,
+             window_end   = EXCLUDED.window_end,
+             updated_at   = NOW()`,
+          [controller.id, apBySerial.get(ap.serial) || null, ap.ap_name, ap.serial,
+            ap.rx_bytes, ap.tx_bytes,
+            new Date(window.from_timestamp * 1000), new Date(window.to_timestamp * 1000)]);
+      } catch (e) {
+        console.warn(
+          `[wireless-bw] aruba_central "${controller.name}" AP ${ap.serial} upsert failed: ` +
+          (e && e.message ? e.message : String(e))
+        );
+      }
+    }
+
+    // Prune rows for APs no longer in this cycle's top-N — keeps the widget
+    // honest, an AP that drops out of the top N shouldn't linger forever
+    // showing a stale snapshot. Skipped entirely on a zero-result cycle (a
+    // transient empty response must not wipe the last known-good snapshot).
+    if (topAps.length) {
+      const keepSerials = topAps.map((a) => a.serial);
+      await pool.query(
+        `DELETE FROM wireless_ap_bandwidth_topn WHERE controller_id = $1 AND serial <> ALL($2::text[])`,
+        [controller.id, keepSerials]);
+    }
+  } catch (e) {
+    console.error(
+      `[wireless-bw] aruba_central "${controller.name}" bandwidth cycle failed:`,
+      e && e.message ? e.message : String(e)
+    );
+  }
+}
+
 module.exports = {
   name: 'aruba_central',
   pollRf,
   fetchClients,
+  pollEvents,
+  pollTopBandwidth,
   async poll(controller, pool) {
     if (!controller || !controller.controller_url) {
       throw new Error('aruba_central: missing controller_url');

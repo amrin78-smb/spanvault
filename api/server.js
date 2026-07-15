@@ -35,6 +35,11 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.80.0': [
+    'Aruba Central APs now report real CPU and memory usage (at zero extra API cost, piggybacked on the existing poll) -- shown in the AP detail drawer alongside the already-working Uptime.',
+    'New: Aruba Central\'s native event feed (AP up/down, radio changes, auth failures, config changes) is now collected on its own 5-minute cycle and stored for future surfacing -- a separate source from the roam/join/leave events already synthesised from client snapshots, not a replacement.',
+    'New: a "top talkers" data feed -- the 10 highest-bandwidth Aruba Central APs over a rolling window, refreshed every 5 minutes -- is now collected and stored, ready to power a future Wireless Insights widget.',
+  ],
   '1.79.3': [
     'Fixed: Aruba Central wireless clients were missing their IP address entirely, and every 5GHz client showed a blank Band column -- both were mapping bugs, not missing data. IP address is actually present on the client endpoint we poll (an earlier fix wrongly assumed it wasn\'t, generalizing from a different Central API). Band was being decoded with the AP endpoint\'s 0/1-radio-index convention, but the client endpoint reports the GHz value itself (2/5/6) -- band:5 was falling through to blank instead of "5GHz". Verified against live data and a real client sample before shipping.',
   ],
@@ -4813,7 +4818,8 @@ app.get('/api/wireless/aps', wrap(async (req, res) => {
            a.rx_errors_delta_2g, a.tx_errors_delta_2g, a.rx_errors_delta_5g, a.tx_errors_delta_5g,
            a.throughput_in_bps, a.throughput_out_bps, a.serial_number, a.auth_failures,
            a.interference_pct_2g, a.interference_pct_5g,
-           a.reboot_count, a.bootstrap_count
+           a.reboot_count, a.bootstrap_count,
+           a.cpu_pct, a.mem_total, a.mem_free
     FROM wireless_aps a
     LEFT JOIN wireless_controllers c ON c.id = a.controller_id
     ${where.length ? 'WHERE ' + where.join(' AND ') : ''}

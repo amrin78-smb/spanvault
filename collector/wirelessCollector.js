@@ -832,6 +832,7 @@ async function upsertAp(pool, controller, ap) {
     numOrNull(ap.interference_pct_2g), numOrNull(ap.interference_pct_5g),
     intOrNull(ap.reboot_count), intOrNull(ap.bootstrap_count),
     rxErrDelta2g, txErrDelta2g, rxErrDelta5g, txErrDelta5g,
+    numOrNull(ap.cpu_pct), intOrNull(ap.mem_total), intOrNull(ap.mem_free),
   ];
 
   let apId = null;
@@ -904,9 +905,12 @@ async function upsertAp(pool, controller, ap) {
           tx_errors_delta_2g  = $40,
           rx_errors_delta_5g  = $41,
           tx_errors_delta_5g  = $42,
+          cpu_pct             = $43,
+          mem_total           = $44,
+          mem_free            = $45,
           last_seen_at        = NOW(),
           updated_at          = NOW()
-        WHERE id = $43
+        WHERE id = $46
         RETURNING id
       `, [...vals, existing.rows[0].id]);
       apId = u.rows[0].id;
@@ -928,9 +932,11 @@ async function upsertAp(pool, controller, ap) {
          throughput_in_bps, throughput_out_bps, serial_number, auth_failures,
          interference_pct_2g, interference_pct_5g, reboot_count, bootstrap_count,
          rx_errors_delta_2g, tx_errors_delta_2g, rx_errors_delta_5g, tx_errors_delta_5g,
+         cpu_pct, mem_total, mem_free,
          last_seen_at, updated_at)
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,
-              $23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,NOW(),NOW())
+              $23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,
+              $43,$44,$45,NOW(),NOW())
       ON CONFLICT (controller_id, name) DO UPDATE SET
         monitored_device_id = EXCLUDED.monitored_device_id,
         mac_address      = EXCLUDED.mac_address,
@@ -976,6 +982,9 @@ async function upsertAp(pool, controller, ap) {
         tx_errors_delta_2g = EXCLUDED.tx_errors_delta_2g,
         rx_errors_delta_5g = EXCLUDED.rx_errors_delta_5g,
         tx_errors_delta_5g = EXCLUDED.tx_errors_delta_5g,
+        cpu_pct          = EXCLUDED.cpu_pct,
+        mem_total        = EXCLUDED.mem_total,
+        mem_free         = EXCLUDED.mem_free,
         last_seen_at     = NOW(),
         updated_at       = NOW()
       RETURNING id
@@ -1956,6 +1965,69 @@ async function pollAllArubaCentralRf(pool) {
   }
 }
 
+// Aruba Central's native events feed — its own cycle, default 300s. See
+// aruba-central.js's pollEvents() section comment for the distinction from
+// the roam/join/leave/low_signal events processClientSnapshot() already
+// synthesises (a different source, not a replacement).
+const ARUBA_EVENTS_POLL_INTERVAL = (() => {
+  const envSec = parseInt(process.env.SV_ARUBA_EVENTS_POLL_INTERVAL_SECONDS, 10);
+  return (Number.isFinite(envSec) && envSec > 0 ? envSec : 300) * 1000;
+})();
+// Fetch window = the poll interval plus a fixed overlap, so two consecutive
+// cycles' windows always overlap rather than risk a gap if a cycle runs
+// slightly late — ON CONFLICT DO NOTHING in pollEvents()'s insert (keyed on
+// the dedupe_key unique index) makes re-fetching the overlapping portion
+// safe rather than a source of duplicate rows.
+const ARUBA_EVENTS_WINDOW_OVERLAP_SEC = 60;
+// Safety margin subtracted from "now" before it becomes to_timestamp — see
+// aruba-central.js's timeWindow() for why this must never be 0 (clock skew
+// alone can trigger Central's "to_timestamp cannot be greater than current
+// time" rejection).
+const ARUBA_TIMESTAMP_MARGIN_SEC = 300;
+
+let eventsBusy = false;
+async function pollAllArubaCentralEvents(pool) {
+  if (eventsBusy) return;
+  eventsBusy = true;
+  try {
+    const r = await pool.query(
+      `SELECT * FROM wireless_controllers WHERE active = TRUE AND vendor = 'aruba_central'`);
+    const windowSec = Math.round(ARUBA_EVENTS_POLL_INTERVAL / 1000) + ARUBA_EVENTS_WINDOW_OVERLAP_SEC;
+    for (const c of r.rows) {
+      await apiClients.aruba_central.pollEvents(c, pool, windowSec, ARUBA_TIMESTAMP_MARGIN_SEC);
+    }
+  } catch (err) {
+    console.error('[wireless-events] poll cycle failed:', err.message);
+  } finally {
+    eventsBusy = false;
+  }
+}
+
+// Top-N AP bandwidth "top talkers" snapshot — its own cycle, default 300s.
+const ARUBA_BW_POLL_INTERVAL = (() => {
+  const envSec = parseInt(process.env.SV_ARUBA_BW_POLL_INTERVAL_SECONDS, 10);
+  return (Number.isFinite(envSec) && envSec > 0 ? envSec : 300) * 1000;
+})();
+const ARUBA_BW_TOPN_COUNT = 10;
+
+let bwBusy = false;
+async function pollAllArubaCentralBandwidth(pool) {
+  if (bwBusy) return;
+  bwBusy = true;
+  try {
+    const r = await pool.query(
+      `SELECT * FROM wireless_controllers WHERE active = TRUE AND vendor = 'aruba_central'`);
+    const windowSec = Math.round(ARUBA_BW_POLL_INTERVAL / 1000);
+    for (const c of r.rows) {
+      await apiClients.aruba_central.pollTopBandwidth(c, pool, windowSec, ARUBA_TIMESTAMP_MARGIN_SEC, ARUBA_BW_TOPN_COUNT);
+    }
+  } catch (err) {
+    console.error('[wireless-bw] poll cycle failed:', err.message);
+  } finally {
+    bwBusy = false;
+  }
+}
+
 // Start the wireless collector on a 5-minute cadence (first pass after 20s so
 // the initial NetVault sync + vendor detection has a chance to populate).
 // `alertHooks` (optional — { raise(mac, controllerId, siteId, message), resolve(mac,
@@ -1979,12 +2051,22 @@ function startWirelessCollector(pool, alertHooks) {
   // pass enriches.
   setTimeout(() => pollAllArubaCentralRf(pool), 60 * 1000);
   setInterval(() => pollAllArubaCentralRf(pool), ARUBA_RF_POLL_INTERVAL);
-  log(`wireless collector started (APs every 5 min, clients every 10 min, aruba_central RF every ${Math.round(ARUBA_RF_POLL_INTERVAL / 60000)} min)`);
+  // Aruba Central native events + top-N bandwidth — each their own cycle,
+  // both independent of the main poll and of each other (a failure in one
+  // must never affect the other — see their own never-throws contracts in
+  // aruba-central.js). First pass at 70s/80s so they run after the first
+  // main AP poll (20s) has had a chance to create the AP rows the bandwidth
+  // pass resolves ap_id against.
+  setTimeout(() => pollAllArubaCentralEvents(pool), 70 * 1000);
+  setInterval(() => pollAllArubaCentralEvents(pool), ARUBA_EVENTS_POLL_INTERVAL);
+  setTimeout(() => pollAllArubaCentralBandwidth(pool), 80 * 1000);
+  setInterval(() => pollAllArubaCentralBandwidth(pool), ARUBA_BW_POLL_INTERVAL);
+  log(`wireless collector started (APs every 5 min, clients every 10 min, aruba_central RF every ${Math.round(ARUBA_RF_POLL_INTERVAL / 60000)} min, events every ${Math.round(ARUBA_EVENTS_POLL_INTERVAL / 60000)} min, bandwidth every ${Math.round(ARUBA_BW_POLL_INTERVAL / 60000)} min)`);
 }
 
 module.exports = {
   startWirelessCollector, pollAll, pollController, upsertAp, upsertSsid, upsertRogueAp,
   autoDetectControllers, cleanupBadAutoControllers, cleanupDecimalMacAps, testController, debugWalk,
   walkOid, pollClients, pollAllClients, probeControllerCapabilities, probeControllerCapabilitiesDetailed,
-  pollAllArubaCentralRf,
+  pollAllArubaCentralRf, pollAllArubaCentralEvents, pollAllArubaCentralBandwidth,
 };

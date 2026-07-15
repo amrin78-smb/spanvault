@@ -123,6 +123,9 @@ interface AccessPoint {
   tx_power_5g: number | null;
   uptime_seconds: number | null;
   uptime_formatted: string | null;
+  cpu_pct: number | null;
+  mem_total: number | null;
+  mem_free: number | null;
   last_seen_at: string | null;
   noise_floor_2g: number | null;
   noise_floor_5g: number | null;
@@ -1193,6 +1196,16 @@ function apUtilColor(ap: AccessPoint): string {
   return u == null ? 'var(--text-muted)' : pctColor(u);
 }
 
+// wireless_aps.mem_total/mem_free are stored as the raw values Aruba Central
+// reports (see aruba-central.js's mapAp()) rather than a precomputed
+// percentage — derive a display-only percentage here instead of adding a
+// mem_pct column nothing else needs. null when either raw value is missing
+// or mem_total is 0 (division would be meaningless).
+function apMemPct(memTotal: number | null, memFree: number | null): number | null {
+  if (memTotal == null || memFree == null || memTotal <= 0) return null;
+  return Math.round(((memTotal - memFree) / memTotal) * 100);
+}
+
 // ── Controller status strip (Insights tab) (top-level) ────────
 // Compact per-controller rows: status dot, name, AP count, client count, CPU%.
 // Sourced from the already-fetched /api/wireless/controllers payload — no new fetch.
@@ -2012,6 +2025,8 @@ function ApDetailDrawer({
             <tr><td style={{ color: 'var(--text-muted)' }}>Firmware</td><td>{ap.firmware_version || '—'}</td></tr>
             <tr><td style={{ color: 'var(--text-muted)' }}>Serial Number</td><td>{ap.serial_number || '—'}</td></tr>
             <tr><td style={{ color: 'var(--text-muted)' }}>Uptime</td><td>{ap.uptime_formatted || '—'}</td></tr>
+            <tr><td style={{ color: 'var(--text-muted)' }}>CPU</td><td>{ap.cpu_pct != null ? `${Math.round(Number(ap.cpu_pct))}%` : '—'}</td></tr>
+            <tr><td style={{ color: 'var(--text-muted)' }}>Memory</td><td>{apMemPct(ap.mem_total, ap.mem_free) != null ? `${apMemPct(ap.mem_total, ap.mem_free)}%` : '—'}</td></tr>
             <tr><td style={{ color: 'var(--text-muted)' }}>Reboots</td><td>{ap.reboot_count ?? '—'}</td></tr>
             <tr><td style={{ color: 'var(--text-muted)' }}>Bootstraps</td><td>{ap.bootstrap_count ?? '—'}</td></tr>
             <tr><td style={{ color: 'var(--text-muted)' }}>Auth Failures</td><td>{ap.auth_failures ?? '—'}</td></tr>

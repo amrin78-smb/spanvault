@@ -1039,6 +1039,18 @@ ALTER TABLE wireless_aps ADD COLUMN IF NOT EXISTS tx_errors_delta_2g BIGINT;
 ALTER TABLE wireless_aps ADD COLUMN IF NOT EXISTS rx_errors_delta_5g BIGINT;
 ALTER TABLE wireless_aps ADD COLUMN IF NOT EXISTS tx_errors_delta_5g BIGINT;
 
+-- Per-AP CPU/memory — first populated by the aruba_central AP poll's
+-- show_resource_details=true flag (see aruba-central.js's apsUrl()/mapAp()).
+-- No SNMP AP parser currently reports these (only per-CONTROLLER cpu_pct/
+-- mem_pct exist, on wireless_controllers), so they're null for every other
+-- vendor. mem_total/mem_free are raw values (unit as reported by Central,
+-- not converted) rather than a computed mem_pct, matching the destination
+-- field names actually requested — a mem_pct can be derived client-side from
+-- the two if ever needed.
+ALTER TABLE wireless_aps ADD COLUMN IF NOT EXISTS cpu_pct    NUMERIC;
+ALTER TABLE wireless_aps ADD COLUMN IF NOT EXISTS mem_total  BIGINT;
+ALTER TABLE wireless_aps ADD COLUMN IF NOT EXISTS mem_free   BIGINT;
+
 -- Per-SSID security/encryption type (e.g. "WPA2-PSK (AES)", "Open"), from the
 -- vendor's ESSID table where available.
 ALTER TABLE wireless_ssids ADD COLUMN IF NOT EXISTS encryption_type TEXT;
@@ -1219,6 +1231,67 @@ CREATE INDEX IF NOT EXISTS idx_wclient_event_ctrl
   ON wireless_client_events(controller_id, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_wclient_event_ts
   ON wireless_client_events(ts DESC);
+
+-- Aruba Central's NATIVE event stream (GET /monitoring/v2/events -- AP up/
+-- down, radio changes, client auth failures, config events), distinct from
+-- wireless_client_events above (which is SYNTHESISED from client-snapshot
+-- diffs by processClientSnapshot() in wirelessCollector.js -- roam/join/
+-- leave/low_signal only, and only ever about a client, never an AP/switch/
+-- gateway). Central's events don't fit either wireless_client_events' shape
+-- (no from/to AP concept) or the generic `alerts` table (device_id-keyed,
+-- active/resolved lifecycle -- a historical event log isn't "resolved" the
+-- way a threshold-breach alert is), so this is its own table rather than
+-- forced into either.
+-- central_event_id is Central's own event id when the response provides one
+-- (field name not independently confirmed against a live sample -- see
+-- aruba-central.js's mapEvent()); dedupe_key is what overlapping poll
+-- windows actually dedupe on -- central_event_id when present, else a
+-- timestamp+device_mac+type composite (see mapEvent()'s comment for why a
+-- unique event id is preferred when available).
+CREATE TABLE IF NOT EXISTS wireless_central_events (
+  id               BIGSERIAL PRIMARY KEY,
+  controller_id    INTEGER NOT NULL REFERENCES wireless_controllers(id) ON DELETE CASCADE,
+  central_event_id TEXT,
+  dedupe_key       TEXT NOT NULL,
+  ts               TIMESTAMPTZ,
+  device_type      TEXT,   -- ACCESS POINT / SWITCH / GATEWAY / CLIENT
+  device_mac       TEXT,
+  serial           TEXT,
+  hostname         TEXT,
+  level            TEXT,
+  type             TEXT,
+  description      TEXT,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_wcentral_events_dedupe
+  ON wireless_central_events(controller_id, dedupe_key);
+CREATE INDEX IF NOT EXISTS idx_wcentral_events_ctrl_ts
+  ON wireless_central_events(controller_id, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_wcentral_events_ts
+  ON wireless_central_events(ts DESC);
+
+-- Latest top-N AP bandwidth snapshot from Aruba Central (GET /monitoring/v2/
+-- aps/bandwidth_usage/topn) -- a "top talkers" widget data source, ONE row
+-- per (controller, AP serial), overwritten each poll rather than accumulated
+-- as history (this is a live "who's using the most bandwidth right now"
+-- view, not a time series -- wireless_history already serves that role for
+-- other per-AP metrics). ap_id is resolved by serial against wireless_aps,
+-- same join strategy as the RF-enrichment pass; null if no matching AP row
+-- exists yet (e.g. a brand-new AP not yet seen by the main poll).
+CREATE TABLE IF NOT EXISTS wireless_ap_bandwidth_topn (
+  id            SERIAL PRIMARY KEY,
+  controller_id INTEGER NOT NULL REFERENCES wireless_controllers(id) ON DELETE CASCADE,
+  ap_id         INTEGER REFERENCES wireless_aps(id) ON DELETE SET NULL,
+  ap_name       TEXT,
+  serial        TEXT,
+  rx_bytes      BIGINT,
+  tx_bytes      BIGINT,
+  window_start  TIMESTAMPTZ,
+  window_end    TIMESTAMPTZ,
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_wap_bw_topn_ctrl_serial
+  ON wireless_ap_bandwidth_topn(controller_id, serial);
 
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO spanvault_user;
 GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO spanvault_user;
