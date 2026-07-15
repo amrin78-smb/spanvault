@@ -1534,35 +1534,87 @@ async function walkOid(pool, controller, oid) {
 }
 
 // ── Client-level troubleshooting (Tier 1) ─────────────────────
-// Poll a controller's associated clients (SNMP), detect roam/join/leave/
-// low-signal events vs the previous snapshot, upsert the current client set,
-// and prune stale clients + old events. Never throws; a client-poll failure is
-// isolated and never affects AP polling.
+// Poll a controller's associated clients (SNMP OR aruba_central's bulk API —
+// see the dispatcher below), detect roam/join/leave/low-signal events vs the
+// previous snapshot, upsert the current client set, and prune stale clients +
+// old events. Never throws; a client-poll failure is isolated and never
+// affects AP polling.
 // `alertHooks` (optional — { raise(mac, controllerId, siteId, message), resolve(mac,
 // controllerId) }) is how wireless_client_bandwidth_high alerts get raised/resolved;
 // see the CLIENT_BANDWIDTH_THRESHOLD_BPS comment above and startWirelessCollector
 // below for why it's injected rather than required from collector.js directly.
+// pollClients() is a thin ACQUISITION dispatcher — vendor-specific fetch only.
+// All PROCESSING (diff/roam-join-leave events, counter deltas, alerting,
+// pruning, upsert) lives in processClientSnapshot() below, shared by every
+// acquisition source so that logic exists exactly once. The SNMP branch below
+// is byte-for-byte the same acquisition this function has always done — do
+// not "simplify" it, production SNMP controllers (SMT_WLC, TUFS-OKF-WLC-1)
+// depend on this exact path.
 async function pollClients(pool, controller, apList, alertHooks) {
-  const parser = getClientParser(controller.vendor);
-  if (!parser || !controller.snmp_device_id) return; // unsupported vendor or no SNMP device
+  let clients;
 
-  const apByName = new Map(apList.map((a) => [a.name, a]));
-  const apByMac = new Map(apList.filter((a) => a.mac_address).map((a) => [a.mac_address, a]));
+  if (controller.vendor === 'aruba_central') {
+    // Bulk client list — ONE call per poll (not per-AP like RF enrichment), so
+    // this safely piggybacks on the existing client-poll cadence rather than
+    // needing its own slower cycle. See aruba-central.js's fetchClients() for
+    // the endpoint/field-mapping detail and why it deliberately never
+    // refreshes the token itself (the main AP poll owns that).
+    try {
+      clients = await apiClients.aruba_central.fetchClients(controller, pool);
+    } catch (e) {
+      console.warn(`[wireless] aruba_central client fetch failed for ${controller.name}: ${e && e.message ? e.message : String(e)}`);
+      return; // failure isolation — this controller's clients just don't update this cycle
+    }
+  } else {
+    const parser = getClientParser(controller.vendor);
+    if (!parser || !controller.snmp_device_id) return; // unsupported vendor or no SNMP device
 
-  const dq = await pool.query('SELECT * FROM monitored_devices WHERE id = $1', [controller.snmp_device_id]);
-  const device = dq.rows[0];
-  if (!device) return;
+    const apByName = new Map(apList.map((a) => [a.name, a]));
+    const apByMac = new Map(apList.filter((a) => a.mac_address).map((a) => [a.mac_address, a]));
 
-  const session = createSession(device, 10000);
-  let clients = [];
-  try {
-    clients = (await parser.parseClients(session, { byName: apByName, byMac: apByMac })) || [];
-  } finally {
-    try { session.close(); } catch (_e) { /* ignore */ }
+    const dq = await pool.query('SELECT * FROM monitored_devices WHERE id = $1', [controller.snmp_device_id]);
+    const device = dq.rows[0];
+    if (!device) return;
+
+    const session = createSession(device, 10000);
+    try {
+      clients = (await parser.parseClients(session, { byName: apByName, byMac: apByMac })) || [];
+    } finally {
+      try { session.close(); } catch (_e) { /* ignore */ }
+    }
   }
-  if (clients.length === 0) {
-    log(`[clients] ${controller.name} (${controller.vendor}): 0 clients (no rows from the client table OID)`);
+
+  if (!clients || clients.length === 0) {
+    log(`[clients] ${controller.name} (${controller.vendor}): 0 clients`);
     return;
+  }
+
+  await processClientSnapshot(pool, controller, apList, clients, alertHooks);
+}
+
+// Shared PROCESSING for every acquisition source above: AP-id resolution,
+// join/roam/leave/low-signal event detection, roam-count + bandwidth
+// alerting, upsert, and stale pruning. Vendor-agnostic — takes an already-
+// acquired, already-normalised client array and does not care which
+// acquisition branch produced it.
+async function processClientSnapshot(pool, controller, apList, clients, alertHooks) {
+  // AP-id resolution: SNMP acquisition already resolves ap_id internally (via
+  // the byName/byMac maps passed into parser.parseClients() above — see
+  // collector/wireless/clients/index.js) so client.ap_id is already set for
+  // every SNMP-sourced client and this loop is a no-op for them. The
+  // aruba_central acquisition path deliberately does NOT resolve ap_id itself
+  // — it only knows ap_name/ap_serial (see aruba-central.js's mapClient()) —
+  // so this is the ONE place ap_name/ap_serial gets turned into ap_id,
+  // regardless of how many non-SNMP acquisition sources exist. Name match is
+  // tried first (matches the SNMP convention already used elsewhere), serial
+  // is the fallback for a source that doesn't know the AP's display name.
+  const apByName = new Map(apList.map((a) => [a.name, a]));
+  const apBySerial = new Map(apList.filter((a) => a.serial_number).map((a) => [a.serial_number, a]));
+  for (const client of clients) {
+    if (client.ap_id != null) continue;
+    const matched = (client.ap_name && apByName.get(client.ap_name))
+      || (client.ap_serial && apBySerial.get(client.ap_serial));
+    if (matched) client.ap_id = matched.id;
   }
 
   // Previous snapshot for roaming/leave detection. Also carries the persisted
@@ -1734,8 +1786,8 @@ async function pollClients(pool, controller, apList, alertHooks) {
         (mac_address, ip_address, hostname, controller_id, ap_id, ap_name, ssid_name, band, channel,
          rssi_dbm, tx_rate_mbps, rx_rate_mbps, connected_since, last_seen_at, auth_type,
          is_problem, roaming_count, vendor, is_sticky, phy_mode, vlan_id, rx_bps, tx_bps,
-         rx_bytes_raw, tx_bytes_raw, byte_counter_bits, bw_sampled_at)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)
+         rx_bytes_raw, tx_bytes_raw, byte_counter_bits, bw_sampled_at, os_type)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)
       ON CONFLICT (controller_id, mac_address) DO UPDATE SET
         ip_address    = EXCLUDED.ip_address,
         hostname      = COALESCE(EXCLUDED.hostname, wireless_clients.hostname),
@@ -1760,7 +1812,11 @@ async function pollClients(pool, controller, apList, alertHooks) {
         rx_bytes_raw  = EXCLUDED.rx_bytes_raw,
         tx_bytes_raw  = EXCLUDED.tx_bytes_raw,
         byte_counter_bits = EXCLUDED.byte_counter_bits,
-        bw_sampled_at = EXCLUDED.bw_sampled_at
+        bw_sampled_at = EXCLUDED.bw_sampled_at,
+        -- COALESCEd like hostname/connected_since above: a source that never
+        -- reports os_type (every SNMP client parser today) must not wipe a
+        -- value a different cycle/source already established for this MAC.
+        os_type       = COALESCE(EXCLUDED.os_type, wireless_clients.os_type)
     `, [
       client.mac_address, client.ip_address || null, client.hostname || null, controller.id,
       client.ap_id || null, client.ap_name || null, client.ssid_name || null, client.band || null,
@@ -1768,7 +1824,7 @@ async function pollClients(pool, controller, apList, alertHooks) {
       numOrNull(client.tx_rate_mbps), numOrNull(client.rx_rate_mbps), client.connected_since || null,
       now, client.auth_type || null, isProblem, roamCount, controller.vendor, isSticky,
       client.phy_mode || null, intOrNull(client.vlan_id), rxBps, txBps,
-      rawRx, rawTx, client.byte_counter_bits || null, bwSampledAt,
+      rawRx, rawTx, client.byte_counter_bits || null, bwSampledAt, client.os_type || null,
     ]);
     await pool.query(
       `INSERT INTO wireless_client_history (mac_address, controller_id, ts, rx_bps, tx_bps, rssi_dbm)
@@ -1832,10 +1888,13 @@ async function pollAllClients(pool, alertHooks) {
   try {
     const r = await pool.query(`SELECT * FROM wireless_controllers WHERE active = TRUE`);
     for (const c of r.rows) {
-      if (!c.snmp_device_id) continue;
+      // aruba_central has no snmp_device_id (API-based) but has its own client
+      // acquisition path — see pollClients()'s dispatcher above. Every other
+      // non-SNMP vendor still has no client support at all, so still skip.
+      if (!c.snmp_device_id && c.vendor !== 'aruba_central') continue;
       try {
         const apq = await pool.query(
-          `SELECT id, name, mac_address FROM wireless_aps WHERE controller_id = $1`, [c.id]);
+          `SELECT id, name, mac_address, serial_number FROM wireless_aps WHERE controller_id = $1`, [c.id]);
         await pollClients(pool, c, apq.rows, alertHooks);
       } catch (e) {
         // Client polling never affects AP polling — isolate per-controller failures.

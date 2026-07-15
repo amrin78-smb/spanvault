@@ -35,6 +35,10 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.79.0': [
+    'Aruba Central now collects wireless client details (hostname, AP, SSID, band, channel, connected-since, OS type, VLAN, auth type) via a new bulk API call each poll cycle -- joining the existing SNMP-based client tracking used by other controllers. Per-client signal strength (RSSI) and live tx/rx rate are not available from this vendor\'s API and stay blank.',
+    'Refactored the wireless client-polling pipeline to separate data acquisition (vendor-specific) from event detection/alerting/upsert (shared, one copy for every vendor) -- the existing SNMP client path is functionally unchanged, just reorganized so a new source could be added without duplicating the roam/join/leave logic.',
+  ],
   '1.78.1': [
     'Security fix: a site_admin could read another site\'s wireless client data (bandwidth/RSSI history, connection events) by MAC address or by AP ID, since three wireless API routes -- GET /api/wireless/clients/:mac, /api/wireless/clients/:mac/history, and /api/wireless/aps/:id/clients -- had no site-scoping check at all, unlike the already-scoped client list page. All three now 403 if the client/AP resolves to a site outside the caller\'s assigned sites.',
     'Redacted 3 more secret columns (Aruba Central\'s OAuth2 client secret, refresh token, and access token) from the admin-only /api/wireless/debug diagnostic dump -- it previously only redacted the older api_key/api_password fields, so it leaked live, rotating Aruba Central credentials in cleartext to any admin who hit it.',

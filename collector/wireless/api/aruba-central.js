@@ -635,9 +635,218 @@ async function pollRf(controller, pool) {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// CLIENT ACQUISITION — bulk call, MAIN 5-min poll cycle (not a separate
+// timer like RF enrichment above). Read before editing.
+//
+// LIVE-VERIFIED against production Central (not assumed from Swagger docs):
+//   GET /monitoring/v1/clients/wireless?group=<g>&limit=1000
+// NOT /monitoring/v2/clients — that "unified" endpoint returns count:0 for
+// this deployment (IAP-managed APs). v1/clients/wireless is the one with
+// real data. count == total at limit=1000 for the current fleet (81
+// clients), so pagination is not exercised today, but fetchClients() below
+// still implements the offset loop defensively for a larger future fleet.
+//
+// fetchClients() deliberately does NOT refresh the OAuth token — same rule
+// as pollRf() above: exactly one place in this file (poll()) owns the
+// PERSIST-FIRST-USE-SECOND refresh contract. Unlike pollRf() (which has its
+// own independent timer and therefore tolerates/skips a missing-or-expired
+// token gracefully), fetchClients() is called as part of the SAME main poll
+// cycle as poll() itself, right after AP acquisition — by the time it runs,
+// poll() has already guaranteed a valid, possibly-just-refreshed
+// controller.api_access_token exists for this cycle. So a missing token
+// here is treated as a real error (thrown), not a "skip this cycle"
+// no-op — don't "fix" this to silently return [] on a missing token like
+// pollRf() does; that's the right behavior for pollRf()'s independent timer,
+// not for this call site.
+// ─────────────────────────────────────────────────────────────────────────
+
+// Same conditional-omission style as apsUrl()/networksUrl(): `group` is only
+// added when api_group_filter is set, `offset` is only added when non-zero
+// (the first page never sends offset=0).
+function clientsUrl(controller, offset) {
+  const base = String(controller.controller_url).replace(/\/+$/, '') + '/monitoring/v1/clients/wireless';
+  const group = str(controller.api_group_filter);
+  const params = ['limit=1000'];
+  if (group) params.push('group=' + encodeURIComponent(group));
+  if (offset > 0) params.push('offset=' + offset);
+  return base + '?' + params.join('&');
+}
+
+// One page of the client list. Same header rules as fetchAps()/
+// fetchNetworks(): TenantID conditionally included, never sent empty. Safe
+// to log the full URL — clientsUrl()'s only params are limit/group/offset,
+// none of them secret (unlike the token-refresh URL).
+async function fetchClientsPage(controller, accessToken, offset) {
+  const url = clientsUrl(controller, offset);
+  console.log('[wireless] aruba_central: GET', url);
+  const headers = {
+    'Authorization': 'Bearer ' + accessToken,
+    'Content-Type': 'application/json',
+  };
+  const tenantId = str(controller.api_customer_id);
+  if (tenantId) headers.TenantID = tenantId;
+
+  return fetchJsonVerbose(url, { method: 'GET', headers }, TIMEOUT_MS, 'client fetch');
+}
+
+// Tolerant extraction, mirroring apArray()/networksArray()'s exact pattern —
+// the precise top-level wrapper key wasn't 100% pinned down during
+// verification (the Swagger reference doc says `clients`, but apply the same
+// defensive tolerance as the other *Array() helpers in this file rather than
+// assuming only one shape works).
+function clientArray(body) {
+  if (Array.isArray(body)) return body;
+  if (!body || typeof body !== 'object') return [];
+  if (Array.isArray(body.clients)) return body.clients;
+  if (Array.isArray(body.data)) return body.data;
+  return [];
+}
+
+const CLIENT_BAND_LABELS = { '2g': '2.4GHz', '5g': '5GHz', '6g': '6GHz' };
+
+// Normalize a MAC to lowercase colon-separated hex (e.g. "aa:bb:cc:dd:ee:ff")
+// — the canonical format the rest of this codebase's wireless client
+// pipeline uses everywhere (collector/wireless/clients/_util.js's hexMac/
+// macFromTail/macFromHead helpers, shared by every SNMP vendor client
+// parser). Central's raw value is already reported as lowercase-colon in
+// production, so this is a no-op in practice today — but real normalization
+// is done anyway (not a passthrough) as defensive insurance: a silent
+// mismatch here would make the same physical client appear as two different
+// rows (once from SNMP, once from this path) and break roam-event detection,
+// which keys strictly on exact mac_address string equality. Returns null
+// (never a mangled value) if the input doesn't contain exactly 12 hex
+// digits.
+function normalizeMac(raw) {
+  const s = str(raw);
+  if (!s) return null;
+  const hex = s.toLowerCase().replace(/[^0-9a-f]/g, '');
+  if (hex.length !== 12) return null;
+  return hex.match(/.{2}/g).join(':');
+}
+
+// last_connection_time -> connected_since. IMPORTANT: the exact unit of this
+// field was NOT 100% pinned down during verification. Treated as epoch
+// MILLISECONDS here (JS's Date constructor already takes milliseconds — do
+// NOT divide by 1000 first, that would produce a 1970 date if the value
+// truly is milliseconds). A plausibility guard catches the case where that
+// assumption is wrong: if the resulting date is before year 2000 or more
+// than 1 day in the future, it's logged and treated as a unit mismatch
+// (connected_since left null) rather than stored as a nonsense date. Flag
+// this field for double-checking against a real sample response if one
+// becomes available.
+function parseConnectedSince(raw, macForLog) {
+  if (raw === null || raw === undefined || raw === '') return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return null;
+  const d = new Date(n);
+  const year2000Ms = Date.UTC(2000, 0, 1);
+  const oneDayFutureMs = Date.now() + 24 * 60 * 60 * 1000;
+  if (d.getTime() < year2000Ms || d.getTime() > oneDayFutureMs) {
+    console.warn(
+      `[wireless] aruba_central: client ${macForLog || '?'} last_connection_time (${JSON.stringify(raw)}) ` +
+      'is implausible as an epoch-milliseconds value — leaving connected_since null. This field\'s unit was ' +
+      'not confirmed against a real sample response during verification; check this if one becomes available.'
+    );
+    return null;
+  }
+  return d;
+}
+
+// Map one client object from GET /monitoring/v1/clients/wireless into the
+// wireless_clients-shaped output object the wirelessCollector.js refactor
+// will consume. This is NOT the same shape as mapAp()'s AP object — ap_id is
+// not part of it; AP-id resolution from ap_name/ap_serial happens on the
+// consumer side, not here. Only fields with real, verified data are mapped;
+// everything else is explicit null, mirroring mapAp()'s discipline of never
+// letting one missing field imply another is also missing.
+function mapClient(clientRaw) {
+  const macAddress = normalizeMac(pick(clientRaw, ['macaddr']));
+
+  const bandRaw = pick(clientRaw, ['band']);
+  const bandCode = bandOf(bandRaw);
+  let band = null;
+  if (bandCode && CLIENT_BAND_LABELS[bandCode]) {
+    band = CLIENT_BAND_LABELS[bandCode];
+  } else if (bandRaw !== undefined) {
+    console.warn(
+      `[wireless] aruba_central: client "${macAddress || JSON.stringify(pick(clientRaw, ['macaddr'])) || '?'}" ` +
+      `has an unrecognised band value (${JSON.stringify(bandRaw)}) — leaving band null.`
+    );
+  }
+
+  return {
+    mac_address: macAddress,
+    // Not present on this endpoint's payload — explicit null (do not use its
+    // absence to imply anything else is also absent, see mapAp()'s comment).
+    ip_address: null,
+    hostname: str(pick(clientRaw, ['name', 'hostname'])),
+    ap_name: str(pick(clientRaw, ['associated_device_name'])),
+    ap_serial: str(pick(clientRaw, ['associated_device'])),
+    ssid_name: str(pick(clientRaw, ['network'])),
+    band,
+    channel: parseChannel(pick(clientRaw, ['channel'])),
+    rssi_dbm: null,
+    tx_rate_mbps: null,
+    rx_rate_mbps: null,
+    connected_since: parseConnectedSince(pick(clientRaw, ['last_connection_time']), macAddress),
+    os_type: str(pick(clientRaw, ['os_type'])),
+    vlan_id: num(pick(clientRaw, ['vlan'])),
+    auth_type: str(pick(clientRaw, ['authentication_type'])),
+    phy_mode: null,
+    rx_bytes: null,
+    tx_bytes: null,
+    byte_counter_bits: null,
+  };
+}
+
+// Exported entry point — signature deliberately mirrors poll(controller,
+// pool) for call-site consistency, but `pool` is unused here (no token
+// persistence needed on this read-only path); accepted anyway so the
+// caller's call site looks uniform with poll()/pollRf().
+//
+// Does NOT wrap its own errors in a try/catch — they propagate to the
+// caller. wirelessCollector.js's refactored pollClients() owns per-
+// controller failure isolation for this path ("an aruba_central
+// client-fetch failure must not fail the AP poll or any other controller's
+// client collection"), mirroring how poll() itself doesn't swallow its own
+// errors — pollController() in wirelessCollector.js does that.
+async function fetchClients(controller, pool) {
+  if (!controller || !controller.api_access_token) {
+    // Real error, not a silent skip — see the section comment above for why
+    // this differs from pollRf()'s missing-token handling.
+    throw new Error('aruba_central: fetchClients: no stored access token (expected one already refreshed by this poll cycle\'s poll() call)');
+  }
+  const accessToken = controller.api_access_token;
+
+  const rawClients = [];
+  let offset = 0;
+  for (;;) {
+    const body = await fetchClientsPage(controller, accessToken, offset);
+    const page = clientArray(body);
+    rawClients.push(...page);
+
+    // Defensive pagination: read count/total (names not 100% pinned down
+    // during verification) and loop on offset while count < total, same
+    // fallback-gracefully spirit as the other *Array() helpers in this file.
+    // If either field is missing/unrecognisable, stop after this page rather
+    // than loop on an assumption that could run forever.
+    const count = num(pick(body, ['count']));
+    const total = num(pick(body, ['total']));
+    if (count === null || total === null || count >= total || page.length === 0) break;
+    offset += page.length;
+  }
+
+  // Filter out anything without a usable identity — mirrors the main poll's
+  // `.filter((s) => s.ssid_name)` for SSIDs, same reasoning: can't upsert a
+  // client row with no key to upsert on.
+  return rawClients.map(mapClient).filter((c) => c.mac_address);
+}
+
 module.exports = {
   name: 'aruba_central',
   pollRf,
+  fetchClients,
   async poll(controller, pool) {
     if (!controller || !controller.controller_url) {
       throw new Error('aruba_central: missing controller_url');

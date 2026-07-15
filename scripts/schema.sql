@@ -1047,6 +1047,10 @@ ALTER TABLE wireless_ssids ADD COLUMN IF NOT EXISTS encryption_type TEXT;
 -- phy_mode is a capability indicator, distinct from the negotiated tx_rate_mbps.
 ALTER TABLE wireless_clients ADD COLUMN IF NOT EXISTS phy_mode TEXT;
 ALTER TABLE wireless_clients ADD COLUMN IF NOT EXISTS vlan_id  INTEGER;
+-- Client-reported OS family (e.g. "iOS", "Windows") — first populated by the
+-- aruba_central client acquisition path; no SNMP client parser currently
+-- reports it, so it's null for every other vendor.
+ALTER TABLE wireless_clients ADD COLUMN IF NOT EXISTS os_type  TEXT;
 
 -- ══ Wireless intelligence (computed analytics per poll cycle) ═════════════════
 CREATE TABLE IF NOT EXISTS wireless_intelligence (
