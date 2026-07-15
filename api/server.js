@@ -35,6 +35,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.79.3': [
+    'Fixed: Aruba Central wireless clients were missing their IP address entirely, and every 5GHz client showed a blank Band column -- both were mapping bugs, not missing data. IP address is actually present on the client endpoint we poll (an earlier fix wrongly assumed it wasn\'t, generalizing from a different Central API). Band was being decoded with the AP endpoint\'s 0/1-radio-index convention, but the client endpoint reports the GHz value itself (2/5/6) -- band:5 was falling through to blank instead of "5GHz". Verified against live data and a real client sample before shipping.',
+  ],
   '1.79.2': [
     'Fixed: Aruba Central clients were entirely missing from the Clients tab\'s default view (though correctly counted in the Total Clients card) whenever total clients across all controllers exceeded the 500-row page cap. Root cause: the query sorted by signal strength with weakest-last, and this vendor\'s API never reports signal strength at all, so its clients sorted as one solid block past the cutoff. The query now guarantees every controller a fair, round-robin share of the row budget instead of one global sort -- verified against production data.',
   ],

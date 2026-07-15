@@ -141,18 +141,51 @@ function pick(obj, keys) {
   return undefined;
 }
 
-// Band matcher. LIVE-VERIFIED against production Aruba Central (curl'd
-// against GET /monitoring/v2/aps): radios[].band is a NUMERIC index, not a
-// string — 0 = 2.4GHz, 1 = 5GHz. No 6GHz value has been observed/confirmed on
-// this endpoint. Numeric match is checked FIRST and is authoritative for this
-// endpoint. The string-substring matching below is kept only as a fallback —
-// for forward-compatibility in case a different Central API surface, or a
-// future Central version, ever reports band as a human-readable string
-// ("2.4GHz", "5GHz", "6GHz") or enum-style token ("RADIO_TYPE_2_4GHZ") instead
-// of the numeric index this endpoint actually returns today.
+// Band matcher for the AP/RF endpoints ONLY (GET /monitoring/v2/aps, GET
+// /monitoring/v1/aps/{serial} — used by mapAp()/mapRf()). LIVE-VERIFIED
+// against production Aruba Central (curl'd against GET /monitoring/v2/aps):
+// radios[].band is a NUMERIC index, not a string — 0 = 2.4GHz, 1 = 5GHz. No
+// 6GHz value has been observed/confirmed on this endpoint. Numeric match is
+// checked FIRST and is authoritative for this endpoint. The string-substring
+// matching below is kept only as a fallback — for forward-compatibility in
+// case a different Central API surface, or a future Central version, ever
+// reports band as a human-readable string ("2.4GHz", "5GHz", "6GHz") or
+// enum-style token ("RADIO_TYPE_2_4GHZ") instead of the numeric index this
+// endpoint actually returns today.
+//
+// DO NOT use this for the CLIENT endpoint (GET /monitoring/v1/clients/
+// wireless) — it uses a COMPLETELY DIFFERENT numeric convention (the GHz
+// value itself, not a radio index: 2/5/6, not 0/1). See clientBandOf() below,
+// which exists specifically because reusing this function for clients
+// silently mapped every 5GHz client to null in production (5 !== 0, 5 !== 1,
+// and none of the string fallbacks match a bare "5" either) — confirmed live:
+// band='2.4GHz' was set correctly by string-fallback accident, but every
+// 5GHz channel (36/44/56/64/104/112/153/161) had band=NULL. Keep these two
+// mappers separate — do not "unify" them back into one function.
 function bandOf(raw) {
   if (raw === 0 || raw === '0') return '2g';
   if (raw === 1 || raw === '1') return '5g';
+  const s = str(raw);
+  if (!s) return null;
+  const low = s.toLowerCase().replace(/[\s_-]/g, '');
+  if (low.includes('6g') || low.includes('6e')) return '6g';
+  if (low.includes('5g')) return '5g';
+  if (low.includes('2.4') || low.includes('24g') || low.includes('2g')) return '2g';
+  return null;
+}
+
+// Band matcher for the CLIENT endpoint ONLY (GET /monitoring/v1/clients/
+// wireless — used by mapClient() below). DIFFERENT convention from bandOf()
+// above: band here is the GHZ VALUE itself, not a radio index — LIVE-
+// VERIFIED against a real client object (band:5, channel:"56 (80 MHz)" —
+// channel 56 is 5GHz-only, confirming band:5 means 5GHz, not "radio index
+// 5"). Numeric 2/5/6 map directly to GHz; the string-substring fallback below
+// mirrors bandOf()'s style for forward-compat (a human-readable "2.4GHz"/
+// "5GHz"/"6GHz"/"6E" string instead of a bare number).
+function clientBandOf(raw) {
+  if (raw === 2 || raw === '2') return '2g';
+  if (raw === 5 || raw === '5') return '5g';
+  if (raw === 6 || raw === '6') return '6g';
   const s = str(raw);
   if (!s) return null;
   const low = s.toLowerCase().replace(/[\s_-]/g, '');
@@ -776,7 +809,7 @@ function mapClient(clientRaw) {
   const macAddress = normalizeMac(pick(clientRaw, ['macaddr']));
 
   const bandRaw = pick(clientRaw, ['band']);
-  const bandCode = bandOf(bandRaw);
+  const bandCode = clientBandOf(bandRaw);
   let band = null;
   if (bandCode && CLIENT_BAND_LABELS[bandCode]) {
     band = CLIENT_BAND_LABELS[bandCode];
@@ -789,9 +822,12 @@ function mapClient(clientRaw) {
 
   return {
     mac_address: macAddress,
-    // Not present on this endpoint's payload — explicit null (do not use its
-    // absence to imply anything else is also absent, see mapAp()'s comment).
-    ip_address: null,
+    // IS present on this endpoint — LIVE-VERIFIED ("ip_address":
+    // "172.24.208.57" on a real client object). An earlier version of this
+    // mapper wrongly generalised from the /monitoring/v2/clients ("unified")
+    // schema, where this field's presence wasn't confirmed, to this endpoint
+    // (GET /monitoring/v1/clients/wireless), where it is.
+    ip_address: str(pick(clientRaw, ['ip_address'])),
     hostname: str(pick(clientRaw, ['name', 'hostname'])),
     ap_name: str(pick(clientRaw, ['associated_device_name'])),
     ap_serial: str(pick(clientRaw, ['associated_device'])),
