@@ -783,6 +783,29 @@ correct trade: a missing column in a debug query is a far smaller problem
 than a newly-added secret silently becoming world-readable to every readonly
 role.
 
+### New tables need an explicit readonly `GRANT` — but NEVER the blanket form
+Because the suite's blanket `GRANT SELECT ON ALL TABLES IN SCHEMA public TO
+claude_readonly / nocvault_readonly` must **not** be re-run (see the secrets exclusion directly
+above — it silently re-widens `wireless_controllers`), any NEW table does not automatically
+become readable by the diagnostic roles. `schema.sql` only grants new tables to
+`spanvault_user` (the app role), not to the readonly roles. After adding a table, a
+`claude_readonly` diagnostic query returns `permission denied for table <name>` until it is
+granted explicitly. This is expected fail-closed behaviour, not a bug.
+
+**For a NON-secret table** (the normal case — telemetry, events, snapshots), grant per-table as
+`postgres` over localhost:
+```sql
+GRANT SELECT ON <new_table_1>, <new_table_2> TO claude_readonly, nocvault_readonly;
+```
+Granted this way: `wireless_central_events`, `wireless_ap_bandwidth_topn` (1.80.0).
+
+**For a table holding credentials/secrets**, use a **column-level** grant excluding the secret
+columns, exactly as `wireless_controllers` does — never a table-wide grant.
+
+Do NOT "fix" a permission-denied by re-running the blanket `GRANT SELECT ON ALL TABLES ...`
+form — that is the one command that undoes the secrets exclusion above. Per-table grants are
+the only correct path.
+
 ## Live Server Verification (Diagnostics)
 
 The suite runs on the production server **192.168.6.111**. Verify the *running*
