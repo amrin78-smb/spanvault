@@ -1011,6 +1011,7 @@ function warnText(type: string): string {
     case 'wireless_high_interference': return 'interference exceeded threshold';
     case 'wireless_degraded_noise_floor': return 'noise floor degraded';
     case 'wireless_roam_storm': return 'roam storm detected';
+    case 'wireless_weak_clients': return 'weak/low-rate clients detected';
     default:             return type.startsWith('rule_') ? 'alert rule triggered' : type.replace(/_/g, ' ');
   }
 }
@@ -1025,6 +1026,7 @@ function humanEvent(type: string): string {
     case 'wireless_high_interference': return 'high interference';
     case 'wireless_degraded_noise_floor': return 'degraded noise floor';
     case 'wireless_roam_storm': return 'roam storm';
+    case 'wireless_weak_clients': return 'weak clients';
     default:             return type.replace(/_/g, ' ');
   }
 }

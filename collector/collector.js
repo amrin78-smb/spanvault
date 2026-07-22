@@ -1849,6 +1849,15 @@ async function evaluateWirelessAlerts() {
     const noiseFloorThresholdDbm = settingInt('wireless_noise_floor_threshold_dbm', -85);
     const roamStormCount = settingInt('wireless_roam_storm_count', 15);
     const roamStormWindowMinutes = settingInt('wireless_roam_storm_window_minutes', 10);
+    // Weak-client rollup — a client counts as "weak" for this check if it's
+    // already flagged is_problem (bad RSSI/excess roaming, set by
+    // wirelessCollector.js) OR stuck at a low negotiated PHY rate, a dimension
+    // is_problem doesn't cover today (a client glued to e.g. 6-24 Mbps drags
+    // disproportionate airtime for every other client on that radio).
+    const weakClientRateMbps = settingInt('wireless_weak_client_rate_mbps', 24);
+    const weakClientMinTotal = settingInt('wireless_weak_client_min_total', 8);
+    const weakClientMinCount = settingInt('wireless_weak_client_min_count', 3);
+    const weakClientRatioPct = settingInt('wireless_weak_client_ratio_pct', 25);
     // Controllers — offline when the last poll errored.
     const ctrls = (await sv.query(
       `SELECT id, name, status, site_id, vendor, last_error FROM wireless_controllers WHERE active = TRUE`)).rows;
@@ -1911,6 +1920,21 @@ async function evaluateWirelessAlerts() {
           GROUP BY ap_id`, [utilWindowMinutes]);
       for (const row of hr.rows) historyAggByAp.set(row.ap_id, row);
     } catch (e) { console.error('[wireless-alert] rolling-window history query failed:', e.message); }
+
+    // Weak-client rollup — one grouped query per AP, mirroring the history
+    // aggregate above, rather than a per-AP round trip. Isolated in its own
+    // try/catch so a lag between wireless_clients and wireless_aps on a
+    // freshly migrated DB can't take out the other checks in this loop.
+    const weakClientsByAp = new Map();
+    try {
+      const wc = await sv.query(
+        `SELECT ap_id, COUNT(*) AS total,
+                COUNT(*) FILTER (WHERE is_problem = TRUE OR (tx_rate_mbps IS NOT NULL AND tx_rate_mbps < $1)) AS weak
+           FROM wireless_clients
+          WHERE ap_id IS NOT NULL
+          GROUP BY ap_id`, [weakClientRateMbps]);
+      for (const row of wc.rows) weakClientsByAp.set(row.ap_id, row);
+    } catch (e) { console.error('[wireless-alert] weak-client rollup query failed:', e.message); }
 
     for (const ap of aps) {
       if (ap.status === 'offline') {
@@ -2003,6 +2027,26 @@ async function evaluateWirelessAlerts() {
         } else {
           await resolveWirelessAlert('wireless_ap_id', ap.id, 'wireless_degraded_noise_floor');
         }
+
+        // 6. Weak-client rollup — flags an AP whose client population skews
+        // heavily toward weak-signal/low-rate clients, a per-client condition
+        // none of the radio-level aggregates above (util/retry/interference/
+        // noise floor) can see. Skipped below wireless_weak_client_min_total so
+        // a single slow client on a lightly-loaded AP doesn't read as "100%
+        // weak" noise.
+        const wc = weakClientsByAp.get(ap.id) || { total: 0, weak: 0 };
+        const wcTotal = Number(wc.total) || 0;
+        const wcWeak = Number(wc.weak) || 0;
+        let weakClientsFlagged = false;
+        if (wcTotal >= weakClientMinTotal && wcWeak >= weakClientMinCount) {
+          const wcPct = Math.round((wcWeak / wcTotal) * 100);
+          if (wcPct >= weakClientRatioPct) {
+            weakClientsFlagged = true;
+            await raiseWirelessAlert('wireless_ap_id', ap, 'wireless_weak_clients', 'warning',
+              `Access point ${ap.name} has ${wcWeak} of ${wcTotal} clients (${wcPct}%) with weak signal or a low negotiated data rate — these clients may be consuming disproportionate airtime`);
+          }
+        }
+        if (!weakClientsFlagged) await resolveWirelessAlert('wireless_ap_id', ap.id, 'wireless_weak_clients');
       }
       // Reboot/flap: uptime went backwards since we last saw it.
       const up = ap.uptime_seconds != null ? Number(ap.uptime_seconds) : null;

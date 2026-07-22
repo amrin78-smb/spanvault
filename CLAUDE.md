@@ -298,9 +298,31 @@ when the tier changes. **Don't "simplify" this back to a bare
 passes every static check) and quietly caps every two-tier alert at whichever
 severity fired first.
 
-**KIV (deliberately not built in this pass):** a per-client low-signal/
-low-data-rate rollup, and a combined single "AP congestion score" surfaced on
-the Wireless page. Both stay in view for a future iteration.
+**Update (2026-07) — both KIV items above have since shipped:**
+
+- **`wireless_weak_clients`** (7th alert type) — a per-AP rollup over
+  `wireless_clients`, not `wireless_history`: a client counts as "weak" when
+  it's already `is_problem` (bad RSSI/excess roaming, set by
+  `wirelessCollector.js`) OR stuck at a low negotiated PHY rate — `is_problem`
+  never covered data rate. Settings: `wireless_weak_client_rate_mbps` (24),
+  `wireless_weak_client_min_total` (8 — an AP below this client count is
+  skipped so one slow client doesn't read as "100% weak"),
+  `wireless_weak_client_min_count` (3), `wireless_weak_client_ratio_pct` (25).
+- **AP congestion score** — a 0-100 blend of util/retry/interference/imbalance/
+  weak-client-ratio into one number + `low`/`medium`/`high` level, computed by
+  `collector/wirelessScore.js`'s `computeCongestionScore()` (a pure function —
+  no DB access of its own) and wired into `GET /api/wireless/aps` and
+  `GET /api/wireless/aps/:id` in `api/server.js`, which fetch/aggregate the
+  inputs and call it. **This is display-only, computed live at read time, NOT
+  persisted** — unlike the alert checks above, there's no new column on
+  `wireless_aps` and nothing in the collector computes it. The API's rolling
+  window is a **fixed 15-minute `INTERVAL`, not a `wireless_util_window_minutes`
+  setting read** — a deliberate simplification (an extra `app_settings` round
+  trip isn't worth it for a display aggregate); if that setting is ever changed
+  from its default, the score's window will silently drift out of sync with
+  the alerts' window. `congestion_score`/`congestion_level` are always `null`
+  together for a non-`online` AP — never a misleading `0`/`'low'` for an AP
+  that's actually down.
 
 ### After any change
 Run `npm run build` inside frontend/ to verify before committing.

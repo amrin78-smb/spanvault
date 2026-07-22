@@ -56,6 +56,7 @@ function prettyType(t: string): string {
   if (t === 'wireless_high_interference') return 'High Interference';
   if (t === 'wireless_degraded_noise_floor') return 'Degraded Noise Floor';
   if (t === 'wireless_roam_storm') return 'Roam Storm';
+  if (t === 'wireless_weak_clients') return 'Weak Clients';
   return t.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 

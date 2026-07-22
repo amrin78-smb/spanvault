@@ -22,6 +22,7 @@ const { discoverDevice, snmpTest } = require('../collector/discovery');
 const topology = require('../collector/topology');
 const wireless = require('../collector/wirelessCollector');
 const { wirelessVendorFor } = require('../collector/wireless');
+const { computeCongestionScore } = require('../collector/wirelessScore');
 const { startWsServer, connectedAgents, agentLogs, pushConfigToAgent, pushConfigToAgentId, disconnectAgent, sendToAgentId, agentMeta } = require('./ws-server');
 const intelligence = require('./intelligence');
 const { getLicense, getLicenseState } = require('./licenseCheck');
@@ -35,6 +36,11 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.82.0': [
+    'New wireless alert: "Weak Clients" flags an AP whose client population skews heavily toward weak-signal, sticky/roaming, or low-negotiated-data-rate clients -- a per-client condition none of the existing radio-level checks (utilization, retry, interference) can see, since a couple of struggling clients can drag down airtime for everyone else on that radio.',
+    'New: access points now show a 0-100 "Congestion" score (Low/Medium/High) on the Wireless page -- both in the Access Points list and the AP detail drawer -- blending channel utilization, retry rate, interference, band imbalance, and weak-client ratio into one at-a-glance number instead of requiring an admin to cross-reference several separate metrics.',
+    'Weak/low-rate clients are now visually flagged (a small warning indicator) everywhere client lists are shown -- the AP detail drawer\'s client list and the full Clients table.',
+  ],
   '1.81.0': [
     'New wireless alerts: access-point channel utilization is now evaluated as a rolling 15-minute average with warning/critical tiers (65%/85%), instead of a single instantaneous poll only firing at 90% -- the old check could miss a real, bursty congestion pattern entirely.',
     'New: sustained high frame-retry-rate, elevated RF interference, and degraded noise-floor alerts for access points -- all built on metrics SpanVault was already collecting but never alerted on.',
@@ -4810,6 +4816,22 @@ app.post('/api/wireless/controllers/:id/test', wrap(async (req, res) => {
 }));
 
 // ── Access points ─────────────────────────────────────────────
+// Per-radio client imbalance, as a 0-100 "dominant band's share of total
+// clients" percentage — mirrors evaluateWirelessAlerts()'s wireless_client_imbalance
+// check in collector/collector.js exactly (only bands with a non-null channel
+// count as "in play"; needs >=2 in-play bands and at least one client to be
+// evaluable). Returns 0 when not evaluable, same as a not-imbalanced AP.
+function wirelessImbalancePct(ap) {
+  const bandClients = [];
+  if (ap.radio_2g_channel != null) bandClients.push(Number(ap.clients_2g) || 0);
+  if (ap.radio_5g_channel != null) bandClients.push(Number(ap.clients_5g) || 0);
+  if (ap.radio_6g_channel != null) bandClients.push(Number(ap.clients_6g) || 0);
+  const clientsTotal = Number(ap.clients_total) || 0;
+  if (bandClients.length < 2 || clientsTotal <= 0) return 0;
+  const dominant = Math.max(...bandClients);
+  return Math.round((dominant / clientsTotal) * 100);
+}
+
 app.get('/api/wireless/aps', wrap(async (req, res) => {
   const where = [];
   const params = [];
@@ -4838,7 +4860,52 @@ app.get('/api/wireless/aps', wrap(async (req, res) => {
     ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
     ORDER BY a.site_name NULLS LAST, a.name
   `, params);
-  res.json(r.rows.map((row) => ({ ...row, uptime_formatted: fmtUptime(row.uptime_seconds) })));
+
+  // Rolling-window RF averages (same 15-min window as the collector's default
+  // wireless_util_window_minutes) and a weak-client ratio, both grouped by
+  // ap_id in one query each — a fixed display window, not a live app_settings
+  // read (avoids an extra round trip for a display-only aggregate).
+  const historyAggByAp = new Map();
+  try {
+    const hr = await sv.query(`
+      SELECT ap_id,
+             AVG(radio_2g_util) AS avg_util_2g, AVG(radio_5g_util) AS avg_util_5g,
+             AVG(retry_rate_2g) AS avg_retry_2g, AVG(retry_rate_5g) AS avg_retry_5g,
+             AVG(interference_pct_2g) AS avg_intf_2g, AVG(interference_pct_5g) AS avg_intf_5g
+        FROM wireless_history
+       WHERE ts >= NOW() - INTERVAL '15 minutes'
+       GROUP BY ap_id`);
+    for (const row of hr.rows) historyAggByAp.set(row.ap_id, row);
+  } catch (e) { console.error('[wireless/aps] rolling-window history query failed:', e.message); }
+
+  const weakByAp = new Map();
+  try {
+    const wr = await sv.query(`
+      SELECT ap_id, COUNT(*) AS total, COUNT(*) FILTER (WHERE is_problem = TRUE) AS weak
+        FROM wireless_clients
+       WHERE ap_id IS NOT NULL
+       GROUP BY ap_id`);
+    for (const row of wr.rows) weakByAp.set(row.ap_id, row);
+  } catch (e) { console.error('[wireless/aps] weak-client query failed:', e.message); }
+
+  res.json(r.rows.map((row) => {
+    let congestion_score = null;
+    let congestion_level = null;
+    if (row.status === 'online') {
+      const agg = historyAggByAp.get(row.id);
+      const util = agg ? Math.max(Number(agg.avg_util_2g) || 0, Number(agg.avg_util_5g) || 0) : 0;
+      const retry = agg ? Math.max(Number(agg.avg_retry_2g) || 0, Number(agg.avg_retry_5g) || 0) : 0;
+      const interference = agg ? Math.max(Number(agg.avg_intf_2g) || 0, Number(agg.avg_intf_5g) || 0) : 0;
+      const imbalancePct = wirelessImbalancePct(row);
+      const weak = weakByAp.get(row.id);
+      const weakClientRatioPct = weak && Number(weak.total) > 0
+        ? Math.round((Number(weak.weak) / Number(weak.total)) * 100) : 0;
+      const scored = computeCongestionScore({ util, retry, interference, imbalancePct, weakClientRatioPct });
+      congestion_score = scored.score;
+      congestion_level = scored.level;
+    }
+    return { ...row, uptime_formatted: fmtUptime(row.uptime_seconds), congestion_score, congestion_level };
+  }));
 }));
 
 app.get('/api/wireless/aps/:id', wrap(async (req, res) => {
@@ -4861,7 +4928,42 @@ app.get('/api/wireless/aps/:id', wrap(async (req, res) => {
     WHERE ap_id = $1 AND ts >= NOW() - INTERVAL '24 hours'
     GROUP BY bucket ORDER BY bucket
   `, [id]);
-  res.json({ ...ap, uptime_formatted: fmtUptime(ap.uptime_seconds), history: hist.rows });
+
+  // Same congestion scoring as the list endpoint, scoped to this one AP.
+  let congestion_score = null;
+  let congestion_level = null;
+  if (ap.status === 'online') {
+    let agg = null;
+    try {
+      const hr = await sv.query(`
+        SELECT AVG(radio_2g_util) AS avg_util_2g, AVG(radio_5g_util) AS avg_util_5g,
+               AVG(retry_rate_2g) AS avg_retry_2g, AVG(retry_rate_5g) AS avg_retry_5g,
+               AVG(interference_pct_2g) AS avg_intf_2g, AVG(interference_pct_5g) AS avg_intf_5g
+          FROM wireless_history
+         WHERE ap_id = $1 AND ts >= NOW() - INTERVAL '15 minutes'`, [id]);
+      agg = hr.rows[0] || null;
+    } catch (e) { console.error('[wireless/aps/:id] rolling-window history query failed:', e.message); }
+    let weak = null;
+    try {
+      const wr = await sv.query(`
+        SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE is_problem = TRUE) AS weak
+          FROM wireless_clients
+         WHERE ap_id = $1`, [id]);
+      weak = wr.rows[0] || null;
+    } catch (e) { console.error('[wireless/aps/:id] weak-client query failed:', e.message); }
+
+    const util = agg ? Math.max(Number(agg.avg_util_2g) || 0, Number(agg.avg_util_5g) || 0) : 0;
+    const retry = agg ? Math.max(Number(agg.avg_retry_2g) || 0, Number(agg.avg_retry_5g) || 0) : 0;
+    const interference = agg ? Math.max(Number(agg.avg_intf_2g) || 0, Number(agg.avg_intf_5g) || 0) : 0;
+    const imbalancePct = wirelessImbalancePct(ap);
+    const weakClientRatioPct = weak && Number(weak.total) > 0
+      ? Math.round((Number(weak.weak) / Number(weak.total)) * 100) : 0;
+    const scored = computeCongestionScore({ util, retry, interference, imbalancePct, weakClientRatioPct });
+    congestion_score = scored.score;
+    congestion_level = scored.level;
+  }
+
+  res.json({ ...ap, uptime_formatted: fmtUptime(ap.uptime_seconds), history: hist.rows, congestion_score, congestion_level });
 }));
 
 // AP client/utilization history (bucketed by range).

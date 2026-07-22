@@ -151,6 +151,11 @@ interface AccessPoint {
   auth_failures: number | null;
   reboot_count: number | null;
   bootstrap_count: number | null;
+  // AP congestion rollup (0-100, or null when the AP isn't online — never a
+  // misleading 0). congestion_level is a coarse bucketing of the same score
+  // for at-a-glance badges. See congestionTint()/CongestionPill() below.
+  congestion_score: number | null;
+  congestion_level: 'low' | 'medium' | 'high' | null;
 }
 
 interface ApHistoryRow {
@@ -400,15 +405,29 @@ type ClientSortKey =
   | 'mac_address' | 'ip_address' | 'ap_name' | 'ssid_name' | 'band'
   | 'vlan_id' | 'rssi_dbm' | 'tx_rate_mbps' | 'connected_since' | 'status' | 'bandwidth';
 
+// Low-rate threshold for the "weak client" flag (Mbps) — matches the
+// collector's wireless_weak_clients alert default. Display-only heuristic,
+// deliberately hardcoded rather than fetched from settings.
+const WEAK_CLIENT_RATE_MBPS = 24;
+
+// True when a client should be visually flagged as a problem client anywhere
+// it's rendered: either the API already marked it (is_problem — sticky/low
+// signal/frequent roamer, computed server-side) OR it's transmitting below
+// the low-rate threshold.
+function isWeakClient(c: WirelessClient): boolean {
+  return c.is_problem === true || (c.tx_rate_mbps != null && c.tx_rate_mbps < WEAK_CLIENT_RATE_MBPS);
+}
+
 // Numeric status rank mirroring ClientStatusBadge's exact precedence (worst
-// first): 0=Sticky, 1=Low Signal, 2=Frequent Roamer, 3=Normal. Ascending sort
-// on 'status' therefore shows the worst clients first, matching the API's
-// existing default problem-first ordering.
+// first): 0=Sticky, 1=Low Signal, 2=Frequent Roamer, 3=Weak Client (low tx
+// rate), 4=Normal. Ascending sort on 'status' therefore shows the worst
+// clients first, matching the API's existing default problem-first ordering.
 function clientStatusRank(c: WirelessClient): number {
   if (c.is_sticky) return 0;
   if (c.rssi_dbm != null && c.rssi_dbm < -75) return 1;
   if (Number(c.roaming_count) > 5) return 2;
-  return 3;
+  if (c.tx_rate_mbps != null && c.tx_rate_mbps < WEAK_CLIENT_RATE_MBPS) return 3;
+  return 4;
 }
 
 // Returns the comparable value for a given column. Numeric columns return a
@@ -1206,6 +1225,55 @@ function apMemPct(memTotal: number | null, memFree: number | null): number | nul
   return Math.round(((memTotal - memFree) / memTotal) * 100);
 }
 
+// ── AP congestion score/level display (tint-token colored, level-based) ───────
+// congestion_score/congestion_level are null together whenever the AP isn't
+// online — never render a bare 0/'—' as if it were a real "no congestion"
+// reading for an offline AP.
+function congestionTint(level: 'low' | 'medium' | 'high'): { bg: string; fg: string } {
+  if (level === 'high') return { bg: 'var(--tint-danger)', fg: 'var(--tint-danger-fg)' };
+  if (level === 'medium') return { bg: 'var(--tint-warn)', fg: 'var(--tint-warn-fg)' };
+  return { bg: 'var(--tint-success)', fg: 'var(--tint-success-fg)' };
+}
+
+// Small colored pill for a LIST-context row (Access Points tab), mirroring the
+// structural pattern of the existing StatusDot-based status cell nearby: a
+// short label an admin can scan a whole AP list for at a glance.
+function CongestionPill({ level }: { level: 'low' | 'medium' | 'high' | null }) {
+  if (level == null) return <span style={{ color: 'var(--text-muted)' }}>—</span>;
+  const { bg, fg } = congestionTint(level);
+  return (
+    <span
+      style={{
+        display: 'inline-block', padding: '2px 8px', borderRadius: 'var(--radius-sm)',
+        background: bg, color: fg, fontSize: 'var(--text-xs)', fontWeight: 600, textTransform: 'capitalize',
+      }}
+    >
+      {level}
+    </span>
+  );
+}
+
+// Labeled badge for the AP detail drawer's summary area — "Congestion: 62 (Medium)".
+// Renders nothing when the AP is offline (score/level null) rather than a
+// misleading "0".
+function ApCongestionBadge({ score, level }: { score: number | null; level: 'low' | 'medium' | 'high' | null }) {
+  if (score == null || level == null) return null;
+  const { bg, fg } = congestionTint(level);
+  const levelLabel = level.charAt(0).toUpperCase() + level.slice(1);
+  return (
+    <span
+      style={{
+        display: 'inline-flex', alignItems: 'center', gap: 6, padding: '3px 10px',
+        borderRadius: 'var(--radius-sm)', background: bg, color: fg,
+        fontSize: 'var(--text-sm)', fontWeight: 700,
+      }}
+      title="AP congestion score (0-100, higher = more congested)"
+    >
+      Congestion: {score} ({levelLabel})
+    </span>
+  );
+}
+
 // ── Controller status strip (Insights tab) (top-level) ────────
 // Compact per-controller rows: status dot, name, AP count, client count, CPU%.
 // Sourced from the already-fetched /api/wireless/controllers payload — no new fetch.
@@ -1625,6 +1693,7 @@ const AP_SORT_ACCESSORS: Record<string, (a: AccessPoint) => string | number | nu
   ch2g: (a) => a.radio_2g_channel ?? null,
   ch5g: (a) => a.radio_5g_channel ?? null,
   util: (a) => apUtil(a),
+  congestion: (a) => a.congestion_score ?? null,
   uptime: (a) => a.uptime_seconds ?? null,
   lastseen: (a) => (a.last_seen_at ? Date.parse(a.last_seen_at) : null),
 };
@@ -1732,6 +1801,7 @@ function ApControllerGroup({
                   <SortTh label="2.4GHz" col="ch2g" sort={sort} onSort={onSort} />
                   <SortTh label="5GHz" col="ch5g" sort={sort} onSort={onSort} />
                   <SortTh label="Channel Util" col="util" sort={sort} onSort={onSort} />
+                  <SortTh label="Congestion" col="congestion" sort={sort} onSort={onSort} />
                   <SortTh label="Uptime" col="uptime" sort={sort} onSort={onSort} />
                   <SortTh label="Last Seen" col="lastseen" sort={sort} onSort={onSort} />
                 </tr>
@@ -1757,6 +1827,7 @@ function ApControllerGroup({
                         <UtilBar pct={apUtil(ap) as number} />
                       )}
                     </td>
+                    <td><CongestionPill level={ap.congestion_level} /></td>
                     <td>{ap.uptime_formatted || '—'}</td>
                     <td>{fmtRel(ap.last_seen_at)}</td>
                   </tr>
@@ -2015,6 +2086,11 @@ function ApDetailDrawer({
         <div style={{ color: 'var(--text-muted)', fontSize: 'var(--text-base)', marginTop: 4 }}>
           {ap.site_name || '—'} · {ap.vendor || 'unknown vendor'} · {ap.status}
         </div>
+        {ap.congestion_score != null && (
+          <div style={{ marginTop: 8 }}>
+            <ApCongestionBadge score={ap.congestion_score} level={ap.congestion_level} />
+          </div>
+        )}
 
         <h3 style={{ marginBottom: 6 }}>AP Info</h3>
         <table className="sv-table">
@@ -2146,8 +2222,22 @@ function ApDetailDrawer({
                   padding: '6px 0', borderBottom: '1px solid var(--border-light)', fontSize: 'var(--text-base)',
                 }}
               >
-                <span style={{ flex: 1, minWidth: 0, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                  {c.mac_address || c.ip_address || '—'}
+                <span style={{ flex: 1, minWidth: 0, fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {c.mac_address || c.ip_address || '—'}
+                  </span>
+                  {isWeakClient(c) && (
+                    <span
+                      title="Weak client — low signal/sticky/roaming or a low data rate"
+                      style={{
+                        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                        width: 16, height: 16, borderRadius: '50%', flexShrink: 0,
+                        background: 'var(--tint-warn)', color: 'var(--tint-warn-fg)',
+                      }}
+                    >
+                      <IconWarning width={10} height={10} />
+                    </span>
+                  )}
                 </span>
                 <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, width: 90 }}>
                   <span style={{
@@ -3094,6 +3184,13 @@ function ClientStatusBadge({ client }: { client: WirelessClient }) {
     return (
       <span className="sv-badge" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: 'var(--yellow)', borderColor: 'var(--yellow)' }}>
         <IconRepeat width={12} height={12} /> Frequent Roamer
+      </span>
+    );
+  }
+  if (client.tx_rate_mbps != null && client.tx_rate_mbps < WEAK_CLIENT_RATE_MBPS) {
+    return (
+      <span className="sv-badge" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: 'var(--yellow)', borderColor: 'var(--yellow)' }}>
+        <IconWarning width={12} height={12} /> Weak Client
       </span>
     );
   }
