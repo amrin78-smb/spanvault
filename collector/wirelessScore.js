@@ -13,13 +13,21 @@
 // moment-to-moment load, so they carry the smallest weights.
 function computeCongestionScore({ util, retry, interference, imbalancePct, weakClientRatioPct }) {
   const utilC = Math.min(100, Math.max(0, util || 0)) * 0.35;
-  const retryC = Math.min(100, (retry || 0) * 4) * 0.25;
-  const intfC = Math.min(100, (interference || 0) * 2.5) * 0.15;
+  const retryC = Math.min(100, Math.max(0, retry || 0) * 4) * 0.25;
+  const intfC = Math.min(100, Math.max(0, interference || 0) * 2.5) * 0.15;
   const imbalanceC = Math.min(100, Math.max(0, imbalancePct || 0)) * 0.15;
   const weakC = Math.min(100, Math.max(0, weakClientRatioPct || 0)) * 0.10;
   const score = Math.round(utilC + retryC + intfC + imbalanceC + weakC);
   const clamped = Math.max(0, Math.min(100, score));
-  const level = clamped >= 70 ? 'high' : clamped >= 40 ? 'medium' : 'low';
+  // Found in the 2026-07-22 bug sweep: with the ORIGINAL 70/40 cutoffs, util
+  // saturated at 100% contributes only 35 points (its own weight) and could
+  // never alone escape "low", directly contradicting this file's own "util
+  // dominates" comment above. Thresholds are now set against what the actual
+  // weighted components can produce: util alone maxed = 35 (one major signal
+  // maxed -> at least "medium"); util+retry both maxed = 60 (two major
+  // signals maxed -> "high"). Re-derive these by hand again if the weights
+  // above ever change — they're tuned together, not independently.
+  const level = clamped >= 60 ? 'high' : clamped >= 35 ? 'medium' : 'low';
   return { score: clamped, level };
 }
 

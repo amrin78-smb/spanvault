@@ -411,11 +411,16 @@ type ClientSortKey =
 const WEAK_CLIENT_RATE_MBPS = 24;
 
 // True when a client should be visually flagged as a problem client anywhere
-// it's rendered: either the API already marked it (is_problem — sticky/low
-// signal/frequent roamer, computed server-side) OR it's transmitting below
-// the low-rate threshold.
+// it's rendered: is_problem (low signal/frequent roamer), is_sticky (poor
+// signal but NOT roaming — a DIFFERENT, non-overlapping server-side condition,
+// see wirelessCollector.js's isProblem/isSticky computation; is_sticky is
+// never folded into is_problem, so checking only is_problem here misses it —
+// found in the 2026-07-22 bug sweep, where this under-flagged exactly the
+// clients the Clients tab's own ClientStatusBadge already ranks as the worst
+// tier), OR a low negotiated data rate.
 function isWeakClient(c: WirelessClient): boolean {
-  return c.is_problem === true || (c.tx_rate_mbps != null && c.tx_rate_mbps < WEAK_CLIENT_RATE_MBPS);
+  return c.is_problem === true || c.is_sticky === true
+    || (c.tx_rate_mbps != null && c.tx_rate_mbps < WEAK_CLIENT_RATE_MBPS);
 }
 
 // Numeric status rank mirroring ClientStatusBadge's exact precedence (worst
@@ -1022,6 +1027,7 @@ export default function WirelessPage() {
           onFilterController={gotoApsForController}
           onViewAllClients={gotoClientsForAp}
           initialApId={initialApId}
+          onInitialApIdConsumed={() => setInitialApId(null)}
         />
       )}
       {tab === 'ssids' && (
@@ -1879,6 +1885,7 @@ function groupByController<T extends { controller_id: number | null; controller_
 function AccessPointsTab({
   siteFilter, setSiteFilter, controllerFilter, setControllerFilter,
   statusFilter, setStatusFilter, onFilterController, onViewAllClients, initialApId,
+  onInitialApIdConsumed,
 }: {
   siteFilter: number | null;
   setSiteFilter: (v: number | null) => void;
@@ -1889,6 +1896,7 @@ function AccessPointsTab({
   onFilterController: (controllerId: number | null) => void;
   onViewAllClients: (apId: number | null) => void;
   initialApId?: number | null;
+  onInitialApIdConsumed?: () => void;
 }) {
   const status = statusFilter;
   const setStatus = setStatusFilter;
@@ -1901,12 +1909,23 @@ function AccessPointsTab({
   // works regardless of the current site/controller/status/vendor filters —
   // the target AP does not need to be visible in the (possibly filtered)
   // list for its drawer to open.
+  //
+  // onInitialApIdConsumed tells the PARENT to clear its initialApId state once
+  // this fires (success or failure — either way the deep link's job is done).
+  // Without this, WirelessPage's initialApId lives for the whole page session
+  // (it's only ever set once, on mount) while this whole component unmounts/
+  // remounts every time the user switches away from the "aps" tab and back —
+  // found in the 2026-07-22 bug sweep: closing the drawer, switching to
+  // another wireless tab, then back to Access Points silently reopened the
+  // SAME AP's drawer again, because the remounted effect still saw the
+  // original (never-cleared) initialApId as if it were a fresh deep link.
   useEffect(() => {
     if (initialApId == null) return;
     let cancelled = false;
     apiGet<AccessPoint>(`/api/wireless/aps/${initialApId}`)
       .then((ap) => { if (!cancelled) setSelectedAp(ap); })
-      .catch(() => { /* AP not found/inaccessible — silently ignore, list still renders */ });
+      .catch(() => { /* AP not found/inaccessible — silently ignore, list still renders */ })
+      .finally(() => { if (!cancelled) onInitialApIdConsumed?.(); });
     return () => { cancelled = true; };
   }, [initialApId]);
 

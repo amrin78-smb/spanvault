@@ -328,6 +328,9 @@ export default function AlertsPage() {
         <tr
           style={{ height: 40, ...(suppressed ? { opacity: 0.6 } : {}), ...(href ? { cursor: 'pointer' } : {}) }}
           onClick={href ? () => router.push(href) : undefined}
+          role={href ? 'button' : undefined}
+          tabIndex={href ? 0 : undefined}
+          onKeyDown={href ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); router.push(href); } } : undefined}
         >
           {/* severity dot */}
           <td style={{ paddingLeft: indent ? 28 : 12, width: 28 }}>

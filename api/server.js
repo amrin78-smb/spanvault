@@ -36,6 +36,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.83.4': [
+    'Fixed from an end-of-day bug sweep of today\'s wireless-alerting work: the AP congestion score\'s client-imbalance component ignored the minimum-client-count gate the real alert uses, inflating scores for lightly-loaded APs; the score\'s Low/Medium/High cutoffs made 100% channel utilization alone read as "Low" despite that being the score\'s own dominant signal; closing a wireless alert\'s AP drawer and revisiting the Access Points tab could silently reopen the same AP again; the AP drawer\'s weak-client indicator missed "sticky" clients that the Clients tab already flags as the worst tier; and the AP detail API route was missing the site-scoping check its sibling routes already have.',
+  ],
   '1.83.3': [
     'Fixed: navigating directly to Settings or Agents (a fresh page load / deep link, not clicking the sidebar from an already-open page) could redirect a genuine admin or super_admin back to the dashboard with "access requires admin role" -- the guard checked the user\'s role before the session had finished loading client-side, evaluating against a temporary \'viewer\' default. Found while investigating the Settings layout fixes above.',
   ],
@@ -4835,13 +4838,25 @@ app.post('/api/wireless/controllers/:id/test', wrap(async (req, res) => {
 // check in collector/collector.js exactly (only bands with a non-null channel
 // count as "in play"; needs >=2 in-play bands and at least one client to be
 // evaluable). Returns 0 when not evaluable, same as a not-imbalanced AP.
+// Found in the 2026-07-22 bug sweep: this used to return a nonzero % for any
+// AP with >=2 bands and >=1 client, which does NOT actually mirror the
+// collector's alert (it also requires clientsTotal >= wireless_imbalance_min_clients,
+// default 15) despite this function's own comment claiming otherwise — a
+// lightly-loaded AP (e.g. 1 client on 5GHz, 0 on 2.4GHz) scored 100% imbalanced
+// here while never coming close to tripping the real alert. Hardcoded to the
+// same default (15) as the collector, same trade-off already accepted for the
+// rolling-window size above (a live app_settings read for a display-only
+// aggregate isn't worth the round trip) — if wireless_imbalance_min_clients is
+// changed from its default, this display value drifts from the real alert
+// threshold the same way the fixed 15-min window can.
+const IMBALANCE_MIN_CLIENTS = 15;
 function wirelessImbalancePct(ap) {
   const bandClients = [];
   if (ap.radio_2g_channel != null) bandClients.push(Number(ap.clients_2g) || 0);
   if (ap.radio_5g_channel != null) bandClients.push(Number(ap.clients_5g) || 0);
   if (ap.radio_6g_channel != null) bandClients.push(Number(ap.clients_6g) || 0);
   const clientsTotal = Number(ap.clients_total) || 0;
-  if (bandClients.length < 2 || clientsTotal <= 0) return 0;
+  if (bandClients.length < 2 || clientsTotal < IMBALANCE_MIN_CLIENTS) return 0;
   const dominant = Math.max(...bandClients);
   return Math.round((dominant / clientsTotal) * 100);
 }
@@ -4931,6 +4946,20 @@ app.get('/api/wireless/aps/:id', wrap(async (req, res) => {
   `, [id]);
   const ap = r.rows[0];
   if (!ap) return res.status(404).json({ error: 'AP not found' });
+
+  // RBAC site scoping — enforced server-side so a site_admin cannot bypass it
+  // by calling the API directly. An unscoped (admin/viewer) caller passes
+  // through. Found missing in the 2026-07-22 bug sweep — the sibling list
+  // endpoint (/api/wireless/aps) and /api/wireless/aps/:id/clients both
+  // already have this guard, but this by-id detail route never did; today's
+  // Alerts-page deep link now gives every role, including site_admin, a
+  // prominent UI path straight into this route by AP ID, so the gap is more
+  // reachable than before even though it predates today's changes.
+  const siteFilter = getSiteFilter(req);
+  if (siteFilter && siteFilter.length && !siteFilter.includes(ap.site_id)) {
+    return res.status(403).json({ error: 'forbidden: AP outside your assigned sites' });
+  }
+
   const hist = await sv.query(`
     SELECT date_bin('5 minutes', ts, TIMESTAMPTZ '2000-01-01') AS bucket,
            ROUND(AVG(clients_total))::int AS clients_total,
