@@ -35,6 +35,12 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.81.0': [
+    'New wireless alerts: access-point channel utilization is now evaluated as a rolling 15-minute average with warning/critical tiers (65%/85%), instead of a single instantaneous poll only firing at 90% -- the old check could miss a real, bursty congestion pattern entirely.',
+    'New: sustained high frame-retry-rate, elevated RF interference, and degraded noise-floor alerts for access points -- all built on metrics SpanVault was already collecting but never alerted on.',
+    'New: client band-imbalance alert -- flags an AP where nearly all clients have piled onto one radio (e.g. 5GHz) while another configured radio on the same AP sits idle, a common capacity/band-steering problem that was previously invisible.',
+    'New: roam-storm alert -- flags an AP absorbing an abnormal number of client roams in a short window, indicating sticky-client/roaming thrash.',
+  ],
   '1.80.2': [
     'Hardening: the wireless collector now logs a warning whenever an Aruba Central client\'s AP association can\'t be matched to a known AP, instead of silently leaving it unresolved. This catches a whole class of "one field name wrong" bug early (this integration has shipped a few of those already) rather than only noticing it once someone asks why roam events aren\'t firing.',
     'Corrected an internal code comment that inaccurately described Aruba Central\'s client polling as sharing the same 5-minute cycle as AP polling — it actually runs on its own independent 10-minute timer. No behavior change; this was a documentation-only mix-up that could have misled future work in that area.',

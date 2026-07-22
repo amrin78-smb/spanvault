@@ -1006,6 +1006,11 @@ function warnText(type: string): string {
     case 'high_latency': return 'response time exceeded threshold';
     case 'high_cpu':     return 'CPU exceeded threshold';
     case 'high_memory':  return 'memory exceeded threshold';
+    case 'wireless_high_retry': return 'retry rate exceeded threshold';
+    case 'wireless_client_imbalance': return 'client band imbalance detected';
+    case 'wireless_high_interference': return 'interference exceeded threshold';
+    case 'wireless_degraded_noise_floor': return 'noise floor degraded';
+    case 'wireless_roam_storm': return 'roam storm detected';
     default:             return type.startsWith('rule_') ? 'alert rule triggered' : type.replace(/_/g, ' ');
   }
 }
@@ -1015,6 +1020,11 @@ function humanEvent(type: string): string {
     case 'high_latency': return 'high latency';
     case 'high_cpu':     return 'high CPU';
     case 'high_memory':  return 'high memory';
+    case 'wireless_high_retry': return 'high retry rate';
+    case 'wireless_client_imbalance': return 'client band imbalance';
+    case 'wireless_high_interference': return 'high interference';
+    case 'wireless_degraded_noise_floor': return 'degraded noise floor';
+    case 'wireless_roam_storm': return 'roam storm';
     default:             return type.replace(/_/g, ' ');
   }
 }

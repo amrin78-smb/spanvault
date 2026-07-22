@@ -1767,6 +1767,25 @@ async function resolveWirelessAlert(idCol, id, alertType) {
   } catch (e) { console.error('[wireless-alert] resolve failed:', e.message); }
 }
 
+// Two-tier (warning/critical) checks can't just call raiseWirelessAlert directly
+// when conditions cross from one tier to the other: idx_alerts_active_wap_unique/
+// idx_alerts_active_wctl_unique enforce one ACTIVE row per (id, alert_type), so
+// re-raising the SAME alert_type at a NEW severity while the old-severity row is
+// still active hits ON CONFLICT ... DO NOTHING and silently never escalates (or
+// de-escalates). Resolve any existing active alert of this type at a DIFFERENT
+// severity first, then raise fresh so the insert isn't blocked by its own stale row.
+async function raiseWirelessAlertWithSeverityChange(idCol, entity, alertType, severity, message) {
+  try {
+    const existing = await sv.query(
+      `SELECT severity FROM alerts WHERE ${idCol} = $1 AND alert_type = $2 AND status = 'active'`,
+      [entity.id, alertType]);
+    if (existing.rows[0] && existing.rows[0].severity !== severity) {
+      await resolveWirelessAlert(idCol, entity.id, alertType);
+    }
+  } catch (e) { console.error('[wireless-alert] severity-change check failed:', e.message); }
+  await raiseWirelessAlert(idCol, entity, alertType, severity, message);
+}
+
 // Sustained-high-bandwidth client alerts (wireless_client_bandwidth_high) are
 // a hardcoded-threshold check, deliberately NOT a user-configurable alert_rule
 // like the device/service rule engine (getEffectiveRules/getEffectiveServiceRules
@@ -1813,7 +1832,23 @@ async function resolveClientBandwidthAlert(mac, controllerId) {
 
 async function evaluateWirelessAlerts() {
   try {
-    const utilThreshold = settingInt('wireless_util_threshold_pct', 90);
+    // Rolling-window RF checks (utilization/retry/interference/noise floor) all
+    // read wireless_history over the same trailing window — one setting shared
+    // across them keeps this simple (a separate window per metric would just be
+    // more knobs nobody will individually tune).
+    const utilWindowMinutes = settingInt('wireless_util_window_minutes', 15);
+    const utilWarnPct = settingInt('wireless_util_warn_pct', 65);
+    const utilCritPct = settingInt('wireless_util_crit_pct', 85);
+    const retryThresholdPct = settingInt('wireless_retry_threshold_pct', 15);
+    const imbalanceMinClients = settingInt('wireless_imbalance_min_clients', 15);
+    const imbalanceRatioPct = settingInt('wireless_imbalance_ratio_pct', 90);
+    const interferenceThresholdPct = settingInt('wireless_interference_threshold_pct', 30);
+    // Noise floor is negative dBm — LESS negative (closer to 0) is WORSE, so
+    // "degraded" means the average is >= this threshold (e.g. -80 is worse than
+    // -95). Don't flip this to LEAST like a normal "high value is bad" check.
+    const noiseFloorThresholdDbm = settingInt('wireless_noise_floor_threshold_dbm', -85);
+    const roamStormCount = settingInt('wireless_roam_storm_count', 15);
+    const roamStormWindowMinutes = settingInt('wireless_roam_storm_window_minutes', 10);
     // Controllers — offline when the last poll errored.
     const ctrls = (await sv.query(
       `SELECT id, name, status, site_id, vendor, last_error FROM wireless_controllers WHERE active = TRUE`)).rows;
@@ -1848,24 +1883,125 @@ async function evaluateWirelessAlerts() {
         await resolveWirelessAlert('wireless_controller_id', c.id, 'wireless_api_token_invalid');
       }
     }
-    // APs — down / high utilization / reboot.
+    // APs — down / reboot / rolling-window RF health / structural imbalance.
     const aps = (await sv.query(`
       SELECT a.id, a.name, a.status, a.site_id, a.uptime_seconds,
-             a.radio_2g_util_pct, a.radio_5g_util_pct
+             a.clients_2g, a.clients_5g, a.clients_6g, a.clients_total,
+             a.radio_2g_channel, a.radio_5g_channel, a.radio_6g_channel
         FROM wireless_aps a
         JOIN wireless_controllers c ON c.id = a.controller_id AND c.active = TRUE`)).rows;
+    const apsById = new Map(aps.map(a => [a.id, a]));
+
+    // One grouped query covers the utilization/retry/interference/noise-floor
+    // checks together (all read the same wireless_history rows over the same
+    // window) — far cheaper than a separate round trip per metric. Isolated in
+    // its own try/catch so a missing/un-migrated wireless_history table doesn't
+    // take out reboot/imbalance/roam-storm checks below, matching the rogue-AP
+    // block's "missing table on un-migrated DB — ignore" pattern.
+    const historyAggByAp = new Map();
+    try {
+      const hr = await sv.query(
+        `SELECT ap_id,
+                AVG(radio_2g_util) AS avg_util_2g, AVG(radio_5g_util) AS avg_util_5g,
+                AVG(retry_rate_2g) AS avg_retry_2g, AVG(retry_rate_5g) AS avg_retry_5g,
+                AVG(interference_pct_2g) AS avg_intf_2g, AVG(interference_pct_5g) AS avg_intf_5g,
+                AVG(noise_floor_2g) AS avg_noise_2g, AVG(noise_floor_5g) AS avg_noise_5g
+           FROM wireless_history
+          WHERE ts >= NOW() - make_interval(mins => $1)
+          GROUP BY ap_id`, [utilWindowMinutes]);
+      for (const row of hr.rows) historyAggByAp.set(row.ap_id, row);
+    } catch (e) { console.error('[wireless-alert] rolling-window history query failed:', e.message); }
+
     for (const ap of aps) {
       if (ap.status === 'offline') {
         await raiseWirelessAlert('wireless_ap_id', ap, 'wireless_ap_down', 'critical',
           `Access point ${ap.name} is offline`);
       } else if (ap.status === 'online') {
         await resolveWirelessAlert('wireless_ap_id', ap.id, 'wireless_ap_down');
-        const util = Math.max(Number(ap.radio_2g_util_pct) || 0, Number(ap.radio_5g_util_pct) || 0);
-        if (util >= utilThreshold) {
-          await raiseWirelessAlert('wireless_ap_id', ap, 'wireless_high_util', 'warning',
-            `Access point ${ap.name} channel utilization ${Math.round(util)}% (>= ${utilThreshold}%)`);
+
+        const agg = historyAggByAp.get(ap.id);
+
+        // 1. Tiered rolling-window utilization (replaces the old single-poll
+        // snapshot check — a burst that only lands on 1-2 of the ~3 polls in the
+        // window used to slip under a single-poll threshold entirely).
+        const avgUtil2g = agg ? Number(agg.avg_util_2g) || 0 : 0;
+        const avgUtil5g = agg ? Number(agg.avg_util_5g) || 0 : 0;
+        const util = Math.max(avgUtil2g, avgUtil5g);
+        if (util >= utilCritPct) {
+          await raiseWirelessAlertWithSeverityChange('wireless_ap_id', ap, 'wireless_high_util', 'critical',
+            `Access point ${ap.name} channel utilization averaged ${Math.round(util)}% over the last ${utilWindowMinutes} min (>= ${utilCritPct}% critical)`);
+        } else if (util >= utilWarnPct) {
+          await raiseWirelessAlertWithSeverityChange('wireless_ap_id', ap, 'wireless_high_util', 'warning',
+            `Access point ${ap.name} channel utilization averaged ${Math.round(util)}% over the last ${utilWindowMinutes} min (>= ${utilWarnPct}% warning)`);
         } else {
           await resolveWirelessAlert('wireless_ap_id', ap.id, 'wireless_high_util');
+        }
+
+        // 2. Sustained high retry rate — contention/interference symptom that a
+        // single-poll utilization check can't see at all.
+        const avgRetry2g = agg ? Number(agg.avg_retry_2g) || 0 : 0;
+        const avgRetry5g = agg ? Number(agg.avg_retry_5g) || 0 : 0;
+        const retry = Math.max(avgRetry2g, avgRetry5g);
+        if (retry >= retryThresholdPct) {
+          await raiseWirelessAlert('wireless_ap_id', ap, 'wireless_high_retry', 'warning',
+            `Access point ${ap.name} frame retry rate averaged ${Math.round(retry)}% over the last ${utilWindowMinutes} min (>= ${retryThresholdPct}% — possible contention/interference)`);
+        } else {
+          await resolveWirelessAlert('wireless_ap_id', ap.id, 'wireless_high_retry');
+        }
+
+        // 3. Per-radio client imbalance — a live structural snapshot, not a
+        // rolling window. Only bands the AP actually has active (channel not
+        // null) count as "in play", so a single-radio AP (e.g. 2.4GHz-only) is
+        // never flagged just for having 0 clients on a radio it doesn't have.
+        const bandClients = [];
+        if (ap.radio_2g_channel != null) bandClients.push(Number(ap.clients_2g) || 0);
+        if (ap.radio_5g_channel != null) bandClients.push(Number(ap.clients_5g) || 0);
+        if (ap.radio_6g_channel != null) bandClients.push(Number(ap.clients_6g) || 0);
+        const clientsTotal = Number(ap.clients_total) || 0;
+        let imbalanced = false;
+        if (bandClients.length >= 2 && clientsTotal >= imbalanceMinClients) {
+          const dominant = Math.max(...bandClients);
+          const pct = Math.round((dominant / clientsTotal) * 100);
+          if (pct >= imbalanceRatioPct) {
+            imbalanced = true;
+            await raiseWirelessAlert('wireless_ap_id', ap, 'wireless_client_imbalance', 'warning',
+              `Access point ${ap.name} has ${dominant} of ${clientsTotal} clients (${pct}%) on a single radio band while its other radio(s) sit idle — capacity/band-steering imbalance`);
+          }
+        }
+        if (!imbalanced) await resolveWirelessAlert('wireless_ap_id', ap.id, 'wireless_client_imbalance');
+
+        // 4a. RF interference — missing telemetry (old firmware, no OID) reads
+        // as NULL, safely treated as 0% here (same as the utilization/retry
+        // fallback above — "no data" should never itself look alarming).
+        const avgIntf2g = agg ? Number(agg.avg_intf_2g) || 0 : 0;
+        const avgIntf5g = agg ? Number(agg.avg_intf_5g) || 0 : 0;
+        const interference = Math.max(avgIntf2g, avgIntf5g);
+        if (interference >= interferenceThresholdPct) {
+          await raiseWirelessAlert('wireless_ap_id', ap, 'wireless_high_interference', 'warning',
+            `Access point ${ap.name} RF interference averaged ${Math.round(interference)}% over the last ${utilWindowMinutes} min (>= ${interferenceThresholdPct}%)`);
+        } else {
+          await resolveWirelessAlert('wireless_ap_id', ap.id, 'wireless_high_interference');
+        }
+
+        // 4b. Noise floor degradation — unlike the metrics above, NULL must NOT
+        // default to 0 here: 0 dBm reads as catastrophically WORSE than a
+        // missing-telemetry AP's true (unknown) floor, since less-negative is
+        // worse. An AP with no noise-floor data at all is simply skipped/resolved
+        // rather than treated as a 0 dBm reading.
+        const noise2g = agg && agg.avg_noise_2g != null ? Number(agg.avg_noise_2g) : null;
+        const noise5g = agg && agg.avg_noise_5g != null ? Number(agg.avg_noise_5g) : null;
+        if (noise2g != null || noise5g != null) {
+          const noise = Math.max(
+            noise2g != null ? noise2g : -Infinity,
+            noise5g != null ? noise5g : -Infinity);
+          if (noise >= noiseFloorThresholdDbm) {
+            await raiseWirelessAlert('wireless_ap_id', ap, 'wireless_degraded_noise_floor', 'warning',
+              `Access point ${ap.name} noise floor averaged ${Math.round(noise)} dBm over the last ${utilWindowMinutes} min (>= ${noiseFloorThresholdDbm} dBm — degraded RF environment)`);
+          } else {
+            await resolveWirelessAlert('wireless_ap_id', ap.id, 'wireless_degraded_noise_floor');
+          }
+        } else {
+          await resolveWirelessAlert('wireless_ap_id', ap.id, 'wireless_degraded_noise_floor');
         }
       }
       // Reboot/flap: uptime went backwards since we last saw it.
@@ -1882,6 +2018,34 @@ async function evaluateWirelessAlerts() {
         wirelessApUptime.set(ap.id, up);
       }
     }
+
+    // 5. Roam/disconnect storm — count roams landing on each AP in the last
+    // window (HAVING filters to APs at/over the threshold in SQL rather than in
+    // JS). Isolated in its own try/catch like the history query above, since
+    // wireless_client_events is a separate table with its own migration history.
+    const roamStormApIds = new Set();
+    try {
+      const rr = await sv.query(
+        `SELECT to_ap_id, COUNT(*) AS c
+           FROM wireless_client_events
+          WHERE event_type = 'roam' AND to_ap_id IS NOT NULL
+            AND ts >= NOW() - make_interval(mins => $1)
+          GROUP BY to_ap_id
+         HAVING COUNT(*) >= $2`, [roamStormWindowMinutes, roamStormCount]);
+      for (const row of rr.rows) {
+        const ap = apsById.get(row.to_ap_id);
+        if (!ap) continue;
+        roamStormApIds.add(ap.id);
+        await raiseWirelessAlert('wireless_ap_id', ap, 'wireless_roam_storm', 'warning',
+          `Access point ${ap.name} saw ${row.c} client roams in the last ${roamStormWindowMinutes} min (>= ${roamStormCount}) — possible sticky-client/roaming thrash`);
+      }
+    } catch (e) { console.error('[wireless-alert] roam storm query failed:', e.message); }
+    for (const ap of aps) {
+      if (ap.status === 'online' && !roamStormApIds.has(ap.id)) {
+        await resolveWirelessAlert('wireless_ap_id', ap.id, 'wireless_roam_storm');
+      }
+    }
+
     // Rogue AP detection (opt-in via setting). For each active controller, count
     // rogue/malicious detections seen in the last hour; raise a warning when any
     // are present, otherwise resolve. Uses the controller rows already loaded.

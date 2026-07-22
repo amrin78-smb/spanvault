@@ -51,6 +51,11 @@ function prettyType(t: string): string {
   if (t === 'wireless_api_token_invalid') return 'API Token Invalid';
   if (t === 'wireless_high_util') return 'High Channel Util';
   if (t === 'wireless_ap_rebooted') return 'AP Rebooted';
+  if (t === 'wireless_high_retry') return 'High Retry Rate';
+  if (t === 'wireless_client_imbalance') return 'Client Band Imbalance';
+  if (t === 'wireless_high_interference') return 'High Interference';
+  if (t === 'wireless_degraded_noise_floor') return 'Degraded Noise Floor';
+  if (t === 'wireless_roam_storm') return 'Roam Storm';
   return t.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 

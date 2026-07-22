@@ -249,6 +249,59 @@ just written. **Don't "clean up" these COALESCEs into plain assignments** —
 same failure shape as the `testController` note above: builds clean, passes
 every static check, and quietly breaks RF enrichment in production.
 
+### Wireless RF alerting is windowed/sustained checks, not single-poll snapshots (2026-07)
+`evaluateWirelessAlerts()` in `collector/collector.js` originally only had one
+RF-quality check — `wireless_high_util` compared a single 5-min poll's
+`radio_2g/5g_util_pct` against one 90% cliff (`wireless_util_threshold_pct`).
+That's why real, user-reported AP congestion wasn't alerting: utilization on a
+genuinely busy AP swings poll-to-poll (9-73% observed, ~17% 3-day average), so
+a disruptive burst almost never lands on a sampled poll above 90%. Worse,
+several metrics already collected into `wireless_aps`/`wireless_history`/
+`wireless_client_events` on every poll — retry rate, interference %, noise
+floor, per-radio client-count imbalance, client roam events — had **zero**
+alert logic wired to them at all. `evaluateWirelessAlerts()` now has five RF
+checks, all built on the existing `raiseWirelessAlert`/`resolveWirelessAlert`
+helpers and existing schema (no new tables/columns), each configured via
+`settingInt()`/`setting()` with a hardcoded code-level default and **no
+Settings-page UI** — same code-default-only pattern as
+`wireless_util_threshold_pct`/`wireless_rogue_alerts_enabled` above; an
+operator who wants a non-default value sets it directly in `app_settings`.
+
+| `alert_type` | Check | Settings (default) |
+|---|---|---|
+| `wireless_high_util` | Rolling-window average of `radio_2g_util`/`radio_5g_util` from `wireless_history` (replaces the old single-poll check), two severity tiers | `wireless_util_window_minutes` (15), `wireless_util_warn_pct` (65), `wireless_util_crit_pct` (85) |
+| `wireless_high_retry` | Rolling-window average of `retry_rate_2g`/`retry_rate_5g` from `wireless_history`, same window as util | `wireless_retry_threshold_pct` (15) |
+| `wireless_client_imbalance` | Live snapshot (not windowed) of `wireless_aps.clients_2g/5g/6g` vs `radio_2g/5g/6g_channel` — flags a band carrying a disproportionate client share while another band configured on the SAME AP sits idle | `wireless_imbalance_min_clients` (15), `wireless_imbalance_ratio_pct` (90) |
+| `wireless_high_interference` | Rolling-window average of `interference_pct_2g/5g` from `wireless_history` | `wireless_interference_threshold_pct` (30) |
+| `wireless_degraded_noise_floor` | Rolling-window average of `noise_floor_2g/5g` from `wireless_history` | `wireless_noise_floor_threshold_dbm` (-85) |
+| `wireless_roam_storm` | Count of `wireless_client_events` rows with `event_type='roam'` grouped by `to_ap_id` in a window — flags an AP absorbing abnormal roam volume (sticky-client/roaming thrash), independent of the RF checks above | `wireless_roam_storm_count` (15), `wireless_roam_storm_window_minutes` (10) |
+
+`wireless_client_imbalance` only evaluates a band whose radio the AP actually
+HAS configured (channel not null) — an AP with no 2.4GHz radio at all must
+never be flagged just for sitting at 0 clients on a band it doesn't have.
+`wireless_degraded_noise_floor`'s comparison direction is inverted and easy to
+get backwards: noise floor is negative dBm, so "degraded" means the average is
+**>=** the threshold — i.e. LESS negative / closer to 0 is worse (-80 dBm is
+worse than -95 dBm).
+
+**Gotcha — escalating severity on an already-active alert needs
+resolve-then-re-raise, not a second `raiseWirelessAlert` call.** The `alerts`
+table has a partial unique index enforcing one ACTIVE row per
+`(wireless_ap_id, alert_type)`, and `raiseWirelessAlert` inserts with `ON
+CONFLICT ... DO NOTHING`. For a two-tier check like `wireless_high_util`
+(warn → crit), simply calling `raiseWirelessAlert` again with the new severity
+while the warn-tier row is still active silently no-ops — the conflict
+swallows it and the alert never escalates to critical. The fix is a small
+wrapper that resolves the existing row before re-raising at the new severity
+when the tier changes. **Don't "simplify" this back to a bare
+`raiseWirelessAlert` call** — it reads as harmless cleanup (builds clean,
+passes every static check) and quietly caps every two-tier alert at whichever
+severity fired first.
+
+**KIV (deliberately not built in this pass):** a per-client low-signal/
+low-data-rate rollup, and a combined single "AP congestion score" surfaced on
+the Wireless page. Both stay in view for a future iteration.
+
 ### After any change
 Run `npm run build` inside frontend/ to verify before committing.
 Commit message format: `feat: <short description>` or `fix: <short description>`
