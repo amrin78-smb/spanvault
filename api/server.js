@@ -36,6 +36,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.83.2': [
+    'Fixed: capping short-value field widths (1.83.1) only fixed the input box itself -- the surrounding form layout was still a rigid 2-column grid, so a narrow input left a large dead gap before the next field. Settings (Polling & Thresholds, Wireless Alert Thresholds, Data Retention, SMTP) and the Add/Edit Device dialog now flow fields at their natural width instead of forcing two equal-width columns.',
+  ],
   '1.83.1': [
     'Polish: short-value fields across Settings (thresholds, ports, minutes, counts) no longer stretch into oversized input boxes -- they now use a consistent compact width, matching how a short field should look next to longer ones like SMTP host or email recipients. Also applied to the Add/Edit Device dialog.',
     'Polish: normalized several small inconsistencies found across Settings tabs (helper-text spacing, checkbox spacing, table margins) that had each been hand-tuned slightly differently.',

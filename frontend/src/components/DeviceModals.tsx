@@ -126,7 +126,7 @@ export function DeviceForm({
         <h2>{device ? 'Edit Device' : 'Add Device'}</h2>
         {err && <ErrorBox message={err} />}
         {loadingDevice && <p className="sv-muted" style={{ fontSize: 'var(--text-base)', marginTop: 0 }}>Loading device settings…</p>}
-        <div className="sv-form-grid">
+        <div className="sv-form-grid-compact">
           <label className="sv-field">Name
             <input className="sv-input" value={form.name} onChange={(e) => set('name', e.target.value)} />
           </label>
@@ -165,7 +165,7 @@ export function DeviceForm({
 
         {form.snmp_enabled && (
           <>
-            <div className="sv-form-grid" style={{ marginTop: 14 }}>
+            <div className="sv-form-grid-compact" style={{ marginTop: 14 }}>
               <label className="sv-field">SNMP Version
                 <select className="sv-select" value={form.snmp_version} onChange={(e) => set('snmp_version', e.target.value)}>
                   <option value="1">v1</option>

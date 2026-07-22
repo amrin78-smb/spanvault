@@ -253,7 +253,7 @@ function GeneralSettings({ settings, form, set, save, saving, saveErr, dirty, nu
       {saveErr && <ErrorBox message={saveErr} />}
       <div className="sv-panel">
         <h2>Polling &amp; Thresholds</h2>
-        <div className="sv-form-grid">
+        <div className="sv-form-grid-compact">
           {NUM_FIELDS.map((f) => {
             const err = numErrors[f.key];
             return (
@@ -278,7 +278,7 @@ function GeneralSettings({ settings, form, set, save, saving, saveErr, dirty, nu
         {WIRELESS_ALERT_GROUPS.map((g) => (
           <div key={g.title}>
             <h3 style={{ fontSize: 'var(--text-base)', margin: '14px 0 8px' }}>{g.title}</h3>
-            <div className="sv-form-grid">
+            <div className="sv-form-grid-compact">
               {g.keys.map((k) => {
                 const f = WIRELESS_ALERT_FIELDS.find((x) => x.key === k)!;
                 const err = numErrors[f.key];
@@ -301,7 +301,7 @@ function GeneralSettings({ settings, form, set, save, saving, saveErr, dirty, nu
         <p className="sv-panel-hint">
           Raw samples are rolled up to daily summaries, then purged. 0 = keep forever.
         </p>
-        <div className="sv-form-grid">
+        <div className="sv-form-grid-compact">
           <label className="sv-field">Raw samples (days)
             <input className="sv-input sv-input-sm" type="number" min={0} placeholder="14"
               value={form.retention_raw_days ?? ''} onChange={(e) => set('retention_raw_days', e.target.value)} />
@@ -338,7 +338,7 @@ function NotificationSettings({ settings, form, set, save, saving, saveErr, dirt
             onChange={(e) => set('email_alerts_enabled', e.target.checked ? 'true' : 'false')} />
           Enable email alerts
         </label>
-        <div className="sv-form-grid">
+        <div className="sv-form-grid-compact">
           {SMTP_FIELDS.map((f) => (
             <label className="sv-field" key={f.key}>{f.label}
               <input className={`sv-input${(f as { short?: boolean }).short ? ' sv-input-sm' : ''}`} type={f.type || 'text'} value={form[f.key] ?? ''}
