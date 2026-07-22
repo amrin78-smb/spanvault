@@ -891,11 +891,20 @@ function haCellLabel(ha_mode: string | null, ha_sync_status: string | null): { t
 
 export default function WirelessPage() {
   const [tab, setTab] = useState<TabKey>('overview');
-  // Deep-link support: the dashboard's Wireless Health chips link here with ?tab=intelligence|clients
+  const [initialApId, setInitialApId] = useState<number | null>(null);
+  // Deep-link support: the dashboard's Wireless Health chips link here with ?tab=intelligence|clients,
+  // and the Alerts page links wireless alerts here with ?tab=aps&apId=<id> to open that AP's
+  // detail drawer directly (see AccessPointsTab's initialApId prop below).
   useEffect(() => {
-    const t = new URLSearchParams(window.location.search).get('tab');
+    const search = new URLSearchParams(window.location.search);
+    const t = search.get('tab');
     const valid: TabKey[] = ['overview', 'aps', 'ssids', 'intelligence', 'clients', 'rogues', 'controllers'];
     if (t && (valid as string[]).includes(t)) setTab(t as TabKey);
+    const apIdParam = search.get('apId');
+    if (apIdParam) {
+      const parsed = parseInt(apIdParam, 10);
+      if (!isNaN(parsed)) setInitialApId(parsed);
+    }
   }, []);
   const [siteFilter, setSiteFilter] = useState<number | null>(null);
   const [controllerFilter, setControllerFilter] = useState<number | null>(null);
@@ -1012,6 +1021,7 @@ export default function WirelessPage() {
           setStatusFilter={setApStatusFilter}
           onFilterController={gotoApsForController}
           onViewAllClients={gotoClientsForAp}
+          initialApId={initialApId}
         />
       )}
       {tab === 'ssids' && (
@@ -1868,7 +1878,7 @@ function groupByController<T extends { controller_id: number | null; controller_
 
 function AccessPointsTab({
   siteFilter, setSiteFilter, controllerFilter, setControllerFilter,
-  statusFilter, setStatusFilter, onFilterController, onViewAllClients,
+  statusFilter, setStatusFilter, onFilterController, onViewAllClients, initialApId,
 }: {
   siteFilter: number | null;
   setSiteFilter: (v: number | null) => void;
@@ -1878,11 +1888,27 @@ function AccessPointsTab({
   setStatusFilter: (v: string) => void;
   onFilterController: (controllerId: number | null) => void;
   onViewAllClients: (apId: number | null) => void;
+  initialApId?: number | null;
 }) {
   const status = statusFilter;
   const setStatus = setStatusFilter;
   const [vendor, setVendor] = useState('');
   const [selectedAp, setSelectedAp] = useState<AccessPoint | null>(null);
+
+  // Deep-link support: open a specific AP's drawer when arriving here via
+  // ?tab=aps&apId=<id> (e.g. from a wireless alert on the Alerts page).
+  // Fetched directly by ID rather than looked up from `allAps` below, so it
+  // works regardless of the current site/controller/status/vendor filters —
+  // the target AP does not need to be visible in the (possibly filtered)
+  // list for its drawer to open.
+  useEffect(() => {
+    if (initialApId == null) return;
+    let cancelled = false;
+    apiGet<AccessPoint>(`/api/wireless/aps/${initialApId}`)
+      .then((ap) => { if (!cancelled) setSelectedAp(ap); })
+      .catch(() => { /* AP not found/inaccessible — silently ignore, list still renders */ });
+    return () => { cancelled = true; };
+  }, [initialApId]);
 
   const controllers = useApi<Controller[]>('/api/wireless/controllers', 30000);
 

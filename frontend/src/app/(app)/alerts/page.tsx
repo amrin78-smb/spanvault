@@ -2,6 +2,7 @@
 
 import { Fragment, useState } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import { useApi, apiSend } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
@@ -58,6 +59,28 @@ function prettyType(t: string): string {
   if (t === 'wireless_roam_storm') return 'Roam Storm';
   if (t === 'wireless_weak_clients') return 'Weak Clients';
   return t.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+// Where a wireless alert's entity-name link should point: AP-scoped alerts
+// (wireless_ap_id set) deep-link straight into the specific AP's detail
+// drawer on the Access Points tab; controller-scoped alerts (no AP, but
+// wireless_controller_id set) go to the Controllers tab — there's no
+// per-controller drawer deep-link today, so the tab is as specific as we can get.
+function wirelessHref(a: Alert): string {
+  if (a.wireless_ap_id != null) return `/wireless?tab=aps&apId=${a.wireless_ap_id}`;
+  if (a.wireless_controller_id != null) return `/wireless?tab=controllers`;
+  return '/wireless';
+}
+
+// Same target the entity-name link in a row points to, used to make the
+// whole row clickable. Returns null for alert types with no single obvious
+// destination (row stays non-navigating; the Ack/Resolve buttons still work).
+function rowHref(a: Alert): string | null {
+  if (a.device_id != null) return `/devices/${a.device_id}`;
+  if (a.service_name) return '/services';
+  if (a.agent_name) return `/agents/${a.agent_id}`;
+  if (a.wireless_name) return wirelessHref(a);
+  return null;
 }
 
 // Format a duration in seconds as a compact "Xh Ym" / "Xm" / "Xs" string.
@@ -192,6 +215,7 @@ function AckNoteForm({
 }
 
 export default function AlertsPage() {
+  const router = useRouter();
   const { data: session } = useSession();
   const { canAcknowledgeAlerts } = useRbac();
   const [status, setStatus] = useState('active');
@@ -279,14 +303,14 @@ export default function AlertsPage() {
           <button
             className="sv-btn ghost sm"
             style={{ height: 24, padding: '0 10px', fontSize: 'var(--text-xs)' }}
-            onClick={() => { setAckingId(ackingId === a.id ? null : a.id); setNoteText(''); }}
+            onClick={(e) => { e.stopPropagation(); setAckingId(ackingId === a.id ? null : a.id); setNoteText(''); }}
           >Ack</button>
         )}
         {a.status !== 'resolved' && a.status !== 'suppressed' && (
           <button
             className="sv-btn ghost sm"
             style={{ height: 24, padding: '0 10px', fontSize: 'var(--text-xs)' }}
-            onClick={() => resolve(a)}
+            onClick={(e) => { e.stopPropagation(); resolve(a); }}
           >Resolve</button>
         )}
       </span>
@@ -298,9 +322,13 @@ export default function AlertsPage() {
   function alertRow(a: Alert, indent: boolean) {
     const suppressed = a.status === 'suppressed';
     const acking = ackingId === a.id;
+    const href = rowHref(a);
     return (
       <Fragment key={a.id}>
-        <tr style={{ height: 40, ...(suppressed ? { opacity: 0.6 } : {}) }}>
+        <tr
+          style={{ height: 40, ...(suppressed ? { opacity: 0.6 } : {}), ...(href ? { cursor: 'pointer' } : {}) }}
+          onClick={href ? () => router.push(href) : undefined}
+        >
           {/* severity dot */}
           <td style={{ paddingLeft: indent ? 28 : 12, width: 28 }}>
             <StatusDot status={a.severity === 'critical' ? 'down' : 'warning'} size={9} />
@@ -313,21 +341,21 @@ export default function AlertsPage() {
           <td style={{ whiteSpace: 'nowrap' }}>
             {a.device_id == null && a.service_name ? (
               <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                <Link href="/services" style={{ color: 'var(--sv-crimson)', fontWeight: 600 }}>
+                <Link href="/services" onClick={(e) => e.stopPropagation()} style={{ color: 'var(--sv-crimson)', fontWeight: 600 }}>
                   {a.service_name}
                 </Link>
                 <span className="sv-type-badge" style={{ fontSize: 'var(--text-xs)' }}>Service</span>
               </span>
             ) : a.device_id == null && a.agent_name ? (
               <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                <Link href={`/agents/${a.agent_id}`} style={{ color: 'var(--sv-crimson)', fontWeight: 600 }}>
+                <Link href={`/agents/${a.agent_id}`} onClick={(e) => e.stopPropagation()} style={{ color: 'var(--sv-crimson)', fontWeight: 600 }}>
                   {a.agent_name}
                 </Link>
                 <span className="sv-type-badge" style={{ fontSize: 'var(--text-xs)' }}>Agent</span>
               </span>
             ) : a.device_id == null && a.wireless_name ? (
               <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                <Link href="/wireless" style={{ color: 'var(--sv-crimson)', fontWeight: 600 }}>
+                <Link href={wirelessHref(a)} onClick={(e) => e.stopPropagation()} style={{ color: 'var(--sv-crimson)', fontWeight: 600 }}>
                   {a.wireless_name}
                 </Link>
                 <span className="sv-type-badge" style={{ fontSize: 'var(--text-xs)' }}>
@@ -340,7 +368,7 @@ export default function AlertsPage() {
                 )}
               </span>
             ) : (
-              <Link href={`/devices/${a.device_id}`} style={{ color: 'var(--sv-crimson)', fontWeight: 600 }}>
+              <Link href={`/devices/${a.device_id}`} onClick={(e) => e.stopPropagation()} style={{ color: 'var(--sv-crimson)', fontWeight: 600 }}>
                 {a.device_name || a.ip_address || `#${a.device_id}`}
               </Link>
             )}

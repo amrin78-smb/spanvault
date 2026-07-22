@@ -1232,6 +1232,32 @@ CREATE INDEX IF NOT EXISTS idx_wclient_event_ctrl
 CREATE INDEX IF NOT EXISTS idx_wclient_event_ts
   ON wireless_client_events(ts DESC);
 
+-- Wireless RF/client alert thresholds (evaluateWirelessAlerts() in
+-- collector/collector.js). These were originally code-default-only (no
+-- Settings-page UI, on the theory the defaults were sane) — now exposed for
+-- tuning under Settings -> General -> "Wireless Alert Thresholds" because
+-- production environments legitimately vary in RF noise/utilization. Seeded
+-- here (not just left as settingInt() fallbacks) so the Settings form's
+-- required-numeric-field validation never renders these blank on a fresh or
+-- freshly-updated install; the collector's settingInt(key, default) fallback
+-- still applies identically wherever a row is somehow missing.
+INSERT INTO app_settings (key, value) VALUES
+  ('wireless_util_window_minutes','15'),
+  ('wireless_util_warn_pct','65'),
+  ('wireless_util_crit_pct','85'),
+  ('wireless_retry_threshold_pct','15'),
+  ('wireless_interference_threshold_pct','30'),
+  ('wireless_noise_floor_threshold_dbm','-85'),
+  ('wireless_imbalance_min_clients','15'),
+  ('wireless_imbalance_ratio_pct','90'),
+  ('wireless_roam_storm_count','15'),
+  ('wireless_roam_storm_window_minutes','10'),
+  ('wireless_weak_client_rate_mbps','24'),
+  ('wireless_weak_client_min_total','8'),
+  ('wireless_weak_client_min_count','3'),
+  ('wireless_weak_client_ratio_pct','25')
+ON CONFLICT (key) DO NOTHING;
+
 -- Aruba Central's NATIVE event stream (GET /monitoring/v2/events -- AP up/
 -- down, radio changes, client auth failures, config events), distinct from
 -- wireless_client_events above (which is SYNTHESISED from client-snapshot

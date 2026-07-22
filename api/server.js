@@ -36,6 +36,10 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.83.0': [
+    'New: Settings -> General -> "Wireless Alert Thresholds" lets you tune all 14 wireless RF/client alert thresholds (channel utilization, retry rate, interference, noise floor, client imbalance, roam storm, weak clients) without a code change -- raise a threshold to quiet down alerts in a genuinely busy environment, or lower one to catch problems sooner.',
+    'Fixed: clicking a wireless alert on the Alerts page now jumps straight to that access point\'s detail drawer (or the Controllers tab for controller-level alerts) instead of just the generic Wireless page. Alert rows are now clickable in general -- Ack/Resolve still work without navigating away.',
+  ],
   '1.82.0': [
     'New wireless alert: "Weak Clients" flags an AP whose client population skews heavily toward weak-signal, sticky/roaming, or low-negotiated-data-rate clients -- a per-client condition none of the existing radio-level checks (utilization, retry, interference) can see, since a couple of struggling clients can drag down airtime for everyone else on that radio.',
     'New: access points now show a 0-100 "Congestion" score (Low/Medium/High) on the Wireless page -- both in the Access Points list and the AP detail drawer -- blending channel utilization, retry rate, interference, band imbalance, and weak-client ratio into one at-a-glance number instead of requiring an admin to cross-reference several separate metrics.',

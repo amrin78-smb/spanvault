@@ -172,6 +172,47 @@ const NUM_FIELDS: NumField[] = [
   { key: 'netvault_sync_minutes', label: 'NetVault Sync (min)', min: 1, step: 1 },
 ];
 
+// Wireless RF/client alert thresholds — configures evaluateWirelessAlerts() in
+// collector/collector.js (rolling-window utilization/retry/interference/noise
+// floor, client imbalance, roam storm, weak clients). These used to be
+// code-default-only settingInt() fallbacks with no Settings-page UI; now
+// exposed so busy/noisy environments can be tuned without a code change. Every
+// key here is seeded in scripts/schema.sql with the exact defaults below, so
+// (unlike an un-migrated install) these never render blank/"Required" on a
+// fresh load — same required-numeric-field pattern as NUM_FIELDS above, folded
+// into the same shared validation (see ALL_NUM_FIELDS/numFieldErrors below).
+const WIRELESS_ALERT_FIELDS: NumField[] = [
+  { key: 'wireless_util_window_minutes', label: 'Utilization Window (min)', min: 1, step: 1 },
+  { key: 'wireless_util_warn_pct', label: 'Utilization Warning (%)', min: 1, max: 100, step: 1 },
+  { key: 'wireless_util_crit_pct', label: 'Utilization Critical (%)', min: 1, max: 100, step: 1 },
+  { key: 'wireless_retry_threshold_pct', label: 'Retry Rate Threshold (%)', min: 1, max: 100, step: 1 },
+  { key: 'wireless_interference_threshold_pct', label: 'Interference Threshold (%)', min: 1, max: 100, step: 1 },
+  { key: 'wireless_noise_floor_threshold_dbm', label: 'Noise Floor Threshold (dBm)', min: -100, max: 0, step: 1 },
+  { key: 'wireless_imbalance_min_clients', label: 'Min Clients to Evaluate', min: 1, step: 1 },
+  { key: 'wireless_imbalance_ratio_pct', label: 'Imbalance Ratio (%)', min: 1, max: 100, step: 1 },
+  { key: 'wireless_roam_storm_count', label: 'Roam Count Threshold', min: 1, step: 1 },
+  { key: 'wireless_roam_storm_window_minutes', label: 'Roam Storm Window (min)', min: 1, step: 1 },
+  { key: 'wireless_weak_client_rate_mbps', label: 'Weak Client Rate (Mbps)', min: 1, step: 1 },
+  { key: 'wireless_weak_client_min_total', label: 'Min Total Clients to Evaluate', min: 1, step: 1 },
+  { key: 'wireless_weak_client_min_count', label: 'Min Weak Client Count', min: 1, step: 1 },
+  { key: 'wireless_weak_client_ratio_pct', label: 'Weak Client Ratio (%)', min: 1, max: 100, step: 1 },
+];
+
+// Sub-groups for rendering WIRELESS_ALERT_FIELDS as scannable clusters (each
+// gets its own <h3>) instead of one flat 14-item grid.
+const WIRELESS_ALERT_GROUPS: { title: string; keys: string[] }[] = [
+  { title: 'Channel Utilization', keys: ['wireless_util_window_minutes', 'wireless_util_warn_pct', 'wireless_util_crit_pct'] },
+  { title: 'Retry / Interference / Noise Floor', keys: ['wireless_retry_threshold_pct', 'wireless_interference_threshold_pct', 'wireless_noise_floor_threshold_dbm'] },
+  { title: 'Client Imbalance', keys: ['wireless_imbalance_min_clients', 'wireless_imbalance_ratio_pct'] },
+  { title: 'Roam Storm', keys: ['wireless_roam_storm_count', 'wireless_roam_storm_window_minutes'] },
+  { title: 'Weak Clients', keys: ['wireless_weak_client_rate_mbps', 'wireless_weak_client_min_total', 'wireless_weak_client_min_count', 'wireless_weak_client_ratio_pct'] },
+];
+
+// Every required numeric field across both panels, validated together so Save
+// is disabled whenever ANY of them (Polling & Thresholds or Wireless Alert
+// Thresholds) is invalid — mirrors the pre-existing NUM_FIELDS-only behavior.
+const ALL_NUM_FIELDS: NumField[] = [...NUM_FIELDS, ...WIRELESS_ALERT_FIELDS];
+
 // Validate a single numeric field's raw string value. Returns an error message or
 // null. Blank, non-numeric, or out-of-range (below min / above max) is invalid.
 function numFieldError(f: NumField, raw: string | undefined): string | null {
@@ -184,10 +225,11 @@ function numFieldError(f: NumField, raw: string | undefined): string | null {
   return null;
 }
 
-// Map of key → error message for every invalid NUM_FIELD in the current form.
+// Map of key → error message for every invalid field (NUM_FIELDS +
+// WIRELESS_ALERT_FIELDS) in the current form.
 function numFieldErrors(form: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {};
-  for (const f of NUM_FIELDS) {
+  for (const f of ALL_NUM_FIELDS) {
     const e = numFieldError(f, form[f.key]);
     if (e) out[f.key] = e;
   }
@@ -224,6 +266,34 @@ function GeneralSettings({ settings, form, set, save, saving, saveErr, dirty, nu
             );
           })}
         </div>
+      </div>
+
+      <div className="sv-panel">
+        <h2>Wireless Alert Thresholds</h2>
+        <p className="sv-muted" style={{ fontSize: 'var(--text-base)', marginTop: -4 }}>
+          Controls how sensitive wireless AP alerts are to RF and client conditions. Raising a
+          threshold reduces alert volume for environments that are genuinely busy or noisy;
+          lowering one surfaces problems sooner at the cost of more alerts.
+        </p>
+        {WIRELESS_ALERT_GROUPS.map((g) => (
+          <div key={g.title}>
+            <h3 style={{ fontSize: 'var(--text-base)', margin: '14px 0 8px' }}>{g.title}</h3>
+            <div className="sv-form-grid">
+              {g.keys.map((k) => {
+                const f = WIRELESS_ALERT_FIELDS.find((x) => x.key === k)!;
+                const err = numErrors[f.key];
+                return (
+                  <label className="sv-field" key={f.key}>{f.label}
+                    <input className="sv-input" type="number" min={f.min} max={f.max} step={f.step ?? 1}
+                      aria-invalid={!!err} value={form[f.key] ?? ''}
+                      onChange={(e) => set(f.key, e.target.value)} />
+                    {err && <span className="sv-err-inline" style={{ margin: 0 }}>{err}</span>}
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+        ))}
       </div>
 
       <div className="sv-panel">
