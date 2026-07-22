@@ -55,9 +55,21 @@ export function getSiteFilter(user: RbacUser): number[] | null {
 /**
  * useRbac — resolves the current session into RBAC flags for UI gating.
  * Defaults to the most restrictive role ('viewer') until the session loads.
+ *
+ * `sessionLoading` exposes next-auth's own `status === 'loading'` so a caller
+ * that redirects on a denied permission (e.g. Settings/Agents bouncing a
+ * non-admin to the dashboard) can wait for the REAL role to arrive first.
+ * Without this, a fresh full page load evaluates `canManageSettings` against
+ * the 'viewer' default on the very first render (before the session has
+ * hydrated client-side) and redirects a genuine admin away before their real
+ * role ever loads — reproduced live: navigating straight to /settings as
+ * super_admin bounced to the dashboard with "Settings access requires admin
+ * role". Clicking the same link from an already-loaded page usually doesn't
+ * hit this (the session is already cached), which is why it looked
+ * intermittent rather than a hard, consistent bug.
  */
 export function useRbac() {
-  const { data: session } = useSession();
+  const { data: session, status } = useSession();
   const user: RbacUser = {
     role: ((session?.user as any)?.role as UserRole) || 'viewer',
     sites: ((session?.user as any)?.sites as number[]) || [],
@@ -70,5 +82,6 @@ export function useRbac() {
     canAcknowledgeAlerts: canAcknowledgeAlerts(user),
     isSiteScoped: isSiteScoped(user),
     role: user.role,
+    sessionLoading: status === 'loading',
   };
 }

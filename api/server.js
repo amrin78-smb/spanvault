@@ -36,6 +36,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.83.3': [
+    'Fixed: navigating directly to Settings or Agents (a fresh page load / deep link, not clicking the sidebar from an already-open page) could redirect a genuine admin or super_admin back to the dashboard with "access requires admin role" -- the guard checked the user\'s role before the session had finished loading client-side, evaluating against a temporary \'viewer\' default. Found while investigating the Settings layout fixes above.',
+  ],
   '1.83.2': [
     'Fixed: capping short-value field widths (1.83.1) only fixed the input box itself -- the surrounding form layout was still a rigid 2-column grid, so a narrow input left a large dead gap before the next field. Settings (Polling & Thresholds, Wireless Alert Thresholds, Data Retention, SMTP) and the Add/Edit Device dialog now flow fields at their natural width instead of forcing two equal-width columns.',
   ],

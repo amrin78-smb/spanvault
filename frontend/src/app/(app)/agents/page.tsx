@@ -49,7 +49,7 @@ function dotColor(status: string): string {
 }
 
 export default function AgentsPage() {
-  const { canManageAgents } = useRbac();
+  const { canManageAgents, sessionLoading } = useRbac();
   const router = useRouter();
   const { confirm, ConfirmUI } = useConfirm();
   const { toast, ToastUI } = useToast();
@@ -134,15 +134,19 @@ export default function AgentsPage() {
   }
 
   // Agents management is admin-only — bounce view-only roles to the dashboard.
+  // Gated on sessionLoading so a fresh page load doesn't evaluate
+  // canManageAgents against the pre-hydration 'viewer' default and redirect a
+  // genuine admin away before their real role has loaded (see useRbac's
+  // sessionLoading doc comment — same bug as Settings, fixed together).
   useEffect(() => {
-    if (!canManageAgents) {
+    if (!sessionLoading && !canManageAgents) {
       router.replace('/?notice=' + encodeURIComponent('Agents access requires admin role'));
     }
-  }, [canManageAgents, router]);
+  }, [sessionLoading, canManageAgents, router]);
 
   useRefreshKey(() => agents.reload());
 
-  if (!canManageAgents) {
+  if (sessionLoading || !canManageAgents) {
     return <div className="sv-panel" style={{ marginTop: 20 }}><Loading /></div>;
   }
 

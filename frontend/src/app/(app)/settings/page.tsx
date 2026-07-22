@@ -19,7 +19,7 @@ const TABS = [
 ];
 
 export default function SettingsPage() {
-  const { canManageSettings } = useRbac();
+  const { canManageSettings, sessionLoading } = useRbac();
   const router = useRouter();
   const [tab, setTab] = useState('general');
   // Highlight the Updates tab with a red dot when a new version is available.
@@ -76,14 +76,17 @@ export default function SettingsPage() {
   }, []);
 
   // View-only roles (site_admin / viewer) cannot manage settings — bounce them
-  // to the dashboard with a notice.
+  // to the dashboard with a notice. Gated on sessionLoading so a fresh page
+  // load doesn't evaluate canManageSettings against the pre-hydration
+  // 'viewer' default and redirect a genuine admin away before their real role
+  // has loaded (see useRbac's sessionLoading doc comment).
   useEffect(() => {
-    if (!canManageSettings) {
+    if (!sessionLoading && !canManageSettings) {
       router.replace('/?notice=' + encodeURIComponent('Settings access requires admin role'));
     }
-  }, [canManageSettings, router]);
+  }, [sessionLoading, canManageSettings, router]);
 
-  if (!canManageSettings) {
+  if (sessionLoading || !canManageSettings) {
     return <div className="sv-panel" style={{ marginTop: 20 }}><Loading /></div>;
   }
 
