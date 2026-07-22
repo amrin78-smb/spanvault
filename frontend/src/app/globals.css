@@ -918,6 +918,18 @@ a { color: inherit; text-decoration: none; }
 }
 .sv-input:focus, .sv-select:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(200,16,46,0.1); }
 
+/* Short-value input widths — a field whose value is always short (a number,
+   a port, a percentage, a code) shouldn't stretch to fill a wide
+   .sv-form-grid column or flex row. Two sizes: -sm for numbers/codes, -md
+   for short free text (a name, a search box). Reach for these instead of a
+   one-off inline maxWidth so short fields stay a consistent width sitewide. */
+.sv-input-sm { max-width: 140px; }
+.sv-input-md { max-width: 220px; }
+
+/* Shared helper-text spacing directly under a panel <h2> — one fixed pull-up
+   instead of a hand-picked negative marginTop per panel. */
+.sv-panel-hint { color: var(--text-muted); font-size: var(--text-base); margin: -6px 0 14px; }
+
 .sv-toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 16px; }
 .sv-toolbar .spacer { flex: 1; }
 

@@ -237,7 +237,7 @@ function numFieldErrors(form: Record<string, string>): Record<string, string> {
 }
 const SMTP_FIELDS = [
   { key: 'smtp_host', label: 'SMTP Host' },
-  { key: 'smtp_port', label: 'SMTP Port' },
+  { key: 'smtp_port', label: 'SMTP Port', short: true },
   { key: 'smtp_user', label: 'SMTP User' },
   { key: 'smtp_pass', label: 'SMTP Password', type: 'password' },
   { key: 'smtp_from', label: 'From Address' },
@@ -258,7 +258,7 @@ function GeneralSettings({ settings, form, set, save, saving, saveErr, dirty, nu
             const err = numErrors[f.key];
             return (
               <label className="sv-field" key={f.key}>{f.label}
-                <input className="sv-input" type="number" min={f.min} max={f.max} step={f.step ?? 1}
+                <input className="sv-input sv-input-sm" type="number" min={f.min} max={f.max} step={f.step ?? 1}
                   aria-invalid={!!err} value={form[f.key] ?? ''}
                   onChange={(e) => set(f.key, e.target.value)} />
                 {err && <span className="sv-err-inline" style={{ margin: 0 }}>{err}</span>}
@@ -270,7 +270,7 @@ function GeneralSettings({ settings, form, set, save, saving, saveErr, dirty, nu
 
       <div className="sv-panel">
         <h2>Wireless Alert Thresholds</h2>
-        <p className="sv-muted" style={{ fontSize: 'var(--text-base)', marginTop: -4 }}>
+        <p className="sv-panel-hint">
           Controls how sensitive wireless AP alerts are to RF and client conditions. Raising a
           threshold reduces alert volume for environments that are genuinely busy or noisy;
           lowering one surfaces problems sooner at the cost of more alerts.
@@ -284,7 +284,7 @@ function GeneralSettings({ settings, form, set, save, saving, saveErr, dirty, nu
                 const err = numErrors[f.key];
                 return (
                   <label className="sv-field" key={f.key}>{f.label}
-                    <input className="sv-input" type="number" min={f.min} max={f.max} step={f.step ?? 1}
+                    <input className="sv-input sv-input-sm" type="number" min={f.min} max={f.max} step={f.step ?? 1}
                       aria-invalid={!!err} value={form[f.key] ?? ''}
                       onChange={(e) => set(f.key, e.target.value)} />
                     {err && <span className="sv-err-inline" style={{ margin: 0 }}>{err}</span>}
@@ -298,20 +298,20 @@ function GeneralSettings({ settings, form, set, save, saving, saveErr, dirty, nu
 
       <div className="sv-panel">
         <h2>Data Retention</h2>
-        <p className="sv-muted" style={{ fontSize: 'var(--text-base)', marginTop: -4 }}>
+        <p className="sv-panel-hint">
           Raw samples are rolled up to daily summaries, then purged. 0 = keep forever.
         </p>
         <div className="sv-form-grid">
           <label className="sv-field">Raw samples (days)
-            <input className="sv-input" type="number" min={0} placeholder="14"
+            <input className="sv-input sv-input-sm" type="number" min={0} placeholder="14"
               value={form.retention_raw_days ?? ''} onChange={(e) => set('retention_raw_days', e.target.value)} />
           </label>
           <label className="sv-field">Daily rollups (days)
-            <input className="sv-input" type="number" min={0} placeholder="730"
+            <input className="sv-input sv-input-sm" type="number" min={0} placeholder="730"
               value={form.retention_rollup_days ?? ''} onChange={(e) => set('retention_rollup_days', e.target.value)} />
           </label>
           <label className="sv-field">Audit log (days)
-            <input className="sv-input" type="number" min={0} placeholder="365"
+            <input className="sv-input sv-input-sm" type="number" min={0} placeholder="365"
               value={form.retention_audit_days ?? ''} onChange={(e) => set('retention_audit_days', e.target.value)} />
           </label>
         </div>
@@ -341,7 +341,7 @@ function NotificationSettings({ settings, form, set, save, saving, saveErr, dirt
         <div className="sv-form-grid">
           {SMTP_FIELDS.map((f) => (
             <label className="sv-field" key={f.key}>{f.label}
-              <input className="sv-input" type={f.type || 'text'} value={form[f.key] ?? ''}
+              <input className={`sv-input${(f as { short?: boolean }).short ? ' sv-input-sm' : ''}`} type={f.type || 'text'} value={form[f.key] ?? ''}
                 onChange={(e) => set(f.key, e.target.value)} />
             </label>
           ))}
@@ -354,7 +354,7 @@ function NotificationSettings({ settings, form, set, save, saving, saveErr, dirt
             Send recovery (“all-clear”) emails
           </label>
           <label className="sv-field" style={{ margin: 0 }}>Re-notify cooldown (minutes)
-            <input className="sv-input" type="number" min={0} style={{ maxWidth: 120 }}
+            <input className="sv-input sv-input-sm" type="number" min={0}
               value={form.notify_cooldown_minutes ?? '15'}
               onChange={(e) => set('notify_cooldown_minutes', e.target.value)} />
             <span className="sv-muted" style={{ fontSize: 'var(--text-xs)' }}>0 = no throttle. Suppresses repeat emails for a flapping alert.</span>
@@ -452,7 +452,7 @@ function EscalationOnCall({ form, set }: { form: Record<string, any>; set: (k: s
       <h3 style={{ fontSize: 'var(--text-base)', margin: '8px 0' }}>Steps</h3>
       {stepErr && <div className="sv-err-inline">{stepErr}</div>}
       {(steps.data || []).length > 0 && (
-        <table className="sv-table" style={{ marginBottom: 10 }}>
+        <table className="sv-table" style={{ marginBottom: 12 }}>
           <thead><tr><th>Order</th><th>After (min)</th><th>Recipients</th><th></th></tr></thead>
           <tbody>
             {(steps.data || []).map((s) => (
@@ -469,12 +469,12 @@ function EscalationOnCall({ form, set }: { form: Record<string, any>; set: (k: s
       )}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'flex-end', marginBottom: 16 }}>
         <label className="sv-field" style={{ margin: 0 }}>After (min)
-          <input className="sv-input" type="number" min={1} style={{ maxWidth: 100 }} value={after} onChange={(e) => setAfter(e.target.value)} />
+          <input className="sv-input sv-input-sm" type="number" min={1} value={after} onChange={(e) => setAfter(e.target.value)} />
         </label>
         <label className="sv-field" style={{ margin: 0, flex: 1, minWidth: 200 }}>Recipients
           <input className="sv-input" value={stepTo} onChange={(e) => setStepTo(e.target.value)} placeholder="ops@x.com" disabled={useOncall} />
         </label>
-        <label className="sv-field" style={{ flexDirection: 'row', alignItems: 'center', gap: 6, margin: 0 }}>
+        <label className="sv-field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8, margin: 0 }}>
           <input type="checkbox" checked={useOncall} onChange={(e) => setUseOncall(e.target.checked)} /> Use on-call
         </label>
         <button className="sv-btn" onClick={addStep} disabled={stepBusy}>{stepBusy ? 'Adding…' : 'Add step'}</button>
@@ -483,7 +483,7 @@ function EscalationOnCall({ form, set }: { form: Record<string, any>; set: (k: s
       <h3 style={{ fontSize: 'var(--text-base)', margin: '8px 0' }}>On-Call Shifts</h3>
       {shiftErr && <div className="sv-err-inline">{shiftErr}</div>}
       {(shifts.data || []).length > 0 && (
-        <table className="sv-table" style={{ marginBottom: 10 }}>
+        <table className="sv-table" style={{ marginBottom: 12 }}>
           <thead><tr><th>Contact</th><th>From</th><th>To</th><th></th></tr></thead>
           <tbody>
             {(shifts.data || []).map((s) => (
@@ -572,7 +572,7 @@ function NotificationRoutes() {
   return (
     <div className="sv-panel" style={{ marginTop: 12 }}>
       <h2>Notification Routing</h2>
-      <p className="sv-muted" style={{ fontSize: 'var(--text-base)', marginTop: -4 }}>
+      <p className="sv-panel-hint">
         Send alerts that match a rule to specific recipients. If no route matches an alert, it goes to the
         Alert Recipients above.
       </p>
@@ -598,7 +598,7 @@ function NotificationRoutes() {
       )}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'flex-end' }}>
         <label className="sv-field" style={{ margin: 0 }}>Name
-          <input className="sv-input" style={{ maxWidth: 160 }} value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. DB team" />
+          <input className="sv-input sv-input-md" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. DB team" />
         </label>
         <label className="sv-field" style={{ margin: 0 }}>Severity
           <select className="sv-input" value={sev} onChange={(e) => setSev(e.target.value)}>
@@ -698,7 +698,7 @@ function AuditLog() {
   return (
     <div className="sv-panel">
       <h2>Audit Log</h2>
-      <p className="sv-muted" style={{ fontSize: 'var(--text-base)', marginTop: -4 }}>
+      <p className="sv-panel-hint">
         Recent configuration and operational changes (most recent first).
       </p>
       {!rows.length ? <Empty message="No audit entries yet." /> : (
@@ -859,7 +859,7 @@ function RuleForm({ onAdd, metricOptions = DEVICE_METRIC_OPTIONS }: {
             <select className="sv-select" value={operator} onChange={(e) => setOperator(e.target.value)}>
               {OPERATORS.map((o) => <option key={o} value={o}>{o}</option>)}
             </select>
-            <input className="sv-input" type="number" style={{ width: 110 }} value={threshold}
+            <input className="sv-input sv-input-sm" type="number" value={threshold}
               onChange={(e) => setThreshold(e.target.value)} placeholder="threshold" />
           </>
         )}
@@ -867,7 +867,7 @@ function RuleForm({ onAdd, metricOptions = DEVICE_METRIC_OPTIONS }: {
           <option value="warning">warning</option>
           <option value="critical">critical</option>
         </select>
-        <label className="sv-field" style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+        <label className="sv-field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
           <input type="checkbox" checked={recovery} onChange={(e) => setRecovery(e.target.checked)} />
           Notify on recovery
         </label>
@@ -1048,8 +1048,8 @@ function DeviceRules() {
       <div className="sv-panel">
         <h2>Device Rules</h2>
         <div className="sv-toolbar" style={{ flexWrap: 'wrap' }}>
-          <input className="sv-input" placeholder="Search device by name or IP…" value={search}
-            onChange={(e) => setSearch(e.target.value)} style={{ width: 240 }} />
+          <input className="sv-input sv-input-md" placeholder="Search device by name or IP…" value={search}
+            onChange={(e) => setSearch(e.target.value)} />
           <select className="sv-select" value={deviceId} onChange={(e) => setDeviceId(e.target.value)}>
             <option value="">Select a device…</option>
             {filtered.map((d) => <option key={d.id} value={d.id}>{d.name} ({d.ip_address})</option>)}
@@ -1147,8 +1147,8 @@ function ServiceRules() {
       <div className="sv-panel">
         <h2>Service Rules</h2>
         <div className="sv-toolbar" style={{ flexWrap: 'wrap' }}>
-          <input className="sv-input" placeholder="Search service by name, target, or type…" value={search}
-            onChange={(e) => setSearch(e.target.value)} style={{ width: 240 }} />
+          <input className="sv-input sv-input-md" placeholder="Search service by name, target, or type…" value={search}
+            onChange={(e) => setSearch(e.target.value)} />
           <select className="sv-select" value={serviceId} onChange={(e) => setServiceId(e.target.value)}>
             <option value="">Select a service…</option>
             {filtered.map((s) => <option key={s.id} value={s.id}>{s.name} ({s.type})</option>)}
@@ -1272,7 +1272,7 @@ function Maintenance() {
       {err && <ErrorBox message={err} />}
       <div className="sv-panel">
         <h2>Schedule Maintenance Window</h2>
-        <p className="sv-muted" style={{ marginTop: -8 }}>
+        <p className="sv-panel-hint">
           Alerts are suppressed for the selected scope during this window — leave unscoped to suppress everything.
         </p>
         <div className="sv-toolbar" style={{ flexWrap: 'wrap' }}>
@@ -1286,8 +1286,8 @@ function Maintenance() {
           </label>
           {scope === 'device' && (
             <>
-              <input className="sv-input" placeholder="Search device by name or IP…" value={deviceSearch}
-                onChange={(e) => setDeviceSearch(e.target.value)} style={{ width: 200 }} />
+              <input className="sv-input sv-input-md" placeholder="Search device by name or IP…" value={deviceSearch}
+                onChange={(e) => setDeviceSearch(e.target.value)} />
               <select className="sv-select" value={deviceId} onChange={(e) => setDeviceId(e.target.value)}>
                 <option value="">Select a device…</option>
                 {filteredDevices.map((d) => <option key={d.id} value={d.id}>{d.name} ({d.ip_address})</option>)}
@@ -1296,8 +1296,8 @@ function Maintenance() {
           )}
           {scope === 'service' && (
             <>
-              <input className="sv-input" placeholder="Search service by name, target, or type…" value={serviceSearch}
-                onChange={(e) => setServiceSearch(e.target.value)} style={{ width: 200 }} />
+              <input className="sv-input sv-input-md" placeholder="Search service by name, target, or type…" value={serviceSearch}
+                onChange={(e) => setServiceSearch(e.target.value)} />
               <select className="sv-select" value={serviceId} onChange={(e) => setServiceId(e.target.value)}>
                 <option value="">Select a service…</option>
                 {filteredServices.map((s) => <option key={s.id} value={s.id}>{s.name} ({s.type})</option>)}

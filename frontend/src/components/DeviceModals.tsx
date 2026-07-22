@@ -146,15 +146,15 @@ export function DeviceForm({
             </select>
           </label>
           <label className="sv-field">Poll Interval (s)
-            <input className="sv-input" type="number" value={form.poll_interval_seconds}
+            <input className="sv-input sv-input-sm" type="number" value={form.poll_interval_seconds}
               onChange={(e) => set('poll_interval_seconds', parseInt(e.target.value, 10) || 300)} />
           </label>
           <label className="sv-field">Ping Threshold (ms)
-            <input className="sv-input" type="number" value={form.ping_threshold_ms}
+            <input className="sv-input sv-input-sm" type="number" value={form.ping_threshold_ms}
               onChange={(e) => set('ping_threshold_ms', parseInt(e.target.value, 10) || 500)} />
           </label>
           <label className="sv-field">Failures Before Down
-            <input className="sv-input" type="number" value={form.ping_failures_before_down}
+            <input className="sv-input sv-input-sm" type="number" value={form.ping_failures_before_down}
               onChange={(e) => set('ping_failures_before_down', parseInt(e.target.value, 10) || 3)} />
           </label>
           <label className="sv-field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 24 }}>
@@ -174,7 +174,7 @@ export function DeviceForm({
                 </select>
               </label>
               <label className="sv-field">SNMP Port
-                <input className="sv-input" type="number" value={form.snmp_port}
+                <input className="sv-input sv-input-sm" type="number" value={form.snmp_port}
                   onChange={(e) => set('snmp_port', parseInt(e.target.value, 10) || 161)} />
               </label>
               {form.snmp_version !== '3' ? (
