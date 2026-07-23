@@ -164,14 +164,17 @@ function SaveBar({ save, saving, dirty, disabled }: {
 // ── General settings ───────────────────────────────────────────
 // min/max/step drive both the native input constraints AND the inline validation
 // below. Poll intervals have a sensible 5s floor so the collector isn't hammered.
-type NumField = { key: string; label: string; min: number; max?: number; step?: number };
+// `wide` doubles a field's grid column span in .sv-form-grid-numeric (150px ->
+// ~324px) for the handful of labels too long to fit a single 150px column
+// without wrapping — everything else stays on the uniform 150px column.
+type NumField = { key: string; label: string; min: number; max?: number; step?: number; wide?: boolean };
 const NUM_FIELDS: NumField[] = [
   { key: 'icmp_poll_interval_seconds', label: 'ICMP Poll Interval (s)', min: 5, step: 1 },
   { key: 'snmp_poll_interval_seconds', label: 'SNMP Poll Interval (s)', min: 5, step: 1 },
   { key: 'ping_threshold_ms', label: 'Ping Threshold (ms)', min: 1, step: 1 },
   { key: 'ping_failures_before_down', label: 'Failures Before Down', min: 1, step: 1 },
-  { key: 'cpu_threshold_pct', label: 'CPU Alert Threshold (%)', min: 1, max: 100, step: 1 },
-  { key: 'mem_threshold_pct', label: 'Memory Alert Threshold (%)', min: 1, max: 100, step: 1 },
+  { key: 'cpu_threshold_pct', label: 'CPU Alert Threshold (%)', min: 1, max: 100, step: 1, wide: true },
+  { key: 'mem_threshold_pct', label: 'Memory Alert Threshold (%)', min: 1, max: 100, step: 1, wide: true },
   { key: 'netvault_sync_minutes', label: 'NetVault Sync (min)', min: 1, step: 1 },
 ];
 
@@ -194,7 +197,7 @@ const WIRELESS_ALERT_FIELDS: NumField[] = [
   { key: 'wireless_imbalance_min_clients', label: 'Min Clients to Evaluate', min: 1, step: 1 },
   { key: 'wireless_imbalance_ratio_pct', label: 'Imbalance Ratio (%)', min: 1, max: 100, step: 1 },
   { key: 'wireless_roam_storm_count', label: 'Roam Count Threshold', min: 1, step: 1 },
-  { key: 'wireless_roam_storm_window_minutes', label: 'Roam Storm Window (min)', min: 1, step: 1 },
+  { key: 'wireless_roam_storm_window_minutes', label: 'Roam Storm Window (min)', min: 1, step: 1, wide: true },
   { key: 'wireless_weak_client_rate_mbps', label: 'Weak Client Rate (Mbps)', min: 1, step: 1 },
   { key: 'wireless_weak_client_min_total', label: 'Min Total Clients to Evaluate', min: 1, step: 1 },
   { key: 'wireless_weak_client_min_count', label: 'Min Weak Client Count', min: 1, step: 1 },
@@ -260,7 +263,7 @@ function GeneralSettings({ settings, form, set, save, saving, saveErr, dirty, nu
           {NUM_FIELDS.map((f) => {
             const err = numErrors[f.key];
             return (
-              <label className="sv-field" key={f.key}>{f.label}
+              <label className="sv-field" key={f.key} style={f.wide ? { gridColumn: 'span 2' } : undefined}>{f.label}
                 <input className="sv-input sv-input-sm" type="number" min={f.min} max={f.max} step={f.step ?? 1}
                   aria-invalid={!!err} value={form[f.key] ?? ''}
                   onChange={(e) => set(f.key, e.target.value)} />
@@ -286,7 +289,7 @@ function GeneralSettings({ settings, form, set, save, saving, saveErr, dirty, nu
                 const f = WIRELESS_ALERT_FIELDS.find((x) => x.key === k)!;
                 const err = numErrors[f.key];
                 return (
-                  <label className="sv-field" key={f.key}>{f.label}
+                  <label className="sv-field" key={f.key} style={f.wide ? { gridColumn: 'span 2' } : undefined}>{f.label}
                     <input className="sv-input sv-input-sm" type="number" min={f.min} max={f.max} step={f.step ?? 1}
                       aria-invalid={!!err} value={form[f.key] ?? ''}
                       onChange={(e) => set(f.key, e.target.value)} />

@@ -36,6 +36,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.83.8': [
+    'Settings > General: widened the CPU/Memory alert threshold and Roam Storm Window columns so their labels no longer wrap to two lines in the new grid layout -- everything else stays on the same uniform column width.',
+  ],
   '1.83.7': [
     'Settings page redesign: the General tab\'s polling/threshold fields now line up in a real aligned grid instead of flowing at uneven widths with large gaps between them, and those panels (plus the Email Notifications panel) no longer stretch full-width with mostly empty space around a handful of small fields.',
   ],
