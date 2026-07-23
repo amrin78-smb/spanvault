@@ -1,4 +1,4 @@
-# SpanVault DB schema (scripts/schema.sql, 1488 lines, 47 tables)
+# SpanVault DB schema (scripts/schema.sql, 1653 lines, 47 tables)
 
 Idempotent: re-applied automatically on every API startup (`api/server.js`, since
 1.25.2) via advisory lock, and again by `installer/Update-SpanVault.ps1`. Every
@@ -9,7 +9,7 @@ layers, not a single flat design.
 Format: `TableName  id(PK,type) | col(type,constraints) | col — FK -> OtherTable`
 
 ## Core monitoring
-- `monitored_devices`  id(PK,SERIAL) | name,ip_address(TEXT NOT NULL, UNIQUE) | device_type,site_id,site_name,device_vendor | netvault_device_id — soft-FK to netvault.devices (no real FK, cross-DB) | snmp_enabled,snmp_version,snmp_community,snmp_port,snmp_v3_user,snmp_v3_auth_pass,snmp_v3_priv_pass | poll_interval_seconds,ping_threshold_ms,ping_failures_before_down | current_status,consecutive_failures,last_response_ms,last_checked_at,last_seen_at | active,is_gateway(one per site, partial unique idx),alert_suppressed,suppressed_by_device_id — FK->self | agent_id — FK->agents | topology_discovered_at | created_at,updated_at
+- `monitored_devices`  id(PK,SERIAL) | name,ip_address(TEXT NOT NULL, UNIQUE) | device_type,site_id,site_name,device_vendor | netvault_device_id — soft-FK to netvault.devices (no real FK, cross-DB) | snmp_enabled,snmp_version,snmp_community [SENSITIVE],snmp_port,snmp_v3_user,snmp_v3_auth_pass [SENSITIVE],snmp_v3_priv_pass [SENSITIVE] — column-level readonly exclusion, see Privilege notes | poll_interval_seconds,ping_threshold_ms,ping_failures_before_down | current_status,consecutive_failures,last_response_ms,last_checked_at,last_seen_at | active,is_gateway(one per site, partial unique idx),alert_suppressed,suppressed_by_device_id — FK->self | agent_id — FK->agents | topology_discovered_at | created_at,updated_at
 - `ping_results`  id(PK,BIGSERIAL) | device_id — FK->monitored_devices CASCADE | ts,response_ms,packet_loss_pct,status | agent_id — FK->agents SET NULL
 - `snmp_results`  id(PK,BIGSERIAL) | device_id — FK->monitored_devices CASCADE | ts,oid,metric_name,value,if_index,if_name | agent_id — FK->agents SET NULL
 - `device_sensors`  id(PK,SERIAL) | device_id — FK->monitored_devices CASCADE | sensor_key(UNIQUE w/ device_id),sensor_name,category,metric_name,oid,enabled | is_custom,custom_label,custom_unit
@@ -26,12 +26,12 @@ Format: `TableName  id(PK,type) | col(type,constraints) | col — FK -> OtherTab
 - `escalation_steps`  id(PK,SERIAL) | step_order,after_minutes,email_to,use_oncall,enabled
 - `oncall_shifts`  id(PK,SERIAL) | contact_email,starts_at,ends_at,created_at
 - `alert_escalations`  PK(alert_id,step_id) | alert_id — FK->alerts CASCADE | fired_at
-- `app_settings`  key(PK,TEXT) | value(TEXT) — freeform key/value incl. wireless alert thresholds (14 keys seeded, see gotchas.md), SMTP config, retention windows
+- `app_settings`  key(PK,TEXT) | value(TEXT) — freeform key/value incl. wireless alert thresholds (14 keys seeded, see gotchas.md), SMTP config, retention windows | `smtp_pass` [SENSITIVE] — row-level excluded from readonly roles via `app_settings_public` view (key NOT IN ('smtp_pass')), see Privilege notes; the app itself always reads/writes the real table as `spanvault_user`, unaffected
 
 ## Distributed polling agents
-- `agents`  id(PK,SERIAL) | name,api_key(UNIQUE,default gen_random_uuid()),status,version,ip_address,hostname,last_seen_at,connected_at,created_at,updated_at | disabled | health(JSONB — self-reported cpu/mem/disk/uptime/buffer depth)
+- `agents`  id(PK,SERIAL) | name,api_key(UNIQUE,default gen_random_uuid()) [SENSITIVE — column-level readonly exclusion, see Privilege notes],status,version,ip_address,hostname,last_seen_at,connected_at,created_at,updated_at | disabled | health(JSONB — self-reported cpu/mem/disk/uptime/buffer depth)
 - `agent_sites`  PK(agent_id,site_id) | agent_id — FK->agents CASCADE | site_id,site_name — soft-FK to netvault.sites
-- `agent_discovered_devices`  id(PK,SERIAL) | agent_id — FK->agents CASCADE | ip_address(UNIQUE w/ agent_id),sys_name,sys_descr,mac,vendor,snmp_ok,adopted,first_seen_at,last_seen_at | snmp_community,snmp_version — carries the working creds found during discovery so adoption doesn't guess public/2c
+- `agent_discovered_devices`  id(PK,SERIAL) | agent_id — FK->agents CASCADE | ip_address(UNIQUE w/ agent_id),sys_name,sys_descr,mac,vendor,snmp_ok,adopted,first_seen_at,last_seen_at | snmp_community [SENSITIVE — column-level readonly exclusion, see Privilege notes],snmp_version — carries the working creds found during discovery so adoption doesn't guess public/2c
 
 ## Service checks (agentless)
 - `service_checks`  id(PK,SERIAL) | name,type('http'|'tcp'|'ssl'|'dns'),target,site_id,site_name | agent_id — FK->agents SET NULL (NULL=central) | interval_seconds,params(JSONB),current_status,last_response_ms,last_detail,last_checked_at,active,created_at,updated_at | group_id(UUID) — ties multi-type checks created together, NULL=standalone
@@ -56,7 +56,7 @@ Format: `TableName  id(PK,type) | col(type,constraints) | col — FK -> OtherTab
 - `topology_links`  id(PK,SERIAL) | from_device_id — FK->monitored_devices CASCADE | from_port,from_port_desc | to_device_id — FK->monitored_devices SET NULL (nullable — neighbor may not be monitored) | to_ip,to_name,to_port,to_port_desc | protocol('lldp'/'cdp'),discovered_at,last_seen_at — unique on (from_device_id,from_port,protocol)
 
 ## Wireless
-- `wireless_controllers`  id(PK,SERIAL) | name,vendor,controller_url | api_key,api_username,api_password [SENSITIVE] | site_id,site_name,poll_interval_seconds | snmp_device_id — FK->monitored_devices SET NULL, UNIQUE (WHERE not null) | active,last_polled_at,status,last_error,model,firmware_version,licensed_aps | ha_mode,ha_peer_ip,ha_sync_status,ap_disconnects_24h | ha_peer_controller_id — FK->self SET NULL, ha_manual_role | capabilities(JSONB),capabilities_probed_at | chassis_temp_c,chassis_temp_status,last_reboot_reason,reported_ap_count,reported_client_count | ha_active_aps,ha_standby_aps,ha_total_aps,ha_active_vap_tunnels,ha_standby_vap_tunnels,ha_total_vap_tunnels,ha_ap_hbt_tunnels | ha_peers(JSONB array) | api_client_id,api_client_secret,api_customer_id,api_refresh_token,api_access_token,api_token_expires_at,api_group_filter [SENSITIVE — Aruba Central OAuth2, refresh_token ROTATES on every use, see gotchas.md] — **only table with a deliberate column-level readonly-role exclusion, see Privilege notes**
+- `wireless_controllers`  id(PK,SERIAL) | name,vendor,controller_url | api_key,api_username,api_password [SENSITIVE] | site_id,site_name,poll_interval_seconds | snmp_device_id — FK->monitored_devices SET NULL, UNIQUE (WHERE not null) | active,last_polled_at,status,last_error,model,firmware_version,licensed_aps | ha_mode,ha_peer_ip,ha_sync_status,ap_disconnects_24h | ha_peer_controller_id — FK->self SET NULL, ha_manual_role | capabilities(JSONB),capabilities_probed_at | chassis_temp_c,chassis_temp_status,last_reboot_reason,reported_ap_count,reported_client_count | ha_active_aps,ha_standby_aps,ha_total_aps,ha_active_vap_tunnels,ha_standby_vap_tunnels,ha_total_vap_tunnels,ha_ap_hbt_tunnels | ha_peers(JSONB array) | api_client_id,api_client_secret,api_customer_id,api_refresh_token,api_access_token,api_token_expires_at,api_group_filter [SENSITIVE — Aruba Central OAuth2, refresh_token ROTATES on every use, see gotchas.md] — one of four tables (plus one settings-key view) with a deliberate readonly-role exclusion, see Privilege notes
 - `wireless_aps`  id(PK,SERIAL) | controller_id — FK->wireless_controllers CASCADE | monitored_device_id — FK->monitored_devices SET NULL | name(UNIQUE w/ controller_id),mac_address,model,ip_address,site_id,site_name,status | radio_2g/5g/6g_channel,radio_2g/5g_util_pct,clients_2g/5g/6g/total,tx_power_2g/5g,uptime_seconds,firmware_version,last_seen_at,updated_at | noise_floor_2g/5g,retry_rate_2g/5g,rx/tx_errors_2g/5g,throughput_in/out_bps,serial_number,auth_failures | interference_pct_2g/5g,reboot_count,bootstrap_count | rx/tx_errors_delta_2g/5g | cpu_pct,mem_total,mem_free — RF columns (channel/util/tx_power/noise_floor) are written COALESCE-style, never plain overwrite — see gotchas.md
 - `wireless_history`  id(PK,BIGSERIAL) | ap_id — FK->wireless_aps CASCADE | ts,clients_total,clients_2g,clients_5g,radio_2g_util,radio_5g_util | noise_floor_2g/5g,throughput_in/out_bps,auth_failures,retry_rate_2g/5g,interference_pct_2g/5g
 - `wireless_ssids`  id(PK,SERIAL) | controller_id — FK->wireless_controllers CASCADE | ssid_name(UNIQUE w/ controller_id),site_id,site_name,status,clients_total,bytes_in,bytes_out,auth_successes,auth_failures,updated_at | encryption_type
@@ -75,20 +75,34 @@ Format: `TableName  id(PK,type) | col(type,constraints) | col — FK -> OtherTab
 
 ## Known schema debt
 
-**RESOLVED 2026-07 — see Privilege notes below for the fix.** `scripts/schema.sql`'s
-blanket `GRANT SELECT ON ALL TABLES IN SCHEMA public TO nocvault_readonly` used to
-have no column-level exclusion anywhere in this file, contradicting CLAUDE.md's
-explicit "never re-run the blanket form" warning about `wireless_controllers`. Live
-production was verified safe at the time this was found (a column-level grant had
-been applied manually, out-of-band, directly against the server — never written into
-this file), but the fix was fragile: the next routine `schema.sql` re-apply (a normal,
-automatic part of every deploy) would have silently re-widened it with no error and
-no warning, since a table-level `GRANT` unconditionally overrides any earlier
-column-level restriction in Postgres. A REVOKE+column-GRANT block now lives directly
-in `scripts/schema.sql`, immediately after the blanket grant, so the restriction
-re-derives itself every time the file runs instead of depending on someone
-remembering a manual step. The **suite installer** (`../netvault/installer/
-Install-NocVault-Suite.ps1`) also needed a companion fix — see Privilege notes.
+**RESOLVED 2026-07 (extended 2026-07-23) — see Privilege notes below for the fix.**
+`scripts/schema.sql`'s blanket `GRANT SELECT ON ALL TABLES IN SCHEMA public TO
+nocvault_readonly` used to have no column-level exclusion anywhere in this file,
+contradicting CLAUDE.md's explicit "never re-run the blanket form" warning about
+`wireless_controllers`. Live production was verified safe at the time this was found (a
+column-level grant had been applied manually, out-of-band, directly against the server —
+never written into this file), but the fix was fragile: the next routine `schema.sql`
+re-apply (a normal, automatic part of every deploy) would have silently re-widened it
+with no error and no warning, since a table-level `GRANT` unconditionally overrides any
+earlier column-level restriction in Postgres. A REVOKE+column-GRANT block now lives
+directly in `scripts/schema.sql`, immediately after the blanket grant, so the restriction
+re-derives itself every time the file runs instead of depending on someone remembering a
+manual step. The **suite installer** (`../netvault/installer/Install-NocVault-Suite.ps1`)
+also needed a companion fix — see Privilege notes.
+
+**2026-07-23 — the first pass only covered `wireless_controllers`.** A full audit (grep
+for password/secret/token/api_key/community/auth_pass/priv_pass across this whole file)
+found three more places still blanket-exposed: `monitored_devices` (`snmp_community`,
+`snmp_v3_auth_pass`, `snmp_v3_priv_pass` — plaintext, no at-rest encryption anywhere in
+the collector, broader blast radius than `wireless_controllers` since it covers every
+monitored device), `agents` (`api_key`, the live WS bearer credential remote agents
+authenticate with), and `agent_discovered_devices` (`snmp_community`, the working
+community string found during zero-touch discovery). `app_settings` also turned out to
+carry a real secret VALUE (`smtp_pass`) in its freeform key/value rows — not a column,
+so it got a row-filtered `app_settings_public` VIEW instead of a column-level grant (same
+shape as DDIVault's `app_settings_public`/`api_keys_public` fix). All four are now fixed
+the same way as `wireless_controllers` (column-level allowlist grants, or the row-filter
+view for `app_settings`) — see Privilege notes for the full column lists.
 
 **Wide code-side defensive re-probing of columns/tables that schema.sql already
 guarantees.** `getAlertCaps()` (api/server.js ~3397) queries
@@ -169,3 +183,21 @@ cast when joining/importing from netvault's `devices` table.
   grant script lives — a missing column in a readonly diagnostic query is the
   correct fail-closed behavior; a newly-secret column silently becoming
   world-readable via the blanket form is the failure mode to avoid.
+- **`monitored_devices`/`agents`/`agent_discovered_devices` (fixed 2026-07-23).**
+  Same column-level allowlist pattern as `wireless_controllers`, added to
+  `scripts/schema.sql` right after that block: `monitored_devices` excludes
+  `snmp_community`/`snmp_v3_auth_pass`/`snmp_v3_priv_pass` (28 of 31 columns
+  granted), `agents` excludes `api_key` (12 of 13 granted), `agent_discovered_devices`
+  excludes `snmp_community` (12 of 13 granted) — all live-verified against
+  `information_schema.columns` on 2026-07-23. `monitored_devices` is the widest-blast-
+  radius fix of the four (every monitored device in the install, not just wireless gear).
+- **`app_settings` (fixed 2026-07-23).** Freeform key/value table — a column-level grant
+  can't hide a secret VALUE keyed by row, so this got a row-filtered
+  `app_settings_public` VIEW instead (`WHERE key NOT IN ('smtp_pass')`), with both
+  readonly roles' `SELECT` on the base table revoked and re-granted on the view. A
+  BLOCKLIST, not an allowlist, unlike the three column-level grants above — this
+  table's keys grow organically (new alert thresholds routinely added) so a hardcoded
+  allowlist would rot fast; a future secret-shaped key must be added to the view's
+  `WHERE` clause explicitly. Neither readonly role is used by the app itself
+  (`api/server.js` always reads/writes `app_settings` as `spanvault_user`), so this has
+  zero runtime effect.

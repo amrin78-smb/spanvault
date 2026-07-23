@@ -1537,3 +1537,117 @@ BEGIN
   END IF;
 END
 $$;
+
+-- ── Full credential audit (2026-07-23) — extends the wireless_controllers ──
+-- fix above, which only covered ONE table. A full pass over every column name
+-- containing password/secret/token/api_key/community/auth_pass/priv_pass
+-- across this whole file found THREE more places holding real credential
+-- material that the blanket GRANT above still exposed table-wide:
+--   1. monitored_devices  — snmp_community, snmp_v3_auth_pass, snmp_v3_priv_pass
+--      (plaintext SNMP secrets for EVERY monitored device in the install —
+--      broader blast radius than wireless_controllers, which only covers
+--      wireless gear). No encryption anywhere in the collector for these;
+--      confirmed by inspection of collector/snmp-session.js, which passes
+--      snmp_v3_auth_pass/priv_pass straight through as the SNMPv3 auth/priv
+--      passphrases (net-snmp's own AES/SHA use them in-transit; that's a
+--      wire-protocol detail, not at-rest encryption of the stored column).
+--   2. agents            — api_key, the live bearer credential a remote
+--      polling agent authenticates with over WebSocket. The app layer
+--      already treats this as sensitive (redacted for non-admins and masked
+--      in the admin debug dump, see api/server.js ~line 3140/5267) — the
+--      readonly roles must not be able to read it straight from the table.
+--   3. agent_discovered_devices — snmp_community, the working SNMP community
+--      string the agent found during subnet discovery (same secret class as
+--      #1, carried here so adoption doesn't have to guess public/2c).
+-- Same allowlist approach as wireless_controllers: enumerate every column
+-- EXCEPT the secrets, live-verified against information_schema.columns on
+-- 2026-07-23 (see the connection snippet in CLAUDE.md's "Database Access"
+-- section). A newly added column on any of these three tables is HIDDEN from
+-- both readonly roles until explicitly added below — same fail-closed
+-- trade-off as wireless_controllers.
+DO $$
+BEGIN
+  IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'nocvault_readonly') THEN
+    REVOKE SELECT ON monitored_devices FROM nocvault_readonly;
+    GRANT SELECT (
+      id, name, ip_address, device_type, site_id, site_name, netvault_device_id,
+      snmp_enabled, snmp_version, snmp_port, snmp_v3_user, poll_interval_seconds,
+      ping_threshold_ms, ping_failures_before_down, current_status,
+      consecutive_failures, last_response_ms, last_checked_at, last_seen_at,
+      active, created_at, updated_at, device_vendor, alert_suppressed,
+      suppressed_by_device_id, is_gateway, agent_id, topology_discovered_at
+    ) ON monitored_devices TO nocvault_readonly;
+
+    REVOKE SELECT ON agents FROM nocvault_readonly;
+    GRANT SELECT (
+      id, name, status, version, ip_address, hostname, last_seen_at,
+      connected_at, created_at, updated_at, disabled, health
+    ) ON agents TO nocvault_readonly;
+
+    REVOKE SELECT ON agent_discovered_devices FROM nocvault_readonly;
+    GRANT SELECT (
+      id, agent_id, ip_address, sys_name, sys_descr, mac, vendor, snmp_ok,
+      adopted, first_seen_at, last_seen_at, snmp_version
+    ) ON agent_discovered_devices TO nocvault_readonly;
+  END IF;
+
+  IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'claude_readonly') THEN
+    REVOKE SELECT ON monitored_devices FROM claude_readonly;
+    GRANT SELECT (
+      id, name, ip_address, device_type, site_id, site_name, netvault_device_id,
+      snmp_enabled, snmp_version, snmp_port, snmp_v3_user, poll_interval_seconds,
+      ping_threshold_ms, ping_failures_before_down, current_status,
+      consecutive_failures, last_response_ms, last_checked_at, last_seen_at,
+      active, created_at, updated_at, device_vendor, alert_suppressed,
+      suppressed_by_device_id, is_gateway, agent_id, topology_discovered_at
+    ) ON monitored_devices TO claude_readonly;
+
+    REVOKE SELECT ON agents FROM claude_readonly;
+    GRANT SELECT (
+      id, name, status, version, ip_address, hostname, last_seen_at,
+      connected_at, created_at, updated_at, disabled, health
+    ) ON agents TO claude_readonly;
+
+    REVOKE SELECT ON agent_discovered_devices FROM claude_readonly;
+    GRANT SELECT (
+      id, agent_id, ip_address, sys_name, sys_descr, mac, vendor, snmp_ok,
+      adopted, first_seen_at, last_seen_at, snmp_version
+    ) ON agent_discovered_devices TO claude_readonly;
+  END IF;
+END
+$$;
+
+-- ── app_settings row-level exclusion (same audit, 2026-07-23) ───────────────
+-- app_settings is a freeform key/value table (key TEXT PRIMARY KEY, value
+-- TEXT) — a column-level GRANT can't hide a secret VALUE keyed by a row, only
+-- a secret COLUMN, so this needs a row-filtered VIEW instead (same shape as
+-- DDIVault's app_settings_public/api_keys_public fix). Currently the only
+-- secret-shaped key is 'smtp_pass' (the scheduled-report SMTP password,
+-- seeded blank by default but a real plaintext credential once an admin
+-- configures SMTP — see the seed INSERT near the top of this file and
+-- api/reportScheduler.js). Neither readonly role needs write access and
+-- neither is used by the app itself (api/server.js reads/writes app_settings
+-- exclusively as spanvault_user), so this view has zero effect on runtime
+-- behavior. BLOCKLIST, not allowlist, unlike the column-level grants above —
+-- app_settings' keys grow organically (new alert thresholds are added
+-- routinely) and hardcoding an allowlist would rot immediately. This is a
+-- deliberate, narrower trade-off than the column-level allowlists above: a
+-- FUTURE secret-shaped key (a new *_pass/*_secret/*_token setting) must be
+-- added to the WHERE clause below explicitly, exactly like a new secret
+-- column must be added to the wireless_controllers/monitored_devices/agents
+-- exclusion list above — don't assume this view auto-protects a new key.
+CREATE OR REPLACE VIEW app_settings_public AS
+SELECT key, value FROM app_settings WHERE key NOT IN ('smtp_pass');
+
+DO $$
+BEGIN
+  IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'nocvault_readonly') THEN
+    REVOKE SELECT ON app_settings FROM nocvault_readonly;
+    GRANT SELECT ON app_settings_public TO nocvault_readonly;
+  END IF;
+  IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'claude_readonly') THEN
+    REVOKE SELECT ON app_settings FROM claude_readonly;
+    GRANT SELECT ON app_settings_public TO claude_readonly;
+  END IF;
+END
+$$;

@@ -36,6 +36,12 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.83.11': [
+    'Security: extended last month\'s wireless-controller credential fix to the rest of the schema. A full audit found the earlier fix only covered one table -- monitored_devices (SNMP community/auth/priv passwords, covering every monitored device in the install), agents (the live API key remote polling agents authenticate with), agent_discovered_devices (discovery-time SNMP credentials), and the SMTP password in app_settings were all still fully readable via the cross-app diagnostic/dashboard read role. All four are now excluded the same way, written directly into the file that provisions the database so the fix re-applies itself on every deploy.',
+    'Hardened both the per-app updater and the suite installer so a genuine SQL error while applying the database schema is no longer silently swallowed -- previously psql could hit a real error partway through, keep going, and still report success.',
+    'Corrected a Settings page CSS comment that misidentified the widest numeric field label, and gave the numeric-field grid a little extra column width for margin.',
+    'Corrected several stale entries in the internal codebase index (.ai-codex/) found during this session\'s audit: the Settings tab list was missing 3 tabs, the schema line count was outdated, and a hedge about where a prior security fix lives was tightened to state it plainly.',
+  ],
   '1.83.10': [
     'Extended the Settings > General info-panel treatment to Notifications, Escalation & On-Call, and Alert Rules -- each now explains genuinely non-obvious behavior next to the relevant form: how notification routing overrides (not adds to) global recipients, that each escalation step only fires once per alert, and that alert rules resolve per-metric with device/service overriding site overriding global.',
   ],

@@ -22,7 +22,7 @@ gotchas.md — auth happens via `/sso`.
 - `[client]` `/agents` — `AgentsPage` — remote polling agent fleet list, bulk enable/disable/delete (admin-only via canManageAgents)
 - `[client]` `/agents/[id]` — `AgentDetailPage` — one agent: rename, restart, log tail, rotate key, discover/adopt devices, host health
 - `[client]` `/intelligence` — `IntelligencePage` — anomalies, health scores, capacity forecasts, patterns, incidents, threshold recommendations (multi-tab)
-- `[client]` `/settings` — `SettingsPage` — General/Email Alerts/Wireless Thresholds/Audit Log/Updates/About tabs (admin-only via canManageSettings)
+- `[client]` `/settings` — `SettingsPage` — 8 tabs: General/Notifications/Escalation & On-Call/Alert Rules/Maintenance/Audit Log/Updates/About (admin-only via canManageSettings). Wireless RF alert thresholds live inside General (WIRELESS_ALERT_FIELDS), not their own tab.
 
 ## Standalone routes (outside the (app) shell — no sidebar/topbar)
 - `[client]` `/sso` — `SsoPage` — posts the hub-issued token to this app's own `/api/sso`, then `signIn('credentials', {ssoToken})`

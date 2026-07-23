@@ -934,6 +934,32 @@ Do NOT "fix" a permission-denied by re-running the blanket `GRANT SELECT ON ALL 
 form — that is the one command that undoes the secrets exclusion above. Per-table grants are
 the only correct path.
 
+### Same exclusion now also applies to `monitored_devices`, `agents`, `agent_discovered_devices`, and `app_settings` (2026-07-23)
+A full audit (grepping this file for password/secret/token/api_key/community/auth_pass/
+priv_pass) found the `wireless_controllers` fix above was scoped too narrowly — three more
+tables and one settings key were still blanket-exposed:
+- `monitored_devices` — `snmp_community`, `snmp_v3_auth_pass`, `snmp_v3_priv_pass` (plaintext,
+  no encryption anywhere in the collector; every monitored device in the install, a wider
+  blast radius than `wireless_controllers`).
+- `agents` — `api_key`, the live bearer credential a remote polling agent authenticates with
+  over WebSocket.
+- `agent_discovered_devices` — `snmp_community` (the working community string found during
+  zero-touch discovery).
+- `app_settings` — `smtp_pass` (the SMTP password for scheduled report email). This one isn't
+  a column exclusion: `app_settings` is freeform key/value, so the secret is a VALUE keyed
+  by row, not a column. Fixed with a row-filtered `app_settings_public` VIEW
+  (`WHERE key NOT IN ('smtp_pass')`) instead — both readonly roles' `SELECT` on the raw
+  table is revoked and re-granted on the view, same "last statement wins" ordering rule as
+  the column-level grants. **If you query `app_settings` via `claude_readonly` for
+  diagnostics (see "Database Access" above), query `app_settings_public` instead** — the
+  base table now returns `permission denied`.
+
+All four fixes live in `scripts/schema.sql` immediately after the `wireless_controllers`
+block, in the same REVOKE-then-(column-)GRANT/view shape. See `.ai-codex/schema.md`'s
+"Privilege notes" for the exact column lists. Same rule going forward: a new secret-bearing
+column on any table, or a new secret-shaped `app_settings` key, must be added to the
+matching exclusion — it is not automatically covered by precedent.
+
 ## Live Server Verification (Diagnostics)
 
 The suite runs on the production server **192.168.6.111**. Verify the *running*

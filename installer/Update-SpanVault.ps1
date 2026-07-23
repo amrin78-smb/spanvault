@@ -402,12 +402,21 @@ if ($psql -and (Test-Path $schema)) {
     # --quiet suppresses NOTICE/INFO chatter that psql writes to stderr (which
     # would otherwise raise NativeCommandError over WinRM); consume both streams
     # and gate success on $LASTEXITCODE.
-    try { $null = & $psql --quiet -U $dbUser -d $dbName -f $schema 2>&1 } catch {}
+    # -v ON_ERROR_STOP=1 (added 2026-07-23): without it, psql prints a genuine
+    # SQL error (e.g. a typo'd column in a REVOKE/GRANT block) to stderr and
+    # keeps going, then still exits 0 - so this step would report "[OK] Schema
+    # applied" while a security-relevant grant silently never took effect. This
+    # is the exact failure mode that bit NetVault's own equivalent fix the same
+    # day this was added (see that repo's Install-NocVault-Suite.ps1 comment).
+    # schema.sql's own idempotent statements (IF NOT EXISTS/IF EXISTS/OR
+    # REPLACE/ON CONFLICT) are not errors on a re-apply, so this does not
+    # affect them - only a genuine SQL error now surfaces as a real failure.
+    try { $null = & $psql --quiet -U $dbUser -d $dbName -v ON_ERROR_STOP=1 -f $schema 2>&1 } catch {}
     $psqlExit = $LASTEXITCODE
     $env:PGPASSWORD = ''
     # psql over WinRM commonly returns -1 on a successful run, so treat -1 as 0.
     if ($psqlExit -eq 0 -or $psqlExit -eq -1) { Write-Ok "Schema applied (as $dbUser)" }
-    else { Write-Warn "psql exited with code $psqlExit - apply scripts\schema.sql manually." }
+    else { Write-Warn "psql exited with code $psqlExit - a SQL error occurred applying scripts\schema.sql (ON_ERROR_STOP halted it partway through) - re-run it manually and fix the reported statement before assuming the schema is current." }
 } else {
     Write-Warn 'psql not found or schema.sql missing - apply scripts\schema.sql manually.'
 }

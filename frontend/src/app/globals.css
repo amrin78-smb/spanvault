@@ -963,12 +963,18 @@ label.sv-field .sv-input, label.sv-field .sv-select { font-weight: 400; }
    both horizontally and vertically instead of "flowing" like text. Only use
    this for fields that are ALL sv-input-sm; a form mixing short and free-text
    fields belongs in .sv-form-grid-compact instead.
-   190px is not arbitrary — measured against every current field label at the
-   real font (13px/700), the widest ("Noise Floor Threshold (dBm)") renders at
-   169px; 190px gives every label room to sit on one line with margin to
-   spare, so no field needs a one-off wide override. If a future field's label
-   is longer than ~180px, re-measure rather than reintroducing a per-field hack. */
-.sv-form-grid-numeric { display: grid; grid-template-columns: repeat(auto-fill, 190px); gap: 16px 24px; }
+   200px is not arbitrary — measured against every current field label at the
+   real font (13px/700). The widest is actually "Min Total Clients to
+   Evaluate" (~172px), with "Memory Alert Threshold (%)" close behind
+   (~167px) — NOT "Noise Floor Threshold (dBm)" (~170px), which an earlier
+   version of this comment named as the widest; it's mid-pack, not the
+   long pole. (Corrected 2026-07-23 — the original 190px column with a
+   claimed 169px widest label left only ~18px of margin, not the "margin to
+   spare" the comment described.) 200px gives ~28px of headroom over the
+   actual widest label so every field sits on one line without a one-off
+   wide override. If a future field's label is longer than ~185px,
+   re-measure rather than reintroducing a per-field hack. */
+.sv-form-grid-numeric { display: grid; grid-template-columns: repeat(auto-fill, 200px); gap: 16px 24px; }
 .sv-form-grid-numeric > .sv-field { width: 100%; }
 
 /* Caps a settings-form panel's width so short/numeric fields don't sit in a
