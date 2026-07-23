@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { edgePoint } from '@/lib/mapTypes';
+import { edgePoint, STATUS_FILL } from '@/lib/mapTypes';
 
 export interface TopoNode {
   device_id: number;
@@ -59,19 +59,6 @@ function hashString(s: string): number {
 function siteColor(siteName: string): string {
   if (siteName === UNASSIGNED) return NEUTRAL_GREY;
   return SITE_PALETTE[hashString(siteName) % SITE_PALETTE.length];
-}
-
-function statusColor(status: string): string {
-  switch (status) {
-    case 'up':
-      return '#22c55e';
-    case 'down':
-      return '#ef4444';
-    case 'warning':
-      return '#eab308';
-    default:
-      return '#94a3b8';
-  }
 }
 
 function truncate(s: string, max: number): string {
@@ -206,7 +193,7 @@ function DeviceNode({
   onClick: (deviceId: number) => void;
 }) {
   const { node, x, y } = layout;
-  const fill = statusColor(node.status);
+  const fill = STATUS_FILL[node.status] || STATUS_FILL.unknown;
   const site = node.site_name && node.site_name.trim() ? node.site_name : '';
   const tooltip =
     node.name +

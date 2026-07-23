@@ -11,7 +11,7 @@ import { GradeBadge } from '@/components/intel';
 import { fmtTime, fmtBps, Skeleton, CardSkeleton } from '@/components/ui';
 import {
   SECTION_TITLE, PANEL, STAT_GRID, STAT_CARD, STAT_VALUE, STAT_LABEL, TH, TD,
-  CHART_CARD, CHART_TITLE, CHART_NOTE, TOOLTIP_STYLE,
+  CHART_CARD, CHART_TITLE, CHART_NOTE, TOOLTIP_STYLE, dayColor,
 } from '@/components/reports/reportStyles';
 
 /**
@@ -105,14 +105,6 @@ export type IfSeries = {
 function dash(v: number | string | null | undefined, suffix = ''): string {
   if (v === null || v === undefined || v === '') return '—';
   return `${v}${suffix}`;
-}
-
-function dayColor(d: { uptime_pct: number | null; total_checks: number }): string {
-  if (d.total_checks === 0) return 'var(--sv-unknown)';
-  const p = d.uptime_pct;
-  if (p === null || p < 99) return 'var(--sv-down)';
-  if (p < 99.9) return 'var(--sv-warning)';
-  return 'var(--sv-up)';
 }
 
 function sevClass(severity: string): string {

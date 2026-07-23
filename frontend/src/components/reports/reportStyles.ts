@@ -98,3 +98,24 @@ export const TOOLTIP_STYLE = {
   labelStyle: { color: 'var(--text-muted)' },
   itemStyle: { color: 'var(--text-primary)' },
 };
+
+// Wireless AP/link utilization % → color (>85 critical, >70 warn, else neutral).
+// Was independently duplicated in WirelessAPHealthReport.tsx and
+// WirelessCapacityReport.tsx with a minor null-color discrepancy; canonicalised here.
+export function utilColor(util: number | null): string {
+  if (util == null) return 'var(--text-muted)';
+  if (util > 85) return 'var(--primary)';
+  if (util > 70) return 'var(--yellow)';
+  return 'var(--text-primary)';
+}
+
+// Day-level uptime % (or zero-checks) → color, matches live StatusDot's --sv-* tokens.
+// Was independently duplicated (byte-identical) in DeviceDetailReport.tsx and
+// ServiceDetailReport.tsx; canonicalised here.
+export function dayColor(d: { uptime_pct: number | null; total_checks: number }): string {
+  if (d.total_checks === 0) return 'var(--sv-unknown)';
+  const p = d.uptime_pct;
+  if (p === null || p < 99) return 'var(--sv-down)';
+  if (p < 99.9) return 'var(--sv-warning)';
+  return 'var(--sv-up)';
+}

@@ -1,7 +1,7 @@
 'use client';
 
 import { GradeBadge } from '@/components/intel';
-import { SECTION_TITLE, PANEL, STAT_GRID, STAT_CARD, STAT_VALUE, STAT_LABEL, TH, TD } from '@/components/reports/reportStyles';
+import { SECTION_TITLE, PANEL, STAT_GRID, STAT_CARD, STAT_VALUE, STAT_LABEL, TH, TD, utilColor } from '@/components/reports/reportStyles';
 
 type WirelessAP = {
   name: string;
@@ -60,13 +60,6 @@ function maxUtil(ap: WirelessAP): number | null {
   const b = ap.radio_5g_util_pct;
   if (a == null && b == null) return null;
   return Math.max(a ?? -Infinity, b ?? -Infinity);
-}
-
-function utilColor(util: number | null): string {
-  if (util == null) return 'var(--text-primary)';
-  if (util > 85) return 'var(--primary)';
-  if (util > 70) return 'var(--yellow)';
-  return 'var(--text-primary)';
 }
 
 function statusColor(status: string): string {

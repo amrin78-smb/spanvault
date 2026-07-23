@@ -1,6 +1,6 @@
 'use client';
 
-import { SECTION_TITLE, PANEL, STAT_GRID, STAT_CARD, STAT_VALUE, STAT_LABEL, TH, TD } from '@/components/reports/reportStyles';
+import { SECTION_TITLE, PANEL, STAT_GRID, STAT_CARD, STAT_VALUE, STAT_LABEL, TH, TD, utilColor } from '@/components/reports/reportStyles';
 
 type WirelessCapacity = {
   period: string;
@@ -21,13 +21,6 @@ function capacityColor(pct: number | null): string {
   if (pct >= 90) return 'var(--primary)';
   if (pct >= 70) return 'var(--yellow)';
   return 'var(--green)';
-}
-
-function utilColor(util: number | null): string {
-  if (util === null) return 'var(--text-muted)';
-  if (util > 85) return 'var(--primary)';
-  if (util > 70) return 'var(--yellow)';
-  return 'var(--text-primary)';
 }
 
 function fmtNum(n: number | null): string {

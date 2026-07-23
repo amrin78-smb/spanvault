@@ -74,7 +74,7 @@ importing them are already client components.
 - (c) `WirelessOverviewReport`  data: WirelessOverview
 - (c) `WirelessRFReport`  data: WirelessRF
 - (c) `WirelessSecurityReport`  data: WirelessSecurity
-- `reportStyles.ts` — shared style constants/objects for the report renderers above, not a component
+- `reportStyles.ts` — shared style constants/objects for the report renderers above, not a component. Also exports `utilColor(util)` and `dayColor({uptime_pct,total_checks})` helper functions (canonicalised 2026-07 from byte-identical duplicates previously local to WirelessAPHealthReport/WirelessCapacityReport and DeviceDetailReport/ServiceDetailReport respectively)
 
 ## Violations
 None found. Grepped for nested component-style declarations

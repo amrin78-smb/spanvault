@@ -36,6 +36,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.83.6': [
+    'Deduplicated a handful of color helper functions that had drifted into independent per-file copies with identical logic (topology map status colors, wireless utilization colors, and device/service uptime-calendar colors), consolidating them into one shared source each. Purely cosmetic, no visible change -- the duplicated copies already agreed with each other, this just removes the risk of a future edit accidentally leaving one copy out of sync.',
+  ],
   '1.83.5': [
     'Added a pre-built codebase index (.ai-codex/) so future development sessions can find things faster, with a rule that keeps it in sync going forward.',
     'Security: made a fix from last month more durable. Wireless controller API credentials were already hidden from the cross-app diagnostic/dashboard read role in production, but that protection had only ever been applied by hand and wasn\'t written into the file that provisions the database -- meaning the next routine update could have silently undone it with no warning. It\'s now written directly into that file so it re-applies itself correctly every time.',
