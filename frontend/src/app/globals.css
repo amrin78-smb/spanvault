@@ -953,6 +953,26 @@ label.sv-field .sv-input, label.sv-field .sv-select { font-weight: 400; }
 .sv-form-grid-compact > .sv-field { flex: 1 1 220px; }
 .sv-form-grid-compact > .sv-field:has(.sv-input-sm),
 .sv-form-grid-compact > .sv-field:has(.sv-input-md) { flex: 0 0 auto; }
+
+/* Uniform-column numeric field grid — for forms made ENTIRELY of short
+   sv-input-sm fields (Settings > General's polling/threshold panels). Unlike
+   .sv-form-grid-compact (natural-width flex flow, deliberately variable per
+   field so a long label or a wide text field isn't clipped), every column
+   here is a fixed, identical width — labels of different lengths wrap
+   instead of stretching their column, so fields line up into a real grid
+   both horizontally and vertically instead of "flowing" like text. Only use
+   this for fields that are ALL sv-input-sm; a form mixing short and free-text
+   fields belongs in .sv-form-grid-compact instead. */
+.sv-form-grid-numeric { display: grid; grid-template-columns: repeat(auto-fill, 150px); gap: 16px 24px; }
+.sv-form-grid-numeric > .sv-field { width: 100%; }
+
+/* Caps a settings-form panel's width so short/numeric fields don't sit in a
+   half-empty full-bleed card — pair with .sv-form-grid-numeric or a
+   short-field-dominated .sv-form-grid-compact panel. Not applied to panels
+   holding a wide table or a multi-column rule-builder row (those want the
+   extra width). */
+.sv-panel-narrow { max-width: 900px; }
+
 .sv-field-group { display: flex; flex-direction: column; gap: 8px; padding: 10px; margin-top: 4px;
   border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-primary); }
 .sv-field-group-title { font-size: var(--text-xs); font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); }

@@ -254,9 +254,9 @@ function GeneralSettings({ settings, form, set, save, saving, saveErr, dirty, nu
   return (
     <div>
       {saveErr && <ErrorBox message={saveErr} />}
-      <div className="sv-panel">
+      <div className="sv-panel sv-panel-narrow">
         <h2>Polling &amp; Thresholds</h2>
-        <div className="sv-form-grid-compact">
+        <div className="sv-form-grid-numeric">
           {NUM_FIELDS.map((f) => {
             const err = numErrors[f.key];
             return (
@@ -271,7 +271,7 @@ function GeneralSettings({ settings, form, set, save, saving, saveErr, dirty, nu
         </div>
       </div>
 
-      <div className="sv-panel">
+      <div className="sv-panel sv-panel-narrow">
         <h2>Wireless Alert Thresholds</h2>
         <p className="sv-panel-hint">
           Controls how sensitive wireless AP alerts are to RF and client conditions. Raising a
@@ -281,7 +281,7 @@ function GeneralSettings({ settings, form, set, save, saving, saveErr, dirty, nu
         {WIRELESS_ALERT_GROUPS.map((g) => (
           <div key={g.title}>
             <h3 style={{ fontSize: 'var(--text-base)', margin: '14px 0 8px' }}>{g.title}</h3>
-            <div className="sv-form-grid-compact">
+            <div className="sv-form-grid-numeric">
               {g.keys.map((k) => {
                 const f = WIRELESS_ALERT_FIELDS.find((x) => x.key === k)!;
                 const err = numErrors[f.key];
@@ -299,12 +299,12 @@ function GeneralSettings({ settings, form, set, save, saving, saveErr, dirty, nu
         ))}
       </div>
 
-      <div className="sv-panel">
+      <div className="sv-panel sv-panel-narrow">
         <h2>Data Retention</h2>
         <p className="sv-panel-hint">
           Raw samples are rolled up to daily summaries, then purged. 0 = keep forever.
         </p>
-        <div className="sv-form-grid-compact">
+        <div className="sv-form-grid-numeric">
           <label className="sv-field">Raw samples (days)
             <input className="sv-input sv-input-sm" type="number" min={0} placeholder="14"
               value={form.retention_raw_days ?? ''} onChange={(e) => set('retention_raw_days', e.target.value)} />
@@ -333,7 +333,7 @@ function NotificationSettings({ settings, form, set, save, saving, saveErr, dirt
   return (
     <div>
       {saveErr && <ErrorBox message={saveErr} />}
-      <div className="sv-panel">
+      <div className="sv-panel sv-panel-narrow">
         <h2>Email Notifications</h2>
         <label className="sv-field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 14 }}>
           <input type="checkbox"
