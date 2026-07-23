@@ -36,6 +36,11 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.83.5': [
+    'Added a pre-built codebase index (.ai-codex/) so future development sessions can find things faster, with a rule that keeps it in sync going forward.',
+    'Security: made a fix from last month more durable. Wireless controller API credentials were already hidden from the cross-app diagnostic/dashboard read role in production, but that protection had only ever been applied by hand and wasn\'t written into the file that provisions the database -- meaning the next routine update could have silently undone it with no warning. It\'s now written directly into that file so it re-applies itself correctly every time.',
+    'Fixed the same class of gap for NetVault, LogVault, and DDIVault, and fixed an installer ordering bug that would have silently exposed those credentials on every brand-new install of the whole suite.',
+  ],
   '1.83.4': [
     'Fixed from an end-of-day bug sweep of today\'s wireless-alerting work: the AP congestion score\'s client-imbalance component ignored the minimum-client-count gate the real alert uses, inflating scores for lightly-loaded APs; the score\'s Low/Medium/High cutoffs made 100% channel utilization alone read as "Low" despite that being the score\'s own dominant signal; closing a wireless alert\'s AP drawer and revisiting the Access Points tab could silently reopen the same AP again; the AP drawer\'s weak-client indicator missed "sticky" clients that the Clients tab already flags as the worst tier; and the AP detail API route was missing the site-scoping check its sibling routes already have.',
   ],

@@ -1,5 +1,33 @@
 # SpanVault — NocVault Suite
 
+## Codebase Index — READ FIRST
+
+Pre-built index files live in `.ai-codex/`. Read these BEFORE exploring the codebase:
+- `.ai-codex/routes.md`      — all API routes
+- `.ai-codex/pages.md`       — page tree
+- `.ai-codex/lib.md`         — library exports
+- `.ai-codex/schema.md`      — database schema + known debt
+- `.ai-codex/components.md`  — component index
+- `.ai-codex/gotchas.md`     — non-obvious behaviours
+
+### Maintaining the index — MANDATORY
+
+The index is only useful if it is accurate. A stale index is worse than none: it
+sends sessions confidently to the wrong place.
+
+Any commit that changes the shape of the codebase MUST update the matching index
+file in the SAME commit. Specifically:
+- Add / remove / rename an API route, or change its method or auth   -> routes.md
+- Add / remove / rename a page, or flip client<->server              -> pages.md
+- Add / remove / rename a lib export, or change a signature          -> lib.md
+- Any change to schema.sql or a migration script                     -> schema.md
+- Add / remove a component, or change its props                      -> components.md
+- Discover a new non-obvious behaviour or footgun                    -> gotchas.md
+
+This runs at the same point as the version bump. If you are bumping the version,
+check whether the index needs updating. Do not defer it to "later" — later never
+comes and the index rots.
+
 ## What this is
 SpanVault is a Network Monitoring System (NMS) in the NocVault suite. It runs alongside
 NetVault (port 3000), LogVault (port 3004), and DDIVault (port 3006) on the same Windows Server.
@@ -843,20 +871,45 @@ table-wide `SELECT` on this table (inherited from the suite's own blanket
 `GRANT SELECT ON ALL TABLES IN SCHEMA public`), which meant every diagnostic
 query — including an innocuous `SELECT *` — could read a live customer's
 cloud API secret. Fixed 2026-07 with a **column-level** grant instead: both
-roles can read every column on this table EXCEPT those five. This is a
-deliberate, narrower exception to the suite's normal blanket-grant pattern —
-**never re-run a blanket `GRANT SELECT ON ALL TABLES IN SCHEMA public TO
-claude_readonly / nocvault_readonly` in a way that touches this table** (e.g.
-a fresh-install/suite-installer grant step, or a "just re-grant everything"
-troubleshooting command) — that silently re-widens it back to table-wide
-SELECT, undoing this fix with no error or warning. If a NEW secret-bearing
-column is ever added to this table (or the same pattern is used for another
-vendor's credentials elsewhere), it must be explicitly excluded from the next
-grant the same way — a column-level grant fails closed (a new column is
-simply invisible to diagnostics until explicitly granted), which is the
-correct trade: a missing column in a debug query is a far smaller problem
-than a newly-added secret silently becoming world-readable to every readonly
-role.
+roles can read every column on this table EXCEPT those five.
+
+**Where the fix actually lives (corrected 2026-07-23).** The column-level
+grant is now written directly into `scripts/schema.sql`, immediately after
+the blanket `GRANT SELECT ON ALL TABLES` block — REVOKE-then-column-GRANT,
+since a table-level `GRANT` unconditionally overrides an earlier column-level
+restriction in Postgres, so the REVOKE has to come first and this whole block
+has to be the LAST thing touching that role's privileges on this table. It
+used to exist only as a manual, out-of-band fix applied directly against the
+production server and never written into this file at all — which meant it
+looked safe (production genuinely was safe) while being one routine
+`schema.sql` re-apply away from silently undoing itself, since this file
+auto-applies on every deploy. **A second, independent copy of the same bug
+was found and fixed in the suite installer**: `../netvault/installer/
+Install-NocVault-Suite.ps1`'s `GrantNocRoRead "spanvault"` call (an
+unconditional blanket grant, same shape) used to run AFTER `schema.sql`
+during a fresh install, which would have re-widened this table back to
+table-wide access on day one of every new customer install even with the
+schema.sql fix in place. Reordered to run BEFORE `schema.sql` instead — see
+that repo's own installer for the full reasoning.
+
+This is a deliberate, narrower exception to the suite's normal blanket-grant
+pattern — **never re-run a blanket `GRANT SELECT ON ALL TABLES IN SCHEMA
+public TO claude_readonly / nocvault_readonly` in a way that touches this
+table** (e.g. a manual "just re-grant everything" troubleshooting command run
+directly against production, bypassing schema.sql entirely) — that silently
+re-widens it back to table-wide SELECT, undoing this fix with no error or
+warning. If a NEW secret-bearing column is ever added to this table (or the
+same pattern is used for another vendor's credentials elsewhere), it must be
+explicitly excluded from the grant list in `scripts/schema.sql` the same way
+— a column-level grant fails closed (a new column is simply invisible to
+diagnostics until explicitly granted), which is the correct trade: a missing
+column in a debug query is a far smaller problem than a newly-added secret
+silently becoming world-readable to every readonly role. **The lesson this
+incident actually teaches: a correct fix applied only by hand, directly
+against production, and never captured in the file that gets re-applied on
+every deploy, is not a fix — it's a countdown.** Anything that restricts a
+privilege must live in the same file/script that (re-)grants it, in the
+right order, or the grant will eventually win again.
 
 ### New tables need an explicit readonly `GRANT` — but NEVER the blanket form
 Because the suite's blanket `GRANT SELECT ON ALL TABLES IN SCHEMA public TO

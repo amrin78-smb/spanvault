@@ -1486,3 +1486,54 @@ BEGIN
     END IF;
 END
 $$;
+
+-- ── wireless_controllers column-level exclusion (security pass, 2026-07) ────
+-- wireless_controllers holds live third-party API credentials (api_key,
+-- api_password, api_client_secret, api_refresh_token, api_access_token — the
+-- last two are Aruba Central's rotating OAuth2 tokens). The blanket grant
+-- above previously gave nocvault_readonly/claude_readonly unrestricted
+-- table-level SELECT on this table, including those 5 columns. A prior fix
+-- was applied manually, out-of-band, directly on production — but it was
+-- NEVER written into this file, so the very next time schema.sql runs (a
+-- normal, automatic part of every deploy per this app's CLAUDE.md), the
+-- blanket GRANT above re-exposes all 5 secret columns with no error and no
+-- warning. This block makes that fix durable: it re-derives the SAME
+-- restriction every time schema.sql runs, immediately after the blanket
+-- grant (order matters — the LAST statement touching a privilege wins).
+-- ALLOWLIST, not blocklist: the 42 columns below are every column EXCEPT the
+-- 5 secrets, enumerated from the live table on 2026-07-23. A newly added
+-- column defaults to HIDDEN from these two roles until explicitly added to
+-- this list — a missing column in a diagnostic query is a far smaller
+-- problem than a newly added secret silently becoming world-readable.
+DO $$
+BEGIN
+  IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'nocvault_readonly') THEN
+    REVOKE SELECT ON wireless_controllers FROM nocvault_readonly;
+    GRANT SELECT (
+      id, name, vendor, controller_url, api_username, api_client_id, api_customer_id,
+      api_group_filter, api_token_expires_at, site_id, site_name, snmp_device_id,
+      active, status, last_error, last_polled_at, poll_interval_seconds, model,
+      firmware_version, licensed_aps, ha_mode, ha_peer_ip, ha_sync_status,
+      ap_disconnects_24h, created_at, ha_peer_controller_id, ha_manual_role,
+      capabilities, capabilities_probed_at, chassis_temp_c, chassis_temp_status,
+      last_reboot_reason, reported_ap_count, reported_client_count,
+      ha_active_aps, ha_standby_aps, ha_total_aps, ha_active_vap_tunnels,
+      ha_standby_vap_tunnels, ha_total_vap_tunnels, ha_ap_hbt_tunnels, ha_peers
+    ) ON wireless_controllers TO nocvault_readonly;
+  END IF;
+  IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'claude_readonly') THEN
+    REVOKE SELECT ON wireless_controllers FROM claude_readonly;
+    GRANT SELECT (
+      id, name, vendor, controller_url, api_username, api_client_id, api_customer_id,
+      api_group_filter, api_token_expires_at, site_id, site_name, snmp_device_id,
+      active, status, last_error, last_polled_at, poll_interval_seconds, model,
+      firmware_version, licensed_aps, ha_mode, ha_peer_ip, ha_sync_status,
+      ap_disconnects_24h, created_at, ha_peer_controller_id, ha_manual_role,
+      capabilities, capabilities_probed_at, chassis_temp_c, chassis_temp_status,
+      last_reboot_reason, reported_ap_count, reported_client_count,
+      ha_active_aps, ha_standby_aps, ha_total_aps, ha_active_vap_tunnels,
+      ha_standby_vap_tunnels, ha_total_vap_tunnels, ha_ap_hbt_tunnels, ha_peers
+    ) ON wireless_controllers TO claude_readonly;
+  END IF;
+END
+$$;
