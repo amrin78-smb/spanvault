@@ -36,6 +36,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.83.9': [
+    'Settings > General redesign, round two: widened the field grid columns (measured against every current label, not guessed) so nothing wraps, and added a short "what this setting does" panel next to the Polling & Wireless Threshold sections instead of leaving that space empty -- explains poll intervals, the down-detection logic, rolling-window alert checks, and the two-tier utilization escalation, all sourced from the actual collector logic.',
+  ],
   '1.83.8': [
     'Settings > General: widened the CPU/Memory alert threshold and Roam Storm Window columns so their labels no longer wrap to two lines in the new grid layout -- everything else stays on the same uniform column width.',
   ],

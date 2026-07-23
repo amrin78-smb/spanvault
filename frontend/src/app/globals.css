@@ -962,16 +962,41 @@ label.sv-field .sv-input, label.sv-field .sv-select { font-weight: 400; }
    instead of stretching their column, so fields line up into a real grid
    both horizontally and vertically instead of "flowing" like text. Only use
    this for fields that are ALL sv-input-sm; a form mixing short and free-text
-   fields belongs in .sv-form-grid-compact instead. */
-.sv-form-grid-numeric { display: grid; grid-template-columns: repeat(auto-fill, 150px); gap: 16px 24px; }
+   fields belongs in .sv-form-grid-compact instead.
+   190px is not arbitrary — measured against every current field label at the
+   real font (13px/700), the widest ("Noise Floor Threshold (dBm)") renders at
+   169px; 190px gives every label room to sit on one line with margin to
+   spare, so no field needs a one-off wide override. If a future field's label
+   is longer than ~180px, re-measure rather than reintroducing a per-field hack. */
+.sv-form-grid-numeric { display: grid; grid-template-columns: repeat(auto-fill, 190px); gap: 16px 24px; }
 .sv-form-grid-numeric > .sv-field { width: 100%; }
 
 /* Caps a settings-form panel's width so short/numeric fields don't sit in a
    half-empty full-bleed card — pair with .sv-form-grid-numeric or a
    short-field-dominated .sv-form-grid-compact panel. Not applied to panels
    holding a wide table or a multi-column rule-builder row (those want the
-   extra width). */
-.sv-panel-narrow { max-width: 900px; }
+   extra width). Matches .sv-settings-row's main column so a lone panel
+   (no aside) still left-aligns with the rows above/below it. */
+.sv-panel-narrow { max-width: 860px; }
+
+/* Settings > General: a threshold panel paired with a short contextual
+   explainer, mirroring how a well-organized settings page uses its freed-up
+   width (info, not blank canvas) instead of just capping the panel and
+   leaving the rest of the row empty. The aside sticks just below the
+   sticky tab bar (45px, measured) so it stays visible while the — often
+   much taller — panel beside it scrolls. Stacks to one column below 900px. */
+.sv-settings-row { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 20px; align-items: start; max-width: 1180px; margin-bottom: 20px; }
+@media (max-width: 900px) { .sv-settings-row { grid-template-columns: 1fr; } }
+
+.sv-info-card {
+  background: var(--tint-info); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 16px 18px; position: sticky; top: 45px;
+}
+.sv-info-card h3 { margin: 0 0 12px; font-size: var(--text-base); font-weight: 700; color: var(--tint-info-fg); }
+.sv-info-card dl { margin: 0; }
+.sv-info-card dt { font-size: var(--text-sm); font-weight: 700; color: var(--text-primary); margin-top: 12px; }
+.sv-info-card dt:first-child { margin-top: 0; }
+.sv-info-card dd { margin: 3px 0 0; font-size: var(--text-sm); color: var(--text-secondary); line-height: 1.5; }
 
 .sv-field-group { display: flex; flex-direction: column; gap: 8px; padding: 10px; margin-top: 4px;
   border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-primary); }

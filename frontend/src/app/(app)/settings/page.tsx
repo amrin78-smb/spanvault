@@ -164,17 +164,14 @@ function SaveBar({ save, saving, dirty, disabled }: {
 // ── General settings ───────────────────────────────────────────
 // min/max/step drive both the native input constraints AND the inline validation
 // below. Poll intervals have a sensible 5s floor so the collector isn't hammered.
-// `wide` doubles a field's grid column span in .sv-form-grid-numeric (150px ->
-// ~324px) for the handful of labels too long to fit a single 150px column
-// without wrapping — everything else stays on the uniform 150px column.
-type NumField = { key: string; label: string; min: number; max?: number; step?: number; wide?: boolean };
+type NumField = { key: string; label: string; min: number; max?: number; step?: number };
 const NUM_FIELDS: NumField[] = [
   { key: 'icmp_poll_interval_seconds', label: 'ICMP Poll Interval (s)', min: 5, step: 1 },
   { key: 'snmp_poll_interval_seconds', label: 'SNMP Poll Interval (s)', min: 5, step: 1 },
   { key: 'ping_threshold_ms', label: 'Ping Threshold (ms)', min: 1, step: 1 },
   { key: 'ping_failures_before_down', label: 'Failures Before Down', min: 1, step: 1 },
-  { key: 'cpu_threshold_pct', label: 'CPU Alert Threshold (%)', min: 1, max: 100, step: 1, wide: true },
-  { key: 'mem_threshold_pct', label: 'Memory Alert Threshold (%)', min: 1, max: 100, step: 1, wide: true },
+  { key: 'cpu_threshold_pct', label: 'CPU Alert Threshold (%)', min: 1, max: 100, step: 1 },
+  { key: 'mem_threshold_pct', label: 'Memory Alert Threshold (%)', min: 1, max: 100, step: 1 },
   { key: 'netvault_sync_minutes', label: 'NetVault Sync (min)', min: 1, step: 1 },
 ];
 
@@ -197,7 +194,7 @@ const WIRELESS_ALERT_FIELDS: NumField[] = [
   { key: 'wireless_imbalance_min_clients', label: 'Min Clients to Evaluate', min: 1, step: 1 },
   { key: 'wireless_imbalance_ratio_pct', label: 'Imbalance Ratio (%)', min: 1, max: 100, step: 1 },
   { key: 'wireless_roam_storm_count', label: 'Roam Count Threshold', min: 1, step: 1 },
-  { key: 'wireless_roam_storm_window_minutes', label: 'Roam Storm Window (min)', min: 1, step: 1, wide: true },
+  { key: 'wireless_roam_storm_window_minutes', label: 'Roam Storm Window (min)', min: 1, step: 1 },
   { key: 'wireless_weak_client_rate_mbps', label: 'Weak Client Rate (Mbps)', min: 1, step: 1 },
   { key: 'wireless_weak_client_min_total', label: 'Min Total Clients to Evaluate', min: 1, step: 1 },
   { key: 'wireless_weak_client_min_count', label: 'Min Weak Client Count', min: 1, step: 1 },
@@ -257,49 +254,79 @@ function GeneralSettings({ settings, form, set, save, saving, saveErr, dirty, nu
   return (
     <div>
       {saveErr && <ErrorBox message={saveErr} />}
-      <div className="sv-panel sv-panel-narrow">
-        <h2>Polling &amp; Thresholds</h2>
-        <div className="sv-form-grid-numeric">
-          {NUM_FIELDS.map((f) => {
-            const err = numErrors[f.key];
-            return (
-              <label className="sv-field" key={f.key} style={f.wide ? { gridColumn: 'span 2' } : undefined}>{f.label}
-                <input className="sv-input sv-input-sm" type="number" min={f.min} max={f.max} step={f.step ?? 1}
-                  aria-invalid={!!err} value={form[f.key] ?? ''}
-                  onChange={(e) => set(f.key, e.target.value)} />
-                {err && <span className="sv-err-inline" style={{ margin: 0 }}>{err}</span>}
-              </label>
-            );
-          })}
+      <div className="sv-settings-row">
+        <div className="sv-panel" style={{ margin: 0 }}>
+          <h2>Polling &amp; Thresholds</h2>
+          <div className="sv-form-grid-numeric">
+            {NUM_FIELDS.map((f) => {
+              const err = numErrors[f.key];
+              return (
+                <label className="sv-field" key={f.key}>{f.label}
+                  <input className="sv-input sv-input-sm" type="number" min={f.min} max={f.max} step={f.step ?? 1}
+                    aria-invalid={!!err} value={form[f.key] ?? ''}
+                    onChange={(e) => set(f.key, e.target.value)} />
+                  {err && <span className="sv-err-inline" style={{ margin: 0 }}>{err}</span>}
+                </label>
+              );
+            })}
+          </div>
         </div>
+        <aside className="sv-info-card">
+          <h3>About these settings</h3>
+          <dl>
+            <dt>Poll intervals</dt>
+            <dd>How often SpanVault checks each device over ICMP and SNMP. Floored at 5 seconds so a very low value can&apos;t overload the collector.</dd>
+            <dt>Ping threshold</dt>
+            <dd>A response slower than this marks a device &quot;Warning&quot; — still reachable, just slow.</dd>
+            <dt>Failures before down</dt>
+            <dd>Consecutive failed pings required before a device flips to &quot;Down.&quot; Protects against one dropped packet causing a false alert.</dd>
+            <dt>CPU / Memory thresholds</dt>
+            <dd>SNMP-reported utilization above these fires a warning alert.</dd>
+            <dt>NetVault Sync</dt>
+            <dd>How often device and site inventory refreshes from NetVault.</dd>
+          </dl>
+        </aside>
       </div>
 
-      <div className="sv-panel sv-panel-narrow">
-        <h2>Wireless Alert Thresholds</h2>
-        <p className="sv-panel-hint">
-          Controls how sensitive wireless AP alerts are to RF and client conditions. Raising a
-          threshold reduces alert volume for environments that are genuinely busy or noisy;
-          lowering one surfaces problems sooner at the cost of more alerts.
-        </p>
-        {WIRELESS_ALERT_GROUPS.map((g) => (
-          <div key={g.title}>
-            <h3 style={{ fontSize: 'var(--text-base)', margin: '14px 0 8px' }}>{g.title}</h3>
-            <div className="sv-form-grid-numeric">
-              {g.keys.map((k) => {
-                const f = WIRELESS_ALERT_FIELDS.find((x) => x.key === k)!;
-                const err = numErrors[f.key];
-                return (
-                  <label className="sv-field" key={f.key} style={f.wide ? { gridColumn: 'span 2' } : undefined}>{f.label}
-                    <input className="sv-input sv-input-sm" type="number" min={f.min} max={f.max} step={f.step ?? 1}
-                      aria-invalid={!!err} value={form[f.key] ?? ''}
-                      onChange={(e) => set(f.key, e.target.value)} />
-                    {err && <span className="sv-err-inline" style={{ margin: 0 }}>{err}</span>}
-                  </label>
-                );
-              })}
+      <div className="sv-settings-row">
+        <div className="sv-panel" style={{ margin: 0 }}>
+          <h2>Wireless Alert Thresholds</h2>
+          <p className="sv-panel-hint">
+            Controls how sensitive wireless AP alerts are to RF and client conditions. Raising a
+            threshold reduces alert volume for environments that are genuinely busy or noisy;
+            lowering one surfaces problems sooner at the cost of more alerts.
+          </p>
+          {WIRELESS_ALERT_GROUPS.map((g) => (
+            <div key={g.title}>
+              <h3 style={{ fontSize: 'var(--text-base)', margin: '14px 0 8px' }}>{g.title}</h3>
+              <div className="sv-form-grid-numeric">
+                {g.keys.map((k) => {
+                  const f = WIRELESS_ALERT_FIELDS.find((x) => x.key === k)!;
+                  const err = numErrors[f.key];
+                  return (
+                    <label className="sv-field" key={f.key}>{f.label}
+                      <input className="sv-input sv-input-sm" type="number" min={f.min} max={f.max} step={f.step ?? 1}
+                        aria-invalid={!!err} value={form[f.key] ?? ''}
+                        onChange={(e) => set(f.key, e.target.value)} />
+                      {err && <span className="sv-err-inline" style={{ margin: 0 }}>{err}</span>}
+                    </label>
+                  );
+                })}
+              </div>
             </div>
-          </div>
-        ))}
+          ))}
+        </div>
+        <aside className="sv-info-card">
+          <h3>Reading these thresholds</h3>
+          <dl>
+            <dt>Rolling windows</dt>
+            <dd>Utilization, retry, and interference checks average over the configured window rather than a single poll, so one busy moment doesn&apos;t trigger an alert.</dd>
+            <dt>Warning vs. Critical</dt>
+            <dd>Channel Utilization has two tiers — crossing Critical escalates an already-open alert rather than raising a second one.</dd>
+            <dt>Weak clients</dt>
+            <dd>A client counts as &quot;weak&quot; if it&apos;s already flagged as a connectivity problem, or stuck at a low negotiated data rate.</dd>
+          </dl>
+        </aside>
       </div>
 
       <div className="sv-panel sv-panel-narrow">
