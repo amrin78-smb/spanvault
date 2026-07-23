@@ -363,45 +363,60 @@ function NotificationSettings({ settings, form, set, save, saving, saveErr, dirt
   return (
     <div>
       {saveErr && <ErrorBox message={saveErr} />}
-      <div className="sv-panel sv-panel-narrow">
-        <h2>Email Notifications</h2>
-        <label className="sv-field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 14 }}>
-          <input type="checkbox"
-            checked={String(form.email_alerts_enabled).toLowerCase() === 'true'}
-            onChange={(e) => set('email_alerts_enabled', e.target.checked ? 'true' : 'false')} />
-          Enable email alerts
-        </label>
-        <div className="sv-form-grid-compact">
-          {SMTP_FIELDS.map((f) => (
-            <label className="sv-field" key={f.key}>{f.label}
-              <input className={`sv-input${(f as { short?: boolean }).short ? ' sv-input-sm' : ''}`} type={f.type || 'text'} value={form[f.key] ?? ''}
-                onChange={(e) => set(f.key, e.target.value)} />
+      <div className="sv-settings-row">
+        <div>
+          <div className="sv-panel" style={{ margin: 0 }}>
+            <h2>Email Notifications</h2>
+            <label className="sv-field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 14 }}>
+              <input type="checkbox"
+                checked={String(form.email_alerts_enabled).toLowerCase() === 'true'}
+                onChange={(e) => set('email_alerts_enabled', e.target.checked ? 'true' : 'false')} />
+              Enable email alerts
             </label>
-          ))}
-        </div>
-        <div style={{ marginTop: 14, display: 'flex', flexWrap: 'wrap', gap: 24, alignItems: 'flex-end' }}>
-          <label className="sv-field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8, margin: 0 }}>
-            <input type="checkbox"
-              checked={String(form.email_recovery_enabled ?? 'true').toLowerCase() !== 'false'}
-              onChange={(e) => set('email_recovery_enabled', e.target.checked ? 'true' : 'false')} />
-            Send recovery (“all-clear”) emails
-          </label>
-          <label className="sv-field" style={{ margin: 0 }}>Re-notify cooldown (minutes)
-            <input className="sv-input sv-input-sm" type="number" min={0}
-              value={form.notify_cooldown_minutes ?? '15'}
-              onChange={(e) => set('notify_cooldown_minutes', e.target.value)} />
-            <span className="sv-muted" style={{ fontSize: 'var(--text-xs)' }}>0 = no throttle. Suppresses repeat emails for a flapping alert.</span>
-          </label>
-          <label className="sv-field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8, margin: 0 }}>
-            <input type="checkbox"
-              checked={String(form.anomaly_alerts_enabled ?? 'false').toLowerCase() === 'true'}
-              onChange={(e) => set('anomaly_alerts_enabled', e.target.checked ? 'true' : 'false')} />
-            Alert on baseline anomalies (latency / CPU / memory deviating from normal)
-          </label>
-        </div>
-      </div>
+            <div className="sv-form-grid-compact">
+              {SMTP_FIELDS.map((f) => (
+                <label className="sv-field" key={f.key}>{f.label}
+                  <input className={`sv-input${(f as { short?: boolean }).short ? ' sv-input-sm' : ''}`} type={f.type || 'text'} value={form[f.key] ?? ''}
+                    onChange={(e) => set(f.key, e.target.value)} />
+                </label>
+              ))}
+            </div>
+            <div style={{ marginTop: 14, display: 'flex', flexWrap: 'wrap', gap: 24, alignItems: 'flex-end' }}>
+              <label className="sv-field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8, margin: 0 }}>
+                <input type="checkbox"
+                  checked={String(form.email_recovery_enabled ?? 'true').toLowerCase() !== 'false'}
+                  onChange={(e) => set('email_recovery_enabled', e.target.checked ? 'true' : 'false')} />
+                Send recovery (“all-clear”) emails
+              </label>
+              <label className="sv-field" style={{ margin: 0 }}>Re-notify cooldown (minutes)
+                <input className="sv-input sv-input-sm" type="number" min={0}
+                  value={form.notify_cooldown_minutes ?? '15'}
+                  onChange={(e) => set('notify_cooldown_minutes', e.target.value)} />
+                <span className="sv-muted" style={{ fontSize: 'var(--text-xs)' }}>0 = no throttle. Suppresses repeat emails for a flapping alert.</span>
+              </label>
+              <label className="sv-field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8, margin: 0 }}>
+                <input type="checkbox"
+                  checked={String(form.anomaly_alerts_enabled ?? 'false').toLowerCase() === 'true'}
+                  onChange={(e) => set('anomaly_alerts_enabled', e.target.checked ? 'true' : 'false')} />
+                Alert on baseline anomalies (latency / CPU / memory deviating from normal)
+              </label>
+            </div>
+          </div>
 
-      <NotificationRoutes />
+          <NotificationRoutes />
+        </div>
+        <aside className="sv-info-card">
+          <h3>How delivery works</h3>
+          <dl>
+            <dt>Re-notify cooldown</dt>
+            <dd>Minimum minutes between emails for the same device and alert type — stops a flapping alert from flooding your inbox. 0 disables the throttle entirely.</dd>
+            <dt>Recovery emails</dt>
+            <dd>Sent to the same recipients as the original alert, when it clears.</dd>
+            <dt>Notification routing</dt>
+            <dd>If any route matches an alert, its recipients <em>replace</em> the global Alert Recipients for that alert — they don&apos;t add to them. Global recipients only apply when no route matches.</dd>
+          </dl>
+        </aside>
+      </div>
 
       <SaveBar save={save} saving={saving} dirty={dirty} disabled={hasNumErrors} />
     </div>
@@ -416,7 +431,20 @@ function EscalationSettings({ settings, form, set, save, saving, saveErr, dirty,
   return (
     <div>
       {saveErr && <ErrorBox message={saveErr} />}
-      <EscalationOnCall form={form} set={set} />
+      <div className="sv-settings-row">
+        <EscalationOnCall form={form} set={set} />
+        <aside className="sv-info-card">
+          <h3>How escalation fires</h3>
+          <dl>
+            <dt>Only unacknowledged alerts</dt>
+            <dd>A step fires once an alert has been active and unacknowledged for at least its &quot;After (min)&quot; value. Acknowledging the alert stops further steps.</dd>
+            <dt>Each step fires once</dt>
+            <dd>Per alert, per step — escalation never re-sends the same step even if the alert is still open at the next check.</dd>
+            <dt>Use on-call</dt>
+            <dd>Routes the step to whichever contact&apos;s shift is active right now, instead of a fixed address.</dd>
+          </dl>
+        </aside>
+      </div>
       <SaveBar save={save} saving={saving} dirty={dirty} disabled={hasNumErrors} />
     </div>
   );
@@ -834,18 +862,29 @@ const RULE_SUBTABS = [
 function AlertRules() {
   const [sub, setSub] = useState('global');
   return (
-    <div>
-      <div className="sv-tabs" style={{ marginTop: 0 }}>
-        {RULE_SUBTABS.map((t) => (
-          <button key={t.key} className={`sv-tab ${sub === t.key ? 'active' : ''}`} onClick={() => setSub(t.key)}>
-            {t.label}
-          </button>
-        ))}
+    <div className="sv-settings-row">
+      <div>
+        <div className="sv-tabs" style={{ marginTop: 0 }}>
+          {RULE_SUBTABS.map((t) => (
+            <button key={t.key} className={`sv-tab ${sub === t.key ? 'active' : ''}`} onClick={() => setSub(t.key)}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+        {sub === 'global' && <GlobalRules />}
+        {sub === 'site' && <SiteRules />}
+        {sub === 'device' && <DeviceRules />}
+        {sub === 'service' && <ServiceRules />}
       </div>
-      {sub === 'global' && <GlobalRules />}
-      {sub === 'site' && <SiteRules />}
-      {sub === 'device' && <DeviceRules />}
-      {sub === 'service' && <ServiceRules />}
+      <aside className="sv-info-card">
+        <h3>How rule precedence works</h3>
+        <dl>
+          <dt>Most specific wins, per metric</dt>
+          <dd>A Device (or Service) rule overrides a Site rule, which overrides a Global rule — but only for the metric it defines. A Global rule still applies to every metric the more specific scopes don&apos;t override.</dd>
+          <dt>Scopes</dt>
+          <dd>Global applies everywhere by default. Site, Device, and Service rules narrow that to one location or one entity.</dd>
+        </dl>
+      </aside>
     </div>
   );
 }
