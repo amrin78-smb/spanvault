@@ -36,6 +36,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.83.15': [
+    'Fixed GET /api/system/last-update-status (added in 1.83.13) always returning {exists:false} even right after a real update ran. The route looked for logs/last-update-status.json relative to the app folder, but Update-SpanVault.ps1 actually writes it under -InstallDir, which on a normal suite install is the PARENT of the app folder (a sibling logs/ directory, not one inside it) -- so the file was always there, just never where the route was looking. Now checks both layouts, matching how NetVault\'s equivalent route already handles the same install-dir-vs-app-dir split.',
+  ],
   '1.83.14': [
     'Fixed a real bug in the rollback mechanism added in 1.83.13, found from a live LogVault production incident with the identical code: the rollback restored node_modules/.next BEFORE stopping the just-started services, mutating a live directory tree while SpanVault-API/-Collector were still running against it. In LogVault this corrupted node_modules down to a handful of packages even though the restore reported success, and the Collector crash-looped on a missing module. Reordered to stop services first, matching the safe order the main update flow already uses. Also hardened the rollback\'s own post-restart service-status check to poll for up to 30s and stay informational-only (never override a passing health check), matching the same fix applied to the other suite apps -- SpanVault\'s own main health-check gate was already unaffected by that specific issue.',
   ],
@@ -1486,21 +1489,35 @@ app.get('/api/system/update-available', (_req, res) => {
 });
 
 // Update-SpanVault.ps1 writes a structured result of the last update attempt to
-// logs/last-update-status.json on every run (success or failure) - see the
-// script's Write-StatusJson function. This route just surfaces that file so the
-// frontend can show a banner the moment a failed update needs attention, without
-// anyone having to go looking at the updater's log files. Same access level as
-// /api/system/update-available (goes through the normal authenticated middleware
-// path - not added to frontend/src/middleware.ts's PUBLIC_API allowlist, since
-// neither this nor its sibling need to work with literally no session; both are
-// only ever fetched from within the already-authenticated app shell), but
-// exempted from enforceLicense's disabled-state block below, same as its sibling
-// — an admin should still be able to see a failed-update banner even with an
-// expired license.
+// <InstallDir>\logs\last-update-status.json on every run (success or failure) -
+// see the script's Write-StatusJson function ($StatusPath = Join-Path
+// $InstallDir "logs\...", where $InstallDir is the -InstallDir PARAMETER, NOT
+// derived from $AppRoot). On a suite install, $InstallDir (e.g. C:\Apps\
+// SpanVault) is the PARENT of $AppRoot (C:\Apps\SpanVault\app) - so logs\ is a
+// SIBLING of the app folder this server.js lives in, not inside it. Check both
+// layouts (suite install: sibling of APP_ROOT; standalone install: inside
+// APP_ROOT) the same way NetVault's equivalent route does, rather than
+// assuming one - guessing wrong here silently always returns {exists:false}
+// even when the file is genuinely there, exactly as first shipped in 1.83.13.
+//
+// This route just surfaces that file so the frontend can show a banner the
+// moment a failed update needs attention, without anyone having to go looking
+// at the updater's log files. Same access level as /api/system/update-available
+// (goes through the normal authenticated middleware path - not added to
+// frontend/src/middleware.ts's PUBLIC_API allowlist, since neither this nor its
+// sibling need to work with literally no session; both are only ever fetched
+// from within the already-authenticated app shell), but exempted from
+// enforceLicense's disabled-state block below, same as its sibling — an admin
+// should still be able to see a failed-update banner even with an expired
+// license.
 app.get('/api/system/last-update-status', (_req, res) => {
   const fs = require('fs');
-  const statusPath = path.join(APP_ROOT, 'logs', 'last-update-status.json');
-  if (!fs.existsSync(statusPath)) {
+  const candidates = [
+    path.join(APP_ROOT, '..', 'logs', 'last-update-status.json'),
+    path.join(APP_ROOT, 'logs', 'last-update-status.json'),
+  ];
+  const statusPath = candidates.find((p) => fs.existsSync(p));
+  if (!statusPath) {
     return res.json({ exists: false });
   }
   try {
