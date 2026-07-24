@@ -40,6 +40,7 @@ deliberately skip it).
 - `GET /api/stats` [public] [db] — 3 aggregate counts (monitored_devices/availability/active_alerts) for the NocVault launcher tile; never 500s, degrades to zeros
 - `GET /api/system/update-status` [auth] [external] — compares local vs origin/main git commit hash over git transport (not GitHub REST — avoids per-IP rate limiting)
 - `GET /api/system/update-available` [public] [external] — cached (24h refresh) update-available flag for the cross-app notifier banner
+- `GET /api/system/last-update-status` [public] — reads logs/last-update-status.json written by Update-SpanVault.ps1 (stage/error code/rollback outcome of the last update run); {exists:false} if none yet. Same access level as update-available (exempted from enforceLicense's disabled block, but NOT in middleware.ts's PUBLIC_API allowlist since it's only ever fetched from the already-authenticated app shell). Feeds UpdateFailureBanner.tsx.
 - `POST /api/system/update` [auth+write:admin+] [external] — schedules a one-time Windows Scheduled Task (SYSTEM account) running `installer/Update-SpanVault.ps1`; blocked during license grace/disabled
 - `GET /api/license-status` [auth] [external] — cached (24h) license status from the NocVault licensing service
 - `GET /api/collector/status` [auth] [db] — 'running' if collector heartbeat in app_settings is <2min old

@@ -36,6 +36,12 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.83.13': [
+    'Made the updater (Update-SpanVault.ps1) resilient to a failed update instead of just reporting one -- it now snapshots the current commit, root node_modules, and the frontend build (.next + node_modules) before touching anything, and if any stage fails (git pull, either npm install, the frontend build, service start, a database schema migration, or a new mandatory post-start health check) it automatically reverts to the last known-good version, restarts all 3 services, and re-verifies health -- previously every one of those failures just printed a warning and kept going, which could leave the app limping through a broken deploy instead of stopping cleanly.',
+    'A failed schema migration now also triggers the same rollback (restores the previous working code + restarts services) instead of just warning and continuing -- the new code still isn\'t deployed against a database it failed to migrate, but the service comes back up on the last known-good version instead of being left in an unclear state.',
+    'Every update run (success or failure) now writes a structured result to logs/last-update-status.json -- what stage it reached, an error code, the error message, and whether it rolled back -- surfaced as a new in-app failure banner for admins (GET /api/system/last-update-status) so a failed update can\'t go unnoticed.',
+    'The post-start health check, which used to just warn and still report success if the API never came up healthy, is now a hard gate -- an update is no longer reported as successful unless the running version is actually confirmed serving traffic.',
+  ],
   '1.83.12': [
     'Fixed the Alerts page status/severity filter dropdowns clipping their text ("All severities" was rendering with only ~2px to spare) -- both now have real breathing room instead of auto-sizing right at the edge.',
   ],
@@ -1050,7 +1056,7 @@ async function enforceLicense(req, res, next) {
   }
 
   // Block all access if disabled
-  const exemptPaths = ['/api/health', '/api/stats', '/api/license-status', '/api/system/update-available', '/api/sso'];
+  const exemptPaths = ['/api/health', '/api/stats', '/api/license-status', '/api/system/update-available', '/api/system/last-update-status', '/api/sso'];
   if (state.disabled && !exemptPaths.some(p => req.path.startsWith(p))) {
     return res.status(402).json({
       error: 'License has expired. Please renew your NocVault license.',
@@ -1473,6 +1479,34 @@ app.get('/api/system/update-available', (_req, res) => {
     res.json({ available: true, current: updateAvailable.current, latest: updateAvailable.latest });
   } else {
     res.json({ available: false });
+  }
+});
+
+// Update-SpanVault.ps1 writes a structured result of the last update attempt to
+// logs/last-update-status.json on every run (success or failure) - see the
+// script's Write-StatusJson function. This route just surfaces that file so the
+// frontend can show a banner the moment a failed update needs attention, without
+// anyone having to go looking at the updater's log files. Same access level as
+// /api/system/update-available (goes through the normal authenticated middleware
+// path - not added to frontend/src/middleware.ts's PUBLIC_API allowlist, since
+// neither this nor its sibling need to work with literally no session; both are
+// only ever fetched from within the already-authenticated app shell), but
+// exempted from enforceLicense's disabled-state block below, same as its sibling
+// — an admin should still be able to see a failed-update banner even with an
+// expired license.
+app.get('/api/system/last-update-status', (_req, res) => {
+  const fs = require('fs');
+  const statusPath = path.join(APP_ROOT, 'logs', 'last-update-status.json');
+  if (!fs.existsSync(statusPath)) {
+    return res.json({ exists: false });
+  }
+  try {
+    const BOM = String.fromCharCode(0xfeff);
+    const raw = fs.readFileSync(statusPath, 'utf8');
+    const status = JSON.parse(raw.startsWith(BOM) ? raw.slice(1) : raw);
+    res.json({ exists: true, ...status });
+  } catch (e) {
+    res.json({ exists: false, error: 'Could not read update status file' });
   }
 });
 

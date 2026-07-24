@@ -44,6 +44,7 @@ importing them are already client components.
 - `Connection`  (topology link line) — internal to TopologyMapView.tsx, not exported
 - `DeviceNode` (topology variant) — internal to TopologyMapView.tsx, not exported — NOTE: same name as SVGMapView's exported `DeviceNode`, different module, not a collision (both are module-scoped)
 - (c) `TopologyMapView`  nodes, edges, interactive? — default export, LLDP/CDP link map grouped by site
+- (c) `UpdateFailureBanner`  (no props) — default export, admin-only (`useRbac().canManageSettings`) red banner surfacing a failed `Update-SpanVault.ps1` run, polls `/api/system/last-update-status` every 5min, dismissible per-timestamp
 - (c) `UpdateNotifier`  (no props) — default export, cross-app "update available" banner
 - `icons.tsx` — 30+ small `IconX = (p: SVGProps<SVGSVGElement>) => (...)` const exports (IconDashboard, IconDevices, IconAlerts, IconReports, IconMap, IconSettings, IconAgents, IconIntelligence, IconTopology, IconWireless, IconServices, IconHome, IconLogout, IconCheck, IconSearch, IconBell, IconSun, IconMoon, IconWarning, IconEdit, IconTrash, IconRefresh, IconRepeat, IconStar, IconMonitor, IconTool, IconLock, IconUnlock, IconUndo, IconRedo, ...) — no `(c)` marker needed, pure SVG, no hooks
 - `n(v)` / `gradeColor(grade)` / `scoreColor(score)` — pure helpers (intel.tsx)

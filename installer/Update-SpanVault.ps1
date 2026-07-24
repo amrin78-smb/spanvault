@@ -20,6 +20,14 @@
       7. (Re)registers the three NSSM services and starts them.
       8. Runs a health check against the API.
 
+    Resilience: before touching anything, the script snapshots the current git
+    commit plus root node_modules / frontend .next / frontend node_modules (via
+    Rename-Item - a metadata-only operation regardless of directory size, so this
+    is cheap). If any step from git-pull onward fails, it automatically reverts to
+    that snapshot, restarts all 3 services, and re-verifies health before giving
+    up, instead of leaving the app on broken/partial code. Every run (success or
+    failure) writes a structured logs\last-update-status.json.
+
 .PARAMETER ServerIp
     The server's IP or hostname. Replaces the SERVER_IP placeholder in the
     .env.local templates. Required on first install.
@@ -54,6 +62,20 @@ $env:PATH = @(
     "C:\Program Files\nodejs",
     $env:PATH
 ) -join ";"
+
+# Windows Task Scheduler's default task priority (level 7) maps to the BelowNormal
+# process priority class, unlike a manually-run script (Normal). This starves the
+# CPU-bound npm install/build under contention from the rest of the suite, making
+# an in-app-triggered update (Settings -> Updates, which schedules this as a
+# SYSTEM task) look "stuck" compared to the same update run manually from an
+# interactive PowerShell window. Reset to Normal regardless of how this script was
+# invoked - a no-op when already Normal (the manual-run case). Child processes
+# inherit the parent's priority class by default, so this also covers the
+# npm/node/next child processes it spawns. (Same fix as NetVault/DDIVault/LogVault.)
+try {
+    $proc = Get-Process -Id $PID
+    if ($proc.PriorityClass -ne 'Normal') { $proc.PriorityClass = 'Normal' }
+} catch { Write-Warning "Could not adjust process priority: $($_.Exception.Message)" }
 
 # The in-app updater (Settings -> Updates) is fire-and-forget: it schedules this
 # script as a SYSTEM task and immediately returns { started: true } to the
@@ -128,6 +150,12 @@ function Write-Step($msg)  { Write-Host "`n=== $msg ===" -ForegroundColor Cyan }
 function Write-Ok($msg)    { Write-Host "  [OK] $msg"   -ForegroundColor Green }
 function Write-Warn($msg)  { Write-Host "  [!]  $msg"   -ForegroundColor Yellow }
 
+function Get-ServiceStatus($name) {
+    $svc = Get-Service -Name $name -ErrorAction SilentlyContinue
+    if (-not $svc) { return "NOT_FOUND" }
+    return $svc.Status.ToString().ToUpper()
+}
+
 function Resolve-Tool($name, $hint) {
     $cmd = Get-Command $name -ErrorAction SilentlyContinue
     if (-not $cmd) { throw "$name not found on PATH. $hint" }
@@ -172,8 +200,195 @@ function Resolve-Nssm($installDir, $appRoot) {
     throw "nssm.exe not found. Tried SV_NSSM_PATH in .env.local, '$installDir\nssm\nssm-2.24\win64\nssm.exe', and 'C:\Apps\NetVault\nssm\nssm-2.24\win64\nssm.exe'. Install NSSM or set SV_NSSM_PATH."
 }
 
+# --- Resilience: rollback + structured status reporting -------------------
+# SpanVault has no `output: 'standalone'` build - SpanVault-App runs `next start`
+# directly against a plain `frontend\.next`, sharing the app's normal node_modules
+# (root for the API/Collector, `frontend\node_modules` for the Next.js app). A
+# rollback here has to protect THREE things: the git source, root node_modules
+# (the API/Collector are plain JS with no build step - a broken npm install can
+# break them directly), and both `frontend\.next` and `frontend\node_modules` (the
+# Next.js build output + its deps). Renaming is a metadata-only operation on the
+# same NTFS volume regardless of directory size, so snapshotting all three this way
+# is cheap. (Same shape as DDIVault/LogVault's equivalent - the closest structural
+# match in the suite, since SpanVault is also a non-standalone Next.js build.)
+#
+# Unlike DDIVault/LogVault, this script does NOT need to back up/restore
+# .env.local for rollback: Write-EnvFile (below) never regenerates .env.local if
+# it already exists, and `git clean` explicitly excludes it - so it's never
+# mutated by a normal update run in the first place.
+$StatusPath      = Join-Path $InstallDir "logs\last-update-status.json"
+$prevCommit      = $null
+$attemptedCommit = $null
+$currentStage    = 'init'
+
+$StageCodes = @{
+    'init'                 = 5
+    'pre-flight'           = 10
+    'git-pull'             = 20
+    'schema-apply'         = 25
+    'npm-install-root'     = 30
+    'npm-install-frontend' = 35
+    'npm-build'            = 40
+    'service-start'        = 50
+    'health-check'         = 60
+    'rollback-failed'      = 70
+}
+
+function Write-StatusJson {
+    param(
+        [bool]$Success,
+        [string]$Stage,
+        [int]$ErrorCode = 0,
+        [string]$ErrorMessage = $null,
+        [bool]$RolledBack = $false,
+        [bool]$HealthCheckPassed = $false
+    )
+    $status = [ordered]@{
+        timestamp         = (Get-Date).ToString('o')
+        success           = $Success
+        stage             = $Stage
+        errorCode         = $ErrorCode
+        errorMessage      = $ErrorMessage
+        previousCommit    = $prevCommit
+        attemptedCommit   = $attemptedCommit
+        finalCommit       = if ($RolledBack) { $prevCommit } else { $attemptedCommit }
+        rolledBack        = $RolledBack
+        healthCheckPassed = $HealthCheckPassed
+    }
+    try {
+        $json = $status | ConvertTo-Json
+        # Write via .NET directly with a BOM-less UTF8Encoding, not Out-File
+        # -Encoding UTF8 (which writes a UTF-8 BOM in Windows PowerShell 5.1) -
+        # Node's fs.readFileSync(path, 'utf8') doesn't strip a BOM, which would
+        # break JSON.parse on every single write. (Same bug found and fixed in
+        # NetVault's Update-NetVault.ps1 1.23.27 - fixed here from the start.)
+        [System.IO.File]::WriteAllText($StatusPath, $json, (New-Object System.Text.UTF8Encoding $false))
+    } catch {
+        Write-Warn "Could not write status file $StatusPath - $($_.Exception.Message)"
+    }
+}
+
+# Poll the API's /api/health until it reports ok, or $TimeoutSec elapses.
+function Wait-Healthy([int]$TimeoutSec = 60) {
+    Write-Host "  Waiting for SpanVault API to respond on :3009 " -ForegroundColor Gray -NoNewline
+    $healthy = $false
+    for ($i = 0; $i -lt $TimeoutSec; $i++) {
+        try {
+            $resp = Invoke-RestMethod -Uri 'http://127.0.0.1:3009/api/health' -TimeoutSec 2 -ErrorAction Stop
+            if ($resp.status -eq 'ok') { $healthy = $true; break }
+        } catch {}
+        Write-Host "." -ForegroundColor DarkGray -NoNewline
+        Start-Sleep -Seconds 1
+    }
+    Write-Host ""
+    return $healthy
+}
+
+# Revert to the pre-update commit + restore the node_modules/.next snapshots,
+# restart all 3 services (same order the main script already starts them in: API,
+# Collector, App), and confirm the OLD version is actually healthy before
+# declaring the rollback itself successful.
+#
+# Note on database migrations: this rolls back CODE, not schema. STEP 5 below
+# still refuses to deploy new code against a database it failed to migrate (a
+# schema migration is not something a code-level rollback can undo, and
+# scripts/schema.sql is not applied inside a single transaction) - but a schema
+# failure now triggers this same rollback instead of leaving the app down
+# entirely, since the old code is far more likely to tolerate a few extra/partial
+# columns than SpanVault is to tolerate being completely offline (same reasoning
+# DDIVault/LogVault use for their own schema-apply step).
+function Invoke-Rollback([string]$Reason) {
+    Write-Host ""
+    Write-Step "ROLLING BACK - reason: $Reason"
+    $ok = $true
+    try {
+        Push-Location $AppRoot
+        if ($prevCommit) {
+            Write-Host "  Reverting source to $prevCommit" -ForegroundColor Gray
+            $null = & $git reset --hard $prevCommit 2>&1
+            if ($LASTEXITCODE -eq 0) { Write-Ok "Source reverted" } else { Write-Warn "git reset during rollback failed (exit $LASTEXITCODE)"; $ok = $false }
+        } else {
+            Write-Warn "No pre-update commit recorded - skipping source revert"
+        }
+        Pop-Location
+
+        $rootModulesBackup     = Join-Path $AppRoot 'node_modules.lastgood'
+        $frontendNextBackup    = Join-Path $Frontend '.next.lastgood'
+        $frontendModulesBackup = Join-Path $Frontend 'node_modules.lastgood'
+
+        if (Test-Path $rootModulesBackup) {
+            $target = Join-Path $AppRoot 'node_modules'
+            if (Test-Path $target) { Remove-Item $target -Recurse -Force -ErrorAction SilentlyContinue }
+            Rename-Item -Path $rootModulesBackup -NewName 'node_modules' -ErrorAction Stop
+            Write-Ok "Restored root node_modules"
+        } else {
+            Write-Warn "No root node_modules snapshot found to restore"
+        }
+        if (Test-Path $frontendNextBackup) {
+            $target = Join-Path $Frontend '.next'
+            if (Test-Path $target) { Remove-Item $target -Recurse -Force -ErrorAction SilentlyContinue }
+            Rename-Item -Path $frontendNextBackup -NewName '.next' -ErrorAction Stop
+            Write-Ok "Restored frontend .next build output"
+        } else {
+            Write-Warn "No frontend .next snapshot found to restore"
+            $ok = $false
+        }
+        if (Test-Path $frontendModulesBackup) {
+            $target = Join-Path $Frontend 'node_modules'
+            if (Test-Path $target) { Remove-Item $target -Recurse -Force -ErrorAction SilentlyContinue }
+            Rename-Item -Path $frontendModulesBackup -NewName 'node_modules' -ErrorAction Stop
+            Write-Ok "Restored frontend node_modules"
+        } else {
+            Write-Warn "No frontend node_modules snapshot found to restore"
+            $ok = $false
+        }
+
+        Write-Step "Restarting services on last known-good version"
+        foreach ($svc in $Services) {
+            $null = & sc.exe query $svc.Name 2>&1
+            if ($LASTEXITCODE -eq 0) { $null = & sc.exe stop $svc.Name 2>&1 }
+        }
+        Start-Sleep -Seconds 3
+        foreach ($svc in $Services) {
+            $null = & $nssm start $svc.Name 2>&1
+        }
+        Start-Sleep -Seconds 3
+
+        foreach ($svc in $Services) {
+            if ((Get-ServiceStatus $svc.Name) -ne "RUNNING") { Write-Warn "$($svc.Name) is not running after rollback restart"; $ok = $false }
+        }
+
+        $healthy = Wait-Healthy -TimeoutSec 30
+        if ($healthy) { Write-Ok "Rollback verified - last known-good version is up and healthy" }
+        else { Write-Warn "Rollback restart did not pass the health check"; $ok = $false }
+        return ($ok -and $healthy)
+    } catch {
+        Write-Warn "Rollback itself failed: $($_.Exception.Message)"
+        return $false
+    }
+}
+
+# Every failure path in this script funnels through here instead of just
+# Write-Warn-and-continue, so a failure always attempts recovery and always
+# leaves a structured record behind - see the resilience block above.
+function Fail-Update {
+    param([string]$Stage, [string]$Message)
+    $code = if ($StageCodes.ContainsKey($Stage)) { $StageCodes[$Stage] } else { 99 }
+    Write-Host ""
+    Write-Warn "Update failed at stage '$Stage': $Message"
+    $rollbackOk = Invoke-Rollback -Reason $Message
+    if (-not $rollbackOk) {
+        Write-Warn "!!! ROLLBACK ALSO FAILED - SpanVault may be DOWN. Manual intervention required. !!!"
+        $code = $StageCodes['rollback-failed']
+    }
+    Write-StatusJson -Success $false -Stage $Stage -ErrorCode $code -ErrorMessage $Message -RolledBack $rollbackOk -HealthCheckPassed $rollbackOk
+    try { Stop-Transcript | Out-Null } catch {}
+    exit 1
+}
+
 # ── Pre-flight ─────────────────────────────────────────────────
 Write-Step 'Pre-flight checks'
+$currentStage = 'pre-flight'
 # nssm is resolved by FULL PATH (not via PATH) — see Resolve-Nssm above.
 $nssm = Resolve-Nssm $InstallDir $AppRoot
 # git/npm resolve via PATH, which we prepended with Git/Node locations at the top
@@ -221,8 +436,46 @@ foreach ($svc in $Services) {
 }
 $ErrorActionPreference = $prevEAP
 
+# ── 1.5. Snapshot current version for rollback ─────────────────
+# Must happen BEFORE git touches anything and BEFORE npm install/build overwrites
+# node_modules/.next, so a failure anywhere from here on can be undone by putting
+# these exact folders back rather than needing to rebuild (which could itself
+# fail for the same reason the original update did).
+Write-Step 'Snapshotting current version for rollback'
+Push-Location $AppRoot
+$rp = & $git rev-parse HEAD 2>&1
+if ($rp -match '^[0-9a-f]{40}$') { $prevCommit = $rp }
+Pop-Location
+if ($prevCommit) { Write-Ok "Current commit: $prevCommit" }
+else { Write-Warn "Could not determine current commit - rollback will not be able to revert source" }
+
+$rootModulesBackup     = Join-Path $AppRoot 'node_modules.lastgood'
+$frontendNextBackup    = Join-Path $Frontend '.next.lastgood'
+$frontendModulesBackup = Join-Path $Frontend 'node_modules.lastgood'
+# Clear any stale backups left by a prior interrupted run before snapshotting the
+# CURRENTLY-serving version, not an older leftover one.
+foreach ($stale in @($rootModulesBackup, $frontendNextBackup, $frontendModulesBackup)) {
+    if (Test-Path $stale) { Remove-Item $stale -Recurse -Force -ErrorAction SilentlyContinue }
+}
+$rootModulesPath = Join-Path $AppRoot 'node_modules'
+if (Test-Path $rootModulesPath) {
+    Rename-Item -Path $rootModulesPath -NewName 'node_modules.lastgood' -ErrorAction SilentlyContinue
+    Write-Ok "Snapshotted root node_modules"
+}
+$frontendNextPath = Join-Path $Frontend '.next'
+if (Test-Path $frontendNextPath) {
+    Rename-Item -Path $frontendNextPath -NewName '.next.lastgood' -ErrorAction SilentlyContinue
+    Write-Ok "Snapshotted frontend .next build output"
+}
+$frontendModulesPath = Join-Path $Frontend 'node_modules'
+if (Test-Path $frontendModulesPath) {
+    Rename-Item -Path $frontendModulesPath -NewName 'node_modules.lastgood' -ErrorAction SilentlyContinue
+    Write-Ok "Snapshotted frontend node_modules"
+}
+
 # ── 2. Pull latest code ────────────────────────────────────────
 Write-Step 'Pulling latest code'
+$currentStage = 'git-pull'
 Push-Location $AppRoot
 # git writes informational messages ("Already on 'main'", "Your branch is
 # up to date", fetch progress) to stderr. Over a remote PowerShell (WinRM)
@@ -241,13 +494,9 @@ Push-Location $AppRoot
 # SYSTEM has never run git in this repo before (only whichever interactive
 # account originally cloned it has), and Git >= 2.35.2 (CVE-2022-24765)
 # refuses to operate in a repo it doesn't consider "owned" by the current
-# account: "fatal: detected dubious ownership in repository at '...'". That
-# fetch/reset failure was previously only WARNED about below (never fatal to
-# the whole script), so this wasn't why services stayed down — but it did mean
-# an in-app-triggered update silently kept redeploying the OLD checkout while
-# reporting "OK". Register this repo as safe for whichever account is running
-# right now (idempotent — safe to add the same path twice) so this class of
-# failure can't happen at all, rather than just being tolerated.
+# account: "fatal: detected dubious ownership in repository at '...'". Register
+# this repo as safe for whichever account is running right now (idempotent —
+# safe to add the same path twice) so this class of failure can't happen at all.
 try { $null = & $git config --global --add safe.directory $AppRoot 2>&1 } catch {}
 
 $prevEAP = $ErrorActionPreference
@@ -262,8 +511,11 @@ $ErrorActionPreference = $prevEAP
 if ($fetchExit -eq 0 -and $resetExit -eq 0) {
     Write-Ok "Reset to origin/$Branch"
 } else {
-    Write-Warn "git fetch/reset failed (fetch=$fetchExit reset=$resetExit) - the checkout may not have advanced. Verify the working tree manually."
+    Pop-Location
+    Fail-Update -Stage 'git-pull' -Message "git fetch/reset failed (fetch=$fetchExit reset=$resetExit)"
 }
+$rp = & $git rev-parse HEAD 2>&1
+if ($rp -match '^[0-9a-f]{40}$') { $attemptedCommit = $rp }
 Pop-Location
 
 # ── 3. Write .env.local from template (SERVER_IP substitution) ──
@@ -311,20 +563,33 @@ if ((Test-Path $rootEnv) -and $ServerIp) {
 
 # ── 4. Install dependencies ────────────────────────────────────
 Write-Step 'Installing dependencies (root)'
+$currentStage = 'npm-install-root'
 Push-Location $AppRoot
 # npm writes progress/warnings to stderr; consume both streams to avoid
 # NativeCommandError over WinRM, and gate on $LASTEXITCODE for real failures.
 $null = & $npm install --omit=dev 2>&1
-if ($LASTEXITCODE -eq 0) { Write-Ok 'Root dependencies installed' }
-else { Write-Warn "npm install (root) exited with code $LASTEXITCODE" }
+$rootInstallExit = $LASTEXITCODE
 Pop-Location
+if ($rootInstallExit -eq 0) {
+    Write-Ok 'Root dependencies installed'
+} else {
+    # Previously this only warned and kept going, deploying the API/Collector
+    # against a possibly-broken root node_modules. Root deps failing to install
+    # is exactly the class of failure the rollback exists for.
+    Fail-Update -Stage 'npm-install-root' -Message "npm install (root) failed (exit $rootInstallExit)"
+}
 
 Write-Step 'Installing dependencies (frontend)'
+$currentStage = 'npm-install-frontend'
 Push-Location $Frontend
 $null = & $npm install 2>&1
-if ($LASTEXITCODE -eq 0) { Write-Ok 'Frontend dependencies installed' }
-else { Write-Warn "npm install (frontend) exited with code $LASTEXITCODE" }
+$feInstallExit = $LASTEXITCODE
 Pop-Location
+if ($feInstallExit -eq 0) {
+    Write-Ok 'Frontend dependencies installed'
+} else {
+    Fail-Update -Stage 'npm-install-frontend' -Message "npm install (frontend) failed (exit $feInstallExit)"
+}
 
 # ── 4b. Reassign public-object ownership to spanvault_user ─────
 # Self-heal for fresh installs: the DB is created OWNER spanvault_user but its
@@ -389,6 +654,7 @@ $$;
 
 # ── 5. Apply database schema (idempotent) ──────────────────────
 Write-Step 'Applying database schema'
+$currentStage = 'schema-apply'
 $schema = Join-Path $AppRoot 'scripts\schema.sql'
 if ($psql -and (Test-Path $schema)) {
     # Connect as spanvault_user (the DB owner) using the password from .env.local
@@ -415,8 +681,17 @@ if ($psql -and (Test-Path $schema)) {
     $psqlExit = $LASTEXITCODE
     $env:PGPASSWORD = ''
     # psql over WinRM commonly returns -1 on a successful run, so treat -1 as 0.
-    if ($psqlExit -eq 0 -or $psqlExit -eq -1) { Write-Ok "Schema applied (as $dbUser)" }
-    else { Write-Warn "psql exited with code $psqlExit - a SQL error occurred applying scripts\schema.sql (ON_ERROR_STOP halted it partway through) - re-run it manually and fix the reported statement before assuming the schema is current." }
+    if ($psqlExit -eq 0 -or $psqlExit -eq -1) {
+        Write-Ok "Schema applied (as $dbUser)"
+    } else {
+        # Still refuse to deploy new code against a database it failed to migrate
+        # (ON_ERROR_STOP=1 halted it partway through) - but recover the SERVICE
+        # instead of leaving SpanVault down entirely. This rolls back CODE only;
+        # the database itself is left in whatever partial state the failed
+        # statement produced (schema.sql is not applied inside one transaction,
+        # so a code-level rollback cannot undo that part).
+        Fail-Update -Stage 'schema-apply' -Message "psql exited with code $psqlExit applying scripts\schema.sql as $dbUser - re-run manually and fix the reported statement before assuming the schema is current"
+    }
 } else {
     Write-Warn 'psql not found or schema.sql missing - apply scripts\schema.sql manually.'
 }
@@ -461,14 +736,23 @@ if ($ServerIp) {
 
 # ── 6. Build frontend (NOT standalone) ─────────────────────────
 Write-Step 'Building frontend'
+$currentStage = 'npm-build'
 Push-Location $Frontend
 $null = & $npm run build 2>&1
-if ($LASTEXITCODE -eq 0) { Write-Ok 'Frontend built' }
-else { Write-Warn "Frontend build exited with code $LASTEXITCODE - check the build output." }
+$buildExit = $LASTEXITCODE
 Pop-Location
+if ($buildExit -eq 0) {
+    Write-Ok 'Frontend built'
+} else {
+    # Previously this warned and kept going into service (re)registration/start
+    # against a broken or missing .next - Fail-Update now actually restores the
+    # last-known-good build output and restarts services on it.
+    Fail-Update -Stage 'npm-build' -Message "Frontend build failed (exit $buildExit)"
+}
 
 # ── 7. (Re)register and start NSSM services ────────────────────
 Write-Step 'Registering services'
+$currentStage = 'service-start'
 $nodeExe = (Get-Command node).Source
 foreach ($svc in $Services) {
     # Same guard as the stop section: probe existence with sc.exe query rather
@@ -499,20 +783,29 @@ foreach ($svc in $Services) {
     Write-Ok "Started $($svc.Name)"
 }
 
-# ── 8. Health check ────────────────────────────────────────────
+# ── 8. Health check (now a mandatory gate, not advisory) ───────
 Write-Step 'Health check'
+$currentStage = 'health-check'
 Start-Sleep -Seconds 5
-try {
-    $resp = Invoke-RestMethod -Uri 'http://127.0.0.1:3009/api/health' -TimeoutSec 10
-    if ($resp.status -eq 'ok') {
-        Write-Ok "API healthy: $($resp.service) @ $($resp.time)"
-    } else {
-        Write-Warn "API responded but status was '$($resp.status)'"
-    }
-} catch {
-    Write-Warn "API health check failed: $($_.Exception.Message)"
-    Write-Warn "Check logs in $InstallDir\logs\"
+# Mandatory final health check (matches NetVault/DDIVault/LogVault's resilience
+# upgrade): a service that "started" per NSSM is not proof the app is actually
+# serving traffic - poll /api/health with retries instead of a single best-effort
+# attempt, and treat a failure here the same as any other stage failure (triggers
+# a rollback) rather than just printing a warning and reporting success anyway.
+$healthy = Wait-Healthy -TimeoutSec 60
+if ($healthy) {
+    Write-Ok "API health check passed"
+} else {
+    Fail-Update -Stage 'health-check' -Message "API did not answer /api/health within 60s of starting - service may be crash-looping or stuck"
 }
+
+# Update succeeded and is confirmed healthy - the pre-update snapshots are no
+# longer needed. Remove them so they don't accumulate across updates or get
+# mistaken for a stale rollback target on the next run.
+foreach ($snap in @($rootModulesBackup, $frontendNextBackup, $frontendModulesBackup)) {
+    if (Test-Path $snap) { Remove-Item $snap -Recurse -Force -ErrorAction SilentlyContinue }
+}
+Write-StatusJson -Success $true -Stage $null -ErrorCode 0 -RolledBack $false -HealthCheckPassed $true
 
 # Prefer the actually-configured SERVER_IP from .env.local over the -ServerIp param —
 # now that self-location means -ServerIp is routinely omitted on a routine update, this
