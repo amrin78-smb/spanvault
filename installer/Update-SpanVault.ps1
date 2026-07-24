@@ -302,6 +302,23 @@ function Invoke-Rollback([string]$Reason) {
     Write-Step "ROLLING BACK - reason: $Reason"
     $ok = $true
     try {
+        # Stop services BEFORE touching node_modules/.next below. STEP 7 already
+        # started all 3 services by the time a failure can trigger this function,
+        # so without this, the restore's Remove-Item/Rename-Item would be mutating
+        # a directory tree while SpanVault-API/-Collector are still live and
+        # actively require()-ing from it - a real race that produced exactly this
+        # symptom in production (LogVault's identical bug): the restore reported
+        # success, but the resulting node_modules ended up with only a handful of
+        # packages, and the Collector crash-looped on a missing module. Mirrors
+        # the safe order the main update flow already uses (STEP 1 stops services
+        # before STEP 4/6 ever touch node_modules/.next).
+        Write-Step "Stopping services before restoring last known-good version"
+        foreach ($svc in $Services) {
+            $null = & sc.exe query $svc.Name 2>&1
+            if ($LASTEXITCODE -eq 0) { $null = & sc.exe stop $svc.Name 2>&1 }
+        }
+        Start-Sleep -Seconds 3
+
         Push-Location $AppRoot
         if ($prevCommit) {
             Write-Host "  Reverting source to $prevCommit" -ForegroundColor Gray
@@ -345,17 +362,24 @@ function Invoke-Rollback([string]$Reason) {
 
         Write-Step "Restarting services on last known-good version"
         foreach ($svc in $Services) {
-            $null = & sc.exe query $svc.Name 2>&1
-            if ($LASTEXITCODE -eq 0) { $null = & sc.exe stop $svc.Name 2>&1 }
-        }
-        Start-Sleep -Seconds 3
-        foreach ($svc in $Services) {
             $null = & $nssm start $svc.Name 2>&1
         }
         Start-Sleep -Seconds 3
 
+        # Informational only - SCM's STARTPENDING -> RUNNING transition can lag
+        # several seconds behind the process actually serving traffic (confirmed
+        # live in LogVault's identical rollback code: "Rollback verified...
+        # healthy" printed immediately followed by "ROLLBACK ALSO FAILED", from
+        # this exact check alone overriding a passing health check). Poll briefly
+        # for a clean status line, but only $healthy below decides the return value.
         foreach ($svc in $Services) {
-            if ((Get-ServiceStatus $svc.Name) -ne "RUNNING") { Write-Warn "$($svc.Name) is not running after rollback restart"; $ok = $false }
+            $status = 'UNKNOWN'
+            for ($i = 0; $i -lt 30; $i++) {
+                $status = Get-ServiceStatus $svc.Name
+                if ($status -eq "RUNNING") { break }
+                Start-Sleep -Seconds 1
+            }
+            if ($status -ne "RUNNING") { Write-Warn "$($svc.Name) - $status (SCM status can lag - health check below is authoritative)" }
         }
 
         $healthy = Wait-Healthy -TimeoutSec 30
