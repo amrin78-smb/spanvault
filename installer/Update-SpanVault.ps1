@@ -132,6 +132,41 @@ if ((Split-Path -Leaf $AppRoot) -ieq 'app') {
     $InstallDir = $AppRoot
 }
 
+# ── Concurrency guard — prevent overlapping update runs ─────────
+# Two overlapping runs (e.g. an admin double-clicking "Update Now", or a stuck
+# earlier run getting retriggered) can each independently stale-cleanup and
+# re-snapshot the SAME node_modules.lastgood / .next.lastgood directories at
+# STEP 1.5 below - the second run's snapshot silently clobbers the first run's
+# genuine pre-update rollback target, so if THAT first run then fails,
+# Invoke-Rollback restores the WRONG "last known good" state (actually the
+# second run's own in-progress, possibly broken, intermediate state) — a real,
+# confirmed failure mode, not a hypothetical one. A simple PID-checked lock
+# file closes this off entirely: if a lock file already exists and its
+# recorded PID is still a live process, this is a genuine concurrent run —
+# warn and exit immediately without touching services, git, node_modules, or
+# the status file. Otherwise claim the lock for this run; the try/finally
+# around the whole main flow below always removes it, on both the success and
+# the failure/rollback paths (see the top-level try/catch/finally just before
+# STEP 1).
+New-Item -ItemType Directory -Force -Path (Join-Path $InstallDir 'logs') | Out-Null
+$LockPath = Join-Path $InstallDir 'logs\update.lock'
+if (Test-Path $LockPath) {
+    $lockedPid = $null
+    try { $lockedPid = [int]((Get-Content $LockPath -Raw).Trim()) } catch { $lockedPid = $null }
+    $stillRunning = $false
+    if ($lockedPid) {
+        try { $stillRunning = [bool](Get-Process -Id $lockedPid -ErrorAction Stop) } catch { $stillRunning = $false }
+    }
+    if ($stillRunning) {
+        Write-Warning "Another Update-SpanVault.ps1 run is already in progress (PID $lockedPid) - exiting without making any changes. Wait for it to finish, or investigate PID $lockedPid if it appears stuck."
+        exit 1
+    } else {
+        Write-Warning "Found a stale update lock file (recorded PID $lockedPid is not running) - removing it and proceeding."
+        Remove-Item $LockPath -Force -ErrorAction SilentlyContinue
+    }
+}
+[System.IO.File]::WriteAllText($LockPath, "$PID", (New-Object System.Text.UTF8Encoding $false))
+
 # The in-app updater (Settings -> Updates) is fire-and-forget: it schedules this
 # script as a SYSTEM task and immediately returns { started: true } to the
 # browser, with no live output stream. Without a transcript, a run triggered
@@ -238,7 +273,30 @@ function Resolve-Nssm($installDir, $appRoot) {
 $StatusPath      = Join-Path $InstallDir "logs\last-update-status.json"
 $prevCommit      = $null
 $attemptedCommit = $null
+# Package.json "version" strings (distinct from the git commit hashes above) -
+# captured so the post-update / post-rollback health checks can confirm the
+# EXPECTED version is actually the one answering /api/health, not just that
+# something answered. $prevVersion is read before git touches anything (STEP
+# 1.5) and is what Invoke-Rollback expects to see once it has reverted source
+# back to $prevCommit. $attemptedVersion is read right after the git reset to
+# the new commit (STEP 2) and is what the main flow's STEP 8 health check
+# expects to see once the new code is deployed and serving.
+$prevVersion      = $null
+$attemptedVersion = $null
 $currentStage    = 'init'
+
+# Reads the "version" field out of a package.json file. Returns $null (not a
+# thrown error) on anything missing/unparsable, so a version-check failure
+# never blocks the update itself - it only means the extra version gate in
+# Wait-Healthy below is silently skipped for that run.
+function Get-PackageVersion([string]$pkgPath) {
+    if (-not (Test-Path $pkgPath)) { return $null }
+    try {
+        $pkg = Get-Content $pkgPath -Raw | ConvertFrom-Json
+        if ($pkg.version) { return [string]$pkg.version }
+        return $null
+    } catch { return $null }
+}
 
 $StageCodes = @{
     'init'                 = 5
@@ -288,13 +346,23 @@ function Write-StatusJson {
 }
 
 # Poll the API's /api/health until it reports ok, or $TimeoutSec elapses.
-function Wait-Healthy([int]$TimeoutSec = 60) {
+# -ExpectedVersion (optional): when given, healthy also requires the
+# response's "version" field to match - so this only declares success once the
+# INTENDED code is actually the thing answering, not merely that some process
+# is listening on :3009. Without this, a health check that passes because the
+# OLD (pre-update) process hadn't actually been replaced yet - or because
+# rollback restored the wrong snapshot - would be indistinguishable from a
+# genuinely successful deploy. Omit the parameter (or pass $null/'') to keep
+# the previous status-only behavior. Retry/timeout behavior is unchanged.
+function Wait-Healthy([int]$TimeoutSec = 60, [string]$ExpectedVersion = $null) {
     Write-Host "  Waiting for SpanVault API to respond on :3009 " -ForegroundColor Gray -NoNewline
     $healthy = $false
     for ($i = 0; $i -lt $TimeoutSec; $i++) {
         try {
             $resp = Invoke-RestMethod -Uri 'http://127.0.0.1:3009/api/health' -TimeoutSec 2 -ErrorAction Stop
-            if ($resp.status -eq 'ok') { $healthy = $true; break }
+            if ($resp.status -eq 'ok' -and (-not $ExpectedVersion -or $resp.version -eq $ExpectedVersion)) {
+                $healthy = $true; break
+            }
         } catch {}
         Write-Host "." -ForegroundColor DarkGray -NoNewline
         Start-Sleep -Seconds 1
@@ -316,6 +384,33 @@ function Wait-Healthy([int]$TimeoutSec = 60) {
 # entirely, since the old code is far more likely to tolerate a few extra/partial
 # columns than SpanVault is to tolerate being completely offline (same reasoning
 # DDIVault/LogVault use for their own schema-apply step).
+# Restores one snapshot directory (e.g. node_modules.lastgood -> node_modules)
+# with a short retry loop, mirroring Wait-Healthy's retry pattern instead of a
+# single all-or-nothing attempt. A transient file lock right after a service
+# stop - the exact race this script's own comments above acknowledge can
+# happen (a just-stopped process's handles don't always release instantly) -
+# previously turned into an immediate hard "ROLLBACK ALSO FAILED" with zero
+# retry. Retries BOTH the pre-existing-target Remove-Item and the Rename-Item
+# together each attempt, since either one can be the thing a lingering handle
+# is blocking.
+function Invoke-RestoreRename([string]$BackupPath, [string]$TargetPath, [int]$MaxAttempts = 5, [int]$DelaySeconds = 2) {
+    $targetName = Split-Path -Leaf $TargetPath
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        try {
+            if (Test-Path $TargetPath) { Remove-Item $TargetPath -Recurse -Force -ErrorAction Stop }
+            Rename-Item -Path $BackupPath -NewName $targetName -ErrorAction Stop
+            return $true
+        } catch {
+            if ($attempt -eq $MaxAttempts) {
+                Write-Warn "Restore of $TargetPath failed after $MaxAttempts attempts: $($_.Exception.Message)"
+                return $false
+            }
+            Start-Sleep -Seconds $DelaySeconds
+        }
+    }
+    return $false
+}
+
 function Invoke-Rollback([string]$Reason) {
     Write-Host ""
     Write-Step "ROLLING BACK - reason: $Reason"
@@ -353,28 +448,31 @@ function Invoke-Rollback([string]$Reason) {
         $frontendModulesBackup = Join-Path $Frontend 'node_modules.lastgood'
 
         if (Test-Path $rootModulesBackup) {
-            $target = Join-Path $AppRoot 'node_modules'
-            if (Test-Path $target) { Remove-Item $target -Recurse -Force -ErrorAction SilentlyContinue }
-            Rename-Item -Path $rootModulesBackup -NewName 'node_modules' -ErrorAction Stop
-            Write-Ok "Restored root node_modules"
+            if (Invoke-RestoreRename $rootModulesBackup (Join-Path $AppRoot 'node_modules')) {
+                Write-Ok "Restored root node_modules"
+            } else {
+                $ok = $false
+            }
         } else {
             Write-Warn "No root node_modules snapshot found to restore"
             $ok = $false
         }
         if (Test-Path $frontendNextBackup) {
-            $target = Join-Path $Frontend '.next'
-            if (Test-Path $target) { Remove-Item $target -Recurse -Force -ErrorAction SilentlyContinue }
-            Rename-Item -Path $frontendNextBackup -NewName '.next' -ErrorAction Stop
-            Write-Ok "Restored frontend .next build output"
+            if (Invoke-RestoreRename $frontendNextBackup (Join-Path $Frontend '.next')) {
+                Write-Ok "Restored frontend .next build output"
+            } else {
+                $ok = $false
+            }
         } else {
             Write-Warn "No frontend .next snapshot found to restore"
             $ok = $false
         }
         if (Test-Path $frontendModulesBackup) {
-            $target = Join-Path $Frontend 'node_modules'
-            if (Test-Path $target) { Remove-Item $target -Recurse -Force -ErrorAction SilentlyContinue }
-            Rename-Item -Path $frontendModulesBackup -NewName 'node_modules' -ErrorAction Stop
-            Write-Ok "Restored frontend node_modules"
+            if (Invoke-RestoreRename $frontendModulesBackup (Join-Path $Frontend 'node_modules')) {
+                Write-Ok "Restored frontend node_modules"
+            } else {
+                $ok = $false
+            }
         } else {
             Write-Warn "No frontend node_modules snapshot found to restore"
             $ok = $false
@@ -402,7 +500,7 @@ function Invoke-Rollback([string]$Reason) {
             if ($status -ne "RUNNING") { Write-Warn "$($svc.Name) - $status (SCM status can lag - health check below is authoritative)" }
         }
 
-        $healthy = Wait-Healthy -TimeoutSec 30
+        $healthy = Wait-Healthy -TimeoutSec 30 -ExpectedVersion $prevVersion
         if ($healthy) { Write-Ok "Rollback verified - last known-good version is up and healthy" }
         else { Write-Warn "Rollback restart did not pass the health check"; $ok = $false }
         return ($ok -and $healthy)
@@ -459,6 +557,31 @@ if (-not (Test-Path $AppRoot)) {
 # above use explicit `throw` (which terminates regardless of this setting).
 $ErrorActionPreference = 'Continue'
 
+# ── Global safety net ───────────────────────────────────────────
+# Everything from here through the end of the main flow is wrapped in a
+# top-level try/catch/finally. Previously, rollback and the status-file write
+# were ONLY reachable through the specific hardcoded Fail-Update call sites
+# below (git-pull, npm-install, schema-apply, npm-build, health-check) - any
+# OTHER unhandled exception anywhere in this section (a confirmed real one:
+# `(Get-Command node).Source` further down silently produces an EMPTY string
+# rather than throwing when node isn't found in THIS PowerShell's default
+# non-strict mode, which is arguably worse than a crash - it would register
+# the services with a blank Application path with no error at all; other
+# genuine unexpected exceptions in this section - a permissions error, a
+# bad-path exception, anything not specifically anticipated - DO terminate
+# normally and, before this fix, killed the process with NO rollback attempt
+# and NO status-file write, leaving the admin with zero signal) would bypass
+# rollback entirely. Routing every exception through the SAME Fail-Update path
+# the known failure sites already use means a genuinely unexpected failure
+# gets the same resilience treatment as a known one, instead of being a
+# silent, uncovered gap. $currentStage (updated as each step below begins)
+# tells Fail-Update which stage to record even for a failure this catch block
+# was never specifically written to expect. The `finally` releases the
+# concurrency lock claimed above on every path - success, an explicit
+# Fail-Update call (which itself calls `exit`, but `finally` blocks still run
+# during a script-scoped `exit` unwind - verified by hand), or this catch.
+try {
+
 # ── 1. Stop services ───────────────────────────────────────────
 Write-Step 'Stopping services'
 # nssm status writes "Can't open service!" to stderr for a non-existent service,
@@ -492,6 +615,9 @@ if ($rp -match '^[0-9a-f]{40}$') { $prevCommit = $rp }
 Pop-Location
 if ($prevCommit) { Write-Ok "Current commit: $prevCommit" }
 else { Write-Warn "Could not determine current commit - rollback will not be able to revert source" }
+$prevVersion = Get-PackageVersion (Join-Path $AppRoot 'package.json')
+if ($prevVersion) { Write-Ok "Current version: $prevVersion" }
+else { Write-Warn "Could not determine current package.json version - health checks will fall back to status-only" }
 
 $rootModulesBackup     = Join-Path $AppRoot 'node_modules.lastgood'
 $frontendNextBackup    = Join-Path $Frontend '.next.lastgood'
@@ -572,6 +698,9 @@ if ($fetchExit -eq 0 -and $resetExit -eq 0) {
 $rp = & $git rev-parse HEAD 2>&1
 if ($rp -match '^[0-9a-f]{40}$') { $attemptedCommit = $rp }
 Pop-Location
+$attemptedVersion = Get-PackageVersion (Join-Path $AppRoot 'package.json')
+if ($attemptedVersion) { Write-Ok "Deploying version: $attemptedVersion" }
+else { Write-Warn "Could not determine new package.json version - the final health check will fall back to status-only" }
 
 # ── 3. Write .env.local from template (SERVER_IP substitution) ──
 Write-Step 'Writing environment files'
@@ -808,7 +937,19 @@ if ($buildExit -eq 0) {
 # ── 7. (Re)register and start NSSM services ────────────────────
 Write-Step 'Registering services'
 $currentStage = 'service-start'
-$nodeExe = (Get-Command node).Source
+# Explicit check rather than trusting the global try/catch trap below to catch
+# a bad (Get-Command node).Source: `node` not resolving here isn't hypothetical
+# (PATH is prepended near the top of this script specifically because SYSTEM's
+# default PATH omits it - a config drift there would reproduce this), and a
+# specific message here is far more useful to whoever reads the failure than
+# a generic caught-exception one. This is belt-and-suspenders with the global
+# trap, not a replacement for it - the trap still exists for the genuinely
+# unexpected cases this specific check can't anticipate.
+$nodeCmd = Get-Command node -ErrorAction SilentlyContinue
+if (-not $nodeCmd) {
+    Fail-Update -Stage 'service-start' -Message "node not found on PATH when registering services - cannot determine node.exe path for NSSM. Check that Node.js is installed and PATH includes it."
+}
+$nodeExe = $nodeCmd.Source
 foreach ($svc in $Services) {
     # Same guard as the stop section: probe existence with sc.exe query rather
     # than nssm status, which would raise NativeCommandError for a service that
@@ -847,11 +988,11 @@ Start-Sleep -Seconds 5
 # serving traffic - poll /api/health with retries instead of a single best-effort
 # attempt, and treat a failure here the same as any other stage failure (triggers
 # a rollback) rather than just printing a warning and reporting success anyway.
-$healthy = Wait-Healthy -TimeoutSec 60
+$healthy = Wait-Healthy -TimeoutSec 60 -ExpectedVersion $attemptedVersion
 if ($healthy) {
     Write-Ok "API health check passed"
 } else {
-    Fail-Update -Stage 'health-check' -Message "API did not answer /api/health within 60s of starting - service may be crash-looping or stuck"
+    Fail-Update -Stage 'health-check' -Message "API did not answer /api/health within 60s of starting (or never reported the expected version $attemptedVersion) - service may be crash-looping, stuck, or still serving the old code"
 }
 
 # Update succeeded and is confirmed healthy - the pre-update snapshots are no
@@ -874,6 +1015,19 @@ if (-not $displayIp) { $displayIp = 'localhost' }
 Write-Host "`nSpanVault update complete." -ForegroundColor Green
 Write-Host "  Frontend:  http://$($displayIp):3008" -ForegroundColor Green
 Write-Host "  API:       http://127.0.0.1:3009 (loopback only)" -ForegroundColor Green
+
+} catch {
+    # Global safety net (see the comment at the top of this try block) - any
+    # exception not already handled by a specific Fail-Update call site above
+    # lands here. Fail-Update itself calls `exit 1` after attempting rollback
+    # and writing the status file, so nothing below this catch runs for this
+    # path except the `finally` (lock cleanup) and the transcript stop after it.
+    Fail-Update -Stage $currentStage -Message "Unexpected error: $($_.Exception.Message)"
+} finally {
+    # Release the concurrency lock claimed near the top of the script,
+    # regardless of how the try block above exited.
+    if (Test-Path $LockPath) { Remove-Item $LockPath -Force -ErrorAction SilentlyContinue }
+}
 
 # Best-effort — if Start-Transcript never succeeded (see top of script), this
 # throws harmlessly; never let it mask the update's own success/failure.

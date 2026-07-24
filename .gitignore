@@ -1,6 +1,13 @@
 node_modules/
 .next/
 *.tsbuildinfo
+
+# Update-SpanVault.ps1 rollback snapshots (node_modules.lastgood,
+# .next.lastgood, etc.) — the updater's own `git clean --exclude="*.lastgood"`
+# already protects a real deployed install, but ignore here too as
+# defense-in-depth so a stray leftover from a local/dev run can't accidentally
+# get swept into a normal `git add -A` commit.
+*.lastgood/
 .env.local
 !.env.local.example
 *.log

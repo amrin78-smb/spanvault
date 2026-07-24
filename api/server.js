@@ -36,6 +36,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.83.18': [
+    'Updater resilience audit, fixing 5 issues in Update-SpanVault.ps1 and its frontend: (1) the whole main flow is now wrapped in a top-level try/catch so ANY unhandled exception -- not just the specific known failure sites (git-pull, npm install, schema apply, build, health check) -- routes through the same automatic rollback + status-file write, plus an explicit check right after resolving node.exe instead of relying on the trap alone for that one case; (2) added a PID-checked lock file so two overlapping update runs can no longer stomp on each other\'s rollback snapshot (confirmed real failure: both runs re-snapshotting the SAME node_modules.lastgood/.next.lastgood), and the in-app "Update Now" trigger now returns 409 instead of unconditionally rescheduling over a run already in progress; (3) the post-update and post-rollback health checks now also verify the expected package.json version actually answered, not just that something did; (4) the rollback\'s node_modules/.next restore now retries a few times on a transient file lock instead of failing immediately, matching the retry pattern already used elsewhere in the script; (5) the update overlay now checks the real outcome (success vs. auto-rolled-back vs. rollback-also-failed) before showing anything, instead of assuming success from a health-poll transition alone -- fixes a real case where the green "updated successfully" banner and the red failure banner could both show at once.',
+  ],
   '1.83.17': [
     'Fixed a real production regression from the 1.83.16 fix (the one that made rollback snapshots actually survive git clean): TypeScript\'s build-time type-check only excludes the exact name "node_modules" by default, not the "node_modules.lastgood"/".next.lastgood" snapshot directories now sitting right next to it -- so once those snapshots could survive, the very next build tried to type-check next-auth\'s source code inside the OLD snapshot copy and failed on an import that only resolves from within its own original dependency tree. The two fixes were masking each other: before 1.83.16, the snapshot was always deleted before the build ran, so this was never hit. Snapshot directories are now explicitly excluded from the TypeScript check.',
   ],
@@ -1546,6 +1549,42 @@ app.get('/api/system/last-update-status', (_req, res) => {
 // services — and the service account may also lack rights to start services. A
 // scheduled task launched by the Task Scheduler under SYSTEM is fully detached
 // from this service's process tree and has the permissions + lifetime to finish.
+// Update-SpanVault.ps1 (concurrency guard, added alongside the script's own
+// lock file) claims logs\update.lock at the very start of its run and holds
+// it — recording its own PID — until the whole run finishes (success or
+// failure), removed in a `finally` block. Check the SAME file here, using the
+// SAME two-candidate suite-install/standalone-install path pattern as
+// last-update-status.json just above, so this route refuses to schedule a
+// SECOND overlapping run instead of unconditionally deleting/recreating the
+// scheduled task out from under an already-running update — two overlapping
+// runs can each independently stale-cleanup and re-snapshot the SAME
+// node_modules.lastgood/.next.lastgood directories, silently destroying one
+// run's genuine rollback snapshot (see the script's own comment on this).
+function isUpdateRunning() {
+  const fs = require('fs');
+  const candidates = [
+    path.join(APP_ROOT, '..', 'logs', 'update.lock'),
+    path.join(APP_ROOT, 'logs', 'update.lock'),
+  ];
+  const lockPath = candidates.find((p) => fs.existsSync(p));
+  if (!lockPath) return false;
+  let pid;
+  try {
+    pid = parseInt(fs.readFileSync(lockPath, 'utf8').trim(), 10);
+  } catch (_e) {
+    return false; // unreadable lock file — treat as not running rather than blocking forever
+  }
+  if (!pid) return false;
+  try {
+    // Signal 0 doesn't actually signal the process — it just probes whether a
+    // process with this PID exists (works on Windows too). Throws if not.
+    process.kill(pid, 0);
+    return true;
+  } catch (_e) {
+    return false; // stale lock — the recorded PID is no longer running
+  }
+}
+
 app.post('/api/system/update', wrap(async (_req, res) => {
   // SERVER_IP is loaded from .env.local via dotenv at startup. No hardcoded IP
   // and no fallback (CLAUDE.md) — if it isn't configured we cannot update.
@@ -1553,6 +1592,12 @@ app.post('/api/system/update', wrap(async (_req, res) => {
   if (!serverIp) {
     return res.status(400).json({
       error: 'SERVER_IP not configured in .env.local — add SERVER_IP=your_server_ip to .env.local',
+    });
+  }
+
+  if (isUpdateRunning()) {
+    return res.status(409).json({
+      error: 'An update is already in progress. Wait for it to finish before starting another.',
     });
   }
 

@@ -1681,26 +1681,75 @@ function UpdateConfirmModal({ onCancel, onConfirm }: { onCancel: () => void; onC
   );
 }
 
+// Shape of GET /api/system/last-update-status - the same source
+// UpdateFailureBanner reads. Kept as a local subset (not shared with that
+// file) since only these fields matter here.
+type LastUpdateStatus = {
+  exists?: boolean;
+  success?: boolean;
+  rolledBack?: boolean;
+  errorMessage?: string | null;
+  timestamp?: string;
+};
+
+// Matches UpdateFailureBanner.tsx's own DISMISS_KEY_PREFIX/sessionStorage key
+// shape. Duplicated (not shared) because the two components don't otherwise
+// import from each other - kept in sync deliberately, same pattern already
+// used for UPDATE_STATUS_REFRESHED_EVENT above.
+const FAILURE_DISMISS_KEY_PREFIX = 'sv-update-failure-dismissed-';
+
 // Full-screen overlay shown during an update; polls for recovery.
-// State machine: 'starting' → 'down' → 'api_up' → 'back_up' (+ 'timeout').
-//  - 'down'   : a probe failed at least once, so we know a restart is underway.
-//  - 'api_up' : /api/health is stably back (3 consecutive OK after going down),
-//               but the API (:3009) returning does NOT mean the Next.js frontend
-//               (:3008, started LAST by the installer) is serving pages yet. So
-//               we now poll a frontend-served static asset for real liveness.
-//  - 'back_up': the frontend is confirmed live → short settle countdown → reload.
+// State machine: 'starting' → 'down' → 'api_up' → 'checking_result' →
+//   'success' | 'rolled_back' | 'rollback_failed' (+ 'timeout').
+//  - 'down'            : a probe failed at least once, so a restart is underway.
+//  - 'api_up'          : /api/health is stably back (3 consecutive OK after
+//                        going down), but the API (:3009) returning does NOT
+//                        mean the Next.js frontend (:3008, started LAST by the
+//                        installer) is serving pages yet. So we now poll a
+//                        frontend-served static asset for real liveness.
+//  - 'checking_result' : the frontend is confirmed live, but BEFORE declaring
+//                        success we fetch last-update-status.json (the same
+//                        source UpdateFailureBanner reads) - a passing health
+//                        poll here is equally true whether the NEW version
+//                        came up healthy OR the OLD version came back up
+//                        healthy after an automatic rollback. Only the status
+//                        file distinguishes them. This is the fix for a real
+//                        bug: the overlay used to declare success purely from
+//                        the health-poll transition and always show the green
+//                        "updated successfully" banner, even on a run that had
+//                        actually rolled back - which could then show
+//                        SIMULTANEOUSLY with UpdateFailureBanner's red failure
+//                        banner, two contradictory messages on screen at once.
+//  - 'success'         : status file confirms a clean, non-rolled-back update.
+//  - 'rolled_back'     : the update failed and Update-SpanVault.ps1 rolled it
+//                        back successfully - SpanVault is fine, running on the
+//                        previous version, but this needs attention. Reloads
+//                        after the same settle countdown, just with a warning
+//                        banner instead of the success one.
+//  - 'rollback_failed' : the update failed AND the rollback also failed -
+//                        SpanVault may be down or unstable. No auto-reload -
+//                        reloading a possibly-down app front-and-center serves
+//                        no one, so this phase just sits and shows the
+//                        problem until an admin manually intervenes/reloads.
 // A healthy /api/health response only counts as recovery once the API has
 // actually been seen down first, so we never declare "complete" against the
 // still-running pre-restart service.
 function UpdatingOverlay() {
-  const [phase, setPhase] = useState<'starting' | 'down' | 'api_up' | 'back_up' | 'timeout'>('starting');
+  const [phase, setPhase] = useState<
+    'starting' | 'down' | 'api_up' | 'checking_result' | 'success' | 'rolled_back' | 'rollback_failed' | 'timeout'
+  >('starting');
   const [countdown, setCountdown] = useState(RELOAD_SETTLE_SECONDS);
+  const [failReason, setFailReason] = useState<string | null>(null);
   const wentDown = useRef(false);
   const consecutiveUp = useRef(0);
 
-  // Navigate to the dashboard with a success banner. Used by both the countdown
-  // and the "Reload Now" button (which skips the remaining countdown).
-  const reloadToDashboard = () => { window.location.href = '/?updated=true'; };
+  // Navigate to the dashboard with the appropriate banner. Used by both the
+  // countdown and the "Reload Now" button (which skips the remaining
+  // countdown). Only called for 'success'/'rolled_back' - see the query-param
+  // contract in (app)/page.tsx's UpdatedNotice.
+  const reloadToDashboard = (outcome: 'success' | 'rolledback') => {
+    window.location.href = outcome === 'rolledback' ? '/?updateRolledBack=true' : '/?updated=true';
+  };
 
   // Phase 1: poll /api/health until the API is stably back up after going down.
   useEffect(() => {
@@ -1776,8 +1825,8 @@ function UpdatingOverlay() {
   // Phase 2: once the API is back ('api_up'), poll a frontend-served static asset
   // (/spanvault-logo.svg on :3008) to confirm the Next.js app is actually serving
   // pages before we reload. Require 2 consecutive 200s. Safety fallback: if this
-  // takes longer than MAX_FRONTEND_WAIT_MS, proceed to 'back_up' anyway so we
-  // never hang worse than the old fixed-delay behavior.
+  // takes longer than MAX_FRONTEND_WAIT_MS, proceed to 'checking_result' anyway
+  // so we never hang worse than the old fixed-delay behavior.
   useEffect(() => {
     if (phase !== 'api_up') return;
     let active = true;
@@ -1794,7 +1843,7 @@ function UpdatingOverlay() {
       if (Date.now() - startedAt > MAX_FRONTEND_WAIT_MS) {
         // Frontend never confirmed live in time — proceed anyway rather than hang.
         stopPolling();
-        if (active) setPhase('back_up');
+        if (active) setPhase('checking_result');
         return;
       }
 
@@ -1818,7 +1867,7 @@ function UpdatingOverlay() {
       consecutiveFrontendUp += 1;
       if (consecutiveFrontendUp >= 2) {
         stopPolling();
-        setPhase('back_up');
+        setPhase('checking_result');
       }
     };
 
@@ -1831,19 +1880,69 @@ function UpdatingOverlay() {
     };
   }, [phase]);
 
-  // Phase 3: frontend is confirmed live — short settle countdown, then reload.
+  // Phase 3: services are confirmed live again, but that alone doesn't tell us
+  // whether the NEW version came up healthy or the OLD version came back up
+  // healthy after an automatic rollback — both look identical from a pure
+  // health-poll standpoint. Fetch last-update-status.json (the same source
+  // UpdateFailureBanner reads) to find out which actually happened before
+  // deciding what to show / whether to auto-reload at all.
   useEffect(() => {
-    if (phase !== 'back_up') return;
-    if (countdown <= 0) { reloadToDashboard(); return; }
+    if (phase !== 'checking_result') return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/system/last-update-status', { cache: 'no-store' });
+        const data: LastUpdateStatus = await res.json();
+        if (cancelled) return;
+        if (data?.exists && data.success === false) {
+          setFailReason(data.errorMessage || null);
+          // Pre-dismiss the persistent UpdateFailureBanner for this SAME event
+          // — we're about to show the equivalent info immediately below, so
+          // the banner popping up right after on the dashboard would just be
+          // showing the same thing twice. It stays available (banner's own
+          // dismiss key is untouched) for a genuinely later page load — a new
+          // tab/session, or a DIFFERENT failed update after this one.
+          if (data.timestamp) {
+            try { sessionStorage.setItem(FAILURE_DISMISS_KEY_PREFIX + data.timestamp, '1'); } catch { /* ignore */ }
+          }
+          setPhase(data.rolledBack ? 'rolled_back' : 'rollback_failed');
+        } else {
+          setPhase('success');
+        }
+      } catch {
+        // Could not determine the outcome — the health checks above already
+        // confirmed something is serving, so fall back to the pre-existing
+        // "assume success" behavior rather than stalling the overlay forever.
+        if (!cancelled) setPhase('success');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [phase]);
+
+  // Phase 4: outcome known — for a clean success or a successful automatic
+  // rollback, a short settle countdown then reload (with the right banner).
+  // rollback_failed never reaches here — no auto-reload, see the phase-list
+  // comment above.
+  useEffect(() => {
+    if (phase !== 'success' && phase !== 'rolled_back') return;
+    if (countdown <= 0) { reloadToDashboard(phase === 'rolled_back' ? 'rolledback' : 'success'); return; }
     const id = setTimeout(() => setCountdown((c) => c - 1), 1000);
     return () => clearTimeout(id);
   }, [phase, countdown]);
 
+  const inProgress = phase === 'starting' || phase === 'down' || phase === 'api_up' || phase === 'checking_result';
+  const settling = phase === 'success' || phase === 'rolled_back';
+
   let statusLine = 'Starting update…';
   if (phase === 'down') statusLine = 'Services restarting… ⟳';
   else if (phase === 'api_up') statusLine = 'API is back. Waiting for the web app to start…';
-  else if (phase === 'back_up') {
-    statusLine = `✓ Services are back online. Reloading in ${countdown} second${countdown === 1 ? '' : 's'}…`;
+  else if (phase === 'checking_result') statusLine = 'Services are back. Verifying the update actually completed…';
+  else if (phase === 'success') {
+    statusLine = `✓ Update completed successfully. Reloading in ${countdown} second${countdown === 1 ? '' : 's'}…`;
+  } else if (phase === 'rolled_back') {
+    statusLine = `The update failed and was automatically rolled back — SpanVault is running normally on the previous version. Reloading in ${countdown} second${countdown === 1 ? '' : 's'}…`;
+  } else if (phase === 'rollback_failed') {
+    statusLine = 'The update failed and the automatic rollback ALSO failed — SpanVault may be DOWN or unstable. Manual intervention required.';
   } else if (phase === 'timeout') statusLine = 'Update is taking longer than expected. Try refreshing the page manually.';
 
   return (
@@ -1853,26 +1952,55 @@ function UpdatingOverlay() {
       display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16,
     }}>
       <div className="sv-panel" style={{ maxWidth: 440, textAlign: 'center', width: '100%' }}>
-        {phase !== 'back_up' && phase !== 'timeout' && (
+        {inProgress && (
           <div style={{ fontSize: 44, lineHeight: 1, display: 'inline-block', animation: 'spin 1s linear infinite' }}>⟳</div>
         )}
-        {phase === 'back_up' && <div style={{ fontSize: 44, lineHeight: 1 }}>✓</div>}
+        {phase === 'success' && <div style={{ fontSize: 44, lineHeight: 1 }}>✓</div>}
+        {phase === 'rolled_back' && <div style={{ fontSize: 44, lineHeight: 1, color: 'var(--sv-warn, #d97706)' }}>⚠</div>}
+        {phase === 'rollback_failed' && <div style={{ fontSize: 44, lineHeight: 1, color: 'var(--sv-down, #C8102E)' }}>⛔</div>}
         {phase === 'timeout' && <div style={{ fontSize: 44, lineHeight: 1 }}>⚠</div>}
-        <h2 style={{ marginTop: 14 }}>Updating SpanVault…</h2>
-        <p className="sv-muted">Pulling latest code and restarting services. Do not close this window.</p>
-        <p style={{ fontWeight: 600, margin: '14px 0' }}>{statusLine}</p>
-        {phase === 'back_up' && (
-          <div style={{ fontSize: 40, fontWeight: 800, lineHeight: 1, margin: '4px 0 10px', color: 'var(--primary)' }}>
+        <h2 style={{ marginTop: 14 }}>
+          {phase === 'rolled_back' ? 'Update Rolled Back'
+            : phase === 'rollback_failed' ? 'Update Failed'
+            : 'Updating SpanVault…'}
+        </h2>
+        <p className="sv-muted">
+          {phase === 'rolled_back' || phase === 'rollback_failed'
+            ? 'The in-app updater detected a problem with this update.'
+            : 'Pulling latest code and restarting services. Do not close this window.'}
+        </p>
+        <p style={{
+          fontWeight: 600, margin: '14px 0',
+          color: phase === 'rollback_failed' ? 'var(--sv-down, #C8102E)'
+            : phase === 'rolled_back' ? 'var(--sv-warn, #d97706)'
+            : undefined,
+        }}>
+          {statusLine}
+        </p>
+        {(phase === 'rolled_back' || phase === 'rollback_failed') && failReason && (
+          <p className="sv-muted" style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--text-sm)', wordBreak: 'break-word' }}>
+            {failReason}
+          </p>
+        )}
+        {settling && (
+          <div style={{
+            fontSize: 40, fontWeight: 800, lineHeight: 1, margin: '4px 0 10px',
+            color: phase === 'rolled_back' ? 'var(--sv-warn, #d97706)' : 'var(--primary)',
+          }}>
             {countdown}
           </div>
         )}
-        {phase !== 'back_up' && (
+        {inProgress && (
           <p className="sv-muted" style={{ fontSize: 'var(--text-sm)' }}>(This usually takes 1-3 minutes)</p>
         )}
         <button
           className="sv-btn"
           style={{ marginTop: 10 }}
-          onClick={phase === 'back_up' ? reloadToDashboard : () => window.location.reload()}
+          onClick={
+            phase === 'success' ? () => reloadToDashboard('success')
+              : phase === 'rolled_back' ? () => reloadToDashboard('rolledback')
+              : () => window.location.reload()
+          }
         >
           Reload Now
         </button>

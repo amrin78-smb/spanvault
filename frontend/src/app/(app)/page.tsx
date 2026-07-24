@@ -443,23 +443,58 @@ function RedirectNotice() {
   );
 }
 
-// Dismissible success banner shown after the in-app updater redirects here with
-// ?updated=true. Mirrors RedirectNotice: reads the query param on mount (no
-// useSearchParams → no Suspense requirement) and strips it so a refresh won't
-// re-show it.
+// Dismissible banner shown after the in-app updater redirects here. Mirrors
+// RedirectNotice: reads the query param on mount (no useSearchParams → no
+// Suspense requirement) and strips it so a refresh won't re-show it.
+//
+// Two distinct outcomes, both set by settings/page.tsx's UpdatingOverlay
+// AFTER it has actually checked /api/system/last-update-status — never from
+// the health-poll transition alone (that only proves something is answering,
+// not which version):
+//   ?updated=true          — a clean, non-rolled-back update. Green success.
+//   ?updateRolledBack=true — the update failed and was automatically rolled
+//                            back. Amber warning, NOT the green banner — a
+//                            rolled-back run must never be presented as a
+//                            success. (rollback-ALSO-failed never reaches
+//                            here at all — the overlay does not auto-reload
+//                            for that outcome, see UpdatingOverlay.)
+// This is the single source of truth for what to show IMMEDIATELY after an
+// update; UpdateFailureBanner (persistent, polls independently) is only
+// relevant for a LATER page load — the overlay pre-dismisses it for this same
+// event via sessionStorage before navigating here, so the two never show
+// contradictory information at once.
 function UpdatedNotice() {
-  const [show, setShow] = useState(false);
+  const [state, setState] = useState<'none' | 'success' | 'rolledback'>('none');
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get('updated') === 'true') {
-      setShow(true);
+      setState('success');
+      window.history.replaceState({}, '', window.location.pathname);
+    } else if (params.get('updateRolledBack') === 'true') {
+      setState('rolledback');
       window.history.replaceState({}, '', window.location.pathname);
     }
   }, []);
-  if (!show) return null;
+  if (state === 'none') return null;
+  if (state === 'rolledback') {
+    return (
+      <div
+        onClick={() => setState('none')}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px',
+          marginBottom: 12, borderRadius: 'var(--radius-sm)', fontSize: 'var(--text-base)', fontWeight: 600,
+          cursor: 'pointer', color: '#92400e', background: 'rgba(217,119,6,0.10)',
+          border: '1px solid rgba(217,119,6,0.30)',
+        }}
+      >
+        <IconWarning width={15} height={15} aria-hidden style={{ flexShrink: 0 }} />
+        <span>An update failed and was automatically rolled back — SpanVault is running normally on the previous version. See Settings → Updates for details.</span>
+      </div>
+    );
+  }
   return (
     <div
-      onClick={() => setShow(false)}
+      onClick={() => setState('none')}
       style={{
         display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px',
         marginBottom: 12, borderRadius: 'var(--radius-sm)', fontSize: 'var(--text-base)', fontWeight: 600,
