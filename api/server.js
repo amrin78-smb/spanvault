@@ -36,6 +36,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.83.17': [
+    'Fixed a real production regression from the 1.83.16 fix (the one that made rollback snapshots actually survive git clean): TypeScript\'s build-time type-check only excludes the exact name "node_modules" by default, not the "node_modules.lastgood"/".next.lastgood" snapshot directories now sitting right next to it -- so once those snapshots could survive, the very next build tried to type-check next-auth\'s source code inside the OLD snapshot copy and failed on an import that only resolves from within its own original dependency tree. The two fixes were masking each other: before 1.83.16, the snapshot was always deleted before the build ran, so this was never hit. Snapshot directories are now explicitly excluded from the TypeScript check.',
+  ],
   '1.83.16': [
     'Found via a full adversarial bug sweep of the resilience work (4 real issues, all fixed): the CRITICAL one -- git clean was deleting the rollback\'s own node_modules/.next backup snapshots on every single run, moments after creating them (verified by actually reproducing it against this repo\'s .gitignore), which meant the safety net added recently had never actually been able to restore anything. Fixed by excluding the backup naming pattern from the clean step.',
     'The transcript, last-update-status.json, and NSSM log paths all still keyed off the -InstallDir parameter\'s hardcoded default, while the app path itself already self-locates independently of it (the in-app Update button never passes -InstallDir). On any install where they diverge, none of those diagnostic artifacts could be found -- -InstallDir now self-locates the same way the app path already does.',
