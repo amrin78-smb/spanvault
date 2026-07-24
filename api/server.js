@@ -36,6 +36,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.83.12': [
+    'Fixed the Alerts page status/severity filter dropdowns clipping their text ("All severities" was rendering with only ~2px to spare) -- both now have real breathing room instead of auto-sizing right at the edge.',
+  ],
   '1.83.11': [
     'Security: extended last month\'s wireless-controller credential fix to the rest of the schema. A full audit found the earlier fix only covered one table -- monitored_devices (SNMP community/auth/priv passwords, covering every monitored device in the install), agents (the live API key remote polling agents authenticate with), agent_discovered_devices (discovery-time SNMP credentials), and the SMTP password in app_settings were all still fully readable via the cross-app diagnostic/dashboard read role. All four are now excluded the same way, written directly into the file that provisions the database so the fix re-applies itself on every deploy.',
     'Hardened both the per-app updater and the suite installer so a genuine SQL error while applying the database schema is no longer silently swallowed -- previously psql could hit a real error partway through, keep going, and still report success.',

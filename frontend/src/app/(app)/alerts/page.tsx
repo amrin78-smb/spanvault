@@ -438,14 +438,14 @@ export default function AlertsPage() {
       }}>
         {/* Row 1: status / severity / search */}
         <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-          <select className="sv-select" value={status} onChange={(e) => setStatus(e.target.value)} style={{ height: 32 }}>
+          <select className="sv-select" value={status} onChange={(e) => setStatus(e.target.value)} style={{ height: 32, minWidth: 155 }}>
             <option value="">All statuses</option>
             <option value="active">Active</option>
             <option value="acknowledged">Acknowledged</option>
             <option value="resolved">Resolved</option>
             <option value="suppressed">Suppressed</option>
           </select>
-          <select className="sv-select" value={severity} onChange={(e) => setSeverity(e.target.value)} style={{ height: 32 }}>
+          <select className="sv-select" value={severity} onChange={(e) => setSeverity(e.target.value)} style={{ height: 32, minWidth: 145 }}>
             <option value="">All severities</option>
             <option value="critical">Critical</option>
             <option value="warning">Warning</option>
