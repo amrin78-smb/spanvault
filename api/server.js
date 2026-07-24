@@ -36,6 +36,12 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.83.16': [
+    'Found via a full adversarial bug sweep of the resilience work (4 real issues, all fixed): the CRITICAL one -- git clean was deleting the rollback\'s own node_modules/.next backup snapshots on every single run, moments after creating them (verified by actually reproducing it against this repo\'s .gitignore), which meant the safety net added recently had never actually been able to restore anything. Fixed by excluding the backup naming pattern from the clean step.',
+    'The transcript, last-update-status.json, and NSSM log paths all still keyed off the -InstallDir parameter\'s hardcoded default, while the app path itself already self-locates independently of it (the in-app Update button never passes -InstallDir). On any install where they diverge, none of those diagnostic artifacts could be found -- -InstallDir now self-locates the same way the app path already does.',
+    'The rollback\'s "no root node_modules backup" branch didn\'t mark the rollback as failed like its sibling branches do, so it could report full success even though it hadn\'t actually restored what it claimed to.',
+    'The pre-update snapshot renames could fail silently (e.g. a file still locked by a just-stopped service) and still print "Snapshotted" regardless -- now verified after the fact, with a clear warning if a rename didn\'t actually happen.',
+  ],
   '1.83.15': [
     'Fixed GET /api/system/last-update-status (added in 1.83.13) always returning {exists:false} even right after a real update ran. The route looked for logs/last-update-status.json relative to the app folder, but Update-SpanVault.ps1 actually writes it under -InstallDir, which on a normal suite install is the PARENT of the app folder (a sibling logs/ directory, not one inside it) -- so the file was always there, just never where the route was looking. Now checks both layouts, matching how NetVault\'s equivalent route already handles the same install-dir-vs-app-dir split.',
   ],

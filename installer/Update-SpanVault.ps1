@@ -77,29 +77,6 @@ try {
     if ($proc.PriorityClass -ne 'Normal') { $proc.PriorityClass = 'Normal' }
 } catch { Write-Warning "Could not adjust process priority: $($_.Exception.Message)" }
 
-# The in-app updater (Settings -> Updates) is fire-and-forget: it schedules this
-# script as a SYSTEM task and immediately returns { started: true } to the
-# browser, with no live output stream. Without a transcript, a run triggered
-# that way leaves NO durable record of what happened — every Write-Host/
-# Write-Step/Write-Warn line below is otherwise lost the moment the scheduled
-# task's process exits, which is exactly the case that most needs diagnosing.
-# Start it as early as possible (before pre-flight) so even a pre-flight
-# failure is captured. Best-effort: a transcript that fails to start (e.g. one
-# is already open in this session) must never block the actual update.
-New-Item -ItemType Directory -Force -Path (Join-Path $InstallDir 'logs') | Out-Null
-$transcriptPath = Join-Path $InstallDir "logs\update-$(Get-Date -Format 'yyyyMMdd-HHmmss').log"
-try { Start-Transcript -Path $transcriptPath -Append | Out-Null } catch { Write-Warning "Could not start transcript: $($_.Exception.Message)" }
-
-# Give the API a moment to return its { started: true } response to the frontend
-# before we start stopping services.
-Write-Host "=== Update starting in 5 seconds ==="
-Start-Sleep -Seconds 5
-
-# FIREWALL NOTE: SpanVault agents connect outbound to port 3010.
-# Ensure port 3010 is reachable from all agent servers to this host.
-# Open inbound: netsh advfirewall firewall add rule name="SpanVault Agent WS"
-#   protocol=TCP dir=in localport=3010 action=allow
-
 # The repo is cloned one level deeper than the install dir: the install dir
 # ($InstallDir) holds top-level artifacts (logs, nssm), while the application
 # code lives in the 'app' subfolder. All git/npm/build/file operations and the
@@ -135,6 +112,48 @@ $AppRoot  = Split-Path -Parent $PSScriptRoot
 # with "Cannot read properties of null (reading 'useContext')". Pin to on-disk casing.
 $AppRoot  = Get-TrueCasePath $AppRoot
 $Frontend = Join-Path $AppRoot 'frontend'
+
+# Self-locate -InstallDir too, the same way $AppRoot already self-locates - the
+# in-app "Update Now" trigger (api/server.js) never passes -InstallDir, so it
+# always fell back to this parameter's hardcoded default regardless of the REAL
+# install location. That silently broke the transcript, last-update-status.json,
+# and NSSM stdout/stderr log paths (all still built from $InstallDir below) on
+# any install whose real path differs from the default - the failure banner
+# would never appear even after a genuinely failed/rolled-back update, since
+# api/server.js's own /api/system/last-update-status route derives its
+# candidate paths from the correctly self-located APP_ROOT, not this
+# (possibly-wrong) $InstallDir. A suite install's app root ends in "...\app"
+# (this script's own doc comment above); a standalone install's app root has no
+# such "app" leaf. Detect which by checking $AppRoot's own leaf folder name,
+# and derive InstallDir from that instead of trusting the parameter.
+if ((Split-Path -Leaf $AppRoot) -ieq 'app') {
+    $InstallDir = Split-Path -Parent $AppRoot
+} else {
+    $InstallDir = $AppRoot
+}
+
+# The in-app updater (Settings -> Updates) is fire-and-forget: it schedules this
+# script as a SYSTEM task and immediately returns { started: true } to the
+# browser, with no live output stream. Without a transcript, a run triggered
+# that way leaves NO durable record of what happened — every Write-Host/
+# Write-Step/Write-Warn line below is otherwise lost the moment the scheduled
+# task's process exits, which is exactly the case that most needs diagnosing.
+# Start it as early as possible (before pre-flight) so even a pre-flight
+# failure is captured. Best-effort: a transcript that fails to start (e.g. one
+# is already open in this session) must never block the actual update.
+New-Item -ItemType Directory -Force -Path (Join-Path $InstallDir 'logs') | Out-Null
+$transcriptPath = Join-Path $InstallDir "logs\update-$(Get-Date -Format 'yyyyMMdd-HHmmss').log"
+try { Start-Transcript -Path $transcriptPath -Append | Out-Null } catch { Write-Warning "Could not start transcript: $($_.Exception.Message)" }
+
+# Give the API a moment to return its { started: true } response to the frontend
+# before we start stopping services.
+Write-Host "=== Update starting in 5 seconds ==="
+Start-Sleep -Seconds 5
+
+# FIREWALL NOTE: SpanVault agents connect outbound to port 3010.
+# Ensure port 3010 is reachable from all agent servers to this host.
+# Open inbound: netsh advfirewall firewall add rule name="SpanVault Agent WS"
+#   protocol=TCP dir=in localport=3010 action=allow
 
 # ── Configuration ──────────────────────────────────────────────
 # Note: SpanVault-API also starts a WebSocket server on SV_WS_PORT (default 3010)
@@ -340,6 +359,7 @@ function Invoke-Rollback([string]$Reason) {
             Write-Ok "Restored root node_modules"
         } else {
             Write-Warn "No root node_modules snapshot found to restore"
+            $ok = $false
         }
         if (Test-Path $frontendNextBackup) {
             $target = Join-Path $Frontend '.next'
@@ -481,20 +501,31 @@ $frontendModulesBackup = Join-Path $Frontend 'node_modules.lastgood'
 foreach ($stale in @($rootModulesBackup, $frontendNextBackup, $frontendModulesBackup)) {
     if (Test-Path $stale) { Remove-Item $stale -Recurse -Force -ErrorAction SilentlyContinue }
 }
+# Each rename below is verified by checking the NEW name actually exists
+# afterward, rather than trusting -ErrorAction SilentlyContinue's silence as
+# proof of success - a locked file (e.g. a just-stopped service's process not
+# fully exited yet, since the stop loop above only does a flat sleep with no
+# exit-polling) can make Rename-Item fail silently, which previously still
+# printed "Snapshotted ..." unconditionally. A falsely-reported snapshot means
+# Invoke-Rollback later finds nothing to restore for that directory with no
+# warning ever having been raised.
 $rootModulesPath = Join-Path $AppRoot 'node_modules'
 if (Test-Path $rootModulesPath) {
     Rename-Item -Path $rootModulesPath -NewName 'node_modules.lastgood' -ErrorAction SilentlyContinue
-    Write-Ok "Snapshotted root node_modules"
+    if (Test-Path $rootModulesBackup) { Write-Ok "Snapshotted root node_modules" }
+    else { Write-Warn "Could not snapshot root node_modules (rename failed) - a failure below could not be rolled back for this directory" }
 }
 $frontendNextPath = Join-Path $Frontend '.next'
 if (Test-Path $frontendNextPath) {
     Rename-Item -Path $frontendNextPath -NewName '.next.lastgood' -ErrorAction SilentlyContinue
-    Write-Ok "Snapshotted frontend .next build output"
+    if (Test-Path $frontendNextBackup) { Write-Ok "Snapshotted frontend .next build output" }
+    else { Write-Warn "Could not snapshot frontend .next (rename failed) - a failure below could not be rolled back for this directory" }
 }
 $frontendModulesPath = Join-Path $Frontend 'node_modules'
 if (Test-Path $frontendModulesPath) {
     Rename-Item -Path $frontendModulesPath -NewName 'node_modules.lastgood' -ErrorAction SilentlyContinue
-    Write-Ok "Snapshotted frontend node_modules"
+    if (Test-Path $frontendModulesBackup) { Write-Ok "Snapshotted frontend node_modules" }
+    else { Write-Warn "Could not snapshot frontend node_modules (rename failed) - a failure below could not be rolled back for this directory" }
 }
 
 # ── 2. Pull latest code ────────────────────────────────────────
@@ -529,7 +560,7 @@ $null = & $git fetch origin 2>&1
 $fetchExit = $LASTEXITCODE
 $null = & $git reset --hard "origin/$Branch" 2>&1
 $resetExit = $LASTEXITCODE
-$null = & $git clean -fd --exclude=".env.local" --exclude="node_modules" 2>&1
+$null = & $git clean -fd --exclude=".env.local" --exclude="node_modules" --exclude="*.lastgood" 2>&1
 $null = & $git status 2>&1
 $ErrorActionPreference = $prevEAP
 if ($fetchExit -eq 0 -and $resetExit -eq 0) {
