@@ -1055,14 +1055,10 @@ ALTER TABLE wireless_aps ADD COLUMN IF NOT EXISTS mem_free   BIGINT;
 -- vendor's ESSID table where available.
 ALTER TABLE wireless_ssids ADD COLUMN IF NOT EXISTS encryption_type TEXT;
 
--- Per-client PHY/HT capability (e.g. "802.11ac (80MHz)") and VLAN assignment.
--- phy_mode is a capability indicator, distinct from the negotiated tx_rate_mbps.
-ALTER TABLE wireless_clients ADD COLUMN IF NOT EXISTS phy_mode TEXT;
-ALTER TABLE wireless_clients ADD COLUMN IF NOT EXISTS vlan_id  INTEGER;
--- Client-reported OS family (e.g. "iOS", "Windows") — first populated by the
--- aruba_central client acquisition path; no SNMP client parser currently
--- reports it, so it's null for every other vendor.
-ALTER TABLE wireless_clients ADD COLUMN IF NOT EXISTS os_type  TEXT;
+-- (The wireless_clients phy_mode/vlan_id/os_type ALTERs that used to sit HERE
+--  were moved BELOW, to right after the CREATE TABLE wireless_clients — they
+--  ran before the table was created, which errored on a fresh install with
+--  "relation wireless_clients does not exist". See that relocated block.)
 
 -- ══ Wireless intelligence (computed analytics per poll cycle) ═════════════════
 CREATE TABLE IF NOT EXISTS wireless_intelligence (
@@ -1159,6 +1155,20 @@ ALTER TABLE wireless_clients ADD COLUMN IF NOT EXISTS rx_bytes_raw BIGINT;
 ALTER TABLE wireless_clients ADD COLUMN IF NOT EXISTS tx_bytes_raw BIGINT;
 ALTER TABLE wireless_clients ADD COLUMN IF NOT EXISTS byte_counter_bits SMALLINT;
 ALTER TABLE wireless_clients ADD COLUMN IF NOT EXISTS bw_sampled_at TIMESTAMPTZ;
+
+-- Per-client PHY/HT capability (e.g. "802.11ac (80MHz)") and VLAN assignment.
+-- phy_mode is a capability indicator, distinct from the negotiated tx_rate_mbps.
+-- (Relocated here 2026-07-25 from ABOVE the CREATE TABLE wireless_clients: these
+--  three ALTERs used to run before the table existed, which errored on a fresh
+--  install — "relation wireless_clients does not exist" — while silently passing
+--  on any already-provisioned DB where the table was already present. This is
+--  the same fresh-install ordering class as the DDIVault schema-file fix.)
+ALTER TABLE wireless_clients ADD COLUMN IF NOT EXISTS phy_mode TEXT;
+ALTER TABLE wireless_clients ADD COLUMN IF NOT EXISTS vlan_id  INTEGER;
+-- Client-reported OS family (e.g. "iOS", "Windows") — first populated by the
+-- aruba_central client acquisition path; no SNMP client parser currently
+-- reports it, so it's null for every other vendor.
+ALTER TABLE wireless_clients ADD COLUMN IF NOT EXISTS os_type  TEXT;
 
 -- Per-client bandwidth history — one row per client per poll, for a trend chart
 -- on the client detail panel and future bandwidth-threshold alerting. NOT keyed
