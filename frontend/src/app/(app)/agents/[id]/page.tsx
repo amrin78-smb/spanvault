@@ -10,7 +10,7 @@ import {
 } from '@/components/ui';
 import { IconWarning } from '@/components/icons';
 import { StatusDot } from '@/components/StatusDot';
-import { AgentStatusPill, AgentInstall, AgentDiscovery, AgentHealth, AgentHealthData, AgentLogs, SiteMultiSelect } from '@/components/AgentBits';
+import { AgentStatusPill, AgentDiscovery, AgentHealth, AgentHealthData, AgentLogs, SiteMultiSelect } from '@/components/AgentBits';
 
 type AgentSite = { site_id: number; site_name: string | null };
 type AgentDevice = {
@@ -27,7 +27,6 @@ type AgentDetail = {
   ip_address: string | null; hostname: string | null; disabled?: boolean;
   last_seen_at: string | null; connected_at: string | null; created_at: string;
   sites: AgentSite[]; devices: AgentDevice[]; service_checks: AgentServiceCheck[];
-  install_command: string;
   health?: AgentHealthData; latest_agent_version?: string | null;
 };
 type Site = { id: number; name: string };
@@ -84,17 +83,6 @@ export default function AgentDetailPage({ params }: { params: { id: string } }) 
     })) return;
     await apiSend(`/api/agents/${params.id}`, 'DELETE');
     router.push('/agents');
-  }
-
-  async function handleRotateKey() {
-    if (!await confirm({
-      title: 'Rotate API key?',
-      message: 'Rotate this agent\'s API key? The current key stops working immediately — you must re-run the install command (shown below) on the remote server.',
-      confirmLabel: 'Rotate key',
-      danger: true,
-    })) return;
-    await apiSend(`/api/agents/${params.id}/rotate-key`, 'POST');
-    agent.reload();
   }
 
   async function handleToggleDisabled() {
@@ -202,15 +190,6 @@ export default function AgentDetailPage({ params }: { params: { id: string } }) 
             <dt style={{ color: 'var(--text-muted)' }}>Created</dt>
             <dd style={{ margin: 0, color: 'var(--text-primary)' }}>{fmtTime(a.created_at)}</dd>
           </dl>
-          <div style={{ display: 'flex', alignItems: 'center', marginTop: 16, marginBottom: 8 }}>
-            <span style={{ ...SECTION_TITLE_STYLE, marginBottom: 0 }}>Install / Reconnect</span>
-            <span style={{ flex: 1 }} />
-            <button className="sv-btn ghost sm" onClick={handleRotateKey} title="Generate a new API key (old key stops working)">Rotate key</button>
-          </div>
-          <p className="sv-muted" style={{ fontSize: 'var(--text-sm)', margin: '0 0 8px' }}>
-            Run this on the remote server (PowerShell, as Administrator):
-          </p>
-          <AgentInstall command={a.install_command} />
         </div>
 
         {/* Right — Assigned Sites */}

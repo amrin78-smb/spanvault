@@ -9,7 +9,7 @@ import {
   ErrorBox, fmtRel, PageHeader, CardSkeleton, EmptyState, useRefreshKey, Loading, useConfirm, useToast,
 } from '@/components/ui';
 import { IconAgents } from '@/components/icons';
-import { AgentInstall, AgentConnectWaiter, NewAgentModal, AgentHealthData } from '@/components/AgentBits';
+import { AgentHealthData } from '@/components/AgentBits';
 
 type AgentSite = { site_id: number; site_name: string | null };
 export type Agent = {
@@ -54,12 +54,9 @@ export default function AgentsPage() {
   const { confirm, ConfirmUI } = useConfirm();
   const { toast, ToastUI } = useToast();
   const agents = useApi<Agent[]>(canManageAgents ? '/api/agents' : null, 15000);
-  const [showNew, setShowNew] = useState(false);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
-  // After creating an agent, surface its install command in a modal.
-  const [created, setCreated] = useState<{ id: number; name: string; install_command: string } | null>(null);
 
   function toggleSelect(id: number) {
     setSelected((prev) => {
@@ -87,9 +84,9 @@ export default function AgentsPage() {
   }
 
   // Runs an existing single-agent action across every selected id, then
-  // summarizes success/failure as one toast (used by bulk rotate-key/restart —
-  // there is no bulk-specific backend endpoint, this just loops the same
-  // POST /api/agents/:id/... routes the single-agent detail page already uses).
+  // summarizes success/failure as one toast (used by bulk restart — there is no
+  // bulk-specific backend endpoint, this just loops the same POST
+  // /api/agents/:id/... route the single-agent detail page already uses).
   async function runBulk(ids: number[], action: (id: number) => Promise<any>, verbPast: string) {
     let ok = 0;
     const failures: string[] = [];
@@ -109,17 +106,6 @@ export default function AgentsPage() {
     } else {
       toast(`${verbPast} ${ok} of ${ids.length} agent${ids.length === 1 ? '' : 's'}`, 'ok');
     }
-  }
-
-  async function bulkRotateKeys() {
-    const ids = Array.from(selected);
-    if (!await confirm({
-      title: `Rotate keys for ${ids.length} agent(s)?`,
-      message: `Rotate the API key for the ${ids.length} selected agent(s)? Each current key stops working immediately — you must re-run each agent's install command (shown on its detail page) on the remote server.`,
-      confirmLabel: 'Rotate Keys',
-      danger: true,
-    })) return;
-    await runBulk(ids, (id) => apiSend(`/api/agents/${id}/rotate-key`, 'POST'), 'Rotated');
   }
 
   async function bulkRestart() {
@@ -187,9 +173,18 @@ export default function AgentsPage() {
     <div>
       {ConfirmUI}
       {ToastUI}
-      <PageHeader title="Agents" subtitle="Remote polling agents that monitor devices at sites the server can't reach directly.">
-        <button className="sv-btn" onClick={() => setShowNew(true)}>+ New Agent</button>
-      </PageHeader>
+      <PageHeader title="Agents" subtitle="Remote polling agents that monitor devices at sites the server can't reach directly." />
+
+      {/* Enrollment is owned by the NetVault hub (Phase 4) — agents are added there,
+          then appear here for site assignment and device discovery. */}
+      <div style={{
+        fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', margin: '0 0 14px',
+        padding: '8px 12px', background: 'var(--surface-subtle)',
+        border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
+      }}>
+        To add an agent, enroll it from the <strong>NetVault hub → Agents</strong> page. Once it
+        connects it appears here, where you can assign its sites and discover devices.
+      </div>
 
       {agents.error && <ErrorBox message={agents.error} />}
 
@@ -280,7 +275,6 @@ export default function AgentsPage() {
           <span style={{ fontSize: 'var(--text-base)', fontWeight: 600 }}>{selected.size} selected</span>
           <span style={{ flex: 1 }} />
           <button className="sv-btn ghost sm" onClick={bulkRestart}>Restart</button>
-          <button className="sv-btn ghost sm" onClick={bulkRotateKeys}>Rotate Keys</button>
           <button className="sv-btn ghost sm" onClick={() => bulkDisable(true)}>Disable</button>
           <button className="sv-btn ghost sm" onClick={() => bulkDisable(false)}>Enable</button>
           <button className="sv-btn danger sm" onClick={bulkDelete}>Delete</button>
@@ -319,33 +313,8 @@ export default function AgentsPage() {
           <EmptyState
             icon={<IconAgents width={26} height={26} />}
             title="No agents yet"
-            message="Create an agent and run its install command on a remote server to start distributed polling."
-            actionLabel="+ New Agent"
-            onAction={() => setShowNew(true)}
+            message="Enroll an agent from the NetVault hub's Agents page. Once it connects it appears here, where you can assign its sites and discover devices."
           />
-        </div>
-      )}
-
-      {showNew && (
-        <NewAgentModal
-          onClose={() => setShowNew(false)}
-          onCreated={(c) => { setShowNew(false); setCreated(c); agents.reload(); }}
-        />
-      )}
-
-      {created && (
-        <div className="sv-modal-backdrop" onClick={() => setCreated(null)}>
-          <div className="sv-modal" style={{ maxWidth: 640 }} onClick={(e) => e.stopPropagation()}>
-            <h2 style={{ marginTop: 0 }}>Agent “{created.name}” created</h2>
-            <p className="sv-muted" style={{ fontSize: 'var(--text-base)' }}>
-              Run this on the remote server (PowerShell, as Administrator):
-            </p>
-            <AgentInstall command={created.install_command} />
-            <AgentConnectWaiter agentId={created.id} />
-            <div style={{ marginTop: 18, textAlign: 'right' }}>
-              <button className="sv-btn" onClick={() => setCreated(null)}>Done</button>
-            </div>
-          </div>
         </div>
       )}
     </div>

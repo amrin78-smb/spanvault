@@ -36,6 +36,11 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.85.0': [
+    'NocVault Agents Phase 4a — the SpanVault Agents page is slimmed now that the NetVault hub owns agent enrollment and identity. Removed the legacy "New Agent" flow (which minted a SpanVault API key + install command), the "Rotate key" action, and the "Install / Reconnect" panel — these only ever applied to legacy API-key agents; hub-enrolled agents are added from the NetVault hub\'s Agents page instead (an inline note points there). Site assignment, device discovery/adopt, restart, logs, disable and delete are unchanged.',
+    'Security tidy-up: the agent API no longer returns the agent\'s api_key or install_command in any response (they were only used to render the now-removed install panel). The api_key column and the legacy API-key WebSocket handshake are intact, so existing key-based agents keep working unchanged.',
+    'The now-unreachable POST /api/agents (create) and POST /api/agents/:id/rotate-key routes were removed (their only callers were the removed UI); site-binding for existing agents is unaffected (it lives in POST /api/agents/:id/sites).',
+  ],
   '1.84.0': [
     'NocVault Agents Phase 3 — SpanVault now accepts the hub-signed agent identity on its agent WebSocket, so an agent enrolled once at the NetVault hub can connect here with no separate SpanVault API key. This is accept-both: existing agents using their SpanVault API key keep working exactly as before (the key path is unchanged), so nothing in the live fleet breaks — new/hub-enrolled agents just use the hub identity instead.',
     'A hub-enrolled agent is auto-linked to a single SpanVault agent record (new agents.hub_agent_id column) on first connect, so one physical agent shows up in one place for site assignment instead of as two disconnected entries. Its hostname is adopted from the first heartbeat.',
@@ -3124,11 +3129,6 @@ app.get('/api/netvault/sites', wrap(async (_req, res) => {
 // ══════════════════════════════════════════════════════════════
 // Distributed polling agents
 // ══════════════════════════════════════════════════════════════
-// Build the one-line install command shown to the user after creating an agent.
-function installCommand(serverUrl, apiKey) {
-  return `& ([scriptblock]::Create((irm ${serverUrl}/api/agent/install.ps1))) -ServerUrl "${serverUrl}" -ApiKey "${apiKey}"`;
-}
-
 // The agents.disabled / agents.health columns are later migrations — probe once
 // so the list/detail endpoints work before and after schema.sql is re-applied.
 async function agentColExists(col) {
@@ -3191,79 +3191,14 @@ app.get('/api/agents', wrap(async (_req, res) => {
   res.json(r.rows.map((a) => ({ ...a, latest_agent_version: latest })));
 }));
 
-// Create an agent: generate api_key, assign sites, auto-assign existing devices.
-app.post('/api/agents', wrap(async (req, res) => {
-  const b = req.body || {};
-  if (!b.name) return res.status(400).json({ error: 'name is required' });
-  const siteIds = Array.isArray(b.site_ids) ? b.site_ids.map((n) => parseInt(n, 10)).filter((n) => !isNaN(n)) : [];
+// legacy: agent provisioning (POST /api/agents — mint api_key + install command)
+// now owned by the NetVault hub (Phase 4). Enrollment happens on the hub's Agents
+// page; the SpanVault page only binds sites to / discovers devices for an already-
+// provisioned agent. Site-binding for existing agents lives in POST /api/agents/:id/sites.
 
-  const client = await sv.connect();
-  try {
-    await client.query('BEGIN');
-    const ins = await client.query(`INSERT INTO agents (name) VALUES ($1) RETURNING *`, [b.name]);
-    const agent = ins.rows[0];
-    const displaced = new Set();
-
-    if (siteIds.length) {
-      // A site belongs to exactly one agent — detach these from any other agent
-      // (and remember them so we can refresh their config after commit).
-      const prev = await client.query(
-        `SELECT DISTINCT agent_id FROM agent_sites WHERE site_id = ANY($1::int[])`, [siteIds]);
-      for (const row of prev.rows) displaced.add(row.agent_id);
-      await client.query(`DELETE FROM agent_sites WHERE site_id = ANY($1::int[])`, [siteIds]);
-
-      // Resolve site names from NetVault for display (best-effort).
-      let names = {};
-      try {
-        const nr = await nv.query(`SELECT id, name FROM sites WHERE id = ANY($1::int[])`, [siteIds]);
-        for (const row of nr.rows) names[row.id] = row.name;
-      } catch (_e) { /* NetVault optional */ }
-
-      for (const sid of siteIds) {
-        await client.query(
-          `INSERT INTO agent_sites (agent_id, site_id, site_name) VALUES ($1,$2,$3)
-           ON CONFLICT (agent_id, site_id) DO UPDATE SET site_name = EXCLUDED.site_name`,
-          [agent.id, sid, names[sid] || null]
-        );
-      }
-      // Auto-assign every monitored device in those sites to this agent. Reset
-      // current_status to 'unknown' — these devices' status was last observed by
-      // whoever polled them before (central collector or another agent), and this
-      // brand-new agent hasn't polled them yet, so any stale 'up' must not linger
-      // (evaluateAgentDevices() does nothing for a non-online agent, e.g.
-      // never_connected, so a stale status could otherwise persist indefinitely).
-      await client.query(
-        `UPDATE monitored_devices SET agent_id = $1, current_status = 'unknown', updated_at = NOW() WHERE site_id = ANY($2::int[])`,
-        [agent.id, siteIds]
-      );
-    }
-    await client.query('COMMIT');
-
-    // Refresh config for any agent that lost sites to this new one.
-    for (const aid of displaced) {
-      if (aid && aid !== agent.id) {
-        try { await pushConfigToAgentId(aid); } catch (e) { console.error('[agents] displaced push failed:', e.message); }
-      }
-    }
-
-    const serverUrl = getServerUrl(req);
-    res.status(201).json({
-      ...agent,
-      install_command: installCommand(serverUrl, agent.api_key),
-    });
-  } catch (err) {
-    await client.query('ROLLBACK');
-    throw err;
-  } finally {
-    client.release();
-  }
-}));
-
-// Agent detail: agent + assigned sites + device list.
-// RBAC: api_key (and install_command, which embeds it) is a live secret — only
-// admin/super_admin may see it. Other authenticated roles (site_admin/viewer)
-// still get the rest of the agent object (status/name/devices/etc), just with
-// the secret fields redacted rather than being blocked from the route.
+// Agent detail: agent + assigned sites + device list. The agents.api_key column
+// is a legacy secret (only api_key-enrolled agents have one; hub-JWT agents don't)
+// and is never returned by the API — the hub owns enrollment/identity (Phase 4).
 app.get('/api/agents/:id', wrap(async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const a = await sv.query(`SELECT * FROM agents WHERE id = $1`, [id]);
@@ -3280,17 +3215,13 @@ app.get('/api/agents/:id', wrap(async (req, res) => {
     SELECT id, name, type, target, site_name, current_status, last_response_ms, last_checked_at
     FROM service_checks WHERE agent_id = $1 ORDER BY name
   `, [id]);
-  const serverUrl = getServerUrl(req);
-  const role = req.headers['x-user-role'];
-  const isAdmin = role === 'admin' || role === 'super_admin';
   const agent = { ...a.rows[0] };
-  if (!isAdmin) delete agent.api_key;
+  delete agent.api_key; // legacy secret — never exposed via the API (hub owns enrollment; Phase 4)
   res.json({
     ...agent,
     sites: sites.rows,
     devices: devices.rows,
     service_checks: serviceChecks.rows,
-    install_command: isAdmin ? installCommand(serverUrl, a.rows[0].api_key) : null,
     latest_agent_version: latestAgentVersion(),
   });
 }));
@@ -3306,20 +3237,9 @@ app.put('/api/agents/:id', wrap(async (req, res) => {
   res.json(r.rows[0]);
 }));
 
-// Rotate an agent's API key. The old key is immediately invalid; if the agent is
-// connected it is dropped and must be re-installed with the new command.
-app.post('/api/agents/:id/rotate-key', wrap(async (req, res) => {
-  const id = parseInt(req.params.id, 10);
-  const cur = await sv.query(`SELECT id FROM agents WHERE id = $1`, [id]);
-  if (!cur.rows[0]) return res.status(404).json({ error: 'Agent not found' });
-  const r = await sv.query(
-    `UPDATE agents SET api_key = gen_random_uuid()::text, status = 'never_connected',
-       updated_at = NOW() WHERE id = $1 RETURNING *`, [id]);
-  // connectedAgents is keyed by local agents.id (not api_key) — drop by id.
-  try { disconnectAgent(id, 'Key rotated'); } catch (_e) { /* ignore */ }
-  const serverUrl = getServerUrl(req);
-  res.json({ ...r.rows[0], install_command: installCommand(serverUrl, r.rows[0].api_key) });
-}));
+// legacy: agent api_key rotation (POST /api/agents/:id/rotate-key) now owned by
+// the NetVault hub (Phase 4). Meaningless for hub-JWT agents (no api_key); the
+// hub owns JWT refresh. Removed with the New Agent / Install-command UI.
 
 // Enable/disable an agent without deleting it. Disabling drops any live socket and
 // refuses future handshakes until re-enabled.

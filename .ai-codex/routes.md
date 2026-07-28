@@ -102,11 +102,10 @@ deliberately skip it).
 
 ## Distributed polling agents
 - `GET /api/agents` [auth] [db] — all agents with device counts + assigned sites
-- `POST /api/agents` [auth+write:admin+] [db] — generates api_key, assigns sites, auto-assigns devices
-- `GET /api/agents/:id` [auth] [db] — secret fields redacted rather than 403ing the whole route
+- `GET /api/agents/:id` [auth] [db] — never returns api_key/install_command (legacy secret; hub owns enrollment, Phase 4)
 - `PUT /api/agents/:id` [auth+write:admin+] [db] — rename
-- `POST /api/agents/:id/rotate-key` [auth+write:admin+] [db] — old key invalid immediately; connected agent dropped
 - `POST /api/agents/:id/disabled` [auth+write:admin+] [db] — disable/enable without deleting; drops live socket, refuses handshakes
+- NOTE: `POST /api/agents` (create) + `POST /api/agents/:id/rotate-key` REMOVED in Phase 4a — agent enrollment/api_key are now owned by the NetVault hub; SpanVault only binds sites (`/:id/sites`) + discovers devices for already-provisioned agents
 - `DELETE /api/agents/:id` [auth+write:admin+] [db] — devices fall back to local polling (agent_id -> NULL)
 - `POST /api/agents/:id/sites` [auth+write:admin+] [db] — replace site assignments + re-derive device ownership
 - `POST /api/agents/:id/restart` [auth+write:admin+] [external] — WS message; agent exits, NSSM restarts it

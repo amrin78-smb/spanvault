@@ -19,8 +19,8 @@ gotchas.md — auth happens via `/sso`.
 - `[client]` `/maps/[id]/edit` — `MapEditorPage` — drag/resize/align map designer (multi-select, undo/redo, shapes/icons, weathermap link binding)
 - `[client]` `/wireless` — `WirelessPage` — Overview/Intelligence/Controllers/Clients/SSIDs/Rogue-APs tabs, 897-line entry point
 - `[client]` `/topology` — `TopologyPage` — LLDP/CDP-discovered link map grouped by site (TopologyMapView)
-- `[client]` `/agents` — `AgentsPage` — remote polling agent fleet list, bulk enable/disable/delete (admin-only via canManageAgents)
-- `[client]` `/agents/[id]` — `AgentDetailPage` — one agent: rename, restart, log tail, rotate key, discover/adopt devices, host health
+- `[client]` `/agents` — `AgentsPage` — remote polling agent fleet list, bulk restart/enable/disable/delete (admin-only via canManageAgents). Enrollment moved to the NetVault hub (Phase 4a); page shows a hub note instead of a New Agent button
+- `[client]` `/agents/[id]` — `AgentDetailPage` — one agent: rename, restart, log tail, assign sites, discover/adopt devices, host health (no install-command / rotate-key panel — hub owns enrollment, Phase 4a)
 - `[client]` `/intelligence` — `IntelligencePage` — anomalies, health scores, capacity forecasts, patterns, incidents, threshold recommendations (multi-tab)
 - `[client]` `/settings` — `SettingsPage` — 8 tabs: General/Notifications/Escalation & On-Call/Alert Rules/Maintenance/Audit Log/Updates/About (admin-only via canManageSettings). Wireless RF alert thresholds live inside General (WIRELESS_ALERT_FIELDS), not their own tab.
 

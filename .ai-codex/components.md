@@ -6,9 +6,7 @@ effectively client-only even where not marked — noted). All files here are
 importing them are already client components.
 
 ## Top-level (frontend/src/components/)
-- (c) `AgentConnectWaiter`  agentId — live "waiting for agent to connect" -> "Connected!" poller (AgentBits.tsx)
 - (c) `AgentStatusPill`  status (AgentBits.tsx)
-- (c) `AgentInstall`  command — shows the one-line install command with copy button (AgentBits.tsx)
 - (c) `AgentLogs`  agentId, online — log tail viewer + refresh (AgentBits.tsx)
 - (c) `AgentHealth`  health, online — self-reported host health panel (AgentBits.tsx)
 - (c) `AlertBanner`  (no props) — global top-of-shell "X down · X warning" banner, polls /api/dashboard/summary every 30s
