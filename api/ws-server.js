@@ -18,6 +18,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { WebSocketServer } = require('ws');
 const { Pool } = require('pg');
+const { verifyHubAgentJwt } = require('./agent-identity');
 const { OID } = require('../collector/snmp-session');
 const { detectVendor } = require('../collector/parsers');
 const {
@@ -78,7 +79,25 @@ const sv = new Pool({
 });
 sv.on('error', (err) => console.error('[WS DB] Pool error:', err.message));
 
-// Map of api_key → live WebSocket connection.
+// NetVault DB (read-only) — needed for the Phase 3 hub-JWT path to honour hub
+// revocation at connect (a signature check alone can't see a hub-side revoke).
+// SpanVault already reads this DB for site names elsewhere; the default role
+// (`netvault`) has full SELECT on netvault.agents, so `revoked_at` is readable.
+const nv = new Pool({
+  host:     process.env.NETVAULT_DB_HOST || 'localhost',
+  port:     parseInt(process.env.NETVAULT_DB_PORT || '5432', 10),
+  database: process.env.NETVAULT_DB_NAME || 'netvault',
+  user:     process.env.NETVAULT_DB_USER || 'netvault',
+  password: process.env.NETVAULT_DB_PASS || '',
+  ssl: false,
+  max: 5,
+  idleTimeoutMillis: 30000,
+});
+nv.on('error', (err) => console.error('[WS DB nv] Pool error:', err.message));
+
+// Map of local agents.id (integer) → live WebSocket connection. Keyed by the
+// LOCAL primary key (not api_key) so both auth paths — legacy api_key rows and
+// hub-JWT rows, which have NO api_key — resolve to the same map key.
 const connectedAgents = new Map();
 
 // Map of agent_id → { lines, ts } — last log tail an agent pushed on request.
@@ -101,9 +120,19 @@ function getApiKey(req) {
   }
 }
 
-// Forcibly drop a connected agent by api_key (used when it is disabled/rotated).
-function disconnectAgent(apiKey, reason) {
-  const ws = connectedAgents.get(apiKey);
+// Read a Bearer token from the Authorization header ONLY (never the legacy ?key=
+// query param — that path is api_key-exclusive). Used to try the hub-JWT path
+// before falling back to the legacy api_key lookup.
+function getBearerToken(req) {
+  const auth = req.headers && req.headers['authorization'];
+  if (auth && /^Bearer\s+/i.test(auth)) return auth.replace(/^Bearer\s+/i, '').trim();
+  return null;
+}
+
+// Forcibly drop a connected agent by local agents.id (used when it is
+// disabled/rotated/deleted, or when the hub revokes it). No-op if not connected.
+function disconnectAgent(agentId, reason) {
+  const ws = connectedAgents.get(agentId);
   if (ws) { try { ws.close(4003, reason || 'Disconnected'); } catch (_e) { /* ignore */ } }
 }
 
@@ -133,29 +162,76 @@ function startWsServer(port) {
 
   wss.on('connection', async (ws, req) => {
     let agent = null;
-    let apiKey = null;
+    // Local agents.id used as the connectedAgents map key + close-handler key.
+    // Both auth paths resolve to a local row, so agent.id is the common key.
+    let agentKey = null;
     try {
-      const keyInfo = getApiKey(req);
-      apiKey = keyInfo.key;
-      if (!apiKey) { ws.close(4001, 'No API key'); return; }
+      // ── Accept-both, JWT-first ──────────────────────────────────────────────
+      // Try the Authorization: Bearer token as a hub-signed agent JWT (local
+      // crypto, no DB). If it verifies AND its audience includes this app's
+      // module, take the JWT path; otherwise fall through to the legacy api_key
+      // path completely unchanged.
+      const bearer = getBearerToken(req);
+      const claims = bearer ? verifyHubAgentJwt(bearer) : null;
+      const aud = claims ? claims.modules.map((m) => String(m).toLowerCase()) : [];
+      const isSpanJwt = !!claims && (aud.indexOf('span') !== -1 || aud.indexOf('spanvault') !== -1);
 
-      const r = await sv.query('SELECT * FROM agents WHERE api_key = $1', [apiKey]);
-      if (!r.rows[0]) { ws.close(4003, 'Invalid API key'); return; }
-      agent = r.rows[0];
-      if (agent.disabled) {
-        console.log(`[WS] Rejected disabled agent: ${agent.name}`);
-        ws.close(4003, 'Agent disabled');
-        return;
-      }
-      if (keyInfo.legacy) {
-        console.warn(
-          `[WS] WARNING: agent "${agent.name}" (#${agent.id}) authenticated via the ` +
-          `deprecated ?key= URL query param, not the Authorization header. This agent ` +
-          `needs updating to a newer agent.js that sends the API key via header.`
+      if (isSpanJwt) {
+        // ── JWT PATH (hub identity) ──────────────────────────────────────────
+        // Honour hub revocation at connect: the signature alone can't see a
+        // hub-side revoke, so cross-check the NetVault agent registry. Any DB
+        // failure fails CLOSED (refuse) rather than silently skipping the check.
+        try {
+          const rev = await nv.query(
+            'SELECT 1 FROM agents WHERE id = $1 AND revoked_at IS NULL', [claims.agentId]);
+          if (!rev.rows[0]) { ws.close(4003, 'Agent revoked'); return; }
+        } catch (e) {
+          console.error(`[WS] JWT revocation check failed (NetVault DB) for ${claims.agentId}: ${e.message}`);
+          ws.close(4003, 'Agent revoked');
+          return;
+        }
+
+        // Auto-provision / link the local agents row by hub_agent_id. A first
+        // connect creates one row (api_key NULL, name = hub id until a heartbeat
+        // supplies the hostname); a reconnect resolves to the same row/id.
+        // api_key is set NULL EXPLICITLY: the column DEFAULT is
+        // gen_random_uuid()::text, so omitting it would mint a phantom, unused
+        // credential — plan decisions #3/#5 require JWT-provisioned rows to have
+        // no api_key.
+        const prov = await sv.query(
+          `INSERT INTO agents (hub_agent_id, name, status, api_key)
+             VALUES ($1, $1, 'online', NULL)
+           ON CONFLICT (hub_agent_id) DO UPDATE SET status = 'online'
+           RETURNING *`,
+          [claims.agentId]
         );
+        agent = prov.rows[0];
+        console.log(`[WS] Agent authenticated via hub JWT: ${agent.name} (#${agent.id}, hub=${claims.agentId})`);
+      } else {
+        // ── LEGACY api_key PATH (unchanged) ──────────────────────────────────
+        const keyInfo = getApiKey(req);
+        const apiKey = keyInfo.key;
+        if (!apiKey) { ws.close(4001, 'No API key'); return; }
+
+        const r = await sv.query('SELECT * FROM agents WHERE api_key = $1', [apiKey]);
+        if (!r.rows[0]) { ws.close(4003, 'Invalid API key'); return; }
+        agent = r.rows[0];
+        if (agent.disabled) {
+          console.log(`[WS] Rejected disabled agent: ${agent.name}`);
+          ws.close(4003, 'Agent disabled');
+          return;
+        }
+        if (keyInfo.legacy) {
+          console.warn(
+            `[WS] WARNING: agent "${agent.name}" (#${agent.id}) authenticated via the ` +
+            `deprecated ?key= URL query param, not the Authorization header. This agent ` +
+            `needs updating to a newer agent.js that sends the API key via header.`
+          );
+        }
       }
 
-      connectedAgents.set(apiKey, ws);
+      agentKey = agent.id;
+      connectedAgents.set(agentKey, ws);
 
       // remoteAddress may be IPv6-mapped (::ffff:1.2.3.4) — strip the prefix.
       const ip = String(req.socket.remoteAddress || '').replace(/^::ffff:/, '');
@@ -184,11 +260,11 @@ function startWsServer(port) {
     ws.on('close', async () => {
       // If the agent already reconnected on a new socket, the map points at that
       // newer socket — do NOT evict it or mark devices offline for a stale close.
-      if (connectedAgents.get(apiKey) !== ws) {
+      if (connectedAgents.get(agentKey) !== ws) {
         console.log(`[WS] Stale socket closed for ${agent.name}; live connection retained`);
         return;
       }
-      connectedAgents.delete(apiKey);
+      connectedAgents.delete(agentKey);
       try {
         await sv.query(`UPDATE agents SET status='offline', updated_at=NOW() WHERE id=$1`, [agent.id]);
         await sv.query(`UPDATE monitored_devices SET current_status='agent_offline' WHERE agent_id=$1`, [agent.id]);
@@ -364,22 +440,18 @@ async function handleSnmpBatch(agent, msg) {
   } catch (_e) { /* skip custom sensors if table un-migrated */ }
 }
 
-// Push fresh config to an agent by id, if it is currently connected.
+// Push fresh config to an agent by local id, if it is currently connected. The
+// live-socket map is keyed by local agents.id, so this works for both api_key and
+// hub-JWT agents (the latter have no api_key to look up).
 async function pushConfigToAgentId(agentId) {
-  const r = await sv.query(`SELECT api_key FROM agents WHERE id=$1`, [agentId]);
-  const key = r.rows[0] && r.rows[0].api_key;
-  if (!key) return;
-  const ws = connectedAgents.get(key);
+  const ws = connectedAgents.get(agentId);
   if (ws) await pushConfigToAgent(ws, agentId);
 }
 
-// Send an arbitrary control message to a connected agent by id. Returns whether
-// the agent was online to receive it (e.g. a "discover" command).
+// Send an arbitrary control message to a connected agent by local id. Returns
+// whether the agent was online to receive it (e.g. a "discover" command).
 async function sendToAgentId(agentId, msg) {
-  const r = await sv.query(`SELECT api_key FROM agents WHERE id=$1`, [agentId]);
-  const key = r.rows[0] && r.rows[0].api_key;
-  if (!key) return false;
-  const ws = connectedAgents.get(key);
+  const ws = connectedAgents.get(agentId);
   if (ws && ws.readyState === 1) { ws.send(JSON.stringify(msg)); return true; }
   return false;
 }
@@ -388,17 +460,27 @@ async function handleAgentMessage(agent, msg) {
   if (!msg || typeof msg !== 'object') return;
   switch (msg.type) {
     case 'heartbeat':
+      // For a hub-JWT agent whose name is still its placeholder hub id, adopt the
+      // reported hostname the first time one arrives. The `hub_agent_id IS NOT
+      // NULL AND name = hub_agent_id` guard makes this a strict no-op for legacy
+      // api_key agents (hub_agent_id NULL) and for any JWT agent already renamed.
       if (await hasHealthCol()) {
         await sv.query(
           `UPDATE agents SET last_seen_at=NOW(), status='online',
-             version=$2, hostname=$3, health=$4, updated_at=NOW() WHERE id=$1`,
+             version=$2, hostname=$3, health=$4,
+             name=CASE WHEN hub_agent_id IS NOT NULL AND name=hub_agent_id AND $3 IS NOT NULL
+                       THEN $3 ELSE name END,
+             updated_at=NOW() WHERE id=$1`,
           [agent.id, msg.version || null, msg.hostname || null,
            msg.health ? JSON.stringify(msg.health) : null]
         );
       } else {
         await sv.query(
           `UPDATE agents SET last_seen_at=NOW(), status='online',
-             version=$2, hostname=$3, updated_at=NOW() WHERE id=$1`,
+             version=$2, hostname=$3,
+             name=CASE WHEN hub_agent_id IS NOT NULL AND name=hub_agent_id AND $3 IS NOT NULL
+                       THEN $3 ELSE name END,
+             updated_at=NOW() WHERE id=$1`,
           [agent.id, msg.version || null, msg.hostname || null]
         );
       }

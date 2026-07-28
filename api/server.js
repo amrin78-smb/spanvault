@@ -36,6 +36,11 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.84.0': [
+    'NocVault Agents Phase 3 — SpanVault now accepts the hub-signed agent identity on its agent WebSocket, so an agent enrolled once at the NetVault hub can connect here with no separate SpanVault API key. This is accept-both: existing agents using their SpanVault API key keep working exactly as before (the key path is unchanged), so nothing in the live fleet breaks — new/hub-enrolled agents just use the hub identity instead.',
+    'A hub-enrolled agent is auto-linked to a single SpanVault agent record (new agents.hub_agent_id column) on first connect, so one physical agent shows up in one place for site assignment instead of as two disconnected entries. Its hostname is adopted from the first heartbeat.',
+    'Hub revocation is honoured: on connect, a hub-identity agent is checked against the NetVault agent registry and refused if revoked (fails closed on any lookup error), and a new loopback endpoint lets the hub drop a revoked agent\'s live session immediately rather than waiting for the next reconnect.',
+  ],
   '1.83.19': [
     'Fixed a fresh-install blocker in scripts/schema.sql: three "ALTER TABLE wireless_clients ADD COLUMN" statements (phy_mode, vlan_id, os_type) were placed ABOVE the "CREATE TABLE wireless_clients" that defines the table. On a fresh install the ALTERs ran first and errored with "relation wireless_clients does not exist", aborting the whole suite install (under psql -v ON_ERROR_STOP=1). It only ever passed on an already-provisioned database where the table already existed -- which is why it was never caught until a genuine clean install. The three ALTERs are moved to sit right after the CREATE TABLE, alongside the other wireless_clients column additions. Also scanned the entire schema for every other statement of this class (any ALTER/index/trigger/insert/foreign-key/view that references a table or column before it is created) and found none -- this was the only one.',
   ],
@@ -1048,6 +1053,28 @@ app.post('/api/internal/agents/push-config', requireLoopback, (req, res) => {
     .catch((e) => {
       console.error('[internal] push-config error:', e.message);
       res.status(500).json({ error: 'push failed' });
+    });
+});
+
+// Called by the NocVault hub when it revokes an agent, to actively kick that
+// agent's LIVE SpanVault WebSocket session (the connect-time revocation check
+// only refuses the NEXT connect). Body: { hub_agent_id }. Resolves the local
+// agents row by hub_agent_id and drops its socket by local id. A no-op 200 if
+// the agent isn't currently connected (or isn't linked here). Loopback-gated +
+// registered ahead of enforceLicense/RBAC, same as push-config above: this is a
+// same-host service call with no user session and no config change.
+app.post('/api/internal/agents/disconnect', requireLoopback, (req, res) => {
+  const hubId = req.body && req.body.hub_agent_id;
+  if (!hubId) return res.status(400).json({ error: 'hub_agent_id is required' });
+  sv.query(`SELECT id FROM agents WHERE hub_agent_id = $1`, [hubId])
+    .then((r) => {
+      const localId = r.rows[0] && r.rows[0].id;
+      if (localId != null) { try { disconnectAgent(localId, 'Agent revoked'); } catch (_e) { /* ignore */ } }
+      res.json({ ok: true, disconnected: localId != null });
+    })
+    .catch((e) => {
+      console.error('[internal] disconnect error:', e.message);
+      res.status(500).json({ error: 'disconnect failed' });
     });
 });
 
@@ -3283,13 +3310,13 @@ app.put('/api/agents/:id', wrap(async (req, res) => {
 // connected it is dropped and must be re-installed with the new command.
 app.post('/api/agents/:id/rotate-key', wrap(async (req, res) => {
   const id = parseInt(req.params.id, 10);
-  const cur = await sv.query(`SELECT api_key FROM agents WHERE id = $1`, [id]);
+  const cur = await sv.query(`SELECT id FROM agents WHERE id = $1`, [id]);
   if (!cur.rows[0]) return res.status(404).json({ error: 'Agent not found' });
-  const oldKey = cur.rows[0].api_key;
   const r = await sv.query(
     `UPDATE agents SET api_key = gen_random_uuid()::text, status = 'never_connected',
        updated_at = NOW() WHERE id = $1 RETURNING *`, [id]);
-  try { disconnectAgent(oldKey, 'Key rotated'); } catch (_e) { /* ignore */ }
+  // connectedAgents is keyed by local agents.id (not api_key) — drop by id.
+  try { disconnectAgent(id, 'Key rotated'); } catch (_e) { /* ignore */ }
   const serverUrl = getServerUrl(req);
   res.json({ ...r.rows[0], install_command: installCommand(serverUrl, r.rows[0].api_key) });
 }));
@@ -3306,7 +3333,8 @@ app.post('/api/agents/:id/disabled', wrap(async (req, res) => {
     `UPDATE agents SET disabled = $2, updated_at = NOW() WHERE id = $1 RETURNING *`, [id, disabled]);
   if (!r.rows[0]) return res.status(404).json({ error: 'Agent not found' });
   if (disabled) {
-    try { disconnectAgent(r.rows[0].api_key, 'Agent disabled'); } catch (_e) { /* ignore */ }
+    // connectedAgents is keyed by local agents.id (not api_key) — drop by id.
+    try { disconnectAgent(id, 'Agent disabled'); } catch (_e) { /* ignore */ }
     await sv.query(`UPDATE agents SET status = 'offline' WHERE id = $1`, [id]);
     await sv.query(`UPDATE monitored_devices SET current_status = 'agent_offline' WHERE agent_id = $1`, [id]);
   }
@@ -3317,13 +3345,13 @@ app.post('/api/agents/:id/disabled', wrap(async (req, res) => {
 // FK), and any lingering 'agent_offline' status is reset so the collector repolls.
 app.delete('/api/agents/:id', wrap(async (req, res) => {
   const id = parseInt(req.params.id, 10);
-  const cur = await sv.query(`SELECT api_key FROM agents WHERE id = $1`, [id]);
-  const oldKey = cur.rows[0] && cur.rows[0].api_key;
   await sv.query(
     `UPDATE monitored_devices SET current_status = 'unknown', updated_at = NOW()
       WHERE agent_id = $1 AND current_status = 'agent_offline'`, [id]);
   await sv.query(`DELETE FROM agents WHERE id = $1`, [id]);
-  if (oldKey) { try { disconnectAgent(oldKey, 'Agent deleted'); } catch (_e) { /* ignore */ } }
+  // connectedAgents is keyed by local agents.id (not api_key), so drop by id —
+  // this also covers hub-JWT agents, which have no api_key. No-op if not connected.
+  try { disconnectAgent(id, 'Agent deleted'); } catch (_e) { /* ignore */ }
   res.json({ ok: true });
 }));
 

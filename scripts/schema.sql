@@ -324,6 +324,22 @@ ALTER TABLE agents ADD COLUMN IF NOT EXISTS disabled BOOLEAN NOT NULL DEFAULT FA
 -- shipped on each heartbeat.
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS health JSONB;
 
+-- ── Phase 3: identity reconciliation (link to the NocVault hub registry) ──────
+-- One physical agent = one identity. A hub-enrolled agent presents a hub-signed
+-- JWT (sub = the hub's opaque agent id, "agt_…") on the WebSocket data plane
+-- instead of a locally-minted api_key. hub_agent_id links this SpanVault row to
+-- netvault.agents.id; the WS server matches (or auto-provisions) a row by it.
+-- Legacy api_key agents keep their key and a NULL hub_agent_id. UNIQUE ignores
+-- NULLs, so many legacy rows can coexist. Additive + idempotent (safe on a
+-- populated DB). No forward ref: placed right after the agents CREATE, before any
+-- FK/grant/view that could reference the column (the tail readonly column-grant
+-- on agents lists hub_agent_id explicitly).
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS hub_agent_id TEXT UNIQUE;
+-- JWT-provisioned agents have no api_key, so it can no longer be NOT NULL.
+-- Existing keyed rows keep their value; the column stays UNIQUE (ignores NULLs).
+-- DROP NOT NULL is a no-op if already nullable, so this is idempotent.
+ALTER TABLE agents ALTER COLUMN api_key DROP NOT NULL;
+
 -- Site assignments: every device in an assigned site is polled by this agent.
 CREATE TABLE IF NOT EXISTS agent_sites (
   agent_id  INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
@@ -1591,7 +1607,7 @@ BEGIN
     REVOKE SELECT ON agents FROM nocvault_readonly;
     GRANT SELECT (
       id, name, status, version, ip_address, hostname, last_seen_at,
-      connected_at, created_at, updated_at, disabled, health
+      connected_at, created_at, updated_at, disabled, health, hub_agent_id
     ) ON agents TO nocvault_readonly;
 
     REVOKE SELECT ON agent_discovered_devices FROM nocvault_readonly;
@@ -1615,7 +1631,7 @@ BEGIN
     REVOKE SELECT ON agents FROM claude_readonly;
     GRANT SELECT (
       id, name, status, version, ip_address, hostname, last_seen_at,
-      connected_at, created_at, updated_at, disabled, health
+      connected_at, created_at, updated_at, disabled, health, hub_agent_id
     ) ON agents TO claude_readonly;
 
     REVOKE SELECT ON agent_discovered_devices FROM claude_readonly;

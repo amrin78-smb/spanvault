@@ -26,6 +26,7 @@ deliberately skip it).
 
 ## Internal (loopback only, bypasses frontend proxy entirely)
 - `POST /api/internal/agents/push-config` [loopback] [db] — collector notifies API to re-push agent config after a site reassignment; registered before enforceLicense/RBAC so it works during license grace/disabled
+- `POST /api/internal/agents/disconnect` [loopback] [db] — hub calls this on agent revoke to actively kick a live WS session; body {hub_agent_id} → resolves local agents.id → disconnectAgent; no-op 200 if not connected/linked; registered before enforceLicense/RBAC (Phase 3)
 
 ## Agent bootstrap files (unauthenticated — no session possible pre-install)
 - `GET /api/agent/install.ps1` [public] — serves the agent installer script

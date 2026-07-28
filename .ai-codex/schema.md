@@ -29,7 +29,7 @@ Format: `TableName  id(PK,type) | col(type,constraints) | col — FK -> OtherTab
 - `app_settings`  key(PK,TEXT) | value(TEXT) — freeform key/value incl. wireless alert thresholds (14 keys seeded, see gotchas.md), SMTP config, retention windows | `smtp_pass` [SENSITIVE] — row-level excluded from readonly roles via `app_settings_public` view (key NOT IN ('smtp_pass')), see Privilege notes; the app itself always reads/writes the real table as `spanvault_user`, unaffected
 
 ## Distributed polling agents
-- `agents`  id(PK,SERIAL) | name,api_key(UNIQUE,default gen_random_uuid()) [SENSITIVE — column-level readonly exclusion, see Privilege notes],status,version,ip_address,hostname,last_seen_at,connected_at,created_at,updated_at | disabled | health(JSONB — self-reported cpu/mem/disk/uptime/buffer depth)
+- `agents`  id(PK,SERIAL) | name,api_key(UNIQUE, NULLABLE since Phase 3 — default gen_random_uuid(); NULL for hub-JWT agents) [SENSITIVE — column-level readonly exclusion, see Privilege notes],status,version,ip_address,hostname,last_seen_at,connected_at,created_at,updated_at | disabled | health(JSONB — self-reported cpu/mem/disk/uptime/buffer depth) | hub_agent_id(TEXT UNIQUE — Phase 3, links to netvault.agents.id "agt_…" for hub-JWT agents; NULL for legacy api_key agents)
 - `agent_sites`  PK(agent_id,site_id) | agent_id — FK->agents CASCADE | site_id,site_name — soft-FK to netvault.sites
 - `agent_discovered_devices`  id(PK,SERIAL) | agent_id — FK->agents CASCADE | ip_address(UNIQUE w/ agent_id),sys_name,sys_descr,mac,vendor,snmp_ok,adopted,first_seen_at,last_seen_at | snmp_community [SENSITIVE — column-level readonly exclusion, see Privilege notes],snmp_version — carries the working creds found during discovery so adoption doesn't guess public/2c
 
@@ -187,7 +187,7 @@ cast when joining/importing from netvault's `devices` table.
   Same column-level allowlist pattern as `wireless_controllers`, added to
   `scripts/schema.sql` right after that block: `monitored_devices` excludes
   `snmp_community`/`snmp_v3_auth_pass`/`snmp_v3_priv_pass` (28 of 31 columns
-  granted), `agents` excludes `api_key` (12 of 13 granted), `agent_discovered_devices`
+  granted), `agents` excludes `api_key` (13 of 14 granted — `hub_agent_id` added to the allowlist in Phase 3), `agent_discovered_devices`
   excludes `snmp_community` (12 of 13 granted) — all live-verified against
   `information_schema.columns` on 2026-07-23. `monitored_devices` is the widest-blast-
   radius fix of the four (every monitored device in the install, not just wireless gear).
