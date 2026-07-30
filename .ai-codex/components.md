@@ -7,7 +7,8 @@ importing them are already client components.
 
 ## Top-level (frontend/src/components/)
 - (c) `AgentStatusPill`  status (AgentBits.tsx)
-- (c) `AgentLogs`  agentId, online — log tail viewer + refresh (AgentBits.tsx)
+- (c) `AgentLogs`  agentId, online, hubEnrolled? — log tail viewer + refresh; when hubEnrolled (Phase 3, `hub_agent_id` set) renders a "managed by NocVault Hub" note + link instead of the local fetch button (AgentBits.tsx)
+- (fn) `getHubUrl`  window.location-derived hub base URL, same per-file-copy pattern as TopBar.tsx/LicenseGuard.tsx (AgentBits.tsx)
 - (c) `AgentHealth`  health, online — self-reported host health panel (AgentBits.tsx)
 - (c) `AlertBanner`  (no props) — global top-of-shell "X down · X warning" banner, polls /api/dashboard/summary every 30s
 - (c) `DeviceForm`  device, sites, initialSiteId?, onClose, onSaved — add/edit device modal

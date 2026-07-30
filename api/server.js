@@ -23,7 +23,7 @@ const topology = require('../collector/topology');
 const wireless = require('../collector/wirelessCollector');
 const { wirelessVendorFor } = require('../collector/wireless');
 const { computeCongestionScore } = require('../collector/wirelessScore');
-const { startWsServer, connectedAgents, agentLogs, pushConfigToAgent, pushConfigToAgentId, disconnectAgent, sendToAgentId, agentMeta } = require('./ws-server');
+const { startWsServer, connectedAgents, agentLogs, pushConfigToAgent, pushConfigToAgentId, disconnectAgent, sendToAgentId, agentMeta, mergeAgentRows } = require('./ws-server');
 const intelligence = require('./intelligence');
 const { getLicense, getLicenseState } = require('./licenseCheck');
 const reportScheduler = require('./reportScheduler');
@@ -36,6 +36,12 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.86.0': [
+    'Fixed a real bug in the Phase 3/4a hub-JWT migration: migrating an EXISTING SpanVault agent to hub-managed mode (swapping its local config to the hub identity and restarting) stranded the agent\'s old record -- with its real site assignment and monitoring history -- and auto-provisioned a brand-new, empty one from scratch, splitting one physical agent into two disconnected rows. The agent WebSocket server now auto-links a newly hub-authenticated connection to its existing record by hostname (the earliest identifying signal the protocol actually provides, arriving on the agent\'s first heartbeat) the moment a confident match is found, merging device assignments and history onto the original record instead of losing them.',
+    'Added an admin fallback for the cases the automatic hostname match can\'t confidently resolve on its own (a duplicate/ambiguous hostname, or a legacy record that hasn\'t reported one yet): a "Link to existing agent" action on the agent detail page lets an admin manually merge a hub-provisioned duplicate into the correct existing record.',
+    'Fixed a second issue from the same migration: a hub-managed agent showed two live, uncoordinated ways to trigger a restart or pull logs -- this app\'s own Restart/Fetch-logs buttons alongside the NetVault hub\'s own command queue -- with no indication which one would actually run. Those local actions now refuse (with a clear message) for a hub-managed agent and the UI shows a note pointing at the hub\'s Agents page instead; legacy (non-hub) agents are completely unaffected, since the local WebSocket remains their only reachable path.',
+    'The agent list (not just the detail page) can now tell a hub-managed agent apart from a legacy one at a glance (a new "Hub-managed" badge on each card), and bulk restart on the fleet list now skips hub-managed agents rather than silently attempting a restart that would never coordinate with the hub\'s own queue.',
+  ],
   '1.85.0': [
     'NocVault Agents Phase 4a — the SpanVault Agents page is slimmed now that the NetVault hub owns agent enrollment and identity. Removed the legacy "New Agent" flow (which minted a SpanVault API key + install command), the "Rotate key" action, and the "Install / Reconnect" panel — these only ever applied to legacy API-key agents; hub-enrolled agents are added from the NetVault hub\'s Agents page instead (an inline note points there). Site assignment, device discovery/adopt, restart, logs, disable and delete are unchanged.',
     'Security tidy-up: the agent API no longer returns the agent\'s api_key or install_command in any response (they were only used to render the now-removed install panel). The api_key column and the legacy API-key WebSocket handshake are intact, so existing key-based agents keep working unchanged.',
@@ -3176,8 +3182,14 @@ async function assignDeviceAgent(deviceId, siteId) {
 app.get('/api/agents', wrap(async (_req, res) => {
   const disCol = (await agentDisabledCol()) ? 'a.disabled' : 'FALSE AS disabled';
   const healthCol = (await agentColExists('health')) ? 'a.health' : 'NULL::jsonb AS health';
+  // hub_agent_id (Phase 3) lets the frontend tell a hub-enrolled agent apart
+  // from a legacy api_key agent in the LIST view too, not just the detail
+  // view (GET /api/agents/:id already returns it via SELECT *) — needed so
+  // the Restart/Fetch-logs UI (local WS push, meaningless for a hub-enrolled
+  // agent — see CLAUDE.md's Phase 3/4a section) can hide/disable itself and
+  // the bulk-restart action can skip hub-enrolled rows.
   const r = await sv.query(`
-    SELECT a.id, a.name, a.status, a.version, a.ip_address, a.hostname,
+    SELECT a.id, a.name, a.status, a.version, a.ip_address, a.hostname, a.hub_agent_id,
            a.last_seen_at, a.connected_at, a.created_at, ${disCol}, ${healthCol},
            (SELECT COUNT(*)::int FROM monitored_devices d WHERE d.agent_id = a.id) AS device_count,
            COALESCE((
@@ -3358,21 +3370,83 @@ app.post('/api/agents/:id/sites', wrap(async (req, res) => {
 }));
 
 // Remotely restart a connected agent (it exits; NSSM restarts the service).
+// Hub-enrolled agents (hub_agent_id set) are refused here — the hub owns
+// restart/logs for them via its own poll-carried command queue
+// (agent_commands), so a local WS push would be a second, uncoordinated way
+// to trigger the same action (see CLAUDE.md's Phase 3/4a section). This is
+// LOCAL-only (api_key) agents' ONLY restart path — they aren't hub-enrolled
+// and the hub has no session with them at all — so that path is unchanged.
 app.post('/api/agents/:id/restart', wrap(async (req, res) => {
   const id = parseInt(req.params.id, 10);
-  const exists = await sv.query(`SELECT id FROM agents WHERE id = $1`, [id]);
+  const exists = await sv.query(`SELECT id, hub_agent_id FROM agents WHERE id = $1`, [id]);
   if (!exists.rows[0]) return res.status(404).json({ error: 'Agent not found' });
+  if (exists.rows[0].hub_agent_id) {
+    return res.status(409).json({ error: 'This agent is managed by the NocVault Hub — restart it from the hub’s Agents page instead.' });
+  }
   const sent = await sendToAgentId(id, { type: 'restart' });
   if (!sent) return res.status(409).json({ error: 'Agent is offline.' });
   res.json({ ok: true });
 }));
 
 // Request a fresh log tail from the agent (it pushes a 'logs' message back).
+// Same hub-enrolled guard as restart above, same reasoning.
 app.post('/api/agents/:id/logs/refresh', wrap(async (req, res) => {
   const id = parseInt(req.params.id, 10);
+  const exists = await sv.query(`SELECT id, hub_agent_id FROM agents WHERE id = $1`, [id]);
+  if (!exists.rows[0]) return res.status(404).json({ error: 'Agent not found' });
+  if (exists.rows[0].hub_agent_id) {
+    return res.status(409).json({ error: 'This agent is managed by the NocVault Hub — fetch its logs from the hub’s Agents page instead.' });
+  }
   const sent = await sendToAgentId(id, { type: 'get_logs' });
   if (!sent) return res.status(409).json({ error: 'Agent is offline.' });
   res.json({ ok: true });
+}));
+
+// ── Manual link fallback (Phase 3 "duplicate row" fix, part 2) ─────────────
+// For when tryLinkAgentByHostname (ws-server.js) can't confidently auto-link
+// a hub-JWT-provisioned row on its own — an ambiguous/duplicate hostname
+// across legacy rows, or the legacy row hasn't reported a hostname yet. An
+// admin who recognizes two rows are the same physical agent (matching
+// hostname/IP/timing) merges them here.
+//
+// :id = the hub-JWT-provisioned DUPLICATE row (hub_agent_id set, api_key
+// NULL — an auto-provisioned row that should have linked to an existing one).
+// body.legacy_agent_id = the existing LEGACY row to merge INTO (api_key set,
+// hub_agent_id NULL). The legacy row always wins the id/history — it's the
+// one with the real device assignments and monitoring history; the
+// auto-provisioned duplicate is typically brand new and gets deleted. Same
+// admin-only RBAC as every other /api/agents/* write (ADMIN_ONLY_WRITE regex
+// above already matches /^\/api\/agents(\/|$)/).
+app.post('/api/agents/:id/link-legacy', wrap(async (req, res) => {
+  const dupId = parseInt(req.params.id, 10);
+  const legacyId = parseInt((req.body || {}).legacy_agent_id, 10);
+  if (!legacyId || isNaN(legacyId)) return res.status(400).json({ error: 'legacy_agent_id is required' });
+  if (legacyId === dupId) return res.status(400).json({ error: 'An agent cannot be linked to itself.' });
+
+  const dup = await sv.query(`SELECT id, hub_agent_id, api_key FROM agents WHERE id = $1`, [dupId]);
+  if (!dup.rows[0]) return res.status(404).json({ error: 'Agent not found' });
+  if (!dup.rows[0].hub_agent_id || dup.rows[0].api_key) {
+    return res.status(400).json({ error: 'This agent is not a hub-JWT-provisioned row (must have hub_agent_id and no api_key).' });
+  }
+  const legacy = await sv.query(`SELECT id, hub_agent_id, api_key FROM agents WHERE id = $1`, [legacyId]);
+  if (!legacy.rows[0]) return res.status(404).json({ error: 'Target legacy agent not found' });
+  if (legacy.rows[0].hub_agent_id || !legacy.rows[0].api_key) {
+    return res.status(400).json({ error: 'Target is not a legacy api_key agent (must have api_key and no hub_agent_id).' });
+  }
+
+  // Force-drop the duplicate's live socket (if connected) before merging, so
+  // the physical agent's own reconnect logic re-authenticates cleanly onto
+  // the now-linked legacy row (ws-server.js's `ON CONFLICT (hub_agent_id) DO
+  // UPDATE` resolves it directly) instead of this route trying to re-key a
+  // live in-memory connection out from under the WS server.
+  try { disconnectAgent(dupId, 'Merged into existing agent'); } catch (_e) { /* ignore */ }
+
+  const merged = await mergeAgentRows(legacyId, dupId, dup.rows[0].hub_agent_id);
+  console.log(
+    `[agents] Manually linked hub agent ${dup.rows[0].hub_agent_id} to legacy agent ` +
+    `#${legacyId} — duplicate row #${dupId} merged and removed`
+  );
+  res.json({ ok: true, agent: merged });
 }));
 
 // Return the most recent log tail the agent pushed (may be empty until refreshed).

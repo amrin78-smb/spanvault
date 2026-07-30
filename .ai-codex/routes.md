@@ -101,15 +101,16 @@ deliberately skip it).
 - `GET /api/netvault/sites` [auth] [db] — for map + filters
 
 ## Distributed polling agents
-- `GET /api/agents` [auth] [db] — all agents with device counts + assigned sites
+- `GET /api/agents` [auth] [db] — all agents with device counts + assigned sites; includes `hub_agent_id` (Phase 3, added so the list view — not just detail — can tell a hub-enrolled agent apart from a legacy one)
 - `GET /api/agents/:id` [auth] [db] — never returns api_key/install_command (legacy secret; hub owns enrollment, Phase 4)
 - `PUT /api/agents/:id` [auth+write:admin+] [db] — rename
 - `POST /api/agents/:id/disabled` [auth+write:admin+] [db] — disable/enable without deleting; drops live socket, refuses handshakes
 - NOTE: `POST /api/agents` (create) + `POST /api/agents/:id/rotate-key` REMOVED in Phase 4a — agent enrollment/api_key are now owned by the NetVault hub; SpanVault only binds sites (`/:id/sites`) + discovers devices for already-provisioned agents
+- `POST /api/agents/:id/link-legacy` [auth+write:admin+] [db] — Phase 3 "duplicate row" manual-link fallback: merges `:id` (a hub-JWT-provisioned duplicate row) into `body.legacy_agent_id` (an existing legacy api_key row), for cases the automatic hostname link in ws-server.js can't confidently resolve on its own (ambiguous/duplicate hostname, or no hostname reported yet); the legacy row keeps its id/history, the duplicate is deleted — see gotchas.md
 - `DELETE /api/agents/:id` [auth+write:admin+] [db] — devices fall back to local polling (agent_id -> NULL)
 - `POST /api/agents/:id/sites` [auth+write:admin+] [db] — replace site assignments + re-derive device ownership
-- `POST /api/agents/:id/restart` [auth+write:admin+] [external] — WS message; agent exits, NSSM restarts it
-- `POST /api/agents/:id/logs/refresh` [auth+write:admin+] [external] — WS request for fresh log tail
+- `POST /api/agents/:id/restart` [auth+write:admin+] [external] — WS message; agent exits, NSSM restarts it; refuses with 409 for a hub-enrolled agent (`hub_agent_id` set) — restart for those runs through the hub's own command queue, see gotchas.md
+- `POST /api/agents/:id/logs/refresh` [auth+write:admin+] [external] — WS request for fresh log tail; same hub-enrolled 409 refusal as restart above
 - `GET /api/agents/:id/logs` [auth] [db] — most recent pushed log tail (may be empty until refreshed)
 - `POST /api/agents/:id/discover` [auth+write:admin+] [external] — trigger subnet sweep on agent (must be online)
 - `GET /api/agents/:id/discovered` [auth] [db] — discovered candidates, flags already-monitored
@@ -259,11 +260,15 @@ deliberately skip it).
 - `POST /api/intelligence/baselines/recompute` [auth+write:admin+] [db] — manual full recompute (testing/refresh)
 
 ## WebSocket server (api/ws-server.js, port 3010, all interfaces — not HTTP routes)
-Not Express routes; a `ws` `WebSocketServer` remote agents connect to. Handshake auth
-via `Authorization` header (API key) or legacy URL param. Handles `message`/`close`/
-`error` per-socket. Exports `startWsServer`, `connectedAgents`, `agentLogs`,
-`pushConfigToAgentId`, `sendToAgentId`, `disconnectAgent`, `agentMeta` — consumed by
-`api/server.js` for the `/api/agents/*` routes above.
+Not Express routes; a `ws` `WebSocketServer` remote agents connect to. Handshake auth is
+accept-both (Phase 3): a hub-signed JWT (`Authorization: Bearer <jwt>`, verified locally via
+`agent-identity.js`) tried first, falling back to the legacy `api_key` (`Authorization` header
+or legacy URL param) unchanged. Handles `message`/`close`/`error` per-socket; the `message`
+handler also runs the auto-link-by-hostname check (see gotchas.md) on each agent's first
+`heartbeat`. Exports `startWsServer`, `connectedAgents`, `agentLogs`, `pushConfigToAgentId`,
+`sendToAgentId`, `disconnectAgent`, `agentMeta`, `mergeAgentRows` (Phase 3 — shared merge
+routine behind both the automatic hostname link and the admin `/api/agents/:id/link-legacy`
+manual fallback) — consumed by `api/server.js` for the `/api/agents/*` routes above.
 
 ## Next.js routes (frontend/src/app/api/)
 - `GET|POST /api/auth/[...nextauth]` [public bootstrap / auth thereafter] — NextAuth catch-all (`frontend/src/lib/auth.ts` authOptions); the ONLY real Next.js API route in this app — middleware explicitly never touches `/api/auth/*`

@@ -136,6 +136,117 @@ function disconnectAgent(agentId, reason) {
   if (ws) { try { ws.close(4003, reason || 'Disconnected'); } catch (_e) { /* ignore */ } }
 }
 
+// ── Phase 3 "duplicate row" fix ─────────────────────────────────────────────
+// docs/nocvault-agents-phase3-plan.md (the team's own migration design doc)
+// calls out this exact risk: a physical agent migrating from api_key to
+// hub-JWT auth connects with a NEW identity (the JWT's hub_agent_id) that has
+// no local row yet, so the naive "auto-provision by hub_agent_id" INSERT
+// strands the agent's OLD (api_key) row — orphaning its site assignment and
+// ping/snmp history — and starts a second, empty row from zero. The doc's own
+// suggested mitigation is two-part: (1) auto-link by matching a real signal
+// against the existing row, (2) an admin manual-link fallback for when that
+// signal is ambiguous or not yet available. Both are implemented here.
+
+// Merge two agents rows into one. `legacyId` (an existing api_key row) keeps
+// its id/history and gets `hubAgentId` stamped onto it; every row that
+// referenced `duplicateId` (a hub-JWT auto-provisioned row) is reassigned to
+// `legacyId`; `duplicateId` is then deleted. Shared by both the automatic
+// hostname-link below and the admin manual-link fallback
+// (POST /api/agents/:id/link-legacy in api/server.js) — one merge routine,
+// two ways to decide which two rows to feed it. Throws on failure (rolled
+// back); callers decide how to report that.
+async function mergeAgentRows(legacyId, duplicateId, hubAgentId) {
+  const client = await sv.connect();
+  try {
+    await client.query('BEGIN');
+    // Every table that carries an agents.id FK. Table names here are a fixed
+    // internal list (never user input) — safe to interpolate.
+    for (const table of [
+      'agent_sites', 'agent_discovered_devices', 'monitored_devices',
+      'ping_results', 'snmp_results', 'service_checks', 'alerts',
+    ]) {
+      await client.query(`UPDATE ${table} SET agent_id = $1 WHERE agent_id = $2`, [legacyId, duplicateId]);
+    }
+    const upd = await client.query(
+      `UPDATE agents SET hub_agent_id = $2, updated_at = NOW() WHERE id = $1 RETURNING *`,
+      [legacyId, hubAgentId]
+    );
+    if (!upd.rows[0]) throw new Error(`legacy agent #${legacyId} not found`);
+    await client.query(`DELETE FROM agents WHERE id = $1`, [duplicateId]);
+    await client.query('COMMIT');
+    return upd.rows[0];
+  } catch (e) {
+    try { await client.query('ROLLBACK'); } catch (_e2) { /* ignore */ }
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+// Try to auto-link a freshly auto-provisioned hub-JWT agent row to a matching
+// legacy (api_key) row, using the agent's reported hostname — the earliest
+// real identifying signal available for this connection. The JWT itself
+// carries none (the hub mints it before it has ever seen the agent's
+// hostname); the hostname only becomes known once the agent's first
+// `heartbeat` message arrives, sent immediately on WS open (agent/agent.js's
+// `ws.on('open', ...)` calls `sendHeartbeat()` before anything else) — so
+// this runs from the message handler, not the connect handler.
+//
+// Only eligible rows: `agent.hub_agent_id` set, `agent.api_key` NULL (a
+// hub-JWT row), and `agent.name === agent.hub_agent_id` — i.e. still carrying
+// its placeholder name, meaning it has never been linked, renamed, or already
+// hostname-adopted. That's the SAME guard the plain hostname-adoption CASE in
+// the 'heartbeat' handler below already uses, so this is naturally a one-shot
+// check per row: after either this link or the plain adoption renames it, the
+// guard trips and every later heartbeat short-circuits on a cheap string
+// comparison with no DB hit.
+//
+// Only merges on an UNAMBIGUOUS match (exactly one legacy row with that
+// hostname). Zero or multiple candidates leave both rows alone — the exact
+// case the admin manual-link fallback exists for. This is a real, accepted
+// limitation: two genuinely different hosts that happen to share a hostname
+// (or a legacy row whose hostname is stale/wrong) can still merge into the
+// wrong row. There is no stronger signal available in the current protocol
+// to disambiguate further (see the plan doc — no per-agent MAC/serial is
+// collected today).
+async function tryLinkAgentByHostname(agent, hostname) {
+  if (!hostname || !agent || !agent.hub_agent_id || agent.api_key) return null;
+  if (agent.name !== agent.hub_agent_id) return null;
+
+  try {
+    const cand = await sv.query(
+      `SELECT id, name FROM agents
+        WHERE api_key IS NOT NULL AND hub_agent_id IS NULL
+          AND hostname IS NOT NULL AND lower(hostname) = lower($1)`,
+      [hostname]
+    );
+    if (cand.rows.length !== 1) return null; // none or ambiguous — leave for admin manual-link
+    const legacy = cand.rows[0];
+    const provisionalId = agent.id;
+
+    const merged = await mergeAgentRows(legacy.id, provisionalId, agent.hub_agent_id);
+    // Stamp live-connection fields now that the merge landed on the legacy row
+    // (mergeAgentRows itself only touches hub_agent_id — it's shared with the
+    // admin path, which shouldn't force status/connected_at for an agent that
+    // may not currently be connected).
+    const r = await sv.query(
+      `UPDATE agents SET status = 'online', hostname = $2,
+          last_seen_at = NOW(), connected_at = NOW(), updated_at = NOW()
+        WHERE id = $1 RETURNING *`,
+      [merged.id, hostname]
+    );
+    console.log(
+      `[WS] Auto-linked hub agent ${agent.hub_agent_id} to existing legacy agent ` +
+      `"${legacy.name}" (#${legacy.id}, hostname="${hostname}") by hostname match — ` +
+      `provisional row #${provisionalId} merged and removed`
+    );
+    return r.rows[0];
+  } catch (e) {
+    console.error(`[WS] Auto-link by hostname failed for hub agent ${agent.hub_agent_id}:`, e.message);
+    return null;
+  }
+}
+
 function startWsServer(port) {
   // Optional TLS: if a cert + key are configured, terminate wss:// here. Otherwise
   // serve plain ws:// (expected on trusted LAN / behind a TLS-terminating proxy).
@@ -253,6 +364,26 @@ function startWsServer(port) {
     ws.on('message', async (raw) => {
       try {
         const msg = JSON.parse(raw);
+        // First real chance to auto-link a just-provisioned hub-JWT row to a
+        // matching legacy row (see tryLinkAgentByHostname above) — the
+        // heartbeat is the earliest message carrying a hostname. A no-op for
+        // legacy agents, already-linked/renamed rows, and no-match cases.
+        if (msg && msg.type === 'heartbeat' && msg.hostname) {
+          const linked = await tryLinkAgentByHostname(agent, msg.hostname);
+          if (linked) {
+            // Re-key the live socket + close-handler state onto the merged
+            // (legacy) row so every subsequent message/config push/close uses
+            // the correct identity for the rest of this connection.
+            connectedAgents.delete(agentKey);
+            agent = linked;
+            agentKey = linked.id;
+            connectedAgents.set(agentKey, ws);
+            // The connect-time config push above was for the brand-new
+            // provisional row (zero devices) — push the legacy row's real
+            // config now that the socket is correctly identified.
+            try { await pushConfigToAgent(ws, agentKey); } catch (_e) { /* best-effort */ }
+          }
+        }
         await handleAgentMessage(agent, msg);
       } catch (e) { console.error('[WS] Message error:', e.message); }
     });
@@ -616,4 +747,7 @@ async function handleAgentMessage(agent, msg) {
   }
 }
 
-module.exports = { startWsServer, connectedAgents, agentLogs, pushConfigToAgent, pushConfigToAgentId, disconnectAgent, sendToAgentId, agentMeta };
+module.exports = {
+  startWsServer, connectedAgents, agentLogs, pushConfigToAgent, pushConfigToAgentId,
+  disconnectAgent, sendToAgentId, agentMeta, mergeAgentRows,
+};

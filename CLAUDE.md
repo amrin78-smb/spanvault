@@ -222,6 +222,61 @@ agent WebSocket — leave blank for plain `ws://` on a trusted LAN/behind a
 proxy), `SV_NSSM_PATH` (nssm.exe path the server hands to the agent installer,
 defaults to NetVault's bundled copy).
 
+### Remote agents, Phase 3/4a — hub-JWT auth, `hub_agent_id`, and the restart/logs split
+SpanVault's agent WebSocket (`api/ws-server.js`) migrated from a standalone
+per-app `api_key` model to a **federated model**: the NocVault hub (NetVault)
+now owns agent identity/enrollment/lifecycle. The WS server accepts **either**
+auth on every connection — "accept-both", so an already-enrolled `api_key`
+agent never breaks:
+
+- **JWT path (hub-enrolled).** The agent presents `Authorization: Bearer
+  <hub-signed JWT>`. `api/agent-identity.js`'s `verifyHubAgentJwt()` verifies
+  it locally (HS256, shared `NEXTAUTH_SECRET` — no DB call) and checks the
+  JWT's `aud` includes `span`/`spanvault`. The connect handler then
+  cross-checks live revocation against NetVault's `agents.revoked_at` (a
+  signature check alone can't see a hub-side revoke) before proceeding.
+- **Legacy path (`api_key`).** Unchanged: `Authorization: Bearer <api_key>` or
+  the deprecated `?key=` query param, looked up in `spanvault.agents`.
+- **`agents.hub_agent_id`** (`TEXT UNIQUE`, nullable) is the link column: set
+  = a hub-enrolled row (`agents.api_key` is then NULL — the column is
+  nullable since Phase 3); NULL = a legacy row (still has an `api_key`). A
+  genuinely new hub-enrolled agent auto-provisions a row on its first JWT
+  connect (`hub_agent_id` = the hub's `sub`, `api_key` NULL).
+
+**Migrating an EXISTING `api_key` agent to hub-JWT mode is a "link", not a
+fresh provision** — swapping its local config to hub mode and restarting must
+NOT create a second, empty row while stranding the original (with its real
+site-assignment/history). This is fixed two ways (see
+`../netvault/docs/nocvault-agents-phase3-plan.md`'s own "duplicate row"
+section for the original design intent, and `.ai-codex/gotchas.md`'s
+"Distributed polling agents" entry for full mechanics):
+1. **Auto-link by hostname** (`tryLinkAgentByHostname()` in ws-server.js) —
+   runs on the agent's first `heartbeat` message (the earliest point a
+   hostname is known; the JWT itself carries none). An UNAMBIGUOUS hostname
+   match against an existing legacy row merges the two (`mergeAgentRows()`:
+   reassigns every FK'd row, stamps `hub_agent_id` onto the legacy row's id,
+   deletes the provisional duplicate) and re-keys the live socket onto the
+   merged row.
+2. **Admin manual-link fallback** — `POST /api/agents/:id/link-legacy`
+   (admin-only) + a "Link to existing agent" picker on the agent detail page
+   (shown only for a hub-enrolled row), for when the hostname match is
+   ambiguous or not yet available. Same `mergeAgentRows()` routine.
+
+**Restart/logs path split.** NetVault's hub ships its own poll-carried
+command queue (`agent_commands` table) for hub-enrolled agents; SpanVault also
+keeps its own WS-push Restart/Fetch-logs (`POST /api/agents/:id/restart`,
+`GET/POST /api/agents/:id/logs[/refresh]`) because **legacy (`api_key`-only)
+agents aren't hub-enrolled and can ONLY be reached this way**. For a
+hub-enrolled agent, both paths existing live and undifferentiated would be two
+uncoordinated ways to trigger the same action with no way to tell which one
+ran — so `restart`/`logs/refresh` now 409 for a `hub_agent_id`-set agent
+server-side, and the UI (both agent pages) disables/hides the local
+restart/logs controls for a hub-enrolled row with a note pointing at the
+hub's Agents page instead; legacy agents are completely unaffected. `GET
+/api/agents` (the list route) now includes `hub_agent_id` in its column
+whitelist (previously only the detail route did) so the list view can make
+the same distinction, not just the detail view.
+
 ### `testController`'s "dry run" is NOT write-free for API controllers with rotating credentials
 `collector/wirelessCollector.js`'s `testController(pool, controller)` (the
 "Test Connection" button's handler) is commented as a dry-run — no DB writes —

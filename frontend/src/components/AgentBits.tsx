@@ -10,6 +10,18 @@ const STALE_DISCOVERY_MS = 7 * 86400 * 1000;
 
 type Site = { id: number; name: string };
 
+// Hub URL — derived from the current page's own hostname, matching the same
+// pattern used by TopBar.tsx / LicenseGuard.tsx / sso/page.tsx (each keeps
+// its own small copy rather than a shared export — see CLAUDE.md's "no
+// hardcoded IPs" section). Only ever rendered client-side (agent pages are
+// 'use client'), so there's no SSR/hydration mismatch risk in practice.
+export function getHubUrl(): string {
+  if (typeof window !== 'undefined') {
+    return `${window.location.protocol}//${window.location.hostname}:3000`;
+  }
+  return process.env.NEXT_PUBLIC_NOCVAULT_HUB_URL || 'http://localhost:3000';
+}
+
 // ── Status pill (online / offline / never connected) ───────────
 export function AgentStatusPill({ status }: { status: string }) {
   const s = (status || 'never_connected').toLowerCase();
@@ -19,7 +31,11 @@ export function AgentStatusPill({ status }: { status: string }) {
 }
 
 // ── Live log tail (pulled on demand from the agent) ────────────
-export function AgentLogs({ agentId, online }: { agentId: number; online: boolean }) {
+// hubEnrolled: true for a hub-JWT agent (hub_agent_id set) — its logs are
+// pulled from the NetVault hub's own command queue, not this app's local WS
+// request/response, so the fetch button is replaced with a note instead of
+// being wired to a call the API now refuses server-side anyway.
+export function AgentLogs({ agentId, online, hubEnrolled }: { agentId: number; online: boolean; hubEnrolled?: boolean }) {
   const [polling, setPolling] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const logs = useApi<{ lines: string[]; ts: number | null }>(
@@ -35,6 +51,17 @@ export function AgentLogs({ agentId, online }: { agentId: number; online: boolea
     } catch (e: any) {
       setMsg(e?.message || 'Failed to request logs.');
     }
+  }
+
+  if (hubEnrolled) {
+    return (
+      <p className="sv-muted" style={{ fontSize: 'var(--text-base)', margin: 0 }}>
+        Managed by NocVault Hub — this agent's logs are pulled from{' '}
+        <a href={`${getHubUrl()}/agents`} target="_blank" rel="noreferrer" style={{ color: 'var(--primary)' }}>
+          NetVault Hub → Agents
+        </a>, not this page.
+      </p>
+    );
   }
 
   const lines = logs.data?.lines || [];

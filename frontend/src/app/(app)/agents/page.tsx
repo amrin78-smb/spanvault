@@ -15,6 +15,11 @@ type AgentSite = { site_id: number; site_name: string | null };
 export type Agent = {
   id: number; name: string; status: string; version: string | null;
   ip_address: string | null; hostname: string | null; disabled?: boolean;
+  // hub_agent_id (Phase 3): set for an agent enrolled via the NetVault hub
+  // (hub-signed JWT auth on the WS data plane), null for a legacy api_key
+  // agent. Hub-enrolled agents' restart/logs are driven by the hub's own
+  // command queue, not this app's local WS push — see CLAUDE.md.
+  hub_agent_id?: string | null;
   last_seen_at: string | null; connected_at: string | null; created_at: string;
   device_count: number; sites: AgentSite[];
   health?: AgentHealthData; latest_agent_version?: string | null;
@@ -87,7 +92,7 @@ export default function AgentsPage() {
   // summarizes success/failure as one toast (used by bulk restart — there is no
   // bulk-specific backend endpoint, this just loops the same POST
   // /api/agents/:id/... route the single-agent detail page already uses).
-  async function runBulk(ids: number[], action: (id: number) => Promise<any>, verbPast: string) {
+  async function runBulk(ids: number[], action: (id: number) => Promise<any>, verbPast: string, note = '') {
     let ok = 0;
     const failures: string[] = [];
     for (const id of ids) {
@@ -102,21 +107,35 @@ export default function AgentsPage() {
     setSelected(new Set());
     agents.reload();
     if (failures.length) {
-      toast(`${verbPast} ${ok} of ${ids.length} — ${failures.join('; ')}`, 'err');
+      toast(`${verbPast} ${ok} of ${ids.length}${note} — ${failures.join('; ')}`, 'err');
     } else {
-      toast(`${verbPast} ${ok} of ${ids.length} agent${ids.length === 1 ? '' : 's'}`, 'ok');
+      toast(`${verbPast} ${ok} of ${ids.length} agent${ids.length === 1 ? '' : 's'}${note}`, 'ok');
     }
   }
 
+  // Hub-enrolled agents (hub_agent_id set) are restarted from the NetVault
+  // hub's own command queue, not this app's local WS push (see CLAUDE.md's
+  // Phase 3/4a section) — skip them from the bulk action rather than sending
+  // a local restart the hub-managed agent doesn't need (and the API now
+  // refuses server-side anyway; filtering here keeps the confirm dialog and
+  // result toast honest about what actually happened).
   async function bulkRestart() {
     const ids = Array.from(selected);
+    const hubManaged = ids.filter((id) => list.find((a) => a.id === id)?.hub_agent_id);
+    const restartable = ids.filter((id) => !hubManaged.includes(id));
+    if (!restartable.length) {
+      toast(`All ${ids.length} selected agent(s) are hub-managed — restart them from NetVault Hub → Agents instead.`, 'err');
+      return;
+    }
     if (!await confirm({
-      title: `Restart ${ids.length} agent(s)?`,
-      message: `Restart the ${ids.length} selected agent(s)? Each will briefly disconnect and reconnect within a few seconds.`,
+      title: `Restart ${restartable.length} agent(s)?`,
+      message: `Restart the ${restartable.length} selected agent(s)? Each will briefly disconnect and reconnect within a few seconds.` +
+        (hubManaged.length ? ` ${hubManaged.length} of your ${ids.length} selected agent(s) are hub-managed and will be skipped — restart those from NetVault Hub → Agents.` : ''),
       confirmLabel: 'Restart',
       danger: true,
     })) return;
-    await runBulk(ids, (id) => apiSend(`/api/agents/${id}/restart`, 'POST', {}), 'Restarted');
+    const note = hubManaged.length ? ` (${hubManaged.length} hub-managed agent(s) skipped — use NetVault Hub → Agents)` : '';
+    await runBulk(restartable, (id) => apiSend(`/api/agents/${id}/restart`, 'POST', {}), 'Restarted', note);
   }
 
   // Agents management is admin-only — bounce view-only roles to the dashboard.
@@ -366,6 +385,17 @@ function AgentCard({ agent, onDelete, selected, onToggleSelect }: {
             }}
           >
             Disabled
+          </span>
+        )}
+        {agent.hub_agent_id && (
+          <span
+            title="Enrolled via the NetVault hub — restart and logs run from the hub's Agents page"
+            style={{
+              fontSize: 'var(--text-xs)', color: 'var(--tint-info-fg)', background: 'var(--tint-info)',
+              borderRadius: 'var(--radius-sm)', padding: '1px 7px', flex: 'none', whiteSpace: 'nowrap',
+            }}
+          >
+            Hub-managed
           </span>
         )}
         <span

@@ -10,9 +10,13 @@ import {
 } from '@/components/ui';
 import { IconWarning } from '@/components/icons';
 import { StatusDot } from '@/components/StatusDot';
-import { AgentStatusPill, AgentDiscovery, AgentHealth, AgentHealthData, AgentLogs, SiteMultiSelect } from '@/components/AgentBits';
+import { AgentStatusPill, AgentDiscovery, AgentHealth, AgentHealthData, AgentLogs, SiteMultiSelect, getHubUrl } from '@/components/AgentBits';
 
 type AgentSite = { site_id: number; site_name: string | null };
+// Minimal shape needed for the "link to legacy agent" picker below — a local
+// type rather than importing the full Agent type from the list page (this
+// file's convention is self-contained local types, e.g. AgentDetail below).
+type AgentListItem = { id: number; name: string; hostname: string | null; hub_agent_id?: string | null };
 type AgentDevice = {
   id: number; name: string; ip_address: string; device_type: string | null;
   site_id: number | null; site_name: string | null; current_status: string;
@@ -25,6 +29,9 @@ type AgentServiceCheck = {
 type AgentDetail = {
   id: number; name: string; status: string; version: string | null;
   ip_address: string | null; hostname: string | null; disabled?: boolean;
+  // hub_agent_id (Phase 3): set for a hub-enrolled agent — see the Agent type
+  // in agents/page.tsx and CLAUDE.md's Phase 3/4a section for the full model.
+  hub_agent_id?: string | null;
   last_seen_at: string | null; connected_at: string | null; created_at: string;
   sites: AgentSite[]; devices: AgentDevice[]; service_checks: AgentServiceCheck[];
   health?: AgentHealthData; latest_agent_version?: string | null;
@@ -70,6 +77,14 @@ export default function AgentDetailPage({ params }: { params: { id: string } }) 
   const agent = useApi<AgentDetail>(`/api/agents/${params.id}`, 15000);
   const sites = useApi<Site[]>('/api/netvault/sites');
   const [editSites, setEditSites] = useState(false);
+  const [linking, setLinking] = useState(false);
+  const [linkTarget, setLinkTarget] = useState<number | ''>('');
+  const [linkSaving, setLinkSaving] = useState(false);
+  // Only fetched while the "Link to legacy agent" picker is open — this is a
+  // hub-JWT-provisioned-row-only admin action (see the manual-link fallback
+  // note in ws-server.js/server.js), so there's no reason to pull the whole
+  // fleet list on every detail-page load.
+  const allAgents = useApi<AgentListItem[]>(linking ? '/api/agents' : null);
 
   useRefreshKey(() => agent.reload());
 
@@ -125,6 +140,32 @@ export default function AgentDetailPage({ params }: { params: { id: string } }) 
     }
   }
 
+  // Manual-link fallback (Phase 3 "duplicate row" fix, part 2): merges THIS
+  // row (a hub-JWT-provisioned duplicate) into an admin-chosen legacy row —
+  // for the ambiguous/no-hostname-yet cases ws-server.js's automatic
+  // hostname link can't resolve on its own. The legacy row keeps its
+  // id/history; this row is deleted, so we navigate to the legacy row after.
+  async function handleLink() {
+    if (!agent.data || linkTarget === '') return;
+    if (!await confirm({
+      title: 'Link to existing agent?',
+      message: `Merge "${agent.data.name}" into the selected legacy agent? The legacy agent keeps its ` +
+        `history and site assignment and is stamped with this agent's hub identity; this duplicate row ` +
+        `is deleted.`,
+      confirmLabel: 'Link & Merge',
+      danger: true,
+    })) return;
+    setLinkSaving(true);
+    try {
+      await apiSend(`/api/agents/${params.id}/link-legacy`, 'POST', { legacy_agent_id: linkTarget });
+      toast('Agents linked — redirecting to the merged agent…', 'ok');
+      router.push(`/agents/${linkTarget}`);
+    } catch (e: any) {
+      toast(e?.message || 'Link failed', 'err');
+      setLinkSaving(false);
+    }
+  }
+
   if (agent.error) return <ErrorBox message={agent.error} />;
   if (agent.loading && !agent.data) return <Loading label="Loading agent…" />;
   const a = agent.data;
@@ -143,7 +184,14 @@ export default function AgentDetailPage({ params }: { params: { id: string } }) 
         <AgentStatusPill status={a.status} />
         <Link href="/agents" className="sv-btn ghost">← Back to Agents</Link>
         <button className="sv-btn ghost" onClick={handleRename}>Rename</button>
-        <button className="sv-btn ghost" onClick={handleRestart} disabled={a.status !== 'online'}>Restart</button>
+        <button
+          className="sv-btn ghost"
+          onClick={handleRestart}
+          disabled={a.status !== 'online' || !!a.hub_agent_id}
+          title={a.hub_agent_id ? 'Managed by NocVault Hub — restart from the hub\'s Agents page' : undefined}
+        >
+          Restart
+        </button>
         <button className="sv-btn ghost" onClick={handleToggleDisabled}>
           {a.disabled ? 'Enable Agent' : 'Disable Agent'}
         </button>
@@ -157,6 +205,57 @@ export default function AgentDetailPage({ params }: { params: { id: string } }) 
             This agent is <strong>disabled</strong> — its connection is refused and its devices are not being polled.
             Use <strong>Enable Agent</strong> to restore it.
           </span>
+        </div>
+      )}
+
+      {/* Hub-enrolled note — restart/logs run from the hub's own command queue,
+          not this app's local WS push (see CLAUDE.md's Phase 3/4a section).
+          Also carries the manual-link fallback for the "duplicate row" case:
+          this row is a hub-JWT auto-provisioned agent that ws-server.js's
+          automatic hostname link couldn't confidently match to an existing
+          legacy row — an admin can pick one here. */}
+      {a.hub_agent_id && (
+        <div style={{ ...CARD_STYLE, borderLeft: '3px solid var(--tint-info-fg)', marginBottom: 12, fontSize: 'var(--text-base)' }}>
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+            <IconWarning width={16} height={16} style={{ flexShrink: 0, marginTop: 2, color: 'var(--tint-info-fg)' }} />
+            <span>
+              This agent is <strong>managed by the NocVault Hub</strong> — restart and log fetch run from{' '}
+              <a href={`${getHubUrl()}/agents`} target="_blank" rel="noreferrer" style={{ color: 'var(--primary)' }}>
+                NetVault Hub → Agents
+              </a>, not the buttons on this page. If this row is a duplicate of an existing legacy agent
+              (e.g. it appeared after migrating that agent to the hub), you can merge them below.
+            </span>
+          </div>
+          {!linking ? (
+            <div style={{ marginTop: 10 }}>
+              <button className="sv-btn ghost sm" onClick={() => setLinking(true)}>Link to existing agent…</button>
+            </div>
+          ) : (
+            <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <select
+                className="sv-select"
+                value={linkTarget}
+                onChange={(e) => setLinkTarget(e.target.value ? parseInt(e.target.value, 10) : '')}
+                style={{ height: 32, padding: '0 8px', fontSize: 'var(--text-base)', minWidth: 220 }}
+              >
+                <option value="">Select the legacy agent to merge into…</option>
+                {(allAgents.data || [])
+                  .filter((x) => x.id !== a.id && !x.hub_agent_id)
+                  .map((x) => (
+                    <option key={x.id} value={x.id}>{x.name} {x.hostname ? `(${x.hostname})` : ''}</option>
+                  ))}
+              </select>
+              <button className="sv-btn sm" onClick={handleLink} disabled={linkTarget === '' || linkSaving}>
+                {linkSaving ? 'Merging…' : 'Link & Merge'}
+              </button>
+              <button className="sv-btn ghost sm" onClick={() => { setLinking(false); setLinkTarget(''); }} disabled={linkSaving}>
+                Cancel
+              </button>
+              {allAgents.data && !allAgents.data.some((x) => x.id !== a.id && !x.hub_agent_id) && (
+                <span className="sv-muted" style={{ fontSize: 'var(--text-sm)' }}>No legacy agents available to merge into.</span>
+              )}
+            </div>
+          )}
         </div>
       )}
 
@@ -270,7 +369,7 @@ export default function AgentDetailPage({ params }: { params: { id: string } }) 
       {/* Row 2.75 — Agent logs, full width */}
       <div style={{ ...CARD_STYLE, marginBottom: 12 }}>
         <div style={SECTION_TITLE_STYLE}>Agent Logs</div>
-        <AgentLogs agentId={a.id} online={a.status === 'online'} />
+        <AgentLogs agentId={a.id} online={a.status === 'online'} hubEnrolled={!!a.hub_agent_id} />
       </div>
 
       {/* Row 3 — Devices grouped by site, full width */}
