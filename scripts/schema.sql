@@ -7,7 +7,12 @@ CREATE TABLE IF NOT EXISTS monitored_devices (
   device_type               TEXT,
   site_id                   INTEGER,
   site_name                 TEXT,
-  netvault_device_id        INTEGER,
+  -- TEXT, not INTEGER: NetVault ships in TWO variants — its own schema.sql
+  -- creates devices.id as SERIAL, but UUID-variant installs exist in the wild
+  -- (netvault/schema.sql carries an explicit "never touches a true UUID-variant
+  -- DB" guard). An INTEGER column here works only against the SERIAL variant and
+  -- breaks sync AND import outright against the UUID one. TEXT holds both.
+  netvault_device_id        TEXT,
   snmp_enabled              BOOLEAN NOT NULL DEFAULT FALSE,
   snmp_version              TEXT    NOT NULL DEFAULT '2c',
   snmp_community            TEXT    DEFAULT 'public',
@@ -29,6 +34,28 @@ CREATE TABLE IF NOT EXISTS monitored_devices (
 );
 -- Detected SNMP vendor (populated by the collector's vendor parser system).
 ALTER TABLE monitored_devices ADD COLUMN IF NOT EXISTS device_vendor TEXT;
+
+-- Retype netvault_device_id INTEGER -> TEXT on already-deployed installs.
+-- CREATE TABLE IF NOT EXISTS above is a no-op where the table already exists, so
+-- without this an existing install keeps the INTEGER column and NetVault sync +
+-- import stay broken against a UUID-variant NetVault (the exact production
+-- failure: invalid input syntax for type integer: "05e34a6b-…", once per sync
+-- cycle, with 0 devices ever linked). Guarded so it runs at most once; the USING
+-- cast is lossless (integers become their own text form) and ALTER TYPE rebuilds
+-- idx_mdev_nvid automatically. No FK references this column.
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+     WHERE table_name = 'monitored_devices'
+       AND column_name = 'netvault_device_id'
+       AND data_type <> 'text'
+  ) THEN
+    ALTER TABLE monitored_devices
+      ALTER COLUMN netvault_device_id TYPE TEXT USING netvault_device_id::text;
+  END IF;
+END
+$$;
 -- Columns the reports/dashboard depend on. These also live in the CREATE TABLE
 -- above, but CREATE TABLE IF NOT EXISTS is a no-op on a DB whose table predates
 -- them — so guard each one idempotently or the executive report (and others)

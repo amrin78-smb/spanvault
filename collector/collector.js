@@ -166,8 +166,13 @@ async function syncNetVaultDevices() {
     // written against an older/assumed schema shape), which threw "function
     // host(character varying) does not exist" on every single sync attempt.
     // No cast needed now — the column already stores a plain address string.
+    // d.id::text — NetVault ships in two variants (SERIAL and UUID devices.id).
+    // Casting here, plus a TEXT netvault_device_id on our side, makes this work
+    // against BOTH. Without it the UUID variant threw
+    // "invalid input syntax for type integer" on the first device of every sync,
+    // aborting the whole cycle — every 30 minutes, with 0 devices ever linked.
     const r = await nv.query(`
-      SELECT d.id AS netvault_device_id, d.name, d.ip_address AS ip_address,
+      SELECT d.id::text AS netvault_device_id, d.name, d.ip_address AS ip_address,
              dt.name AS device_type, d.site_id, s.name AS site_name
       FROM devices d
       LEFT JOIN device_types dt ON dt.id = d.device_type_id

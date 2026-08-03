@@ -36,6 +36,11 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.86.7': [
+    'Fixed NetVault device sync and import, which have never worked on this installation. NetVault exists in two forms — older ones number their devices, newer ones use long identifiers — and SpanVault only ever understood the numeric form. Against the other form every sync failed on the very first device and aborted the whole run, silently, every 30 minutes; importing a device failed the same way. The result was that not one of NetVault\'s 2,357 devices could be linked or imported, and device names, types and sites were never refreshed.',
+    'SpanVault now stores the NetVault identifier as text and compares it as text everywhere, so it works with either form. The change is applied automatically on update; nothing needs to be re-entered.',
+    'Also fixed the device-import screen, which had the same problem in two more places: the list of importable devices could never match what was already imported, and the import itself rejected the newer identifier format outright.',
+  ],
   '1.86.6': [
     'When an update check cannot reach the remote (offline, air-gapped, or a transient git failure), the Updates panel now still shows the version and commit this server is actually running. It previously dropped those fields on that path, so a check that failed for network reasons also blanked out information the server already knew locally. Matches what NetVault has always returned.',
   ],
@@ -3152,12 +3157,15 @@ app.post('/api/snmp-test-adhoc', wrap(async (req, res) => {
 // Devices in NetVault that are NOT yet monitored
 app.get('/api/netvault/devices', wrap(async (_req, res) => {
   const monitored = await sv.query(`SELECT netvault_device_id FROM monitored_devices WHERE netvault_device_id IS NOT NULL`);
-  const existing = new Set(monitored.rows.map((r) => r.netvault_device_id));
+  // Compare as strings on both sides: netvault_device_id is TEXT here and the
+  // NetVault id is cast to text below, so a SERIAL-variant id that once arrived
+  // as a JS number can never miss a match against its own text form.
+  const existing = new Set(monitored.rows.map((r) => String(r.netvault_device_id)));
   // netvault.devices.ip_address is `character varying`, not `inet` — see the
   // matching comment in collector/collector.js's syncNetVaultDevices() for
   // how this was confirmed. No host(...) cast needed.
   const r = await nv.query(`
-    SELECT d.id AS netvault_device_id,
+    SELECT d.id::text AS netvault_device_id,
            d.name,
            d.ip_address AS ip_address,
            dt.name AS device_type,
@@ -3170,7 +3178,7 @@ app.get('/api/netvault/devices', wrap(async (_req, res) => {
       AND COALESCE(d.device_status, 'Active') <> 'Decommed'
     ORDER BY s.name NULLS LAST, d.name
   `);
-  res.json(r.rows.filter((row) => !existing.has(row.netvault_device_id)));
+  res.json(r.rows.filter((row) => !existing.has(String(row.netvault_device_id))));
 }));
 
 // Import selected NetVault devices into monitoring
@@ -3179,14 +3187,17 @@ app.post('/api/netvault/import', wrap(async (req, res) => {
   if (ids.length === 0) return res.status(400).json({ error: 'device_ids array required' });
   // netvault.devices.ip_address is `character varying`, not `inet` — see the
   // matching comment in collector/collector.js's syncNetVaultDevices().
+  // ::text on BOTH sides — d.id is SERIAL on one NetVault variant and UUID on the
+  // other. The old `ANY($1::int[])` threw outright against the UUID variant, so
+  // import was as broken as sync; matching on text works for both.
   const src = await nv.query(`
-    SELECT d.id AS netvault_device_id, d.name, d.ip_address AS ip_address,
+    SELECT d.id::text AS netvault_device_id, d.name, d.ip_address AS ip_address,
            dt.name AS device_type, d.site_id, s.name AS site_name
     FROM devices d
     LEFT JOIN device_types dt ON dt.id = d.device_type_id
     LEFT JOIN sites s ON s.id = d.site_id
-    WHERE d.id = ANY($1::int[]) AND d.ip_address IS NOT NULL
-  `, [ids]);
+    WHERE d.id::text = ANY($1::text[]) AND d.ip_address IS NOT NULL
+  `, [ids.map((v) => String(v))]);
   let imported = 0;
   const touchedAgents = new Set();
   for (const row of src.rows) {
