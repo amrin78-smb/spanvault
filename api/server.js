@@ -36,6 +36,10 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.86.3': [
+    'Deleting a hub-managed agent now happens in NetVault, which owns agent identity -- the Delete button here is disabled for those agents with a note pointing at the hub, the same way Restart and Fetch logs already were. Deleting only the SpanVault record never really worked: the hub kept its own entry, and the agent simply re-created an empty record here on its next connect. When you delete it from NetVault, its record here is now removed automatically and its devices move back to central polling.',
+    'Legacy agents (created here, before hub enrollment existed) are completely unaffected -- SpanVault is still the only place they can be deleted from.',
+  ],
   '1.86.2': [
     'Removed a nonsensical and incorrect upgrade notice on hub-managed agents: "This agent is running v2.5.3; latest is v1.4.0. It updates itself automatically on its next config sync." It was comparing the unified NocVault agent\'s version against SpanVault\'s own legacy built-in agent version -- two unrelated numbering schemes -- so a perfectly up-to-date agent was flagged as out of date, and the advice was wrong too: a hub-managed agent is updated by the hub, not by a SpanVault config sync. The notice (and the "outdated agents" count on the list page) now applies only to legacy agents, which is the only case where SpanVault ships the update.',
   ],
@@ -1096,6 +1100,23 @@ app.post('/api/internal/agents/disconnect', requireLoopback, (req, res) => {
       res.status(500).json({ error: 'disconnect failed' });
     });
 });
+
+// Hub-driven removal (loopback only). The hub calls this after deleting a revoked
+// agent from its own registry, so no orphaned row is left behind here.
+// MUST be registered HERE — alongside the other /api/internal routes and BEFORE
+// enforceLicense + the write-side RBAC gate. A loopback POST carries no
+// x-user-role header, so userRank() defaults it to 'viewer' and the write gate
+// would 403 it; enforceLicense would also 402 it during a license grace period.
+// deleteAgentRow is a hoisted function declaration, so defining it further down
+// next to the admin DELETE is fine.
+app.post('/api/internal/agents/forget', requireLoopback, wrap(async (req, res) => {
+  const hubId = req.body && req.body.hub_agent_id;
+  if (!hubId) return res.status(400).json({ error: 'hub_agent_id is required' });
+  const r = await sv.query(`SELECT id FROM agents WHERE hub_agent_id = $1`, [hubId]);
+  const localId = r.rows[0] && r.rows[0].id;
+  if (localId != null) await deleteAgentRow(localId);
+  res.json({ ok: true, deleted: localId != null });
+}));
 
 // ── License enforcement ───────────────────────────────────────
 // Checks the NocVault license (cached 24h) and gates writes during grace and
@@ -3296,8 +3317,10 @@ app.post('/api/agents/:id/disabled', wrap(async (req, res) => {
 
 // Delete an agent. Its devices fall back to local polling (agent_id → NULL via
 // FK), and any lingering 'agent_offline' status is reset so the collector repolls.
-app.delete('/api/agents/:id', wrap(async (req, res) => {
-  const id = parseInt(req.params.id, 10);
+// Shared by the admin DELETE below and the hub's internal "forget" fan-out, so a
+// hub-driven delete cleans up exactly like a local one (devices released back to
+// central polling, live socket dropped) instead of leaving a half-removed row.
+async function deleteAgentRow(id) {
   await sv.query(
     `UPDATE monitored_devices SET current_status = 'unknown', updated_at = NOW()
       WHERE agent_id = $1 AND current_status = 'agent_offline'`, [id]);
@@ -3305,8 +3328,26 @@ app.delete('/api/agents/:id', wrap(async (req, res) => {
   // connectedAgents is keyed by local agents.id (not api_key), so drop by id —
   // this also covers hub-JWT agents, which have no api_key. No-op if not connected.
   try { disconnectAgent(id, 'Agent deleted'); } catch (_e) { /* ignore */ }
+}
+
+app.delete('/api/agents/:id', wrap(async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  // A hub-enrolled agent is deleted from the NocVault hub, which owns its identity
+  // and fans the removal back here — same split as restart/logs. Deleting only the
+  // local row would strand the hub's registry entry, and the agent would simply
+  // re-provision a fresh empty row on its next connect. Legacy (api_key) agents are
+  // unaffected: the hub has no record of them, so this is their ONLY delete path.
+  const r = await sv.query(`SELECT hub_agent_id FROM agents WHERE id = $1`, [id]);
+  if (!r.rows[0]) return res.status(404).json({ error: 'Agent not found' });
+  if (r.rows[0].hub_agent_id) {
+    return res.status(409).json({
+      error: 'This agent is managed by the NocVault hub — delete it from NetVault → Agents.',
+    });
+  }
+  await deleteAgentRow(id);
   res.json({ ok: true });
 }));
+
 
 // Replace an agent's site assignments + re-derive device ownership.
 app.post('/api/agents/:id/sites', wrap(async (req, res) => {

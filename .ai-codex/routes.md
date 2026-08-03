@@ -27,6 +27,7 @@ deliberately skip it).
 ## Internal (loopback only, bypasses frontend proxy entirely)
 - `POST /api/internal/agents/push-config` [loopback] [db] — collector notifies API to re-push agent config after a site reassignment; registered before enforceLicense/RBAC so it works during license grace/disabled
 - `POST /api/internal/agents/disconnect` [loopback] [db] — hub calls this on agent revoke to actively kick a live WS session; body {hub_agent_id} → resolves local agents.id → disconnectAgent; no-op 200 if not connected/linked; registered before enforceLicense/RBAC (Phase 3)
+- `POST /api/internal/agents/forget` [loopback] [db] — hub-driven removal of a hub-enrolled agent's local row after the hub deletes it; shares `deleteAgentRow()` with the admin DELETE (devices released to central polling, live socket dropped); registered before enforceLicense/RBAC like its siblings (1.86.3)
 
 ## Agent bootstrap files (unauthenticated — no session possible pre-install)
 - `GET /api/agent/install.ps1` [public] — serves the agent installer script
@@ -107,7 +108,7 @@ deliberately skip it).
 - `POST /api/agents/:id/disabled` [auth+write:admin+] [db] — disable/enable without deleting; drops live socket, refuses handshakes
 - NOTE: `POST /api/agents` (create) + `POST /api/agents/:id/rotate-key` REMOVED in Phase 4a — agent enrollment/api_key are now owned by the NetVault hub; SpanVault only binds sites (`/:id/sites`) + discovers devices for already-provisioned agents
 - `POST /api/agents/:id/link-legacy` [auth+write:admin+] [db] — Phase 3 "duplicate row" manual-link fallback: merges `:id` (a hub-JWT-provisioned duplicate row) into `body.legacy_agent_id` (an existing legacy api_key row), for cases the automatic hostname link in ws-server.js can't confidently resolve on its own (ambiguous/duplicate hostname, or no hostname reported yet); the legacy row keeps its id/history, the duplicate is deleted — see gotchas.md
-- `DELETE /api/agents/:id` [auth+write:admin+] [db] — devices fall back to local polling (agent_id -> NULL)
+- `DELETE /api/agents/:id` [auth+write:admin+] [db] — devices fall back to local polling (agent_id -> NULL); **409 for a hub-enrolled row** (hub_agent_id set) — those are deleted from the NetVault hub, which fans the removal back via /api/internal/agents/forget (1.86.3)
 - `POST /api/agents/:id/sites` [auth+write:admin+] [db] — replace site assignments + re-derive device ownership
 - `POST /api/agents/:id/restart` [auth+write:admin+] [external] — WS message; agent exits, NSSM restarts it; refuses with 409 for a hub-enrolled agent (`hub_agent_id` set) — restart for those runs through the hub's own command queue, see gotchas.md
 - `POST /api/agents/:id/logs/refresh` [auth+write:admin+] [external] — WS request for fresh log tail; same hub-enrolled 409 refusal as restart above

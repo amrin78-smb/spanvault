@@ -195,7 +195,14 @@ export default function AgentDetailPage({ params }: { params: { id: string } }) 
         <button className="sv-btn ghost" onClick={handleToggleDisabled}>
           {a.disabled ? 'Enable Agent' : 'Disable Agent'}
         </button>
-        <button className="sv-btn danger" onClick={handleDelete}>Delete Agent</button>
+        <button
+          className="sv-btn danger"
+          onClick={handleDelete}
+          disabled={!!a.hub_agent_id}
+          title={a.hub_agent_id ? 'Managed by NocVault Hub — delete from the hub\'s Agents page' : undefined}
+        >
+          Delete Agent
+        </button>
       </PageHeader>
 
       {a.disabled && (

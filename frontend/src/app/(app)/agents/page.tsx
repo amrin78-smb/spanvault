@@ -78,7 +78,12 @@ export default function AgentsPage() {
       confirmLabel: 'Delete',
       danger: true,
     })) return;
-    for (const id of selected) { try { await apiSend(`/api/agents/${id}`, 'DELETE'); } catch { /* skip */ } }
+    // Skip hub-enrolled agents rather than firing a DELETE the server will 409 —
+    // same pre-filter the bulk restart already does.
+    for (const id of selected) {
+      if (list.find((a) => a.id === id)?.hub_agent_id) continue;
+      try { await apiSend(`/api/agents/${id}`, 'DELETE'); } catch { /* skip */ }
+    }
     setSelected(new Set());
     agents.reload();
   }
@@ -426,7 +431,16 @@ function AgentCard({ agent, onDelete, selected, onToggleSelect }: {
       {/* footer — Configure (left) / Delete (right) */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 'auto', paddingTop: 4 }}>
         <Link href={`/agents/${agent.id}`} className="sv-btn ghost sm">Configure</Link>
-        <button className="sv-btn danger sm" onClick={() => onDelete(agent)}>Delete</button>
+        {/* Hub-enrolled agents are deleted from the hub, which owns their identity
+            and fans the removal back here — same split as restart/logs. */}
+        <button
+          className="sv-btn danger sm"
+          onClick={() => onDelete(agent)}
+          disabled={!!agent.hub_agent_id}
+          title={agent.hub_agent_id ? 'Managed by NocVault Hub — delete from the hub\'s Agents page' : undefined}
+        >
+          Delete
+        </button>
       </div>
     </div>
   );
