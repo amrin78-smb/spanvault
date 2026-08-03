@@ -499,6 +499,16 @@ async function handleSnmpBatch(agent, msg) {
   const deviceId = msg.device_id;
   if (!deviceId) return;
 
+  // A device can be deleted (or moved off this agent) while the agent still holds
+  // results for it — in its offline buffer, or simply in flight before the next
+  // config push lands. Every snmp_results row then trips the device_id FK. Bail
+  // out once here rather than letting each of the (often hundreds of) samples in
+  // this batch throw: the telemetry belongs to something that no longer exists,
+  // and the agent stops polling it on its next config push. Same guard as the
+  // ping_result path below.
+  const known = await sv.query(`SELECT 1 FROM monitored_devices WHERE id=$1`, [deviceId]);
+  if (!known.rows[0]) return;
+
   // Reconstruct varbind values; the agent base64-encodes Buffers as { b: ... }.
   const dec = (v) => (v && typeof v === 'object' && typeof v.b === 'string')
     ? Buffer.from(v.b, 'base64') : v;
@@ -629,13 +639,21 @@ async function handleAgentMessage(agent, msg) {
       }
       break;
 
-    case 'ping_result':
-      await sv.query(
+    case 'ping_result': {
+      // Skip a result whose device has since been deleted / unassigned instead of
+      // letting the device_id FK reject it — that exception unwound the whole
+      // message handler (315 logged failures on the production box) and also
+      // skipped the monitored_devices update below. The INSERT ... SELECT ...
+      // WHERE EXISTS does this in one round trip; rowCount tells us whether the
+      // device is still real, so we only touch monitored_devices when it is.
+      const ins = await sv.query(
         `INSERT INTO ping_results (device_id, ts, response_ms, packet_loss_pct, status, agent_id)
-         VALUES ($1,$2,$3,$4,$5,$6)`,
+         SELECT $1,$2,$3,$4,$5,$6
+          WHERE EXISTS (SELECT 1 FROM monitored_devices WHERE id = $1)`,
         [msg.device_id, msg.ts || new Date(), msg.response_ms,
          msg.packet_loss_pct, msg.status, agent.id]
       );
+      if (!ins.rowCount) break;
       await sv.query(
         `UPDATE monitored_devices SET
            current_status=$2, last_response_ms=$3, last_checked_at=$4,
@@ -645,6 +663,7 @@ async function handleAgentMessage(agent, msg) {
         [msg.device_id, msg.status, msg.response_ms, new Date()]
       );
       break;
+    }
 
     case 'snmp_result':
       await sv.query(

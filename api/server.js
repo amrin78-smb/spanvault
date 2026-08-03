@@ -36,6 +36,11 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.86.5': [
+    'Cleared the two remaining recurring errors in the API log. Deleting a device that a remote agent was polling left the agent shipping results for it — every one was rejected by the database and logged as a failure (315 of them), and the rejection also aborted the status update for that message. Results for a device that no longer exists are now skipped quietly; the agent stops polling it on its next config refresh anyway.',
+    'A request with a non-numeric id in the URL (for example /api/devices/undefined, from a stale bookmark or a link built with a missing value) reached the database as "NaN" and came back as a 500 error (90 of them). Any such request is now rejected up front with a clear 400 Invalid id, across all 67 id-based endpoints at once rather than one at a time.',
+    'For the record, the other two errors in that log were already resolved and are not recurring: the table-ownership failures were fixed by the updater\'s ownership step, and the wireless "is_sticky" errors predate the column being added.',
+  ],
   '1.86.4': [
     'Same change as 1.86.3, which could not start. The new internal endpoint the hub calls to remove a deleted agent was written in a style that crashed the API on boot, so the updater rolled back automatically and 1.86.2 kept running -- no outage, but 1.86.3 never actually deployed. Rewritten to match the surrounding code and verified to start before shipping.',
   ],
@@ -1042,6 +1047,23 @@ nv.on('error', (err) => console.error('[DB nv] Pool error:', err.message));
 
 // ── Middleware ────────────────────────────────────────────────
 app.use(cors());
+
+// Every one of the ~67 `/:id` routes treats the param as an integer (64 via a bare
+// `parseInt(req.params.id, 10)`, the rest via safeInt), and none of the bare ones
+// checked the result. A request like /api/devices/undefined — a frontend that
+// interpolated a missing value, a stale bookmark, a scanner — therefore reached
+// Postgres as NaN and came back as a 500 "invalid input syntax for type integer:
+// NaN" (90 of them on the production box). Rejecting it once here, before routing,
+// fixes the whole class instead of patching 64 call sites; verified first that no
+// `/:id` route wants a non-numeric id, so this cannot swallow a legitimate request.
+// Params with other names (:mac, :uuid, :template, …) are untouched.
+app.param('id', (req, res, next, val) => {
+  if (!/^\d+$/.test(String(val))) {
+    return res.status(400).json({ error: 'Invalid id' });
+  }
+  next();
+});
+
 app.use(express.json({ limit: '12mb' })); // generous — map background images arrive base64-encoded
 app.use((req, _res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
