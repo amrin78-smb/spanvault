@@ -36,6 +36,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.86.4': [
+    'Same change as 1.86.3, which could not start. The new internal endpoint the hub calls to remove a deleted agent was written in a style that crashed the API on boot, so the updater rolled back automatically and 1.86.2 kept running -- no outage, but 1.86.3 never actually deployed. Rewritten to match the surrounding code and verified to start before shipping.',
+  ],
   '1.86.3': [
     'Deleting a hub-managed agent now happens in NetVault, which owns agent identity -- the Delete button here is disabled for those agents with a note pointing at the hub, the same way Restart and Fetch logs already were. Deleting only the SpanVault record never really worked: the hub kept its own entry, and the agent simply re-created an empty record here on its next connect. When you delete it from NetVault, its record here is now removed automatically and its devices move back to central polling.',
     'Legacy agents (created here, before hub enrollment existed) are completely unaffected -- SpanVault is still the only place they can be deleted from.',
@@ -1109,14 +1112,27 @@ app.post('/api/internal/agents/disconnect', requireLoopback, (req, res) => {
 // would 403 it; enforceLicense would also 402 it during a license grace period.
 // deleteAgentRow is a hoisted function declaration, so defining it further down
 // next to the admin DELETE is fine.
-app.post('/api/internal/agents/forget', requireLoopback, wrap(async (req, res) => {
-  const hubId = req.body && req.body.hub_agent_id;
-  if (!hubId) return res.status(400).json({ error: 'hub_agent_id is required' });
-  const r = await sv.query(`SELECT id FROM agents WHERE hub_agent_id = $1`, [hubId]);
-  const localId = r.rows[0] && r.rows[0].id;
-  if (localId != null) await deleteAgentRow(localId);
-  res.json({ ok: true, deleted: localId != null });
-}));
+//
+// ⛔ Do NOT wrap this handler in wrap(). `wrap` is a `const` declared further down
+// the file, so calling it during module evaluation up here throws "Cannot access
+// 'wrap' before initialization" (TDZ) and the API crash-loops on boot. `node
+// --check` does NOT catch this — it is a runtime error, not a syntax one. That is
+// precisely why the sibling /disconnect route above uses a plain handler with its
+// own error handling, and this one must too. Any future route registered in this
+// pre-middleware block has the same constraint.
+app.post('/api/internal/agents/forget', requireLoopback, async (req, res) => {
+  try {
+    const hubId = req.body && req.body.hub_agent_id;
+    if (!hubId) return res.status(400).json({ error: 'hub_agent_id is required' });
+    const r = await sv.query(`SELECT id FROM agents WHERE hub_agent_id = $1`, [hubId]);
+    const localId = r.rows[0] && r.rows[0].id;
+    if (localId != null) await deleteAgentRow(localId);
+    res.json({ ok: true, deleted: localId != null });
+  } catch (e) {
+    console.error('[internal] forget error:', e.message);
+    res.status(500).json({ error: 'forget failed' });
+  }
+});
 
 // ── License enforcement ───────────────────────────────────────
 // Checks the NocVault license (cached 24h) and gates writes during grace and
