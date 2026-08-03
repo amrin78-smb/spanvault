@@ -570,6 +570,21 @@ function numOrNull(v) {
   return Number.isFinite(n) ? n : null;
 }
 
+// Text destined for Postgres, with NUL bytes removed.
+//
+// PostgreSQL cannot store U+0000 in a text/varchar column AT ALL — it rejects the
+// whole statement with `invalid byte sequence for encoding "UTF8": 0x00`. Aruba
+// Central returns NUL-padded fixed-width strings, so any client whose hostname/
+// SSID/AP name carried one failed its entire upsert and was silently dropped from
+// the fleet view (386+ occurrences on the production box, recurring every poll).
+// Stripping is always safe: the byte is unstorable by definition, so nothing that
+// could have been persisted is lost.
+function textOrNull(v) {
+  if (v === null || v === undefined) return null;
+  const s = String(v).replace(/\u0000/g, '');
+  return s === '' ? null : s;
+}
+
 // Best-effort link of an AP to a monitored device by IP (so the AP can show on
 // device pages). Returns the monitored device id or null.
 async function matchMonitoredDevice(pool, ap) {
@@ -1852,13 +1867,16 @@ async function processClientSnapshot(pool, controller, apList, clients, alertHoo
         -- value a different cycle/source already established for this MAC.
         os_type       = COALESCE(EXCLUDED.os_type, wireless_clients.os_type)
     `, [
-      client.mac_address, client.ip_address || null, client.hostname || null, controller.id,
-      client.ap_id || null, client.ap_name || null, client.ssid_name || null, client.band || null,
+      // Every free-text field goes through textOrNull: a single NUL byte anywhere
+      // in them makes Postgres reject the WHOLE upsert, so one padded string from
+      // the controller silently drops that client from the fleet view entirely.
+      textOrNull(client.mac_address), textOrNull(client.ip_address), textOrNull(client.hostname), controller.id,
+      textOrNull(client.ap_id), textOrNull(client.ap_name), textOrNull(client.ssid_name), textOrNull(client.band),
       intOrNull(client.channel), intOrNull(client.rssi_dbm),
       numOrNull(client.tx_rate_mbps), numOrNull(client.rx_rate_mbps), client.connected_since || null,
-      now, client.auth_type || null, isProblem, roamCount, controller.vendor, isSticky,
-      client.phy_mode || null, intOrNull(client.vlan_id), rxBps, txBps,
-      rawRx, rawTx, client.byte_counter_bits || null, bwSampledAt, client.os_type || null,
+      now, textOrNull(client.auth_type), isProblem, roamCount, controller.vendor, isSticky,
+      textOrNull(client.phy_mode), intOrNull(client.vlan_id), rxBps, txBps,
+      rawRx, rawTx, client.byte_counter_bits || null, bwSampledAt, textOrNull(client.os_type),
     ]);
     await pool.query(
       `INSERT INTO wireless_client_history (mac_address, controller_id, ts, rx_bps, tx_bps, rssi_dbm)

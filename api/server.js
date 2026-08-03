@@ -36,6 +36,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.86.8': [
+    'Wireless clients are no longer silently dropped. Aruba Central pads some text fields with a byte PostgreSQL cannot store at all, and it rejects the entire record rather than just that field — so any client whose hostname, SSID or AP name happened to contain one vanished from the Wireless view completely, with only a line in the error log. It was still happening on every poll (386+ times on this server). Those bytes are now removed before saving, which loses nothing: they could never have been stored in the first place.',
+  ],
   '1.86.7': [
     'Fixed NetVault device sync and import, which have never worked on this installation. NetVault exists in two forms — older ones number their devices, newer ones use long identifiers — and SpanVault only ever understood the numeric form. Against the other form every sync failed on the very first device and aborted the whole run, silently, every 30 minutes; importing a device failed the same way. The result was that not one of NetVault\'s 2,357 devices could be linked or imported, and device names, types and sites were never refreshed.',
     'SpanVault now stores the NetVault identifier as text and compares it as text everywhere, so it works with either form. The change is applied automatically on update; nothing needs to be re-entered.',
