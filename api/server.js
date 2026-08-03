@@ -36,6 +36,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.86.2': [
+    'Removed a nonsensical and incorrect upgrade notice on hub-managed agents: "This agent is running v2.5.3; latest is v1.4.0. It updates itself automatically on its next config sync." It was comparing the unified NocVault agent\'s version against SpanVault\'s own legacy built-in agent version -- two unrelated numbering schemes -- so a perfectly up-to-date agent was flagged as out of date, and the advice was wrong too: a hub-managed agent is updated by the hub, not by a SpanVault config sync. The notice (and the "outdated agents" count on the list page) now applies only to legacy agents, which is the only case where SpanVault ships the update.',
+  ],
   '1.86.1': [
     'Fixed the bug that made every remote agent go Offline about 90 seconds after connecting and stay there, even though it was connected and working the whole time. The agent heartbeat handler ran a database statement PostgreSQL could not plan (a parameter used both as a plain value and inside a null-check, with no type it could infer), so every single heartbeat failed and the agent\'s "last seen" time never advanced -- while its devices kept being polled and their results kept arriving normally. The 90-second silence monitor then knocked the agent Offline and marked its devices "agent offline". This had fired 16,665 times on the production server and affected BOTH hub-managed and legacy agents.',
     'Because heartbeats never landed, a hub-managed agent also never picked up its hostname or version -- so it showed on the Agents page as its raw enrollment id with a blank version and no host health. Those now populate on the first heartbeat as intended, and an agent whose row still carries its placeholder name adopts its real hostname automatically.',
@@ -3159,6 +3162,13 @@ const agentDisabledCol = () => agentColExists('disabled');
 
 // Latest canonical agent.js version (parsed from the file the server serves), so
 // the UI can flag agents running an older build (they self-update on next config).
+// The LEGACY (api_key) agent's bundled version — read from this repo's own
+// agent/agent.js, which SpanVault self-updates over the span WS (the config push
+// carries agent_sha/agent_version). It is NOT the version line of the unified
+// NocVault agent a hub-managed agent runs (netvault/agent, 2.x, updated by the hub
+// via its signed bundle). Comparing the two produced the nonsense banner "running
+// v2.5.3; latest is v1.4.0" plus a wrong claim that a config sync would update it,
+// so callers MUST null this out for a hub_agent_id row.
 let _latestAgentVersion;
 function latestAgentVersion() {
   if (_latestAgentVersion !== undefined) return _latestAgentVersion;
@@ -3205,7 +3215,13 @@ app.get('/api/agents', wrap(async (_req, res) => {
     ORDER BY a.name
   `);
   const latest = latestAgentVersion();
-  res.json(r.rows.map((a) => ({ ...a, latest_agent_version: latest })));
+  // Only meaningful for LEGACY agents — see latestAgentVersion(). A hub-managed
+  // agent runs the unified NocVault agent on a different version line entirely and
+  // is updated by the hub, so null here suppresses the "outdated" banner/count.
+  res.json(r.rows.map((a) => ({
+    ...a,
+    latest_agent_version: a.hub_agent_id ? null : latest,
+  })));
 }));
 
 // legacy: agent provisioning (POST /api/agents — mint api_key + install command)
@@ -3239,7 +3255,7 @@ app.get('/api/agents/:id', wrap(async (req, res) => {
     sites: sites.rows,
     devices: devices.rows,
     service_checks: serviceChecks.rows,
-    latest_agent_version: latestAgentVersion(),
+    latest_agent_version: agent.hub_agent_id ? null : latestAgentVersion(),
   });
 }));
 
