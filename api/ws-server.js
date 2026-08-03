@@ -595,12 +595,24 @@ async function handleAgentMessage(agent, msg) {
       // reported hostname the first time one arrives. The `hub_agent_id IS NOT
       // NULL AND name = hub_agent_id` guard makes this a strict no-op for legacy
       // api_key agents (hub_agent_id NULL) and for any JWT agent already renamed.
+      // ⛔ The ::text casts on $3 are REQUIRED — do not "clean them up".
+      // $3 appears both as a plain assignment target (hostname=$3) and inside a
+      // bare `$3 IS NOT NULL` NullTest in the name=CASE arm. PostgreSQL cannot
+      // infer a type for a parameter in that combination and rejects the whole
+      // statement at PARSE time with "could not determine data type of parameter
+      // $3" — so EVERY heartbeat threw, was swallowed by the message handler's
+      // catch, and last_seen_at never advanced. The agent stayed connected and
+      // kept shipping ping/snmp results, but the 90s monitor knocked it 'offline'
+      // and its devices to 'agent_offline' ~92s after connecting, forever.
+      // Hit 16,665 times on the production box before it was found, and it broke
+      // BOTH legacy api_key and hub-JWT agents (the CASE arm is on the shared
+      // path). Same class as the timestamp-cast rule in CLAUDE.md.
       if (await hasHealthCol()) {
         await sv.query(
           `UPDATE agents SET last_seen_at=NOW(), status='online',
-             version=$2, hostname=$3, health=$4,
-             name=CASE WHEN hub_agent_id IS NOT NULL AND name=hub_agent_id AND $3 IS NOT NULL
-                       THEN $3 ELSE name END,
+             version=$2::text, hostname=$3::text, health=$4::jsonb,
+             name=CASE WHEN hub_agent_id IS NOT NULL AND name=hub_agent_id AND $3::text IS NOT NULL
+                       THEN $3::text ELSE name END,
              updated_at=NOW() WHERE id=$1`,
           [agent.id, msg.version || null, msg.hostname || null,
            msg.health ? JSON.stringify(msg.health) : null]
@@ -608,9 +620,9 @@ async function handleAgentMessage(agent, msg) {
       } else {
         await sv.query(
           `UPDATE agents SET last_seen_at=NOW(), status='online',
-             version=$2, hostname=$3,
-             name=CASE WHEN hub_agent_id IS NOT NULL AND name=hub_agent_id AND $3 IS NOT NULL
-                       THEN $3 ELSE name END,
+             version=$2::text, hostname=$3::text,
+             name=CASE WHEN hub_agent_id IS NOT NULL AND name=hub_agent_id AND $3::text IS NOT NULL
+                       THEN $3::text ELSE name END,
              updated_at=NOW() WHERE id=$1`,
           [agent.id, msg.version || null, msg.hostname || null]
         );
