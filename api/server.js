@@ -36,6 +36,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.86.6': [
+    'When an update check cannot reach the remote (offline, air-gapped, or a transient git failure), the Updates panel now still shows the version and commit this server is actually running. It previously dropped those fields on that path, so a check that failed for network reasons also blanked out information the server already knew locally. Matches what NetVault has always returned.',
+  ],
   '1.86.5': [
     'Cleared the two remaining recurring errors in the API log. Deleting a device that a remote agent was polling left the agent shipping results for it — every one was rejected by the database and logged as a failure (315 of them), and the rejection also aborted the status update for that message. Results for a device that no longer exists are now skipped quietly; the agent stops polling it on its next config refresh anyway.',
     'A request with a non-numeric id in the URL (for example /api/devices/undefined, from a stale bookmark or a link built with a missing value) reached the database as "NaN" and came back as a 500 error (90 of them). Any such request is now rejected up front with a clear 400 Invalid id, across all 67 id-based endpoints at once rather than one at a time.',
@@ -1550,7 +1553,19 @@ app.get('/api/system/update-status', wrap(async (_req, res) => {
     // Remote hash unreadable (git/remote unavailable, e.g. 429/timeout on a
     // non-git deploy) → keep the graceful "could not check" response.
     if (!remoteHash) {
-      return res.json({ up_to_date: true, current_version: localVersion, error: 'Could not check for updates' });
+      // Keep the SAME field set as the success shape (minus what genuinely can't be
+      // known), so a client never has to special-case the degraded response.
+      // current_commit/current_hash are local facts and are still available here;
+      // NetVault's equivalent route already returns them and SpanVault's omitted
+      // them, so an offline check silently blanked the "current commit" readout.
+      return res.json({
+        current_version: localVersion,
+        current_commit: localHash,
+        current_hash: localHash,
+        up_to_date: true,
+        update_available: false,
+        error: 'Could not check for updates',
+      });
     }
 
     // Any differing commit = update available. Only pull the remote version
@@ -1578,7 +1593,14 @@ app.get('/api/system/update-status', wrap(async (_req, res) => {
     });
   } catch (e) {
     console.error('[update-status] version check failed:', e.message);
-    res.json({ up_to_date: true, current_version: localVersion, error: 'Could not check for updates' });
+    res.json({
+      current_version: localVersion,
+      current_commit: localHash,
+      current_hash: localHash,
+      up_to_date: true,
+      update_available: false,
+      error: 'Could not check for updates',
+    });
   }
 }));
 
