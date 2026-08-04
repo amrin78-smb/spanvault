@@ -1459,11 +1459,33 @@ function wlApClauses(scope) {
   return { params, where: parts.length ? 'WHERE ' + parts.join(' AND ') : '', and: parts.length ? ' AND ' + parts.join(' AND ') : '' };
 }
 // controller-only clause (tables without a site_id: controllers/ssids/clients/intel).
-function wlCtrlOnly(scope, col) {
+// Controller-keyed clauses for wireless tables that have NO site_id of their own
+// (wireless_clients, wireless_intelligence) plus the controllers table itself.
+//
+// RBAC: `col` is always a controller id — `controller_id` on the child tables, or
+// `id` on wireless_controllers — so ONE subquery form scopes every call site:
+//   <col> IN (SELECT id FROM wireless_controllers WHERE site_id = ANY(...))
+// This is the same controller->site trust boundary already used for
+// wireless_rogue_aps (see gatherWirelessSecurity), and it is exactly as precise as
+// the a.site_id filter wlApClauses uses, because wireless_aps.site_id is itself
+// copied from the owning controller's site_id by the collector.
+//
+// ⚠ This used to be wlCtrlOnly() and applied the controller filter ONLY, silently
+// ignoring scope.siteFilter. All five call sites were affected, so a site_admin's
+// wireless PDF reports contained every site's data — client lists, RF/intelligence
+// scores, top SSIDs and licensed-AP counts — while the matching JSON endpoints
+// (which do scope, via c.site_id) correctly hid them. Renamed so the name can no
+// longer imply that dropping the site filter is intentional.
+function wlCtrlClauses(scope, col) {
   const params = [];
-  let where = '', and = '';
-  if (scope.hasCtrl) { params.push(scope.ctrlId); where = `WHERE ${col} = $1`; and = ` AND ${col} = $1`; }
-  return { params, where, and };
+  const parts = [];
+  if (scope.hasCtrl) { params.push(scope.ctrlId); parts.push(`${col} = $${params.length}`); }
+  if (scope.siteFilter && scope.siteFilter.length) {
+    params.push(scope.siteFilter);
+    parts.push(`${col} IN (SELECT id FROM wireless_controllers WHERE site_id = ANY($${params.length}::int[]))`);
+  }
+  const joined = parts.join(' AND ');
+  return { params, where: parts.length ? 'WHERE ' + joined : '', and: parts.length ? ' AND ' + joined : '' };
 }
 
 // Section header used by the maxUtil colour rules in the AP-health table.
@@ -1498,7 +1520,7 @@ async function gatherWirelessOverview(db, params) {
       ROUND(AVG(${WL_UTIL})::numeric, 1) AS avg_utilization
     FROM wireless_aps a ${apW}`, sp, [{}]);
 
-  const co = wlCtrlOnly(scope, 'controller_id');
+  const co = wlCtrlClauses(scope, 'controller_id');
   const intel = await runQ('intel', `
     SELECT ROUND(AVG(overall_score)::numeric, 0) AS score
     FROM wireless_intelligence ${co.where}`, co.params, []);
@@ -1522,7 +1544,7 @@ async function gatherWirelessOverview(db, params) {
     FROM wireless_aps a ${ta.where}
     ORDER BY a.clients_total DESC NULLS LAST LIMIT 5`, ta.params, []);
 
-  const ss = wlCtrlOnly(scope, 'controller_id');
+  const ss = wlCtrlClauses(scope, 'controller_id');
   const topSsids = await runQ('top_ssids', `
     SELECT ssid_name, COALESCE(clients_total, 0)::int AS client_count
     FROM wireless_ssids ${ss.where}
@@ -1776,7 +1798,7 @@ async function gatherWirelessClients(db, params) {
   const scope = wlScope(q);
   const win = getDateRange({ ...q, range: q.range || '30d' });
   const runQ = mkRunQ(db, 'wireless-clients');
-  const c = wlCtrlOnly(scope, 'controller_id');
+  const c = wlCtrlClauses(scope, 'controller_id');
 
   const sum = await runQ('summary', `
     SELECT COUNT(*)::int AS total_clients,
@@ -1909,7 +1931,7 @@ async function gatherWirelessRf(db, params) {
   const scope = wlScope(q);
   const win = getDateRange({ ...q, range: q.range || '30d' });
   const runQ = mkRunQ(db, 'wireless-rf');
-  const ci = wlCtrlOnly(scope, 'controller_id');
+  const ci = wlCtrlClauses(scope, 'controller_id');
 
   const agg = await runQ('agg', `
     SELECT ROUND(AVG(overall_score)::numeric, 0)      AS overall_score,
@@ -2089,7 +2111,7 @@ async function gatherWirelessCapacity(db, params) {
   const win = getDateRange({ ...q, range: q.range || '90d' });
   const runQ = mkRunQ(db, 'wireless-capacity');
 
-  const lc = wlCtrlOnly(scope, 'id');
+  const lc = wlCtrlClauses(scope, 'id');
   const lic = await runQ('licensed', `
     SELECT COALESCE(SUM(licensed_aps), 0)::int AS licensed
     FROM wireless_controllers ${lc.where}`, lc.params, [{ licensed: 0 }]);

@@ -85,6 +85,20 @@ const cUptime = RTAB_BASE + '.11';   // mtxrWlRtabUptime (TimeTicks) -> connecte
 // mtxrWlApTable: 1.3.6.1.4.1.14988.1.1.1.3.1 — sibling AP-level table (same
 // base + columns as collector/wireless/mikrotik.js). Walked here only for the
 // SSID/Freq columns needed to enrich each client by its interface index.
+//
+// ⚠ UNVALIDATED ASSUMPTION: this enrichment assumes mtxrWlRtabTable's
+// mtxrWlRtabIface (the client row's interface index) and mtxrWlApTable's own
+// index are THE SAME interface numbering, so a client can be joined to its AP
+// row by that index alone. Both are ObjectIndex values on the same device and
+// RouterOS does appear to number them from one interface list, but that has
+// never been confirmed against real hardware — there is no MikroTik device in
+// this estate to check against. If the two tables are ever indexed
+// independently, this silently attaches the WRONG ssid/band to every client
+// (wrong data, not an error — nothing here would fail or log).
+// To falsify: on a RouterOS AP with two or more wireless interfaces, compare
+// the index sets of mtxrWlRtabIface and mtxrWlApTable and confirm a client's
+// iface value selects the interface it is genuinely associated to.
+// Left as-is deliberately (2026-08-04, owner decision) rather than fixed blind.
 const AP_BASE = '1.3.6.1.4.1.14988.1.1.1.3.1';
 const apSsid = AP_BASE + '.4'; // mtxrWlApSsid
 const apFreq = AP_BASE + '.7'; // mtxrWlApFreq (MHz)

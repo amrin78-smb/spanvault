@@ -292,10 +292,26 @@ function parseApTable(walked) {
       else if (band === '5g' && ap.radio_5g_util_pct === null) ap.radio_5g_util_pct = v;
     }
 
-    // Retry rate approximation: Cisco does not expose a true per-radio retry %
-    // here, so we approximate it as the GREATER of the per-radio Rx/Tx load
-    // utilization (bsnAPIfLoadRxUtilization/.TxUtilization, 0..100) —
-    // best-effort, flagged as an approximation; validate against real hardware.
+    // ⚠ THIS IS NOT A RETRY RATE. Cisco does not expose a true per-radio retry %
+    // here, so this writes the GREATER of the per-radio Rx/Tx load UTILIZATION
+    // (bsnAPIfLoadRxUtilization/.TxUtilization, 0..100) into retry_rate_2g/5g —
+    // a column whose name, and every consumer of it, means something else.
+    //
+    // Consequence to know before relying on it: `wireless_high_retry` alerts on
+    // retry_rate_* against wireless_retry_threshold_pct (default 15). On Aruba
+    // that column holds a genuine retry percentage (aruba.js validates 0..100
+    // from the real OID), so 15 is a sensible retry threshold. On Cisco the same
+    // 15 is compared against channel utilization, which a healthy busy AP exceeds
+    // routinely — so the alert means a materially different thing per vendor, and
+    // on Cisco it will fire far more often and not for retries.
+    //
+    // Left as-is deliberately (2026-08-04, owner decision): separating the two
+    // metrics needs a schema change (a distinct utilization column, or a
+    // per-vendor "is approximate" flag) plus alert-threshold rework, and there is
+    // no Cisco hardware in this estate to validate any replacement against — this
+    // whole branch is therefore UNVALIDATED against a real WLC. Do not treat the
+    // values it produces as retry rates, and re-check this before onboarding the
+    // first Cisco controller. See .ai-codex/gotchas.md.
     const rxUtilCol = columnMap(walked.bsnApIfRxUtil, bsnAPIfLoadRxUtilization);
     const txUtilCol = columnMap(walked.bsnApIfTxUtil, bsnAPIfLoadTxUtilization);
     const retryIdxs = new Set([...Object.keys(rxUtilCol), ...Object.keys(txUtilCol)]);

@@ -859,6 +859,20 @@ async function upsertAp(pool, controller, ap) {
   // controller_id at whoever reports the AP NOW. This collapses the duplicate that
   // an HA failover/sync otherwise creates under the peer controller's id. The
   // existing per-(controller_id, name) ON CONFLICT below is the INSERT fallback.
+  //
+  // ⚠ Known limitation — "whoever reports it NOW" has no tie-break. If BOTH
+  // members of an HA pair report the same AP in the same cycle, controller_id
+  // ping-pongs between them every poll; nothing here prefers the active member,
+  // and there is no unique constraint on (site_id, name) to anchor it. Anything
+  // grouping by controller_id (per-controller AP counts, licensed-AP capacity,
+  // controller-scoped reports) would then flap in step with it.
+  // NOT currently occurring on this deployment — verified 2026-08-04 against the
+  // live HA pair (controllers 7/8, both site 31): all 102 APs sit on controller 7,
+  // the peer reports none, and no AP `name` appears under both. Left as-is rather
+  // than guarded speculatively, since the failure cannot be reproduced here to
+  // validate a fix against. To detect it if it ever starts:
+  //   SELECT name, COUNT(DISTINCT controller_id) FROM wireless_aps
+  //    GROUP BY name HAVING COUNT(DISTINCT controller_id) > 1;
   if (controller.site_id != null) {
     const existing = await pool.query(
       `SELECT id FROM wireless_aps WHERE site_id = $1 AND name = $2 LIMIT 1`,

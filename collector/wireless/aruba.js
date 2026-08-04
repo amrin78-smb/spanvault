@@ -671,7 +671,15 @@ function parseRogueAps(walked) {
       // RATIO (positive dB) on the wire — same caveat as wlanStaRSSI in
       // clients/aruba.js. Convert with the same -95dBm typical noise floor.
       const sig = num(rssis[idx]);
-      const rssi_dbm = sig === null ? null : (sig > 0 ? sig - 95 : sig);
+      // `>= 0`, NOT `> 0` — an SNR of exactly 0 is a REAL reading meaning "nothing
+      // above the noise floor", i.e. the weakest possible signal, and must convert
+      // to -95 dBm like every other SNR value. With `> 0` it fell through to the
+      // raw branch and was stored as 0 dBm, which reads as the STRONGEST possible
+      // signal — inverting the meaning. That was not an edge case here: 6001 of
+      // 12361 live rogue rows (49%) sat at exactly 0, so every "strongest rogue"
+      // ranking in the UI and reports was actually listing the faintest ones first.
+      // Matches clients/aruba.js:148 and clients/hpe.js:143, which already use >= 0.
+      const rssi_dbm = sig === null ? null : (sig >= 0 ? sig - 95 : sig);
 
       out.set(rogueBssid, {
         bssid: rogueBssid,
