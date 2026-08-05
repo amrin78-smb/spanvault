@@ -144,7 +144,7 @@ function TopologyCard() {
   return (
     <div className="sv-panel" style={{ display: 'flex', alignItems: 'center', gap: 18, flexWrap: 'wrap', marginBottom: 18 }}>
       <div style={{
-        width: 44, height: 44, borderRadius: 10, flex: 'none',
+        width: 44, height: 44, borderRadius: 'var(--radius)', flex: 'none',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         background: 'var(--bg-primary)', border: '1px solid var(--border)', color: 'var(--primary)',
       }}>

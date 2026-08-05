@@ -676,7 +676,7 @@ export default function ServicesPage() {
                 onClick={() => setStatusFilter(o.v)}
                 style={{
                   height: 28, padding: '0 12px', fontSize: 'var(--text-sm)', cursor: 'pointer',
-                  borderRadius: 14, border: '1px solid var(--border)',
+                  borderRadius: 'var(--radius-pill)', border: '1px solid var(--border)',
                   background: statusFilter === o.v ? 'var(--accent, #C8102E)' : 'transparent',
                   color: statusFilter === o.v ? '#fff' : 'var(--text-primary)',
                   fontWeight: statusFilter === o.v ? 600 : 400,

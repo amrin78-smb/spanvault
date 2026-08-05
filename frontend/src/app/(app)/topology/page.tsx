@@ -239,7 +239,7 @@ function MapTab({
         style={{ padding: 4, flex: 1, minHeight: 360, display: 'flex', flexDirection: 'column' }}
       >
         {hasGraph && tmap.data ? (
-          <div style={{ flex: 1, minHeight: 0, width: '100%', background: '#f8fafc', borderRadius: 6, overflow: 'hidden' }}>
+          <div style={{ flex: 1, minHeight: 0, width: '100%', background: '#f8fafc', borderRadius: 'var(--radius-sm)', overflow: 'hidden' }}>
             <TopologyMapView nodes={tmap.data.nodes} edges={tmap.data.edges} interactive />
           </div>
         ) : (
@@ -264,10 +264,12 @@ function MapTab({
             <>
               {/* Link protocol colors */}
               <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                {/* intentional: 22x3 decorative sliver standing in for a map link line. */}
                 <span style={{ display: 'inline-block', width: 22, height: 3, background: '#2563eb', borderRadius: 2 }} />
                 LLDP
               </span>
               <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                {/* intentional: 22x3 decorative sliver standing in for a map link line. */}
                 <span style={{ display: 'inline-block', width: 22, height: 3, background: '#f97316', borderRadius: 2 }} />
                 CDP
               </span>
@@ -280,6 +282,7 @@ function MapTab({
                 ['#94a3b8', 'Unknown'],
               ] as const).map(([color, label]) => (
                 <span key={label} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                  {/* intentional: 3px on a 10x10 legend swatch — --radius-sm would render it as a circle. */}
                   <span style={{ display: 'inline-block', width: 10, height: 10, background: color, borderRadius: 3 }} />
                   {label}
                 </span>

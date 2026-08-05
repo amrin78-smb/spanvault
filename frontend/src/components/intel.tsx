@@ -91,7 +91,7 @@ export function GradeBadge({ grade }: { grade: string | null | undefined }) {
   return (
     <span style={{
       display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-      minWidth: 24, height: 24, padding: '0 7px', borderRadius: 6,
+      minWidth: 24, height: 24, padding: '0 7px', borderRadius: 'var(--radius-sm)',
       fontWeight: 700, fontSize: 'var(--text-base)', color: c, background: `${c}1a`,
     }}>{g}</span>
   );
@@ -103,8 +103,8 @@ export function ScoreBar({ score, width = 120 }: { score: number | string | null
   const c = scoreColor(s);
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-      <div style={{ width, height: 8, borderRadius: 5, background: 'var(--border)', overflow: 'hidden' }}>
-        <div style={{ width: `${s != null ? Math.max(2, Math.min(100, s)) : 0}%`, height: '100%', background: c, borderRadius: 5 }} />
+      <div style={{ width, height: 8, borderRadius: 'var(--radius-pill)', background: 'var(--border)', overflow: 'hidden' }}>
+        <div style={{ width: `${s != null ? Math.max(2, Math.min(100, s)) : 0}%`, height: '100%', background: c, borderRadius: 'var(--radius-pill)' }} />
       </div>
       <span style={{ fontSize: 'var(--text-base)', fontWeight: 700, color: c, minWidth: 30, textAlign: 'right' }}>
         {s != null ? Math.round(s) : '—'}

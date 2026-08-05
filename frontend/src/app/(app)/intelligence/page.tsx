@@ -96,8 +96,8 @@ function ScoreMiniBar({ score, width = 60, height = 4, showValue = true }: {
   const c = scoreColor(s);
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-      <div style={{ width, height, borderRadius: 2, background: 'var(--border)', overflow: 'hidden', flex: 'none' }}>
-        <div style={{ width: `${s != null ? Math.max(2, Math.min(100, s)) : 0}%`, height: '100%', background: c, borderRadius: 2 }} />
+      <div style={{ width, height, borderRadius: 'var(--radius-pill)', background: 'var(--border)', overflow: 'hidden', flex: 'none' }}>
+        <div style={{ width: `${s != null ? Math.max(2, Math.min(100, s)) : 0}%`, height: '100%', background: c, borderRadius: 'var(--radius-pill)' }} />
       </div>
       {showValue && (
         <span style={{ fontSize: 'var(--text-sm)', fontWeight: 700, color: c, minWidth: 24, textAlign: 'right' }}>

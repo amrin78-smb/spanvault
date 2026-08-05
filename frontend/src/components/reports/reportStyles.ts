@@ -94,7 +94,7 @@ export const CHART_NOTE: CSSProperties = { fontSize: 'var(--text-sm)', color: 'v
 // Shared recharts tooltip styling — recharts' built-in tooltip background is a
 // hardcoded white box that doesn't flip in dark mode, so theme it with tokens.
 export const TOOLTIP_STYLE = {
-  contentStyle: { background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 8, color: 'var(--text-primary)' },
+  contentStyle: { background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', color: 'var(--text-primary)' },
   labelStyle: { color: 'var(--text-muted)' },
   itemStyle: { color: 'var(--text-primary)' },
 };

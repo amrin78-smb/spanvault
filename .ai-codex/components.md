@@ -86,3 +86,5 @@ another component's function body) across `frontend/src/components/**` and
 file, just not exported. This matches CLAUDE.md's explicit rule ("NEVER define
 a component inside another component — causes remount/focus-loss on every
 keystroke") — the codebase currently follows it.
+
+(c) CornersToggle — Rounded/Square segmented row rendered INSIDE the avatar dropdown in TopBar.tsx (uses the sv-dropdown-item class, sits below ThemeToggle variant="item"). Not in Settings: that page is admin-only and this is a per-browser preference every role must reach. Not in the top bar either — it looked wrong there. Reads its value in useEffect, never at render (the <html> attribute does not exist during SSR — reading at render is a hydration mismatch).

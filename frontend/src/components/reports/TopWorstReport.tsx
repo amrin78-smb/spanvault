@@ -115,7 +115,7 @@ export default function TopWorstReport({ data }: { data: TopWorst }) {
                         minWidth: 26,
                         height: 22,
                         padding: '0 6px',
-                        borderRadius: 999,
+                        borderRadius: 'var(--radius-pill)',
                         background: rankBg,
                         color: '#ffffff',
                         fontSize: 'var(--text-xs)',
@@ -135,7 +135,7 @@ export default function TopWorstReport({ data }: { data: TopWorst }) {
                           flex: 1,
                           minWidth: 80,
                           height: 4,
-                          borderRadius: 2,
+                          borderRadius: 'var(--radius-pill)',
                           background: 'var(--surface-subtle)',
                           overflow: 'hidden',
                         }}

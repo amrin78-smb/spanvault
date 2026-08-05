@@ -156,3 +156,5 @@ isGlyphKind(kind) / deviceGlyphFor(typeOrName) / serviceGlyphFor(type) — glyph
 glyphArt(kind, color, strokeWidth) — inline SVG art for a glyph kind
 MapGlyph({kind,x,y,size,color,strokeWidth}) / GlyphSwatch({kind,size,color}) — React glyph components
 ```
+
+(lib) frontend/src/lib/corners.ts — rounded/square corner switch. getCorners/applyCorners/toggleCorners/CORNERS_INIT_SCRIPT. Key sv-corners (matches theme.ts sv- prefix, NOT spanvault-), event sv:corners, attribute data-corners="square" on <html>; rounded = ABSENCE of the attribute (there is deliberately no [data-corners="rounded"] rule). Overrides --radius/--radius-sm/--radius-pill ONLY, so any hardcoded numeric borderRadius opts that component out SILENTLY — always use the token.

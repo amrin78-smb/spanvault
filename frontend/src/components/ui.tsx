@@ -163,7 +163,7 @@ export function EmptyState({ icon, title, message, actionLabel, onAction }: {
     }}>
       {icon && (
         <div style={{
-          width: 56, height: 56, borderRadius: 14, marginBottom: 16,
+          width: 56, height: 56, borderRadius: 'var(--radius)', marginBottom: 16,
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           background: 'var(--bg-primary)', border: '1px solid var(--border)', color: 'var(--text-muted)',
         }}>
@@ -257,6 +257,7 @@ export function Spinner({ size = 14, color = 'var(--primary)' }: { size?: number
     <span style={{
       display: 'inline-block', width: size, height: size,
       border: `2px solid var(--border)`, borderTopColor: color,
+      // intentional: spinner ring — stays round in square-corner mode.
       borderRadius: '50%', animation: 'spin 0.8s linear infinite',
     }} />
   );
@@ -296,7 +297,7 @@ const PAGER_ROW: React.CSSProperties = {
   gap: 12, marginTop: 12, flexWrap: 'wrap',
 };
 const PAGER_BTN: React.CSSProperties = {
-  fontSize: 'var(--text-base)', padding: '4px 12px', borderRadius: 6,
+  fontSize: 'var(--text-base)', padding: '4px 12px', borderRadius: 'var(--radius-sm)',
   border: '1px solid var(--border)', background: 'var(--bg-card)',
   color: 'var(--text-primary)', cursor: 'pointer', lineHeight: 1.4,
 };

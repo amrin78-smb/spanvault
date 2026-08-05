@@ -244,7 +244,7 @@ export default function NetworkSummaryReport({ data }: { data: NetworkSummary })
                     flex: 1,
                     height: 4,
                     background: 'var(--border)',
-                    borderRadius: 2,
+                    borderRadius: 'var(--radius-pill)',
                     overflow: 'hidden',
                   }}
                 >

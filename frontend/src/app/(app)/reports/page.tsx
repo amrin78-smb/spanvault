@@ -951,7 +951,7 @@ export default function ReportsPage() {
                   {saved.data?.map((s) => (
                     <span key={s.id} style={{
                       display: 'inline-flex', alignItems: 'center', height: 24,
-                      border: '1px solid var(--border)', borderRadius: 999, overflow: 'hidden',
+                      border: '1px solid var(--border)', borderRadius: 'var(--radius-pill)', overflow: 'hidden',
                       background: 'var(--bg-card)',
                     }}>
                       <button onClick={() => loadSaved(s)} title={`Load "${s.name}"`}
@@ -966,7 +966,7 @@ export default function ReportsPage() {
                   ))}
                   {applied && !empty && !loading && !showSave && (
                     <button onClick={() => setShowSave(true)}
-                      style={{ display: 'inline-flex', alignItems: 'center', height: 24, border: '1px dashed var(--border)', borderRadius: 999, background: 'var(--bg-card)', cursor: 'pointer', fontSize: 'var(--text-xs)', fontWeight: 600, color: 'var(--primary)', padding: '0 10px' }}>
+                      style={{ display: 'inline-flex', alignItems: 'center', height: 24, border: '1px dashed var(--border)', borderRadius: 'var(--radius-pill)', background: 'var(--bg-card)', cursor: 'pointer', fontSize: 'var(--text-xs)', fontWeight: 600, color: 'var(--primary)', padding: '0 10px' }}>
                       + Save this report
                     </button>
                   )}

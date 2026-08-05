@@ -1840,7 +1840,7 @@ function EditorLabel({
           onBlur={onCommit}
           onKeyDown={(e) => { if (e.key === 'Enter') onCommit(); }}
           onMouseDown={(e) => e.stopPropagation()}
-          style={{ font: `${label.bold ? '700 ' : ''}${fs}px sans-serif`, color: label.color, width: '100%', border: '1px solid #3b82f6', borderRadius: 4, padding: '0 4px' }}
+          style={{ font: `${label.bold ? '700 ' : ''}${fs}px sans-serif`, color: label.color, width: '100%', border: '1px solid #3b82f6', borderRadius: 'var(--radius-sm)', padding: '0 4px' }}
         />
       </foreignObject>
     );
@@ -1927,6 +1927,7 @@ function ConnLiveReadout({ connection }: { connection: MapConnection }) {
   const color = live.pct != null ? utilColor(live.pct) : '#22c55e';
   return (
     <p style={{ fontSize: 'var(--text-sm)', margin: '2px 0 0', display: 'flex', alignItems: 'center', gap: 6 }}>
+      {/* intentional: live-status dot — stays round in square-corner mode. */}
       <span style={{ width: 9, height: 9, borderRadius: '50%', background: color, display: 'inline-block' }} />
       <span>Live: {live.pct != null ? `${live.pct.toFixed(0)}% · ` : ''}{fmtBps(live.bps)}</span>
     </p>

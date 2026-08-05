@@ -32,7 +32,7 @@ export default function SiteScopeBanner() {
         gap: 8,
         padding: '8px 14px',
         marginBottom: 14,
-        borderRadius: 8,
+        borderRadius: 'var(--radius)',
         background: 'var(--tint-info)',
         border: '1px solid var(--tint-info)',
         color: 'var(--tint-info-fg)',

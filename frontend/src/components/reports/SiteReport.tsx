@@ -212,7 +212,7 @@ export default function SiteReport({ data }: { data: SiteSummary }) {
                           display: 'inline-block',
                           width: 70,
                           height: 4,
-                          borderRadius: 2,
+                          borderRadius: 'var(--radius-pill)',
                           background: 'var(--border)',
                           overflow: 'hidden',
                           flex: '0 0 auto',
@@ -224,7 +224,7 @@ export default function SiteReport({ data }: { data: SiteSummary }) {
                             width: `${barWidth}%`,
                             height: '100%',
                             background: barColor,
-                            borderRadius: 2,
+                            borderRadius: 'var(--radius-pill)',
                           }}
                         />
                       </span>

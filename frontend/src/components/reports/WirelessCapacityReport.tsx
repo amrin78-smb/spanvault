@@ -150,6 +150,12 @@ export default function WirelessCapacityReport({ data }: { data: WirelessCapacit
                       minWidth: 2,
                       height: h,
                       background: isPeak ? 'var(--primary)' : 'var(--green)',
+                      /* intentional: chart column cap. These bars are flex-sized with
+                         minWidth 2, so --radius-sm (6px) would visibly dome the tops on
+                         a sparse chart while the original 2px reads as a flat column.
+                         Same class as a legend swatch — a data-visualisation detail, not
+                         a UI surface — and at 2px the residual rounding is imperceptible
+                         in square mode. */
                       borderRadius: '2px 2px 0 0',
                     }}
                   />

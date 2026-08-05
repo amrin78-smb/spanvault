@@ -7,6 +7,7 @@ import { useApi } from '@/lib/api';
 import { IconHome, IconLogout, IconBell } from './icons';
 import TopBarSearch from './TopBarSearch';
 import ThemeToggle from './ThemeToggle';
+import CornersToggle from './CornersToggle';
 
 // Hub URL — derived from the current page's own hostname (so it keeps working
 // if the suite is later accessed via a local-DNS hostname instead of the
@@ -141,6 +142,16 @@ export default function TopBar() {
                 NocVault Hub
               </a>
               <ThemeToggle variant="item" />
+
+              {/* Corner style lives HERE, in the avatar dropdown alongside the
+                  theme toggle, and deliberately NOT on the Settings page:
+                  Settings is admin-only (canManageSettings), but this is a
+                  per-browser display preference stored in localStorage that
+                  every role — viewer included — must be able to set. The
+                  dropdown is the suite's home for per-user preferences and it
+                  keeps the navy top bar uncluttered. */}
+              <CornersToggle />
+
               <div className="sv-dropdown-divider" />
               <button className="sv-dropdown-item danger" onClick={handleSignOut}>
                 <IconLogout width={16} height={16} />

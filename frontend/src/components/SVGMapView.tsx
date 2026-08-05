@@ -265,6 +265,7 @@ export default function SVGMapView({
               <span style={{ fontWeight: 600 }}>Link util</span>
               {utilLegend.map(({ pct, color }) => (
                 <span key={pct} className="item" style={{ gap: 3 }}>
+                  {/* intentional: 2px on a 10x10 legend swatch — --radius-sm would render it as a circle. */}
                   <span style={{ width: 10, height: 10, borderRadius: 2, background: color, display: 'inline-block' }} />
                   {pct}%
                 </span>

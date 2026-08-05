@@ -670,7 +670,7 @@ function ServiceProblems({ checks }: { checks: ServiceCheck[] }) {
             <span style={{ fontWeight: 600, color: 'var(--text-primary)', whiteSpace: 'nowrap' }}>{c.name}</span>
             <span style={{
               flexShrink: 0, fontSize: 'var(--text-xs)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.03em',
-              color: 'var(--text-muted)', background: 'var(--border)', padding: '1px 6px', borderRadius: 4,
+              color: 'var(--text-muted)', background: 'var(--border)', padding: '1px 6px', borderRadius: 'var(--radius-sm)',
             }}>
               {(c.type || '').toUpperCase()}
             </span>
@@ -807,7 +807,7 @@ function ActiveProblems({ api }: { api: Api<Problem[]> }) {
                       title="Site gateway is down"
                       style={{
                         fontSize: 'var(--text-xs)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.03em',
-                        color: '#fff', background: 'var(--red)', padding: '1px 6px', borderRadius: 4, whiteSpace: 'nowrap',
+                        color: '#fff', background: 'var(--red)', padding: '1px 6px', borderRadius: 'var(--radius-sm)', whiteSpace: 'nowrap',
                       }}
                     >
                       Gateway Down{p.suppressed_in_site > 0 ? ` · ${p.suppressed_in_site} suppressed` : ''}
@@ -943,9 +943,9 @@ function SiteHealthCard({ api }: { api: Api<SiteHealth[]> }) {
                     <Link href={`/sites/${st.site_id}`} style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{st.site_name}</Link>
                   ) : <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{st.site_name}</span>}
                 </span>
-                <span style={{ flex: 1, height: 4, borderRadius: 2, background: 'var(--border)', overflow: 'hidden' }}>
+                <span style={{ flex: 1, height: 4, borderRadius: 'var(--radius-pill)', background: 'var(--border)', overflow: 'hidden' }}>
                   <span style={{
-                    display: 'block', height: '100%', borderRadius: 2,
+                    display: 'block', height: '100%', borderRadius: 'var(--radius-pill)',
                     width: `${pct != null ? Math.max(2, pct) : 0}%`, background: uptimeColor(pct),
                   }} />
                 </span>
@@ -1291,9 +1291,9 @@ function SlaBreaches({ api }: { api: Api<Sla> }) {
                   <Link href={`/devices/${d.id}`} style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{d.name}</Link>
                   {d.site_name && <span style={{ color: 'var(--text-muted)' }}> · {d.site_name}</span>}
                 </span>
-                <span style={{ flex: 1, height: 4, borderRadius: 2, background: 'var(--border)', overflow: 'hidden' }}>
+                <span style={{ flex: 1, height: 4, borderRadius: 'var(--radius-pill)', background: 'var(--border)', overflow: 'hidden' }}>
                   <span style={{
-                    display: 'block', height: '100%', borderRadius: 2,
+                    display: 'block', height: '100%', borderRadius: 'var(--radius-pill)',
                     width: `${pct != null ? Math.max(2, Math.min(100, pct)) : 0}%`, background: 'var(--red)',
                   }} />
                 </span>
@@ -1361,9 +1361,9 @@ function ApproachingCapacity({ api }: { api: Api<CapacityRow[]> }) {
                   {c.name}
                 </Link>
                 <span style={{ width: 54, color: 'var(--text-muted)', flexShrink: 0 }}>{capacityMetricLabel(c.metric)}</span>
-                <span style={{ flex: 1, height: 4, borderRadius: 2, background: 'var(--border)', overflow: 'hidden' }}>
+                <span style={{ flex: 1, height: 4, borderRadius: 'var(--radius-pill)', background: 'var(--border)', overflow: 'hidden' }}>
                   <span style={{
-                    display: 'block', height: '100%', borderRadius: 2,
+                    display: 'block', height: '100%', borderRadius: 'var(--radius-pill)',
                     width: `${p95 != null ? Math.min(100, Math.max(2, p95)) : 0}%`, background: color,
                   }} />
                 </span>
@@ -1445,7 +1445,7 @@ function RecurringPatterns({ api }: { api: Api<PatternRow[]> }) {
                     title={`${p.occurrence_count} occurrence${p.occurrence_count === 1 ? '' : 's'}`}
                     style={{
                       flexShrink: 0, fontSize: 'var(--text-xs)', fontWeight: 700, color: '#fff',
-                      background: confColor(pct), padding: '1px 7px', borderRadius: 10, whiteSpace: 'nowrap',
+                      background: confColor(pct), padding: '1px 7px', borderRadius: 'var(--radius-pill)', whiteSpace: 'nowrap',
                     }}
                   >
                     {pct}%
@@ -1584,7 +1584,7 @@ function MaintenanceGroup({ api }: { api: Api<MaintenanceData> }) {
                 fontSize: 'var(--text-xs)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.03em',
                 color: isActive ? '#fff' : 'var(--text-muted)',
                 background: isActive ? '#2563eb' : 'var(--border)',
-                padding: '1px 6px', borderRadius: 4, whiteSpace: 'nowrap', flexShrink: 0,
+                padding: '1px 6px', borderRadius: 'var(--radius-sm)', whiteSpace: 'nowrap', flexShrink: 0,
               }}
             >
               {isActive ? 'Active' : 'Upcoming'}
@@ -1661,8 +1661,8 @@ function IntelBar({ label, score }: { label: string; score: number }) {
         <span style={{ color: 'var(--text-muted)' }}>{label}</span>
         <span style={{ color: c, fontWeight: 600 }}>{score}</span>
       </div>
-      <span style={{ display: 'block', height: 4, borderRadius: 2, background: 'var(--border)', overflow: 'hidden' }}>
-        <span style={{ display: 'block', height: '100%', borderRadius: 2, width: `${Math.max(2, pct)}%`, background: c }} />
+      <span style={{ display: 'block', height: 4, borderRadius: 'var(--radius-pill)', background: 'var(--border)', overflow: 'hidden' }}>
+        <span style={{ display: 'block', height: '100%', borderRadius: 'var(--radius-pill)', width: `${Math.max(2, pct)}%`, background: c }} />
       </span>
     </div>
   );
@@ -1676,7 +1676,7 @@ function WirelessChip({ n, label, color, href, title }: { n: number; label: stri
   if (href) {
     return (
       <Link href={href} title={title} style={{
-        display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 7px', borderRadius: 4,
+        display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 7px', borderRadius: 'var(--radius-sm)',
         background: bg, border: `1px solid ${bd}`, color: fg, fontWeight: 600, whiteSpace: 'nowrap',
         textDecoration: 'none', cursor: 'pointer',
       }}>{body}</Link>
@@ -1684,7 +1684,7 @@ function WirelessChip({ n, label, color, href, title }: { n: number; label: stri
   }
   return (
     <span title={title} style={{
-      display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 7px', borderRadius: 4,
+      display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 7px', borderRadius: 'var(--radius-sm)',
       background: bg, border: `1px solid ${bd}`, color: fg, fontWeight: 600, whiteSpace: 'nowrap',
     }}>{body}</span>
   );

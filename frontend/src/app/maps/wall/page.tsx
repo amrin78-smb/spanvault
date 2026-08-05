@@ -41,7 +41,7 @@ function WallControls(props: {
     background: '#1e293b',
     color: '#e2e8f0',
     border: '1px solid #334155',
-    borderRadius: 6,
+    borderRadius: 'var(--radius-sm)',
     padding: '6px 12px',
     fontSize: 'var(--text-base)',
     cursor: 'pointer',

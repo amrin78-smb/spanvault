@@ -91,7 +91,7 @@ const GRAPH_HEADER: CSSProperties = {
   gap: 8, marginBottom: 10,
 };
 const TAB_BTN_BASE: CSSProperties = {
-  fontSize: 'var(--text-xs)', padding: '2px 8px', borderRadius: 6, border: '1px solid var(--border)',
+  fontSize: 'var(--text-xs)', padding: '2px 8px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)',
   background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', lineHeight: 1.4,
 };
 const TAB_BTN_ACTIVE: CSSProperties = {

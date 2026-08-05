@@ -825,7 +825,7 @@ function ProgressBar({ pct, width }: { pct: number | null | undefined; width?: n
   const c = p > 80 ? 'var(--red)' : p >= 60 ? 'var(--yellow)' : 'var(--green)';
   return (
     <div style={{
-      width: width ?? 48, height: 4, borderRadius: 2, background: 'var(--border)',
+      width: width ?? 48, height: 4, borderRadius: 'var(--radius-pill)', background: 'var(--border)',
       overflow: 'hidden', display: 'inline-block', verticalAlign: 'middle',
     }}>
       <div style={{ width: `${p}%`, height: '100%', background: c }} />
@@ -839,7 +839,7 @@ function GradeBadge({ grade }: { grade: string }) {
   return (
     <span style={{
       fontSize: 'var(--text-xs)', fontWeight: 700, color: c, border: `1px solid ${c}`,
-      borderRadius: 4, padding: '0 6px', lineHeight: '16px', display: 'inline-block',
+      borderRadius: 'var(--radius-sm)', padding: '0 6px', lineHeight: '16px', display: 'inline-block',
     }}>{grade}</span>
   );
 }
@@ -1671,7 +1671,7 @@ function ControllerGroupHeader({
       style={{
         display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer',
         padding: '10px 14px', background: 'var(--bg-primary)',
-        border: '1px solid var(--border)', borderRadius: 8,
+        border: '1px solid var(--border)', borderRadius: 'var(--radius)',
       }}
     >
       <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', width: 12, textAlign: 'center' }}>
@@ -2276,6 +2276,7 @@ function ApDetailDrawer({
                       title="Weak client — low signal/sticky/roaming or a low data rate"
                       style={{
                         display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                        // intentional: circular icon bubble — stays round in square-corner mode.
                         width: 16, height: 16, borderRadius: '50%', flexShrink: 0,
                         background: 'var(--tint-warn)', color: 'var(--tint-warn-fg)',
                       }}
@@ -2286,6 +2287,7 @@ function ApDetailDrawer({
                 </span>
                 <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, width: 90 }}>
                   <span style={{
+                    // intentional: signal status dot — stays round in square-corner mode.
                     width: 8, height: 8, borderRadius: '50%',
                     background: signalColor(c.rssi_dbm), display: 'inline-block',
                   }} />
@@ -2441,7 +2443,7 @@ function RadioBandStats({
   return (
     <div style={{
       flex: '1 1 200px', minWidth: 180,
-      border: '1px solid var(--border)', borderRadius: 8, padding: '10px 12px',
+      border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '10px 12px',
     }}>
       <div style={{ fontWeight: 700, marginBottom: 8 }}>{band}</div>
       <div style={{
@@ -2795,7 +2797,7 @@ function ScoreBar({ label, value }: { label: string; value: number | null }) {
           <span style={{ fontWeight: 600 }}>N/A</span>
         </div>
         <div style={{
-          height: 8, borderRadius: 4, background: 'var(--bg-primary)',
+          height: 8, borderRadius: 'var(--radius-pill)', background: 'var(--bg-primary)',
           border: '1px solid var(--border)',
         }} title="Not available for this vendor" />
       </div>
@@ -2812,7 +2814,7 @@ function ScoreBar({ label, value }: { label: string; value: number | null }) {
         <span style={{ color: scoreColor(v), fontWeight: 600 }}>{v}/100</span>
       </div>
       <div style={{
-        height: 8, borderRadius: 4, background: 'var(--bg-primary)',
+        height: 8, borderRadius: 'var(--radius-pill)', background: 'var(--bg-primary)',
         border: '1px solid var(--border)', overflow: 'hidden',
       }}>
         <div style={{ width: `${v}%`, height: '100%', background: scoreColor(v) }} />
@@ -3251,6 +3253,7 @@ function SignalCell({ rssi }: { rssi: number | null }) {
   return (
     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
       <span style={{
+        // intentional: signal status dot — stays round in square-corner mode.
         width: 9, height: 9, borderRadius: '50%',
         background: signalColor(rssi), display: 'inline-block',
       }} />
@@ -3678,13 +3681,14 @@ function SignalQualityBar({ rssi }: { rssi: number | null }) {
   return (
     <div>
       <div style={{
-        position: 'relative', height: 12, borderRadius: 6,
+        position: 'relative', height: 12, borderRadius: 'var(--radius-pill)',
         background: 'linear-gradient(to right, var(--red), var(--yellow), var(--green))',
         border: '1px solid var(--border)',
       }}>
         {rssi != null && (
           <div style={{
             position: 'absolute', top: -3, left: `calc(${pct}% - 4px)`,
+            // intentional: 3px on a 10px-wide marker — --radius-sm would round it into a capsule.
             width: 10, height: 16, borderRadius: 3,
             background: signalColor(rssi), border: '2px solid var(--bg-card)',
             boxShadow: '0 0 0 1px var(--border)',
@@ -3721,7 +3725,7 @@ function clientEventMeta(ev: ClientEvent): { color: string; text: string | JSX.E
 // Small pill-style range tabs — mirrors devices/[id] page's RangeTabs
 // (TAB_BTN_BASE/TAB_BTN_ACTIVE) sizing/styling for a compact slide-over.
 const CLIENT_RANGE_BTN_BASE: React.CSSProperties = {
-  fontSize: 'var(--text-xs)', padding: '2px 8px', borderRadius: 6, border: '1px solid var(--border)',
+  fontSize: 'var(--text-xs)', padding: '2px 8px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)',
   background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', lineHeight: 1.4,
 };
 const CLIENT_RANGE_BTN_ACTIVE: React.CSSProperties = {
@@ -4433,7 +4437,7 @@ function ControllerDiagnosticsModal({ controller, onClose }: { controller: Contr
             {data.timed_out && (
               <div style={{
                 background: 'var(--tint-warn)', color: 'var(--tint-warn-fg)',
-                fontSize: 'var(--text-sm)', borderRadius: 8, padding: '8px 10px', marginBottom: 12,
+                fontSize: 'var(--text-sm)', borderRadius: 'var(--radius)', padding: '8px 10px', marginBottom: 12,
               }}>
                 The walk hit its time limit — results are partial.
                 {Array.isArray(data.skipped) && data.skipped.length > 0 && (
@@ -4484,7 +4488,7 @@ function ControllerDiagnosticsModal({ controller, onClose }: { controller: Contr
             )}
             <details>
               <summary style={{ cursor: 'pointer', fontSize: 'var(--text-base)', color: 'var(--text-muted)' }}>Raw JSON</summary>
-              <pre style={{ maxHeight: 280, overflow: 'auto', fontSize: 'var(--text-xs)', background: 'var(--bg-code, #0b1020)', color: 'var(--text-code, #cbd5e1)', padding: 10, borderRadius: 6 }}>
+              <pre style={{ maxHeight: 280, overflow: 'auto', fontSize: 'var(--text-xs)', background: 'var(--bg-code, #0b1020)', color: 'var(--text-code, #cbd5e1)', padding: 10, borderRadius: 'var(--radius-sm)' }}>
                 {JSON.stringify(data, null, 2)}
               </pre>
             </details>
@@ -5211,7 +5215,7 @@ function DeviceSelector({
     return (
       <div style={{
         display: 'flex', alignItems: 'center', gap: 10, marginTop: 6,
-        border: '1px solid var(--border)', borderRadius: 8, padding: '8px 12px',
+        border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '8px 12px',
       }}>
         <div style={{ flex: 1 }}>
           <div style={{ fontWeight: 600 }}>{selected.name}</div>
@@ -5234,7 +5238,7 @@ function DeviceSelector({
         disabled={loading}
       />
       <div style={{
-        marginTop: 6, border: '1px solid var(--border)', borderRadius: 8,
+        marginTop: 6, border: '1px solid var(--border)', borderRadius: 'var(--radius)',
         maxHeight: 220, overflowY: 'auto',
       }}>
         {matches.length ? matches.map((d: DeviceRow) => (

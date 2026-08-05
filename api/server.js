@@ -36,6 +36,11 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.87.0': [
+    'You can now switch the whole interface between rounded and square corners. The control is in the avatar menu at the top right, under "Corners" — it applies instantly across every page and switches back just as easily. Neither look is temporary or "the real one".',
+    'The choice is remembered per browser and is yours alone: it changes nothing for other users, needs no administrator rights, and is applied before the page draws so there is no flicker on load.',
+    'Elements meant to be round stay round — status dots, avatars, map markers and the small colour swatches in chart legends are deliberately unaffected, since squaring those reads as a fault rather than a style.',
+  ],
   '1.86.9': [
     'Fixed a data-visibility fault in the wireless PDF reports. A user restricted to certain sites received every site\'s wireless data in five places — the client list, the RF and intelligence scores, the top SSIDs and the licensed-AP counts — even though the same information on screen was correctly limited to their own sites. On this server that meant a report showing 1,253 wireless clients where the viewer should only have seen 372. All five now honour the same site restriction the rest of the application uses. Nothing changes for administrators, who see everything either way.',
     'Corrected rogue access-point signal strength. Roughly half of all detected rogue APs (6,001 of 12,361 here) were recorded at the strongest possible signal when the reading actually meant the opposite — no detectable signal above background noise. Any list ordered by signal strength was therefore showing the faintest, most distant rogues at the top, exactly reversing which ones deserve attention. Readings correct themselves automatically within one polling cycle; no action is needed.',
