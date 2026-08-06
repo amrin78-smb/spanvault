@@ -563,11 +563,13 @@ function SiteAccordion({
         ) : (
           <span className="site-nm">{group.name}</span>
         )}
-        {/* No flex spacer here: .sv-acc-head .site-nm already carries flex:1, so
-            adding one would split the free space and strand the count mid-row. */}
         <span className="sv-muted" style={{ fontWeight: 400, fontSize: 'var(--text-sm)' }}>
           {group.devices.length} {group.devices.length === 1 ? 'device' : 'devices'}
         </span>
+        {/* This spacer, not the site-name link, absorbs the free width — so the
+            empty middle of the header toggles the section instead of navigating
+            to the site page. See the .site-nm rule in globals.css. */}
+        <span style={{ flex: 1 }} />
         <span className="sv-acc-summary" style={{ fontSize: 'var(--text-sm)' }}>
           {gatewayDown && (
             <span className="sv-acc-gw-down" title={`Site gateway ${gateway?.name} is down`}>

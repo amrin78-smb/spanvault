@@ -1490,7 +1490,13 @@ body.sv-noc .sv-content:has(.sv-tabs.sticky) > :first-child { padding-top: 28px;
 .sv-acc-head.warning { border-left-color: var(--sv-warning); }
 .sv-acc-head .chev { transition: transform 0.15s; color: var(--text-muted); flex: none; }
 .sv-acc-head .chev.open { transform: rotate(90deg); }
-.sv-acc-head .site-nm { flex: 1; }
+/* The site name is a LINK to the site page, so it must hug its text — it used to
+   carry flex:1, which stretched its hit area across ~68% of the header (874 of
+   1284px measured) and meant a click anywhere in the middle navigated away
+   instead of expanding the section. Harmless while sites defaulted to open;
+   a real trap once they default to collapsed (1.88.1) and expanding became the
+   primary action. The header's own flex spacer does the filling now. */
+.sv-acc-head .site-nm { flex: 0 0 auto; }
 .sv-acc-head .sv-acc-link:hover { color: var(--primary); text-decoration: underline; }
 .sv-acc-summary { display: flex; align-items: center; gap: 8px; font-size: var(--text-sm); font-weight: 600; }
 .sv-pill { display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border-radius: var(--radius-pill); }
