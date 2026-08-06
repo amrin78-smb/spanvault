@@ -36,6 +36,10 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.88.1': [
+    'The Devices page now opens with every site collapsed, so you land on a one-line summary per site — device count, how many are up, warning and down, and the site\'s average health — instead of every device row at once. Open the sites you care about, or use Expand All.',
+    'Searching temporarily opens every site, so matches are never hidden inside a collapsed section. Clearing the search puts back whichever sites you had open yourself.',
+  ],
   '1.88.0': [
     'The Devices page has been rebuilt as a proper inventory table. Each site still groups into its own collapsible section, but devices now sit in real columns — Device, Type, Vendor / Model, IP Address, Status, Health Score, Last Alert and Last Seen — instead of the previous dense row layout, so devices can be compared down a column at a glance.',
     'Vendor and model are filled in from your NetVault inventory, matched either by the link recorded at import or by IP address (6 of the 12 monitored devices match here). Where a device is not in NetVault, the vendor detected over SNMP is shown instead, and anything genuinely unknown shows a dash rather than a guess.',

@@ -184,8 +184,14 @@ export default function DevicesPage() {
   const [showImport, setShowImport] = useState(false);
   const [chip, setChip] = useState('all');
   const [moreOpen, setMoreOpen] = useState(false);
-  // Groups are open by default; this holds the explicitly-collapsed keys.
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  // Sites start COLLAPSED, so the page opens on a per-site overview instead of
+  // every device row at once. Tracking the OPENED keys (rather than the closed
+  // ones) is what makes that the default: the set is empty before any device
+  // data has loaded, and "empty" has to mean closed.
+  const [expandedSites, setExpandedSites] = useState<Set<string>>(new Set());
+  // Agent groups keep the opposite default — collapsing those too would hide the
+  // site summaries this page is meant to land on, leaving only agent names.
+  const [collapsedAgents, setCollapsedAgents] = useState<Set<string>>(new Set());
   const [page, setPage] = useState(1);
 
   // Pre-select the status filter from the URL (?status=up|down|warning|unknown)
@@ -250,16 +256,29 @@ export default function DevicesPage() {
   // yank the user back to page 1 every 20 seconds.
   useEffect(() => { setPage(1); }, [siteCount]);
 
-  const allKeys = hasAgents
-    ? agentGroups.flatMap((g) => [g.key, ...groupBySite(g.devices).map((s) => `${g.key}::${s.key}`)])
+  const siteKeys = hasAgents
+    ? agentGroups.flatMap((g) => groupBySite(g.devices).map((s) => `${g.key}::${s.key}`))
     : flatGroups.map((g) => g.key);
-  const expandAll = () => setCollapsed(new Set());
-  const collapseAll = () => setCollapsed(new Set(allKeys));
-  const toggle = (k: string) => setCollapsed((prev) => {
+  const agentKeys = agentGroups.map((g) => g.key);
+
+  const expandAll = () => { setExpandedSites(new Set(siteKeys)); setCollapsedAgents(new Set()); };
+  const collapseAll = () => { setExpandedSites(new Set()); setCollapsedAgents(new Set(agentKeys)); };
+  const toggleSite = (k: string) => setExpandedSites((prev) => {
     const next = new Set(prev);
     if (next.has(k)) next.delete(k); else next.add(k);
     return next;
   });
+  const toggleAgent = (k: string) => setCollapsedAgents((prev) => {
+    const next = new Set(prev);
+    if (next.has(k)) next.delete(k); else next.add(k);
+    return next;
+  });
+
+  // A search that returns matches into collapsed sections reads as "no results",
+  // so an active query force-opens every site. This overrides rather than
+  // rewrites the manual state, so clearing the search restores whatever the user
+  // had open themselves.
+  const forceOpen = q.trim().length > 0;
 
   return (
     <div>
@@ -350,12 +369,21 @@ export default function DevicesPage() {
         <div className="sv-panel" style={{ padding: 0 }}><TableSkeleton rows={6} cols={6} /></div>
       ) : hasAgents ? (
         agentGroups.map((g) => (
-          <AgentGroup key={g.key} group={g} collapsed={collapsed} onToggle={toggle} showOs={showOs} />
+          <AgentGroup
+            key={g.key} group={g}
+            open={!collapsedAgents.has(g.key)} onToggle={() => toggleAgent(g.key)}
+            expandedSites={expandedSites} onToggleSite={toggleSite}
+            forceOpen={forceOpen} showOs={showOs}
+          />
         ))
       ) : pagedGroups.length ? (
         <>
           {pagedGroups.map((g) => (
-            <SiteAccordion key={g.key} group={g} open={!collapsed.has(g.key)} onToggle={() => toggle(g.key)} showOs={showOs} />
+            <SiteAccordion
+              key={g.key} group={g}
+              open={forceOpen || expandedSites.has(g.key)}
+              onToggle={() => toggleSite(g.key)} showOs={showOs}
+            />
           ))}
           {pageCount > 1 && (
             <SitePager
@@ -430,24 +458,25 @@ function SitePager({
 
 // ── Agent group: collapsible wrapper holding per-site accordions ──
 function AgentGroup({
-  group, collapsed, onToggle, showOs,
+  group, open, onToggle, expandedSites, onToggleSite, forceOpen, showOs,
 }: {
   group: AgentGroupT;
-  collapsed: Set<string>;
-  onToggle: (k: string) => void;
+  open: boolean;
+  onToggle: () => void;
+  expandedSites: Set<string>;
+  onToggleSite: (k: string) => void;
+  forceOpen: boolean;
   showOs: boolean;
 }) {
   const isLocal = group.agentId == null;
   const offline = group.agentStatus === 'offline';
   const siteGroups = groupBySite(group.devices);
   const counts = countByStatus(group.devices);
-  const open = !collapsed.has(group.key);
-
   return (
     <div className="sv-agent-group" style={{ marginBottom: 12 }}>
       <div
         className={`sv-agent-group-head ${isLocal ? 'local' : ''} ${offline ? 'offline' : ''}`}
-        onClick={() => onToggle(group.key)}
+        onClick={onToggle}
         style={{ minHeight: 36, padding: '0 14px', gap: 10, background: 'var(--bg-primary)' }}
       >
         <svg className={`chev ${open ? 'open' : ''}`} width="13" height="13" viewBox="0 0 24 24"
@@ -484,7 +513,13 @@ function AgentGroup({
         <div className="sv-agent-group-body" style={{ padding: 8 }}>
           {siteGroups.map((g) => {
             const k = `${group.key}::${g.key}`;
-            return <SiteAccordion key={k} group={g} open={!collapsed.has(k)} onToggle={() => onToggle(k)} showOs={showOs} />;
+            return (
+              <SiteAccordion
+                key={k} group={g}
+                open={forceOpen || expandedSites.has(k)}
+                onToggle={() => onToggleSite(k)} showOs={showOs}
+              />
+            );
           })}
         </div>
       )}
