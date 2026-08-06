@@ -711,11 +711,48 @@ function DeviceRow({ device, showOs }: { device: Device; showOs: boolean }) {
   );
 }
 
+// Copy text to the clipboard, working on THIS deployment.
+//
+// `navigator.clipboard` only exists in a secure context — HTTPS or localhost.
+// SpanVault is served over plain HTTP on a LAN IP, so it is `undefined` here
+// (verified live: isSecureContext=false, navigator.clipboard=undefined). The
+// original `navigator.clipboard?.writeText(...)` therefore did nothing at all,
+// and the optional chaining meant it failed SILENTLY — the menu closed as if it
+// had worked. Falls back to a hidden textarea + execCommand, which is deprecated
+// but is the only thing that works in a non-secure context. Same approach as
+// netvault's agents page. Returns whether the copy actually happened, so the UI
+// can say so instead of lying.
+function copyText(text: string): boolean {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch { /* fall through */ }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.top = '-9999px';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    ta.setSelectionRange(0, text.length);
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
 // ── Row actions (kebab) ────────────────────────────────────────
 // Editing and deleting a device now live on the device detail page, so this menu
 // only carries navigation/clipboard actions.
 function RowMenu({ device }: { device: Device }) {
   const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState<boolean | null>(null);
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -739,7 +776,7 @@ function RowMenu({ device }: { device: Device }) {
         aria-label={`Actions for ${device.name}`}
         aria-haspopup="menu"
         aria-expanded={open}
-        onClick={() => setOpen((o) => !o)}
+        onClick={() => { setCopied(null); setOpen((o) => !o); }}
         style={{ padding: '2px 8px', lineHeight: 1.1, fontSize: 'var(--text-md)' }}
       >
         ⋮
@@ -760,10 +797,10 @@ function RowMenu({ device }: { device: Device }) {
           <div className="sv-dropdown-divider" />
           <button className="sv-dropdown-item" role="menuitem" style={{ width: '100%', textAlign: 'left' }}
             onClick={() => {
-              navigator.clipboard?.writeText(device.ip_address);
-              setOpen(false);
+              setCopied(copyText(device.ip_address));
+              setTimeout(() => setOpen(false), 700);
             }}>
-            Copy IP address
+            {copied === null ? 'Copy IP address' : copied ? '✓ Copied' : 'Copy failed'}
           </button>
         </div>
       )}

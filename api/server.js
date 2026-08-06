@@ -36,6 +36,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.88.3': [
+    'Fixed "Copy IP address" on the Devices page, which did nothing. Browsers only expose the clipboard to pages served over HTTPS, and this server runs over plain HTTP, so the copy silently failed while the menu closed as though it had worked. It now uses a method that works without HTTPS and tells you whether it succeeded.',
+  ],
   '1.88.2': [
     'Fixed clicking a site row on the Devices page. The site name behaved as a link across roughly two-thirds of the width of the bar, so clicking the apparently empty middle opened that site\'s own page instead of expanding the list of devices. This went unnoticed while sites started expanded; now that they start collapsed, expanding is the main thing you do there. Only the site name itself now navigates — anywhere else on the bar expands and collapses it.',
   ],
