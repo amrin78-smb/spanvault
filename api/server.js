@@ -36,6 +36,13 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.88.0': [
+    'The Devices page has been rebuilt as a proper inventory table. Each site still groups into its own collapsible section, but devices now sit in real columns — Device, Type, Vendor / Model, IP Address, Status, Health Score, Last Alert and Last Seen — instead of the previous dense row layout, so devices can be compared down a column at a glance.',
+    'Vendor and model are filled in from your NetVault inventory, matched either by the link recorded at import or by IP address (6 of the 12 monitored devices match here). Where a device is not in NetVault, the vendor detected over SNMP is shown instead, and anything genuinely unknown shows a dash rather than a guess.',
+    'The health score each device already had is now shown as a ring with its score and rating, and each site header carries the average for its devices, so a weak site is visible without expanding it. New Type and Vendor filters sit alongside the existing site and status filters, with the quick filters moved under "More Filters", plus Expand All / Collapse All.',
+    'Editing and deleting a device have moved to that device\'s own page, where the rest of its settings already live. This clears two buttons off every row and puts changes behind the page showing what you are about to change. The per-row menu keeps the quick actions: view details, view site, and copy IP address.',
+    'The 7-day and 24-hour mini-charts have been removed from the list. They were too small to read at a glance and each one cost a per-device history query on every refresh; the full-size versions on the device page are unaffected.',
+  ],
   '1.87.0': [
     'You can now switch the whole interface between rounded and square corners. The control is in the avatar menu at the top right, under "Corners" — it applies instantly across every page and switches back just as easily. Neither look is temporary or "the real one".',
     'The choice is remembered per browser and is yours alone: it changes nothing for other users, needs no administrator rights, and is applied before the page draws so there is no flicker on load.',
@@ -2422,6 +2429,38 @@ app.get('/api/dashboard/wireless-intel', wrap(async (req, res) => {
 // ══════════════════════════════════════════════════════════════
 // Monitored devices
 // ══════════════════════════════════════════════════════════════
+// ── NetVault inventory enrichment (vendor / model / OS) ──────────────────────
+// monitored_devices carries no model or OS columns — that inventory data lives
+// in NetVault, a SEPARATE database, so it CANNOT be joined in SQL. Devices link
+// two ways: netvault_device_id (stamped on import) or, for manually-added
+// devices, plain IP match. Cached because /api/devices polls every 20s per open
+// client while the inventory itself changes rarely.
+//
+// netvault.devices.ip_address is `character varying`, NOT `inet` — no host()
+// cast (see the matching comment in /api/netvault/devices for how that was
+// confirmed; adding one breaks this query outright).
+let nvInvCache = { at: 0, byIp: new Map(), byId: new Map() };
+const NV_INV_TTL_MS = 5 * 60 * 1000;
+
+async function netvaultInventory() {
+  if (nvInvCache.at && Date.now() - nvInvCache.at < NV_INV_TTL_MS) return nvInvCache;
+  const r = await nv.query(`
+    SELECT d.id::text AS nv_id, d.ip_address, b.name AS vendor, d.model,
+           d.os_type, d.os_version
+    FROM devices d
+    LEFT JOIN brands b ON b.id = d.brand_id
+    WHERE COALESCE(d.device_status, 'Active') <> 'Decommed'
+  `);
+  const byIp = new Map();
+  const byId = new Map();
+  for (const row of r.rows) {
+    if (row.ip_address) byIp.set(String(row.ip_address).trim(), row);
+    byId.set(String(row.nv_id), row);
+  }
+  nvInvCache = { at: Date.now(), byIp, byId };
+  return nvInvCache;
+}
+
 app.get('/api/devices', wrap(async (req, res) => {
   const { status, site_id, q } = req.query;
   const where = ['d.active = TRUE'];
@@ -2434,11 +2473,12 @@ app.get('/api/devices', wrap(async (req, res) => {
   const rows = await sv.query(`
     SELECT d.id, d.name, d.ip_address, d.device_type, d.site_id, d.site_name,
            d.current_status, d.last_response_ms, d.last_seen_at, d.last_checked_at,
-           d.snmp_enabled, d.poll_interval_seconds, d.netvault_device_id,
+           d.snmp_enabled, d.poll_interval_seconds, d.netvault_device_id, d.device_vendor,
            d.is_gateway, d.alert_suppressed, d.suppressed_by_device_id,
            d.agent_id, ag.name AS agent_name, ag.status AS agent_status,
            cpu.value AS latest_cpu_pct, mem.value AS latest_mem_pct,
-           avail.uptime_24h_pct, la.last_alert_at, spark.days AS spark,
+           avail.uptime_24h_pct,
+           la.last_alert_at, la.last_alert_type, la.last_alert_severity,
            hs.score AS health_score, hs.grade AS health_grade, hs.trend AS health_trend
     FROM monitored_devices d
     LEFT JOIN agents ag ON ag.id = d.agent_id
@@ -2459,26 +2499,42 @@ app.get('/api/devices', wrap(async (req, res) => {
       FROM ping_results
       WHERE device_id = d.id AND ts >= NOW() - INTERVAL '24 hours'
     ) avail ON TRUE
+    -- Most recent alert, not just its timestamp: the list's "Last Alert" column
+    -- shows what fired ("High latency"), so ORDER BY + LIMIT 1 replaces the
+    -- older MAX(triggered_at) — same value for last_alert_at, plus the type.
     LEFT JOIN LATERAL (
-      SELECT MAX(triggered_at) AS last_alert_at
+      SELECT triggered_at AS last_alert_at, alert_type AS last_alert_type,
+             severity AS last_alert_severity
       FROM alerts WHERE device_id = d.id AND alert_type <> 'recovery'
         AND triggered_at >= NOW() - INTERVAL '24 hours'
+      ORDER BY triggered_at DESC LIMIT 1
     ) la ON TRUE
-    LEFT JOIN LATERAL (
-      SELECT json_agg(json_build_object('day', to_char(day, 'YYYY-MM-DD'), 'uptime', uptime) ORDER BY day) AS days
-      FROM (
-        SELECT date_trunc('day', ts) AS day,
-               ROUND((1 - (SUM(CASE WHEN status <> 'up' THEN 1 ELSE 0 END)::numeric
-                      / NULLIF(COUNT(*), 0))) * 100, 0) AS uptime
-        FROM ping_results
-        WHERE device_id = d.id AND ts >= date_trunc('day', NOW()) - INTERVAL '6 days'
-        GROUP BY 1
-      ) s
-    ) spark ON TRUE
     WHERE ${where.join(' AND ')}
     ORDER BY d.site_name NULLS LAST, d.name
   `, params);
-  res.json(rows.rows);
+
+  // Enrichment is best-effort: a NetVault outage must degrade the vendor/model
+  // columns to "—", never fail the whole device list.
+  let inv = null;
+  try {
+    inv = await netvaultInventory();
+  } catch (e) {
+    console.warn('[devices] NetVault inventory enrichment unavailable:', e.message);
+  }
+  res.json(rows.rows.map((d) => {
+    const m = inv
+      ? (d.netvault_device_id ? inv.byId.get(String(d.netvault_device_id)) : null)
+        || inv.byIp.get(String(d.ip_address || '').trim())
+        || null
+      : null;
+    return {
+      ...d,
+      nv_vendor: m ? m.vendor : null,
+      nv_model: m ? m.model : null,
+      os_type: m ? m.os_type : null,
+      os_version: m ? m.os_version : null,
+    };
+  }));
 }));
 
 // Global (Ctrl+K) search — typed, grouped results across monitored devices,

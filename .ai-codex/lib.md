@@ -149,6 +149,14 @@ getTheme() / applyTheme(theme) / toggleTheme() — reads/writes THEME_KEY in loc
 THEME_INIT_SCRIPT — inline script string injected in root layout to avoid a flash of wrong theme
 ```
 
+### vendor.ts — SNMP vendor-key → display-label map
+```
+VENDOR_LABELS — Record<vendorKey, label> ('paloalto' → 'Palo Alto', 'hpe-procurve' → 'HPE ProCurve', …)
+vendorLabel(v) — label lookup, passthrough for unknown keys, null for null/empty
+```
+Shared by the devices list and device detail page — they each carried a private
+byte-identical copy until 1.88.0. Import from here rather than re-declaring.
+
 ### mapIcons.tsx — map editor glyph/shape catalog + renderers
 ```
 DEVICE_GLYPHS / SHAPE_GLYPHS / BASIC_SHAPES — catalog arrays for the "+Shape/Icon" palette

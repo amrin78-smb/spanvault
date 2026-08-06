@@ -68,9 +68,9 @@ deliberately skip it).
 - `GET /api/dashboard/wireless-intel` [auth] [db] — network-wide wireless intelligence rollup for the dashboard card
 
 ## Devices
-- `GET /api/devices` [auth] [db] — list with live status/latency/CPU/mem/uptime lateral joins; filters status/site_id/q
+- `GET /api/devices` [auth] [db] — list with live status/latency/CPU/mem/uptime lateral joins; filters status/site_id/q. Also returns `device_vendor`, `last_alert_type`/`last_alert_severity` (the alert LATERAL is ORDER BY+LIMIT 1, not MAX, so the type comes with the timestamp), and NetVault-enriched `nv_vendor`/`nv_model`/`os_type`/`os_version` (see `netvaultInventory()` — cross-DB, merged in JS, 5-min cache, best-effort). No longer returns `spark` (the 7-day per-device uptime LATERAL was dropped in 1.88.0 with the list sparklines)
 - `GET /api/global-search` [auth] [db] — Ctrl+K search across devices/APs/controllers/service checks, all site-scoped
-- `GET /api/devices/sparklines` [auth] [db] — 24 hourly buckets of response_ms/cpu/mem per device id; registered BEFORE `/:id` so Express doesn't treat "sparklines" as an id
+- `GET /api/devices/sparklines` [auth] [db] — 24 hourly buckets of response_ms/cpu/mem per device id; registered BEFORE `/:id` so Express doesn't treat "sparklines" as an id. **No frontend caller since 1.88.0** (the devices list's trend column was removed); left in place as a working endpoint rather than removed — check here first if you're looking for per-device 24h series
 - `GET /api/devices/:id` [auth] [db]
 - `POST /api/devices` [auth+write:site_admin+] [db] — auto-assigns a polling agent by site if one owns it
 - `PUT /api/devices/:id` [auth+write:site_admin+] [db] — pushes updated SNMP creds to the owning agent immediately if agent-polled

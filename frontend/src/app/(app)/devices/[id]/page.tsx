@@ -3,15 +3,17 @@
 import type { CSSProperties, ReactNode } from 'react';
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ReferenceLine, ReferenceArea, ResponsiveContainer,
 } from 'recharts';
 import { useApi, apiSend } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
+import { vendorLabel } from '@/lib/vendor';
 import { StatusDot } from '@/components/StatusDot';
 import SensorManager from '@/components/SensorManager';
-import { StatusBadge, Loading, ErrorBox, Empty, fmtTime, fmtRel, fmtBps, Pager, useClientPagination, CHART_TOOLTIP } from '@/components/ui';
+import { DeviceForm } from '@/components/DeviceModals';
+import { StatusBadge, Loading, ErrorBox, Empty, fmtTime, fmtRel, fmtBps, Pager, useClientPagination, useConfirm, CHART_TOOLTIP } from '@/components/ui';
 import { GradeBadge, ScoreBar, TrendArrow, n as intelNum } from '@/components/intel';
 
 type Device = {
@@ -37,20 +39,6 @@ type Sensor = {
 type TestResult = {
   success: boolean; vendor?: string; sysDescr?: string; sysName?: string; message: string;
 };
-
-// Map a detected vendor key (from the collector's SNMP parser) to a label.
-const VENDOR_LABELS: Record<string, string> = {
-  fortinet: 'Fortinet', cisco: 'Cisco', aruba: 'Aruba', paloalto: 'Palo Alto',
-  checkpoint: 'Check Point', sonicwall: 'SonicWall', forcepoint: 'Forcepoint',
-  sangfor: 'Sangfor', 'hpe-procurve': 'HPE ProCurve', 'hpe-comware': 'HPE Comware',
-  juniper: 'Juniper', huawei: 'Huawei', mikrotik: 'MikroTik', ubiquiti: 'Ubiquiti',
-  dell: 'Dell', extreme: 'Extreme', brocade: 'Brocade', meraki: 'Cisco Meraki',
-  netgear: 'Netgear', tplink: 'TP-Link', generic: 'Generic (standard MIBs)',
-};
-function vendorLabel(v: string | null): string | null {
-  if (!v) return null;
-  return VENDOR_LABELS[v] || v;
-}
 
 const RANGES = [
   { key: '24h', label: '24h' },
@@ -116,12 +104,17 @@ const TRAFFIC_OUT_COLOR = '#f97316';
 export default function DeviceDetailPage() {
   const { canEdit } = useRbac();
   const { id } = useParams<{ id: string }>();
+  const router = useRouter();
+  const { confirm, ConfirmUI } = useConfirm();
   const [range, setRange] = useState('24h');
   const [sensorsOpen, setSensorsOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
   const [toast, setToast] = useState<TestResult | null>(null);
   const [alertLimit, setAlertLimit] = useState(ALERT_LIMIT_DEFAULT);
 
   const device = useApi<Device>(`/api/devices/${id}`, 20000);
+  // Only needed to populate the edit form's site picker.
+  const sites = useApi<{ id: number; name: string }[]>('/api/netvault/sites');
   const ping = useApi<PingPoint[]>(`/api/devices/${id}/ping-history?range=${range}`, 20000);
   const sensors = useApi<Sensor[]>(`/api/devices/${id}/sensors`, 0);
   const alerts = useApi<AlertsResponse>(`/api/devices/${id}/alerts?limit=${alertLimit}`, 20000);
@@ -133,6 +126,19 @@ export default function DeviceDetailPage() {
     const t = setTimeout(() => setToast(null), 7000);
     return () => clearTimeout(t);
   }, [toast]);
+
+  // Moved here from the devices list, where every row carried its own pair of
+  // buttons; the list now links here for anything that changes a device.
+  async function handleDelete(d: Device) {
+    if (!await confirm({
+      title: 'Stop monitoring device?',
+      message: `Stop monitoring "${d.name}"? Historical data will be removed.`,
+      confirmLabel: 'Delete',
+      danger: true,
+    })) return;
+    await apiSend(`/api/devices/${d.id}`, 'DELETE');
+    router.push('/devices');
+  }
 
   if (device.loading && !device.data) return <Loading />;
   if (device.error) return <ErrorBox message={device.error} />;
@@ -148,6 +154,7 @@ export default function DeviceDetailPage() {
 
   return (
     <div>
+      {ConfirmUI}
       {toast && (
         <div className={`sv-toast ${toast.success ? 'ok' : 'err'}`} onClick={() => setToast(null)}>
           {toast.success
@@ -176,6 +183,12 @@ export default function DeviceDetailPage() {
         )}
         {snmpOn && <TestSnmpButton deviceId={d.id} onResult={setToast} />}
         <PingNow deviceId={d.id} />
+        {canEdit && (
+          <>
+            <button className="sv-btn ghost sm" onClick={() => setEditOpen(true)}>Edit</button>
+            <button className="sv-btn danger sm" onClick={() => handleDelete(d)}>Delete</button>
+          </>
+        )}
       </div>
       <p style={{ color: 'var(--text-muted)', fontSize: 'var(--text-base)', margin: '0 0 14px' }}>
         {d.ip_address} · {d.device_type || 'Unknown type'} · {d.site_name || 'Unassigned'}
@@ -296,6 +309,14 @@ export default function DeviceDetailPage() {
           deviceName={d.name}
           onClose={() => setSensorsOpen(false)}
           onSaved={() => { setSensorsOpen(false); sensors.reload(); }}
+        />
+      )}
+      {editOpen && (
+        <DeviceForm
+          device={d}
+          sites={sites.data || []}
+          onClose={() => setEditOpen(false)}
+          onSaved={() => { setEditOpen(false); device.reload(); }}
         />
       )}
     </div>

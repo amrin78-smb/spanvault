@@ -7,8 +7,8 @@ gotchas.md — auth happens via `/sso`.
 ## Route group (app) — main shell, behind SSO auth via middleware.ts
 - `[server]` `/` (layout) — `AppLayout` — sidebar + top bar shell, AlertBanner, IdleTimeout, LicenseGate, per-user app-access gate render
 - `[client]` `/` — `DashboardPage` — enterprise dashboard: KPI strip, MTTR/MTTA, SLA, capacity, patterns, top-talkers, maintenance, wireless health, recent events (30s auto-refresh)
-- `[client]` `/devices` — `DevicesPage` — PRTG-style devices list, per-site collapsible accordions, status pills, inline CPU/mem/ping badges
-- `[client]` `/devices/[id]` — `DeviceDetailPage` — device detail: graphs, sensors, interfaces, dependencies, uptime calendar, quick stats, "Ping Now"
+- `[client]` `/devices` — `DevicesPage` — inventory table (1.88.0 redesign): per-site collapsible accordions each wrapping a real `<table class="sv-table">` with Device / Type / Vendor+Model / IP / [Version+OS] / Status / Health ring / Last Alert / Last Seen / kebab. Site headers carry status pills + an average health ring. Filters: search, site, type, vendor, status, "More Filters" chips, Expand/Collapse All, 25-sites-per-page pager. NO edit/delete here (moved to the detail page) and no sparklines/trend charts
+- `[client]` `/devices/[id]` — `DeviceDetailPage` — device detail: graphs, sensors, interfaces, dependencies, uptime calendar, quick stats, "Ping Now", **Edit + Delete** (moved here from the list in 1.88.0; delete routes back to `/devices`)
 - `[client]` `/sites/[id]` — `SiteDetailPage` — site summary cards, device list, active alerts scoped to the site
 - `[client]` `/alerts` — `AlertsPage` — alert list, acknowledge/resolve, filters
 - `[client]` `/services` — `ServicesPage` — agentless HTTP/TCP/SSL/DNS checks, multi-type collapsible groups, search + status filter

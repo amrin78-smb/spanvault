@@ -34,7 +34,7 @@ importing them are already client components.
 - (c) `SensorManager`  deviceId, deviceName, onClose, onSaved — default export, sensor discovery + selection modal
 - (c) `Sidebar`  (no props) — default export, nav chips, admin-gated items (Agents/Settings)
 - (c) `SiteScopeBanner`  (no props) — shown to a site_admin to indicate their scoped view
-- `Sparkline`  (props not captured — small SVG trend line component, used across device list/detail)
+- `Sparkline`  (props not captured — small SVG trend line component). **Currently imported by nothing**: its only consumer was the devices list's 24h trend column, removed in the 1.88.0 redesign. Kept as a general-purpose primitive rather than deleted; if you need a mini trend chart, this already exists.
 - `StatusDot`  (props not captured — animated up/down/warning/unknown dot; down/warning pulse via CSS keyframes)
 - (c) `ThemeToggle`  variant='icon'|'item' — default export, light/dark toggle
 - (c) `TopBar`  (no props) — default export, user avatar dropdown incl. "NocVault Hub" link (client-derived getHubUrl())
