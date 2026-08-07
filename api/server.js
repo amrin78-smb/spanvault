@@ -36,6 +36,11 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.90.0': [
+    'The Rogue APs table now names the access point that detected each rogue, instead of only showing its hardware address. The name appears with the address beneath it, so you can still match it against controller logs.',
+    'This needed a collector fix first: for access points discovered over SNMP the hardware address was being read and then discarded, so 213 of 224 access points had none stored and there was nothing to match the detection against. It is now recorded, and names will fill in over the next few polling cycles as each controller is polled.',
+    'Where an address cannot be matched to exactly one access point it is left as an address rather than guessed. Access points are often assigned consecutive addresses, so picking the closest match would sometimes credit a detection to the wrong one — misleading in a security view.',
+  ],
   '1.89.2': [
     'Clarified the line above the Rogue APs table. With paging added it said "Showing 1,000" while the table drew 50, contradicting the pager beneath it. It now states how many detections were loaded out of how many match, and the pager alone says which rows are on screen.',
   ],
@@ -6039,10 +6044,35 @@ app.get('/api/wireless/rogues', wrap(async (req, res) => {
     const offset = Math.max(parseInt(req.query.offset || '0', 10) || 0, 0);
 
     const [rows, matched, summary] = await Promise.all([
+      // detecting_ap is stored as the detecting AP's RADIO MAC (it comes out of
+      // the Aruba monAPInfo table index), so it is resolved to a friendly AP name
+      // in two steps, and only when the answer is unambiguous:
+      //   1. exact match on wireless_aps.mac_address;
+      //   2. failing that, match on the first five octets — an AP's radios differ
+      //      only in the last octet, so this catches the radio-vs-base-MAC offset.
+      // Step 2 is applied ONLY when exactly one AP matches. Aruba allocates APs
+      // sequential MACs, so two different APs can share the first five octets;
+      // resolving that to whichever one sorted first would silently attribute a
+      // detection to the wrong AP, which is worse than showing the raw MAC.
+      // Unresolved rows return NULL and the UI keeps displaying the MAC.
       sv.query(`
-        SELECT r.*, c.name AS controller_name, c.site_name, c.vendor
+        SELECT r.*, c.name AS controller_name, c.site_name, c.vendor,
+               COALESCE(exact_ap.name, CASE WHEN near_ap.n = 1 THEN near_ap.name END) AS detecting_ap_name
         FROM wireless_rogue_aps r
         JOIN wireless_controllers c ON c.id = r.controller_id
+        LEFT JOIN LATERAL (
+          SELECT a.name FROM wireless_aps a
+          WHERE a.mac_address IS NOT NULL
+            AND LOWER(a.mac_address) = LOWER(r.detecting_ap)
+          LIMIT 1
+        ) exact_ap ON TRUE
+        LEFT JOIN LATERAL (
+          SELECT MIN(a.name) AS name, COUNT(*)::int AS n
+          FROM wireless_aps a
+          WHERE a.mac_address IS NOT NULL
+            AND r.detecting_ap IS NOT NULL
+            AND LOWER(LEFT(a.mac_address, 14)) = LOWER(LEFT(r.detecting_ap, 14))
+        ) near_ap ON TRUE
         ${whereSql}
         ORDER BY r.last_seen_at DESC
         LIMIT ${limit} OFFSET ${offset}

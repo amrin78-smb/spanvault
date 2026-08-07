@@ -340,6 +340,10 @@ interface RogueAp {
   channel: number | null;
   classification: 'rogue' | 'friendly' | 'malicious' | 'unclassified' | 'interfering' | string;
   detecting_ap: string | null;
+  // Friendly name resolved from wireless_aps by the API, but ONLY when the MAC
+  // maps to exactly one AP. Null when it cannot be resolved unambiguously, in
+  // which case the UI keeps showing the raw MAC rather than guessing.
+  detecting_ap_name: string | null;
   first_seen_at: string | null;
   last_seen_at: string | null;
   controller_name: string | null;
@@ -1109,7 +1113,7 @@ function RogueApsTab() {
     classification: (r) => r.classification,
     rssi: (r) => r.rssi_dbm,
     channel: (r) => r.channel,
-    detecting: (r) => r.detecting_ap,
+    detecting: (r) => r.detecting_ap_name || r.detecting_ap,
     controller: (r) => r.controller_name,
     lastseen: (r) => r.last_seen_at,
   }), [rows, sort]);
@@ -1253,7 +1257,16 @@ function RogueApsTab() {
                       {r.rssi_dbm != null ? `${r.rssi_dbm} dBm` : '—'}
                     </td>
                     <td>{r.channel != null ? `Ch ${r.channel}` : '—'}</td>
-                    <td>{r.detecting_ap || '—'}</td>
+                    <td>
+                      {r.detecting_ap_name ? (
+                        <>
+                          <div>{r.detecting_ap_name}</div>
+                          <div className="sv-muted" style={{ fontSize: 'var(--text-xs)', fontFamily: 'var(--font-mono)' }}>{r.detecting_ap}</div>
+                        </>
+                      ) : (
+                        <span style={{ fontFamily: 'var(--font-mono)' }}>{r.detecting_ap || '—'}</span>
+                      )}
+                    </td>
                     <td style={{ color: 'var(--text-muted)' }}>{r.controller_name || '—'}</td>
                     <td style={{ color: 'var(--text-muted)' }}>{fmtRel(r.last_seen_at)}</td>
                   </tr>

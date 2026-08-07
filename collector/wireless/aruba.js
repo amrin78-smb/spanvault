@@ -407,6 +407,13 @@ function parseApTable(walked) {
       ap._index = idx;
       ap.byte_counter_bits = 64;
       ap.name = apName;
+      // The wlanAPTable index IS the AP's radio MAC in dotted decimals (see the
+      // comment above about rejecting MAC-shaped names). It was being discarded,
+      // so `wireless_aps.mac_address` sat NULL for every SNMP-discovered Aruba AP
+      // — 213 of 224 APs on this deployment — which is why the Rogue APs table
+      // could only ever show the detecting AP's raw MAC: there was nothing to
+      // resolve it against. fmtMac() handles the dotted-decimal form.
+      ap.mac_address = fmtMac(idx);
       ap.ip_address = str(ips[idx]);
       ap.model = str(models[idx]);
       ap.status = mapStatus(statuses[idx]);
