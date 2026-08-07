@@ -1207,10 +1207,14 @@ function RogueApsTab() {
       {/* Say plainly how much of the matching set is on screen — the old page
           showed a capped list with no indication anything was missing. */}
       <div className="sv-muted" style={{ fontSize: 'var(--text-sm)', marginBottom: 8 }}>
+        {/* Describes what was LOADED versus what MATCHES. The Pager under the
+            table already says which slice of the loaded rows is on screen
+            ("1–50 of 1,000"), so saying "showing" here too would contradict it. */}
         {roguesApi.data
-          ? `Showing ${shown.length.toLocaleString()} of ${matched.toLocaleString()} matching detection${matched === 1 ? '' : 's'}` +
-            (anyFilter && summary ? ` (of ${summary.total.toLocaleString()} total)` : '') +
-            (truncated ? ' — refine the filters to see the rest' : '')
+          ? (truncated
+              ? `Loaded ${shown.length.toLocaleString()} of ${matched.toLocaleString()} matching detections — narrow the filters to reach the rest`
+              : `${matched.toLocaleString()} matching detection${matched === 1 ? '' : 's'}`)
+            + (anyFilter && summary ? ` · ${summary.total.toLocaleString()} detected in total` : '')
           : ''}
       </div>
 

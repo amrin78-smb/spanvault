@@ -36,6 +36,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.89.2': [
+    'Clarified the line above the Rogue APs table. With paging added it said "Showing 1,000" while the table drew 50, contradicting the pager beneath it. It now states how many detections were loaded out of how many match, and the pager alone says which rows are on screen.',
+  ],
   '1.89.1': [
     'The Rogue APs table is now paged 50 at a time instead of drawing up to a thousand rows at once, which made the page slow to open and to scroll on a network with this many detections. The counts, filters and sorting are unchanged, and re-sorting returns you to the first page.',
   ],
