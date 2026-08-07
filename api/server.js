@@ -36,6 +36,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.90.3': [
+    'Fixed the search box on the Rogue APs page. It offered to search the detecting access point but only ever matched the hardware address, so typing the name shown in the table found nothing. Searching by name now works — searching for AP505 returns its 807 detections where it previously returned none. Searching by network name or hardware address is unchanged.',
+  ],
   '1.90.2': [
     'Every rogue detection now shows the name of the access point that heard it. After the previous release recorded the missing hardware addresses, all 12,578 detections and all 110 detecting access points resolve to a name — previously 1 in 100 did.',
   ],
@@ -6019,6 +6022,44 @@ app.get('/api/wireless/clients/summary', wrap(async (req, res) => {
 //
 // Filtering is server-side for the same reason: filtering a truncated 500-row
 // sample in the browser silently answers a different question than the user asked.
+// Rogue rows joined to their detecting AP, so the AP's friendly name is
+// available to BOTH the SELECT and the WHERE clause. Defined once: when display
+// and search each resolved the name their own way, the column showed "AP505-4"
+// while search only ever matched the raw MAC, so searching the name a user could
+// plainly see returned nothing.
+//
+// Resolution is two-step and only ever unambiguous:
+//   1. exact match on wireless_aps.mac_address — this does all the work in
+//      practice (12,578 of 12,578 rows once the 1.90.0 collector fix had
+//      repopulated the MACs);
+//   2. a first-five-octet match used ONLY when exactly one AP matches, kept as a
+//      guarded fallback for a vendor whose radio MAC is offset from the stored AP
+//      MAC. Aruba allocates APs consecutive MACs, so resolving an ambiguous match
+//      to whichever sorted first would credit a detection to the wrong AP — worse
+//      than showing the MAC on a security page. ap_near is gated on
+//      `ap_exact.name IS NULL`, so it only evaluates for rows the exact match
+//      missed (none, currently).
+//
+// JOINs rather than correlated subqueries: as subqueries the name was recomputed
+// per row and, because search referenced it too, a text search cost ~2.1s over
+// 12.5k rows. As joins the identical searches return in ~150ms (measured
+// 2026-08-07). Unresolved rows yield NULL and the UI keeps showing the MAC.
+const ROGUE_FROM = `
+        FROM wireless_rogue_aps r
+        JOIN wireless_controllers c ON c.id = r.controller_id
+        LEFT JOIN wireless_aps ap_exact
+          ON ap_exact.mac_address IS NOT NULL
+         AND LOWER(ap_exact.mac_address) = LOWER(r.detecting_ap)
+        LEFT JOIN LATERAL (
+          SELECT CASE WHEN COUNT(*) = 1 THEN MIN(a.name) END AS name
+          FROM wireless_aps a
+          WHERE ap_exact.name IS NULL
+            AND a.mac_address IS NOT NULL
+            AND r.detecting_ap IS NOT NULL
+            AND LOWER(LEFT(a.mac_address, 14)) = LOWER(LEFT(r.detecting_ap, 14))
+        ) ap_near ON TRUE`;
+const DETECTING_AP_NAME = `COALESCE(ap_exact.name, ap_near.name)`;
+
 app.get('/api/wireless/rogues', wrap(async (req, res) => {
   try {
     const where = [];
@@ -6033,7 +6074,11 @@ app.get('/api/wireless/rogues', wrap(async (req, res) => {
 
     if (req.query.controller_id) { params.push(parseInt(req.query.controller_id, 10)); where.push(`r.controller_id = $${params.length}`); }
     if (req.query.classification) { params.push(String(req.query.classification)); where.push(`r.classification = $${params.length}`); }
-    if (req.query.search) { params.push(`%${String(req.query.search)}%`); where.push(`(r.bssid ILIKE $${params.length} OR r.ssid ILIKE $${params.length} OR r.detecting_ap ILIKE $${params.length})`); }
+    // Includes the RESOLVED detecting-AP name, not just the raw MAC. The column
+    // displays "AP505-4" while r.detecting_ap holds 9c:da:b7:c7:97:94, so
+    // matching the MAC alone meant searching the visible name found nothing —
+    // while the placeholder promised "detecting AP".
+    if (req.query.search) { params.push(`%${String(req.query.search)}%`); where.push(`(r.bssid ILIKE $${params.length} OR r.ssid ILIKE $${params.length} OR r.detecting_ap ILIKE $${params.length} OR ${DETECTING_AP_NAME} ILIKE $${params.length})`); }
     if (req.query.channel) { params.push(parseInt(req.query.channel, 10)); where.push(`r.channel = $${params.length}`); }
     // Band is derived from the channel number: 1-14 is 2.4GHz, 36-177 is 5GHz.
     // 6GHz is deliberately NOT offered — its channel numbers overlap 5GHz in the
@@ -6077,30 +6122,17 @@ app.get('/api/wireless/rogues', wrap(async (req, res) => {
       // Unresolved rows return NULL and the UI keeps displaying the MAC.
       sv.query(`
         SELECT r.*, c.name AS controller_name, c.site_name, c.vendor,
-               COALESCE(exact_ap.name, CASE WHEN near_ap.n = 1 THEN near_ap.name END) AS detecting_ap_name
-        FROM wireless_rogue_aps r
-        JOIN wireless_controllers c ON c.id = r.controller_id
-        LEFT JOIN LATERAL (
-          SELECT a.name FROM wireless_aps a
-          WHERE a.mac_address IS NOT NULL
-            AND LOWER(a.mac_address) = LOWER(r.detecting_ap)
-          LIMIT 1
-        ) exact_ap ON TRUE
-        LEFT JOIN LATERAL (
-          SELECT MIN(a.name) AS name, COUNT(*)::int AS n
-          FROM wireless_aps a
-          WHERE a.mac_address IS NOT NULL
-            AND r.detecting_ap IS NOT NULL
-            AND LOWER(LEFT(a.mac_address, 14)) = LOWER(LEFT(r.detecting_ap, 14))
-        ) near_ap ON TRUE
+               ${DETECTING_AP_NAME} AS detecting_ap_name
+        ${ROGUE_FROM}
         ${whereSql}
         ORDER BY r.last_seen_at DESC
         LIMIT ${limit} OFFSET ${offset}
       `, params),
+      // Uses ROGUE_FROM (not a bare join) because whereSql can reference the
+      // resolved AP name for search — the count must match the rows exactly.
       sv.query(`
         SELECT COUNT(*)::int AS n
-        FROM wireless_rogue_aps r
-        JOIN wireless_controllers c ON c.id = r.controller_id
+        ${ROGUE_FROM}
         ${whereSql}
       `, params),
       // Headline counts over everything this user may see, IGNORING the filters —
@@ -6124,23 +6156,9 @@ app.get('/api/wireless/rogues', wrap(async (req, res) => {
       // resolution as the row query, so the dropdown reads like the column.
       sv.query(`
         SELECT r.detecting_ap AS mac,
-               COALESCE(exact_ap.name, CASE WHEN near_ap.n = 1 THEN near_ap.name END) AS name,
+               ${DETECTING_AP_NAME} AS name,
                COUNT(*)::int AS detections
-        FROM wireless_rogue_aps r
-        JOIN wireless_controllers c ON c.id = r.controller_id
-        LEFT JOIN LATERAL (
-          SELECT a.name FROM wireless_aps a
-          WHERE a.mac_address IS NOT NULL
-            AND LOWER(a.mac_address) = LOWER(r.detecting_ap)
-          LIMIT 1
-        ) exact_ap ON TRUE
-        LEFT JOIN LATERAL (
-          SELECT MIN(a.name) AS name, COUNT(*)::int AS n
-          FROM wireless_aps a
-          WHERE a.mac_address IS NOT NULL
-            AND r.detecting_ap IS NOT NULL
-            AND LOWER(LEFT(a.mac_address, 14)) = LOWER(LEFT(r.detecting_ap, 14))
-        ) near_ap ON TRUE
+        ${ROGUE_FROM}
         ${scopeSql ? scopeSql + ' AND' : 'WHERE'} r.detecting_ap IS NOT NULL
         GROUP BY 1, 2
         ORDER BY 3 DESC
