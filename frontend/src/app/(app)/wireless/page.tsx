@@ -360,6 +360,9 @@ interface RogueResponse {
   returned: number;
   truncated: boolean;
   summary: { total: number; threats: number; malicious: number; interfering: number; friendly: number; active_1h: number };
+  // Every detecting AP in the site-scoped set, counted in SQL — not derived from
+  // `data`, which is capped and would offer only the APs on the current page.
+  detecting_aps: { mac: string; name: string | null; detections: number }[];
 }
 
 // Classification colour: malicious/rogue = red, interfering = yellow,
@@ -1081,6 +1084,7 @@ function RogueApsTab() {
   const [sinceHours, setSinceHours] = useState('');
   const [namedOnly, setNamedOnly] = useState(false);
   const [controllerId, setControllerId] = useState('');
+  const [detectingAp, setDetectingAp] = useState('');
   const { sort, onSort } = useTableSort({ key: 'lastseen', dir: 'desc' });
 
   const controllersApi = useApi<Controller[]>('/api/wireless/controllers', 60000);
@@ -1098,6 +1102,7 @@ function RogueApsTab() {
   if (sinceHours) qs.set('since_hours', sinceHours);
   if (namedOnly) qs.set('named', '1');
   if (controllerId) qs.set('controller_id', controllerId);
+  if (detectingAp) qs.set('detecting_ap', detectingAp);
   const roguesApi = useApi<RogueResponse>(`/api/wireless/rogues?${qs.toString()}`, 30000);
 
   const rows = useMemo(() => roguesApi.data?.data || [], [roguesApi.data]);
@@ -1123,10 +1128,11 @@ function RogueApsTab() {
   // part of the reset key so re-sorting returns to page 1.
   const pg = useClientPagination(shown, ROGUES_PER_PAGE, JSON.stringify(sort));
 
-  const anyFilter = Boolean(search || classFilter || band || channel || minRssi || sinceHours || namedOnly || controllerId);
+  const anyFilter = Boolean(search || classFilter || band || channel || minRssi || sinceHours || namedOnly || controllerId || detectingAp);
   function clearAll() {
     setSearch(''); setClassFilter(''); setBand(''); setChannel('');
     setMinRssi(''); setSinceHours(''); setNamedOnly(false); setControllerId('');
+    setDetectingAp('');
   }
 
   return (
@@ -1197,6 +1203,16 @@ function RogueApsTab() {
           <option value="">All controllers</option>
           {(controllersApi.data || []).map((c) => (
             <option key={c.id} value={c.id}>{c.name}</option>
+          ))}
+        </select>
+        {/* Options come from the API's SQL-side list, so every detecting AP is
+            offered even though the table itself only holds a page of rows. */}
+        <select className="sv-select" style={{ maxWidth: 260 }} value={detectingAp} onChange={(e) => setDetectingAp(e.target.value)}>
+          <option value="">All detecting APs</option>
+          {(roguesApi.data?.detecting_aps || []).map((d) => (
+            <option key={d.mac} value={d.mac}>
+              {(d.name || d.mac)} ({d.detections.toLocaleString()})
+            </option>
           ))}
         </select>
         <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 'var(--text-base)', color: 'var(--text-secondary)', cursor: 'pointer' }}>

@@ -36,6 +36,10 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.90.1': [
+    'Added a "detected by" filter to the Rogue APs page, so you can see everything a particular access point is hearing. It lists every detecting access point with how many detections each has made, named where the name is known and by hardware address otherwise.',
+    'The list is built from all detections rather than from the rows currently on screen, so an access point is never missing from the filter just because it did not appear on the first page.',
+  ],
   '1.90.0': [
     'The Rogue APs table now names the access point that detected each rogue, instead of only showing its hardware address. The name appears with the address beneath it, so you can still match it against controller logs.',
     'This needed a collector fix first: for access points discovered over SNMP the hardware address was being read and then discarded, so 213 of 224 access points had none stored and there was nothing to match the detection against. It is now recorded, and names will fill in over the next few polling cycles as each controller is polled.',
@@ -6037,13 +6041,14 @@ app.get('/api/wireless/rogues', wrap(async (req, res) => {
     if (req.query.min_rssi) { params.push(parseInt(req.query.min_rssi, 10)); where.push(`r.rssi_dbm >= $${params.length}`); }
     if (req.query.since_hours) { params.push(parseInt(req.query.since_hours, 10)); where.push(`r.last_seen_at > NOW() - make_interval(hours => $${params.length})`); }
     if (req.query.named === '1') where.push(`NULLIF(btrim(r.ssid), '') IS NOT NULL`);
+    if (req.query.detecting_ap) { params.push(String(req.query.detecting_ap)); where.push(`r.detecting_ap = $${params.length}`); }
 
     const whereSql = where.length ? 'WHERE ' + where.join(' AND ') : '';
     const scopeSql = scopeWhere.length ? 'WHERE ' + scopeWhere.join(' AND ') : '';
     const limit = Math.min(Math.max(parseInt(req.query.limit || '1000', 10) || 1000, 1), 5000);
     const offset = Math.max(parseInt(req.query.offset || '0', 10) || 0, 0);
 
-    const [rows, matched, summary] = await Promise.all([
+    const [rows, matched, summary, detectors] = await Promise.all([
       // detecting_ap is stored as the detecting AP's RADIO MAC (it comes out of
       // the Aruba monAPInfo table index), so it is resolved to a friendly AP name
       // in two steps, and only when the answer is unambiguous:
@@ -6097,6 +6102,34 @@ app.get('/api/wireless/rogues', wrap(async (req, res) => {
         JOIN wireless_controllers c ON c.id = r.controller_id
         ${scopeSql}
       `, scopeParams),
+      // Options for the "detected by" filter. Built in SQL over the whole
+      // site-scoped set, NOT from the returned rows — the response is capped, so
+      // deriving the list from `data` would offer only the APs that happened to
+      // appear in the newest page and silently hide the rest. Same name
+      // resolution as the row query, so the dropdown reads like the column.
+      sv.query(`
+        SELECT r.detecting_ap AS mac,
+               COALESCE(exact_ap.name, CASE WHEN near_ap.n = 1 THEN near_ap.name END) AS name,
+               COUNT(*)::int AS detections
+        FROM wireless_rogue_aps r
+        JOIN wireless_controllers c ON c.id = r.controller_id
+        LEFT JOIN LATERAL (
+          SELECT a.name FROM wireless_aps a
+          WHERE a.mac_address IS NOT NULL
+            AND LOWER(a.mac_address) = LOWER(r.detecting_ap)
+          LIMIT 1
+        ) exact_ap ON TRUE
+        LEFT JOIN LATERAL (
+          SELECT MIN(a.name) AS name, COUNT(*)::int AS n
+          FROM wireless_aps a
+          WHERE a.mac_address IS NOT NULL
+            AND r.detecting_ap IS NOT NULL
+            AND LOWER(LEFT(a.mac_address, 14)) = LOWER(LEFT(r.detecting_ap, 14))
+        ) near_ap ON TRUE
+        ${scopeSql ? scopeSql + ' AND' : 'WHERE'} r.detecting_ap IS NOT NULL
+        GROUP BY 1, 2
+        ORDER BY 3 DESC
+      `, scopeParams),
     ]);
 
     res.json({
@@ -6105,11 +6138,13 @@ app.get('/api/wireless/rogues', wrap(async (req, res) => {
       returned: rows.rows.length,
       truncated: rows.rows.length < matched.rows[0].n,
       summary: summary.rows[0],              // unfiltered, site-scoped headline counts
+      detecting_aps: detectors.rows,         // [{mac, name, detections}] for the filter
     });
   } catch (e) {
     if (/wireless_rogue_aps/.test(e.message)) {
       return res.json({ data: [], matched: 0, returned: 0, truncated: false,
-        summary: { total: 0, threats: 0, malicious: 0, interfering: 0, friendly: 0, active_1h: 0 } });
+        summary: { total: 0, threats: 0, malicious: 0, interfering: 0, friendly: 0, active_1h: 0 },
+        detecting_aps: [] });
     }
     throw e;
   }
