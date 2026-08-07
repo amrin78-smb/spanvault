@@ -36,6 +36,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.88.4': [
+    'Copying a public map link now works. It used the same clipboard method that is unavailable over plain HTTP, and the failure was silently discarded — the link was still shown on screen for manual copying, so nothing was lost, but the copy itself never happened.',
+  ],
   '1.88.3': [
     'Fixed "Copy IP address" on the Devices page, which did nothing. Browsers only expose the clipboard to pages served over HTTPS, and this server runs over plain HTTP, so the copy silently failed while the menu closed as though it had worked. It now uses a method that works without HTTPS and tells you whether it succeeded.',
   ],

@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useApi } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
 import { vendorLabel } from '@/lib/vendor';
+import { copyText } from '@/lib/clipboard';
 import { ErrorBox, fmtRel, PageHeader, TableSkeleton, EmptyState, useRefreshKey } from '@/components/ui';
 import { StatusDot } from '@/components/StatusDot';
 import SiteScopeBanner from '@/components/SiteScopeBanner';
@@ -709,42 +710,6 @@ function DeviceRow({ device, showOs }: { device: Device; showOs: boolean }) {
       <td style={{ textAlign: 'right' }}><RowMenu device={device} /></td>
     </tr>
   );
-}
-
-// Copy text to the clipboard, working on THIS deployment.
-//
-// `navigator.clipboard` only exists in a secure context — HTTPS or localhost.
-// SpanVault is served over plain HTTP on a LAN IP, so it is `undefined` here
-// (verified live: isSecureContext=false, navigator.clipboard=undefined). The
-// original `navigator.clipboard?.writeText(...)` therefore did nothing at all,
-// and the optional chaining meant it failed SILENTLY — the menu closed as if it
-// had worked. Falls back to a hidden textarea + execCommand, which is deprecated
-// but is the only thing that works in a non-secure context. Same approach as
-// netvault's agents page. Returns whether the copy actually happened, so the UI
-// can say so instead of lying.
-function copyText(text: string): boolean {
-  try {
-    if (navigator.clipboard && window.isSecureContext) {
-      navigator.clipboard.writeText(text);
-      return true;
-    }
-  } catch { /* fall through */ }
-  try {
-    const ta = document.createElement('textarea');
-    ta.value = text;
-    ta.setAttribute('readonly', '');
-    ta.style.position = 'fixed';
-    ta.style.top = '-9999px';
-    ta.style.opacity = '0';
-    document.body.appendChild(ta);
-    ta.select();
-    ta.setSelectionRange(0, text.length);
-    const ok = document.execCommand('copy');
-    document.body.removeChild(ta);
-    return ok;
-  } catch {
-    return false;
-  }
 }
 
 // ── Row actions (kebab) ────────────────────────────────────────

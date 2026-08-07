@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { useApi, apiGet, apiSend } from '@/lib/api';
+import { copyText } from '@/lib/clipboard';
 import { StatusDot } from '@/components/StatusDot';
 import { Loading, ErrorBox } from '@/components/ui';
 import { IconTrash, IconLock, IconUnlock, IconUndo, IconRedo } from '@/components/icons';
@@ -1013,7 +1014,10 @@ export default function MapEditorPage() {
       setIsPublic(r.is_public);
       const url = `${window.location.origin}/maps/public/${r.uuid}`;
       if (r.is_public) {
-        try { await navigator.clipboard.writeText(url); } catch { /* ignore */ }
+        // copyText, not navigator.clipboard: it is undefined over plain HTTP and
+        // the catch here swallowed the resulting TypeError, so the copy failed
+        // with no sign. The URL is shown below for manual copying either way.
+        copyText(url);
         setShareUrl(url);
       } else {
         setShareUrl(null);
