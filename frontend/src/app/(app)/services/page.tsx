@@ -1,11 +1,12 @@
 'use client';
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useApi, apiSend } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
 import {
   ErrorBox, fmtRel, PageHeader, TableSkeleton, EmptyState, useRefreshKey, useEscape, useConfirm,
+  useTableSort, sortRows, SortTh,
 } from '@/components/ui';
 import { StatusDot } from '@/components/StatusDot';
 import { IconServices } from '@/components/icons';
@@ -64,6 +65,20 @@ function typeLabel(t: string): string {
 
 // Severity ranking for aggregating a group's worst child status.
 const STATUS_RANK: Record<string, number> = { down: 3, warning: 2, unknown: 1, up: 0 };
+
+// Column sort accessors. Deliberately inverted vs STATUS_RANK above (down = 0)
+// so the FIRST (ascending) click on Status surfaces the broken checks.
+const STATUS_SORT_ORDER: Record<string, number> = { down: 0, warning: 1, unknown: 2, up: 3 };
+const CHECK_SORT_ACCESSORS: Record<string, (c: ServiceCheck) => unknown> = {
+  status: (c) => STATUS_SORT_ORDER[dotStatus(c.current_status)] ?? 2,
+  name: (c) => c.name,
+  type: (c) => c.type,
+  target: (c) => c.target,
+  runsfrom: (c) => c.agent_name || 'Central',
+  response: (c) => c.last_response_ms,
+  detail: (c) => c.last_detail,
+  checked: (c) => c.last_checked_at,
+};
 
 function worstStatus(checks: ServiceCheck[]): string {
   let worst = 'up';
@@ -555,6 +570,8 @@ export default function ServicesPage() {
   const [editingGroup, setEditingGroup] = useState<{ groupId: string; checks: ServiceCheck[] } | null>(null);
   const [q, setQ] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'down' | 'warning' | 'up'>('all');
+  // No initial sort: unsorted keeps the API's own ordering.
+  const { sort, onSort } = useTableSort();
 
   useRefreshKey(() => checks.reload());
 
@@ -617,6 +634,11 @@ export default function ServicesPage() {
   const filtered = list.filter((c) => matchesSearch(c) && matchesStatus(c));
   const isFiltered = qNorm !== '' || statusFilter !== 'all';
 
+  // Sort runs AFTER filtering, over the flat check list — the block builder below
+  // then re-groups, so a group still renders as one contiguous block, positioned
+  // by its first member in the sorted order.
+  const sorted = useMemo(() => sortRows(filtered, sort, CHECK_SORT_ACCESSORS), [filtered, sort]);
+
   // Build a render order: each grouped set renders together (header + children),
   // ungrouped checks render as individual rows. Order follows first appearance.
   type Block =
@@ -624,7 +646,7 @@ export default function ServicesPage() {
     | { kind: 'group'; groupId: string; checks: ServiceCheck[] };
   const groups = new Map<string, ServiceCheck[]>();
   const blocks: Block[] = [];
-  for (const c of filtered) {
+  for (const c of sorted) {
     if (c.group_id) {
       let g = groups.get(c.group_id);
       if (!g) {
@@ -700,14 +722,14 @@ export default function ServicesPage() {
           <table className="sv-table">
             <thead>
               <tr>
-                <th style={{ width: 28 }} />
-                <th>Name</th>
-                <th>Type</th>
-                <th>Target</th>
-                <th>Runs from</th>
-                <th style={{ textAlign: 'right' }}>Response</th>
-                <th>Detail</th>
-                <th style={{ textAlign: 'right' }}>Checked</th>
+                <SortTh label="Status" col="status" sort={sort} onSort={onSort} />
+                <SortTh label="Name" col="name" sort={sort} onSort={onSort} />
+                <SortTh label="Type" col="type" sort={sort} onSort={onSort} />
+                <SortTh label="Target" col="target" sort={sort} onSort={onSort} />
+                <SortTh label="Runs from" col="runsfrom" sort={sort} onSort={onSort} />
+                <SortTh label="Response" col="response" sort={sort} onSort={onSort} align="right" />
+                <SortTh label="Detail" col="detail" sort={sort} onSort={onSort} />
+                <SortTh label="Checked" col="checked" sort={sort} onSort={onSort} align="right" />
                 {canEdit && <th />}
               </tr>
             </thead>

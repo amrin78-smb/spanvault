@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine, ResponsiveContainer,
@@ -11,6 +11,7 @@ import { StatusDot } from '@/components/StatusDot';
 import {
   PageHeader, ErrorBox, Empty, Loading, TableSkeleton, CardSkeleton,
   StatusBadge, fmtRel, fmtTime, fmtBps, CHART_TOOLTIP,
+  useTableSort, sortRows, SortTh,
 } from '@/components/ui';
 import {
   GradeBadge, TrendArrow, ConfidenceStars, fmtDuration, deviationLabel, deviationTooltip,
@@ -153,6 +154,39 @@ function OverviewTab() {
   const ov = useApi<Overview>('/api/intelligence/overview', REFRESH_MS);
   const d = ov.data;
 
+  // One sort state per table on this tab. Declared above the early returns so
+  // the hook order never changes between loading/loaded renders.
+  const siteSort = useTableSort();
+  const anomSort = useTableSort();
+  const incSort = useTableSort();
+
+  const siteRows = useMemo(() => sortRows(d?.sites || [], siteSort.sort, {
+    site: (s) => s.site_name,
+    score: (s) => s.score,
+    grade: (s) => s.grade,
+    trend: (s) => s.trend,
+    devices: (s) => s.device_count,
+    anomalies: (s) => s.anomaly_count,
+  }), [d?.sites, siteSort.sort]);
+
+  const anomalyRows = useMemo(() => sortRows(d?.recent_anomalies || [], anomSort.sort, {
+    device: (a) => a.device_name,
+    metric: (a) => a.metric,
+    deviation: (a) => n(a.z_score),
+    severity: (a) => a.severity,
+    detected: (a) => a.detected_at,
+  }), [d?.recent_anomalies, anomSort.sort]);
+
+  const incidentRows = useMemo(() => sortRows(d?.recent_incidents || [], incSort.sort, {
+    title: (i) => i.title,
+    affected: (i) => i.affected_count,
+    // Active incidents show their age instead of a duration — sort on the same
+    // number the cell renders so the column stays self-consistent.
+    duration: (i) => (i.status === 'active'
+      ? (Date.now() - Date.parse(i.started_at)) / 1000
+      : i.duration_seconds),
+  }), [d?.recent_incidents, incSort.sort]);
+
   if (ov.loading && !d) {
     return (
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
@@ -211,10 +245,17 @@ function OverviewTab() {
             <div style={{ maxHeight: 220, overflowY: 'auto' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                 <thead>
-                  <IntelTH cols={['Site', 'Score', 'Grade', 'Trend']} rightCols={['Devices', 'Anomalies']} />
+                  <tr>
+                    <SortTh label="Site" col="site" sort={siteSort.sort} onSort={siteSort.onSort} style={TH_STYLE} />
+                    <SortTh label="Score" col="score" sort={siteSort.sort} onSort={siteSort.onSort} style={TH_STYLE} />
+                    <SortTh label="Grade" col="grade" sort={siteSort.sort} onSort={siteSort.onSort} style={TH_STYLE} />
+                    <SortTh label="Trend" col="trend" sort={siteSort.sort} onSort={siteSort.onSort} style={TH_STYLE} />
+                    <SortTh label="Devices" col="devices" sort={siteSort.sort} onSort={siteSort.onSort} align="right" style={{ ...TH_STYLE, textAlign: 'right' }} />
+                    <SortTh label="Anomalies" col="anomalies" sort={siteSort.sort} onSort={siteSort.onSort} align="right" style={{ ...TH_STYLE, textAlign: 'right' }} />
+                  </tr>
                 </thead>
                 <tbody>
-                  {d.sites.map((s) => (
+                  {siteRows.map((s) => (
                     <tr key={`${s.site_id}-${s.site_name}`} style={ROW_STYLE}>
                       <IntelTD>{s.site_id ? <Link href={`/sites/${s.site_id}`}>{s.site_name}</Link> : s.site_name}</IntelTD>
                       <IntelTD><ScoreMiniBar score={s.score} width={60} /></IntelTD>
@@ -265,10 +306,16 @@ function OverviewTab() {
             <div style={{ maxHeight: 180, overflowY: 'auto' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                 <thead>
-                  <IntelTH cols={['Device', 'Metric', 'Deviation', 'Severity', 'Detected']} />
+                  <tr>
+                    <SortTh label="Device" col="device" sort={anomSort.sort} onSort={anomSort.onSort} style={TH_STYLE} />
+                    <SortTh label="Metric" col="metric" sort={anomSort.sort} onSort={anomSort.onSort} style={TH_STYLE} />
+                    <SortTh label="Deviation" col="deviation" sort={anomSort.sort} onSort={anomSort.onSort} style={TH_STYLE} />
+                    <SortTh label="Severity" col="severity" sort={anomSort.sort} onSort={anomSort.onSort} style={TH_STYLE} />
+                    <SortTh label="Detected" col="detected" sort={anomSort.sort} onSort={anomSort.onSort} style={TH_STYLE} />
+                  </tr>
                 </thead>
                 <tbody>
-                  {d.recent_anomalies.map((a) => (
+                  {anomalyRows.map((a) => (
                     <tr key={a.id} style={ROW_STYLE}>
                       <IntelTD><Link href={`/devices/${a.device_id}`} style={{ fontWeight: 600 }}>{a.device_name}</Link></IntelTD>
                       <IntelTD>{a.metric}</IntelTD>
@@ -293,10 +340,14 @@ function OverviewTab() {
             <div style={{ maxHeight: 180, overflowY: 'auto' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                 <thead>
-                  <IntelTH cols={['Title', 'Affected', 'Duration']} />
+                  <tr>
+                    <SortTh label="Title" col="title" sort={incSort.sort} onSort={incSort.onSort} style={TH_STYLE} />
+                    <SortTh label="Affected" col="affected" sort={incSort.sort} onSort={incSort.onSort} style={TH_STYLE} />
+                    <SortTh label="Duration" col="duration" sort={incSort.sort} onSort={incSort.onSort} style={TH_STYLE} />
+                  </tr>
                 </thead>
                 <tbody>
-                  {d.recent_incidents.map((i) => (
+                  {incidentRows.map((i) => (
                     <tr key={i.id} style={ROW_STYLE}>
                       <IntelTD>
                         <span style={{ color: 'var(--red)', marginRight: 6 }}>●</span>
@@ -330,15 +381,6 @@ const TD_STYLE: React.CSSProperties = {
   fontSize: 'var(--text-sm)', color: 'var(--text-primary)', padding: '8px 12px',
   borderBottom: '1px solid var(--border-light)', verticalAlign: 'middle',
 };
-
-function IntelTH({ cols, rightCols = [] }: { cols: string[]; rightCols?: string[] }) {
-  return (
-    <tr>
-      {cols.map((c) => <th key={c} style={TH_STYLE}>{c}</th>)}
-      {rightCols.map((c) => <th key={c} style={{ ...TH_STYLE, textAlign: 'right' }}>{c}</th>)}
-    </tr>
-  );
-}
 
 function IntelTD({ children, right, style, title }: {
   children: React.ReactNode; right?: boolean; style?: React.CSSProperties; title?: string;
@@ -376,6 +418,7 @@ function AnomaliesTab() {
   const [toast, setToast] = useState<string | null>(null);
   const path = filter === 'all' ? '/api/intelligence/anomalies' : `/api/intelligence/anomalies?status=${filter}`;
   const api = useApi<AnomalyRow[]>(path, REFRESH_MS);
+  const { sort, onSort } = useTableSort();
 
   useEffect(() => {
     if (!toast) return;
@@ -383,7 +426,22 @@ function AnomaliesTab() {
     return () => clearTimeout(t);
   }, [toast]);
 
-  const rows = (api.data || []).filter((a) => !q || a.device_name.toLowerCase().includes(q.toLowerCase()));
+  const filtered = useMemo(
+    () => (api.data || []).filter((a) => !q || a.device_name.toLowerCase().includes(q.toLowerCase())),
+    [api.data, q],
+  );
+  // Sort is applied on top of the status chips + device search, never instead of them.
+  const rows = useMemo(() => sortRows(filtered, sort, {
+    device: (a) => a.device_name,
+    site: (a) => a.site_name,
+    metric: (a) => a.metric,
+    current: (a) => n(a.value),
+    baseline: (a) => n(a.baseline_mean),
+    deviation: (a) => n(a.z_score),
+    severity: (a) => a.severity,
+    detected: (a) => a.detected_at,
+    status: (a) => a.status,
+  }), [filtered, sort]);
   const activeCount = (api.data || []).filter((a) => a.status === 'active').length;
 
   async function setStatus(a: AnomalyRow, status: string) {
@@ -440,10 +498,15 @@ function AnomaliesTab() {
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead>
                 <tr>
-                  {['Device', 'Site', 'Metric'].map((c) => <th key={c} style={TH_STYLE}>{c}</th>)}
-                  <th style={{ ...TH_STYLE, textAlign: 'right' }}>Current</th>
-                  <th style={{ ...TH_STYLE, textAlign: 'right' }}>Baseline</th>
-                  {['Deviation', 'Severity', 'Detected', 'Status'].map((c) => <th key={c} style={TH_STYLE}>{c}</th>)}
+                  <SortTh label="Device" col="device" sort={sort} onSort={onSort} style={TH_STYLE} />
+                  <SortTh label="Site" col="site" sort={sort} onSort={onSort} style={TH_STYLE} />
+                  <SortTh label="Metric" col="metric" sort={sort} onSort={onSort} style={TH_STYLE} />
+                  <SortTh label="Current" col="current" sort={sort} onSort={onSort} align="right" style={{ ...TH_STYLE, textAlign: 'right' }} />
+                  <SortTh label="Baseline" col="baseline" sort={sort} onSort={onSort} align="right" style={{ ...TH_STYLE, textAlign: 'right' }} />
+                  <SortTh label="Deviation" col="deviation" sort={sort} onSort={onSort} style={TH_STYLE} />
+                  <SortTh label="Severity" col="severity" sort={sort} onSort={onSort} style={TH_STYLE} />
+                  <SortTh label="Detected" col="detected" sort={sort} onSort={onSort} style={TH_STYLE} />
+                  <SortTh label="Status" col="status" sort={sort} onSort={onSort} style={TH_STYLE} />
                   {canEdit && <th style={{ ...TH_STYLE, textAlign: 'right' }}>Review</th>}
                 </tr>
               </thead>
@@ -529,8 +592,24 @@ function AnomalyActions({ anomaly: a, busy, onSetStatus, onCreateRule }: {
 function PatternsTab() {
   const [q, setQ] = useState('');
   const api = useApi<PatternRow[]>('/api/intelligence/patterns', REFRESH_MS);
-  const rows = (api.data || []).filter((p) =>
-    !q || p.device_name.toLowerCase().includes(q.toLowerCase()) || (p.metric || '').toLowerCase().includes(q.toLowerCase()));
+  const { sort, onSort } = useTableSort();
+  const filtered = useMemo(() => (api.data || []).filter((p) =>
+    !q || p.device_name.toLowerCase().includes(q.toLowerCase()) || (p.metric || '').toLowerCase().includes(q.toLowerCase())),
+    [api.data, q]);
+  const rows = useMemo(() => sortRows(filtered, sort, {
+    device: (p) => p.device_name,
+    site: (p) => p.site_name,
+    pattern: (p) => p.pattern_type,
+    metric: (p) => p.metric,
+    // "When" is a weekday/hour pair — fold it into one chronological-ish number
+    // (weekday-less patterns land after the day-scoped ones).
+    when: (p) => (p.day_of_week == null && p.hour_of_day == null
+      ? null
+      : (p.day_of_week ?? 7) * 24 + (p.hour_of_day ?? 0)),
+    avg: (p) => n(p.avg_value),
+    seen: (p) => p.occurrence_count,
+    confidence: (p) => n(p.confidence),
+  }), [filtered, sort]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -557,10 +636,14 @@ function PatternsTab() {
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead>
                 <tr>
-                  {['Device', 'Site', 'Pattern', 'Metric', 'When'].map((c) => <th key={c} style={TH_STYLE}>{c}</th>)}
-                  <th style={{ ...TH_STYLE, textAlign: 'right' }}>Avg vs Baseline</th>
-                  <th style={{ ...TH_STYLE, textAlign: 'right' }}>Seen</th>
-                  {['Confidence'].map((c) => <th key={c} style={TH_STYLE}>{c}</th>)}
+                  <SortTh label="Device" col="device" sort={sort} onSort={onSort} style={TH_STYLE} />
+                  <SortTh label="Site" col="site" sort={sort} onSort={onSort} style={TH_STYLE} />
+                  <SortTh label="Pattern" col="pattern" sort={sort} onSort={onSort} style={TH_STYLE} />
+                  <SortTh label="Metric" col="metric" sort={sort} onSort={onSort} style={TH_STYLE} />
+                  <SortTh label="When" col="when" sort={sort} onSort={onSort} style={TH_STYLE} />
+                  <SortTh label="Avg vs Baseline" col="avg" sort={sort} onSort={onSort} align="right" style={{ ...TH_STYLE, textAlign: 'right' }} />
+                  <SortTh label="Seen" col="seen" sort={sort} onSort={onSort} align="right" style={{ ...TH_STYLE, textAlign: 'right' }} />
+                  <SortTh label="Confidence" col="confidence" sort={sort} onSort={onSort} style={TH_STYLE} />
                 </tr>
               </thead>
               <tbody>
@@ -599,7 +682,21 @@ function PatternsTab() {
 // ════════════════════════════════════════════════════════════════
 function HealthTab() {
   const api = useApi<HealthRow[]>('/api/intelligence/health', REFRESH_MS);
-  const rows = api.data || [];
+  const { sort, onSort } = useTableSort();
+  const rows = useMemo(() => sortRows(api.data || [], sort, {
+    type: (r) => (r.kind === 'service' ? 'Service' : 'Device'),
+    name: (r) => r.name,
+    site: (r) => r.site_name,
+    score: (r) => n(r.score),
+    grade: (r) => r.grade,
+    uptime: (r) => n(r.uptime_pct),
+    response: (r) => n(r.response_score),
+    // Services carry no anomaly component (the cell renders "—"), so leave
+    // theirs empty and let sortRows park them last in both directions.
+    anomalies: (r) => (r.kind === 'service' ? null : r.anomalies_7d),
+    alerts: (r) => r.alerts_7d,
+    trend: (r) => r.trend,
+  }), [api.data, sort]);
 
   return (
     <SectionCard title="Health Scores" flush={rows.length > 0}>
@@ -614,12 +711,16 @@ function HealthTab() {
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
               <tr>
-                {['Type', 'Name', 'Site', 'Score', 'Grade'].map((c) => <th key={c} style={TH_STYLE}>{c}</th>)}
-                <th style={{ ...TH_STYLE, textAlign: 'right' }}>Uptime</th>
-                {['Response Trend'].map((c) => <th key={c} style={TH_STYLE}>{c}</th>)}
-                <th style={{ ...TH_STYLE, textAlign: 'right' }}>Anomalies 7d</th>
-                <th style={{ ...TH_STYLE, textAlign: 'right' }}>Alerts 7d</th>
-                <th style={TH_STYLE}>Trend</th>
+                <SortTh label="Type" col="type" sort={sort} onSort={onSort} style={TH_STYLE} />
+                <SortTh label="Name" col="name" sort={sort} onSort={onSort} style={TH_STYLE} />
+                <SortTh label="Site" col="site" sort={sort} onSort={onSort} style={TH_STYLE} />
+                <SortTh label="Score" col="score" sort={sort} onSort={onSort} style={TH_STYLE} />
+                <SortTh label="Grade" col="grade" sort={sort} onSort={onSort} style={TH_STYLE} />
+                <SortTh label="Uptime" col="uptime" sort={sort} onSort={onSort} align="right" style={{ ...TH_STYLE, textAlign: 'right' }} />
+                <SortTh label="Response Trend" col="response" sort={sort} onSort={onSort} style={TH_STYLE} />
+                <SortTh label="Anomalies 7d" col="anomalies" sort={sort} onSort={onSort} align="right" style={{ ...TH_STYLE, textAlign: 'right' }} />
+                <SortTh label="Alerts 7d" col="alerts" sort={sort} onSort={onSort} align="right" style={{ ...TH_STYLE, textAlign: 'right' }} />
+                <SortTh label="Trend" col="trend" sort={sort} onSort={onSort} style={TH_STYLE} />
               </tr>
             </thead>
             <tbody>
@@ -847,7 +948,17 @@ function IncidentsTab() {
   else if (filter.key === '30d') path += '&days=30';
 
   const api = useApi<IncidentRow[]>(path, REFRESH_MS);
-  const rows = api.data || [];
+  const { sort, onSort } = useTableSort();
+  // Sorting sits on top of the Active/Resolved/7d/30d filter chips above.
+  const rows = useMemo(() => sortRows(api.data || [], sort, {
+    status: (i) => i.status,
+    title: (i) => i.title,
+    rootcause: (i) => i.root_cause_device_name,
+    affected: (i) => i.affected_count,
+    // Active incidents render "—" for duration; keep them empty so they park last.
+    duration: (i) => (i.status === 'active' ? null : i.duration_seconds),
+    time: (i) => i.started_at,
+  }), [api.data, sort]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -868,7 +979,14 @@ function IncidentsTab() {
           <div style={{ overflowX: 'auto' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead>
-                <IntelTH cols={['Status', 'Title', 'Root Cause', 'Affected', 'Duration', 'Time']} />
+                <tr>
+                  <SortTh label="Status" col="status" sort={sort} onSort={onSort} style={TH_STYLE} />
+                  <SortTh label="Title" col="title" sort={sort} onSort={onSort} style={TH_STYLE} />
+                  <SortTh label="Root Cause" col="rootcause" sort={sort} onSort={onSort} style={TH_STYLE} />
+                  <SortTh label="Affected" col="affected" sort={sort} onSort={onSort} style={TH_STYLE} />
+                  <SortTh label="Duration" col="duration" sort={sort} onSort={onSort} style={TH_STYLE} />
+                  <SortTh label="Time" col="time" sort={sort} onSort={onSort} style={TH_STYLE} />
+                </tr>
               </thead>
               <tbody>
                 {rows.map((i) => <IncidentRowItem key={i.id} incident={i} />)}
@@ -947,7 +1065,16 @@ function ThresholdsTab() {
   const [busy, setBusy] = useState<number | null>(null);
   const [bulkBusy, setBulkBusy] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
-  const rows = api.data || [];
+  const { sort, onSort } = useTableSort();
+  const rows = useMemo(() => sortRows(api.data || [], sort, {
+    device: (r) => r.device_name,
+    site: (r) => r.site_name,
+    metric: (r) => r.metric,
+    current: (r) => n(r.current_threshold),
+    recommended: (r) => n(r.recommended_threshold),
+    reasoning: (r) => r.reasoning,
+    confidence: (r) => n(r.confidence),
+  }), [api.data, sort]);
 
   useEffect(() => {
     if (!toast) return;
@@ -1019,10 +1146,14 @@ function ThresholdsTab() {
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead>
                 <tr>
-                  {['Device', 'Site', 'Metric'].map((c) => <th key={c} style={TH_STYLE}>{c}</th>)}
-                  <th style={{ ...TH_STYLE, textAlign: 'right' }}>Current</th>
-                  <th style={{ ...TH_STYLE, textAlign: 'right' }}>Recommended</th>
-                  {['Reasoning', 'Confidence', 'Apply'].map((c) => <th key={c} style={TH_STYLE}>{c}</th>)}
+                  <SortTh label="Device" col="device" sort={sort} onSort={onSort} style={TH_STYLE} />
+                  <SortTh label="Site" col="site" sort={sort} onSort={onSort} style={TH_STYLE} />
+                  <SortTh label="Metric" col="metric" sort={sort} onSort={onSort} style={TH_STYLE} />
+                  <SortTh label="Current" col="current" sort={sort} onSort={onSort} align="right" style={{ ...TH_STYLE, textAlign: 'right' }} />
+                  <SortTh label="Recommended" col="recommended" sort={sort} onSort={onSort} align="right" style={{ ...TH_STYLE, textAlign: 'right' }} />
+                  <SortTh label="Reasoning" col="reasoning" sort={sort} onSort={onSort} style={TH_STYLE} />
+                  <SortTh label="Confidence" col="confidence" sort={sort} onSort={onSort} style={TH_STYLE} />
+                  <th style={TH_STYLE}>Apply</th>
                 </tr>
               </thead>
               <tbody>

@@ -1,12 +1,12 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useApi, apiSend } from '@/lib/api';
 import {
   ErrorBox, Loading, Empty, fmtRel, fmtTime, PageHeader, useRefreshKey, useConfirm,
-  usePrompt, useToast,
+  usePrompt, useToast, useTableSort, sortRows, SortTh,
 } from '@/components/ui';
 import { IconWarning } from '@/components/icons';
 import { StatusDot } from '@/components/StatusDot';
@@ -85,6 +85,24 @@ export default function AgentDetailPage({ params }: { params: { id: string } }) 
   // note in ws-server.js/server.js), so there's no reason to pull the whole
   // fleet list on every detail-page load.
   const allAgents = useApi<AgentListItem[]>(linking ? '/api/agents' : null);
+
+  // Assigned-sites table sorting. Built here (above the early returns below) so
+  // the hook order stays stable, and derived from the same data the table used
+  // to compute inline — the per-site device count included.
+  const { sort: siteSort, onSort: onSiteSort } = useTableSort();
+  const siteRows = useMemo(() => {
+    const d = agent.data;
+    if (!d) return [] as { site_id: number; site_name: string | null; count: number }[];
+    const rows = d.sites.map((s) => ({
+      site_id: s.site_id,
+      site_name: s.site_name,
+      count: d.devices.filter((dev) => dev.site_id === s.site_id).length,
+    }));
+    return sortRows(rows, siteSort, {
+      site: (r) => r.site_name || `Site ${r.site_id}`,
+      devices: (r) => r.count,
+    });
+  }, [agent.data, siteSort]);
 
   useRefreshKey(() => agent.reload());
 
@@ -323,24 +341,21 @@ export default function AgentDetailPage({ params }: { params: { id: string } }) 
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead>
                 <tr>
-                  <th style={TH_STYLE}>Site</th>
-                  <th style={{ ...TH_STYLE, textAlign: 'right' }}>Devices</th>
+                  <SortTh label="Site" col="site" sort={siteSort} onSort={onSiteSort} style={TH_STYLE} />
+                  <SortTh label="Devices" col="devices" sort={siteSort} onSort={onSiteSort} align="right" style={{ ...TH_STYLE, textAlign: 'right' }} />
                 </tr>
               </thead>
               <tbody>
-                {a.sites.map((s) => {
-                  const count = a.devices.filter((d) => d.site_id === s.site_id).length;
-                  return (
-                    <tr key={s.site_id} style={{ height: 36 }} className="sv-agent-site-row">
-                      <td style={TD_STYLE}>
-                        <Link href={`/sites/${s.site_id}`} style={{ color: 'var(--primary)', textDecoration: 'none' }}>
-                          {s.site_name || `Site ${s.site_id}`}
-                        </Link>
-                      </td>
-                      <td style={{ ...TD_STYLE, textAlign: 'right', color: 'var(--text-muted)' }}>{count}</td>
-                    </tr>
-                  );
-                })}
+                {siteRows.map((s) => (
+                  <tr key={s.site_id} style={{ height: 36 }} className="sv-agent-site-row">
+                    <td style={TD_STYLE}>
+                      <Link href={`/sites/${s.site_id}`} style={{ color: 'var(--primary)', textDecoration: 'none' }}>
+                        {s.site_name || `Site ${s.site_id}`}
+                      </Link>
+                    </td>
+                    <td style={{ ...TD_STYLE, textAlign: 'right', color: 'var(--text-muted)' }}>{s.count}</td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           ) : (

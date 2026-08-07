@@ -1,7 +1,7 @@
 'use client';
 
 import type { CSSProperties, ReactNode } from 'react';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import {
@@ -13,7 +13,7 @@ import { vendorLabel } from '@/lib/vendor';
 import { StatusDot } from '@/components/StatusDot';
 import SensorManager from '@/components/SensorManager';
 import { DeviceForm } from '@/components/DeviceModals';
-import { StatusBadge, Loading, ErrorBox, Empty, fmtTime, fmtRel, fmtBps, Pager, useClientPagination, useConfirm, CHART_TOOLTIP } from '@/components/ui';
+import { StatusBadge, Loading, ErrorBox, Empty, fmtTime, fmtRel, fmtBps, Pager, useClientPagination, useConfirm, CHART_TOOLTIP, useTableSort, sortRows, SortTh } from '@/components/ui';
 import { GradeBadge, ScoreBar, TrendArrow, n as intelNum } from '@/components/intel';
 
 type Device = {
@@ -97,6 +97,16 @@ const ALERT_LIMIT_DEFAULT = 200;
 const ALERT_LOAD_STEP = 200;
 const ALERT_LIMIT_MAX = 1000;
 
+// Column accessors for the Alert History table's shared sorting primitive.
+const ALERT_SORT: Record<string, (a: Alert) => unknown> = {
+  severity: (a) => a.severity,
+  type: (a) => a.alert_type,
+  message: (a) => a.message,
+  triggered: (a) => a.triggered_at,
+  resolved: (a) => a.resolved_at,
+  status: (a) => a.status,
+};
+
 // Combined interface-traffic line colours (In = blue, Out = orange).
 const TRAFFIC_IN_COLOR = '#3b82f6';
 const TRAFFIC_OUT_COLOR = '#f97316';
@@ -118,7 +128,18 @@ export default function DeviceDetailPage() {
   const ping = useApi<PingPoint[]>(`/api/devices/${id}/ping-history?range=${range}`, 20000);
   const sensors = useApi<Sensor[]>(`/api/devices/${id}/sensors`, 0);
   const alerts = useApi<AlertsResponse>(`/api/devices/${id}/alerts?limit=${alertLimit}`, 20000);
-  const alertPg = useClientPagination(alerts.data?.rows ?? [], ALERTS_PER_PAGE);
+  const { sort: alertSort, onSort: onAlertSort } = useTableSort();
+  // Sort the WHOLE fetched set before paginating, so page 1 really is the top of
+  // the chosen order rather than a re-sorted slice of the current page.
+  const alertRows = useMemo(
+    () => sortRows(alerts.data?.rows ?? [], alertSort, ALERT_SORT),
+    [alerts.data, alertSort],
+  );
+  // Changing the sort returns to page 1 (stable string key — an object identity
+  // here would reset the pager on every render).
+  const alertPg = useClientPagination(
+    alertRows, ALERTS_PER_PAGE, alertSort ? `${alertSort.key}:${alertSort.dir}` : '',
+  );
 
   // Auto-dismiss the SNMP-test toast.
   useEffect(() => {
@@ -264,7 +285,14 @@ export default function DeviceDetailPage() {
           <>
             <table className="sv-table">
               <thead>
-                <tr><th>Severity</th><th>Type</th><th>Message</th><th>Triggered</th><th>Resolved</th><th>Status</th></tr>
+                <tr>
+                  <SortTh label="Severity" col="severity" sort={alertSort} onSort={onAlertSort} />
+                  <SortTh label="Type" col="type" sort={alertSort} onSort={onAlertSort} />
+                  <SortTh label="Message" col="message" sort={alertSort} onSort={onAlertSort} />
+                  <SortTh label="Triggered" col="triggered" sort={alertSort} onSort={onAlertSort} />
+                  <SortTh label="Resolved" col="resolved" sort={alertSort} onSort={onAlertSort} />
+                  <SortTh label="Status" col="status" sort={alertSort} onSort={onAlertSort} />
+                </tr>
               </thead>
               <tbody>
                 {alertPg.pageRows.map((a) => (

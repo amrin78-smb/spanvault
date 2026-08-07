@@ -1,10 +1,10 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useApi, apiSend } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
-import { Loading, ErrorBox, Empty, fmtTime, PageHeader, TableSkeleton, Pager, useClientPagination, useConfirm, useToast } from '@/components/ui';
+import { Loading, ErrorBox, Empty, fmtTime, PageHeader, TableSkeleton, Pager, useClientPagination, useConfirm, useToast, useTableSort, sortRows, SortTh } from '@/components/ui';
 import { useLicense } from '@/components/LicenseGuard';
 
 const TABS = [
@@ -748,8 +748,18 @@ const AUDIT_LIMIT_MAX = 1000;
 function AuditLog() {
   const [limit, setLimit] = useState(AUDIT_LIMIT_DEFAULT);
   const audit = useApi<AuditRow[]>(`/api/audit?limit=${limit}`, 30000);
-  const rows = audit.data || [];
-  const pg = useClientPagination(rows, AUDIT_PER_PAGE);
+  const { sort, onSort } = useTableSort();
+  // Default (no sort) keeps the endpoint's most-recent-first ordering.
+  const rows = useMemo(() => sortRows(audit.data || [], sort, {
+    when: (r) => r.ts,
+    user: (r) => r.user_email,
+    role: (r) => r.user_role,
+    action: (r) => `${r.method} ${r.path}`,
+    detail: (r) => (r.detail ? JSON.stringify(r.detail) : null),
+  }), [audit.data, sort]);
+  // Changing the sort re-orders the whole (client-paged) result set, so go back
+  // to page 1 — otherwise the user stays on page 4 of a different ordering.
+  const pg = useClientPagination(rows, AUDIT_PER_PAGE, sort ? `${sort.key}:${sort.dir}` : '');
   if (audit.loading && !audit.data) return <Loading />;
   if (audit.error) return <ErrorBox message={audit.error} />;
   // The endpoint returns a bare array with no total; a full page implies more
@@ -765,7 +775,15 @@ function AuditLog() {
       {!rows.length ? <Empty message="No audit entries yet." /> : (
         <>
           <table className="sv-table">
-            <thead><tr><th>When</th><th>User</th><th>Role</th><th>Action</th><th>Detail</th></tr></thead>
+            <thead>
+              <tr>
+                <SortTh label="When" col="when" sort={sort} onSort={onSort} />
+                <SortTh label="User" col="user" sort={sort} onSort={onSort} />
+                <SortTh label="Role" col="role" sort={sort} onSort={onSort} />
+                <SortTh label="Action" col="action" sort={sort} onSort={onSort} />
+                <SortTh label="Detail" col="detail" sort={sort} onSort={onSort} />
+              </tr>
+            </thead>
             <tbody>
               {pg.pageRows.map((r) => (
                 <tr key={r.id}>

@@ -1,12 +1,12 @@
 'use client';
 
-import { Fragment, useState } from 'react';
+import { Fragment, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import { useApi, apiSend } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
-import { StatusBadge, ErrorBox, fmtTime, fmtRel, PageHeader, TableSkeleton, EmptyState, useRefreshKey, Pager, useClientPagination } from '@/components/ui';
+import { StatusBadge, ErrorBox, fmtTime, fmtRel, PageHeader, TableSkeleton, EmptyState, useRefreshKey, Pager, useClientPagination, useTableSort, sortRows, SortTh } from '@/components/ui';
 import { StatusDot } from '@/components/StatusDot';
 import SiteScopeBanner from '@/components/SiteScopeBanner';
 import { IconNote, IconCheck } from '@/components/icons';
@@ -163,6 +163,38 @@ function groupDurationSec(alerts: Alert[]): number {
   return (Math.max(...ts) - Math.min(...ts)) / 1000;
 }
 
+// ── Sort accessors ───────────────────────────────────────────────
+// The table's rows are GROUPS (a standalone alert, or an incident header with
+// children), so every sort key resolves against the group's representative
+// alert — its first, i.e. most recent, member — except severity/triggered,
+// which aggregate across the whole group the same way the header row displays.
+// Ordering is worst/newest-first-friendly: `severityOrder` is deliberately
+// inverted (critical = 0) so the FIRST (ascending) click surfaces criticals.
+const SEVERITY_ORDER: Record<string, number> = { critical: 0, warning: 1 };
+function severityOrder(sev: string): number {
+  return SEVERITY_ORDER[(sev || '').toLowerCase()] ?? 2;
+}
+// Mirrors the entity-name cell's own precedence (device wins; otherwise
+// service / agent / wireless), so the column sorts by what's actually shown.
+function entityName(a: Alert): string {
+  if (a.device_id == null) {
+    return a.service_name || a.agent_name || a.wireless_name || a.ip_address || '';
+  }
+  return a.device_name || a.ip_address || `#${a.device_id}`;
+}
+function newestTriggered(alerts: Alert[]): number {
+  const ts = alerts.map((a) => new Date(a.triggered_at).getTime()).filter((n) => isFinite(n));
+  return ts.length ? Math.max(...ts) : 0;
+}
+const GROUP_SORT_ACCESSORS: Record<string, (g: Group) => unknown> = {
+  severity: (g) => severityOrder(worstSeverity(g.alerts)),
+  type: (g) => prettyType(g.alerts[0]?.alert_type || ''),
+  device: (g) => entityName(g.alerts[0]),
+  message: (g) => g.alerts[0]?.message || '',
+  status: (g) => g.alerts[0]?.status || '',
+  triggered: (g) => newestTriggered(g.alerts),
+};
+
 // ════════════════════════════════════════════════════════════
 // Top-level presentational components (never nested — CLAUDE.md rule).
 // ════════════════════════════════════════════════════════════
@@ -226,6 +258,8 @@ export default function AlertsPage() {
   const [ackingId, setAckingId] = useState<number | null>(null);
   const [noteText, setNoteText] = useState('');
   const [limit, setLimit] = useState(ALERT_LIMIT_DEFAULT);
+  // No initial sort: the default order stays buildGroups' newest-incident-first.
+  const { sort, onSort } = useTableSort();
 
   const params = new URLSearchParams();
   if (status) params.set('status', status);
@@ -275,12 +309,17 @@ export default function AlertsPage() {
 
   const all = alerts.data || [];
   const filtered = all.filter((a) => passesChips(a, chips, search.trim()));
-  const groups = buildGroups(filtered);
+  // Sort is applied to the grouped rows AFTER filtering, never instead of it.
+  const groups = useMemo(
+    () => sortRows(buildGroups(filtered), sort, GROUP_SORT_ACCESSORS),
+    [filtered, sort],
+  );
   // Reset to page 1 when the filter identity changes (not when limit grows, so
-  // "Load older" preserves the current page position).
+  // "Load older" preserves the current page position). Sort is part of that
+  // identity — a re-sorted list should start at page 1.
   const groupPg = useClientPagination(
     groups, GROUPS_PER_PAGE,
-    `${status}|${severity}|${search.trim()}|${[...chips].sort().join(',')}`,
+    `${status}|${severity}|${search.trim()}|${[...chips].sort().join(',')}|${sort?.key ?? ''}:${sort?.dir ?? ''}`,
   );
   // The server caps the fetch at `limit`; if it returned a full page, older
   // alerts likely exist. No total is available (endpoint returns a bare array),
@@ -487,12 +526,12 @@ export default function AlertsPage() {
           <table className="sv-table">
             <thead>
               <tr style={{ height: 34 }}>
-                <th style={{ ...ALERT_TH_STYLE, width: 28 }} aria-label="Severity" />
-                <th style={ALERT_TH_STYLE}>Type</th>
-                <th style={ALERT_TH_STYLE}>Device</th>
-                <th style={ALERT_TH_STYLE}>Message</th>
-                <th style={ALERT_TH_STYLE}>Status</th>
-                <th style={{ ...ALERT_TH_STYLE, textAlign: 'right' }}>Triggered</th>
+                <SortTh label="Severity" col="severity" sort={sort} onSort={onSort} style={ALERT_TH_STYLE} />
+                <SortTh label="Type" col="type" sort={sort} onSort={onSort} style={ALERT_TH_STYLE} />
+                <SortTh label="Device" col="device" sort={sort} onSort={onSort} style={ALERT_TH_STYLE} />
+                <SortTh label="Message" col="message" sort={sort} onSort={onSort} style={ALERT_TH_STYLE} />
+                <SortTh label="Status" col="status" sort={sort} onSort={onSort} style={ALERT_TH_STYLE} />
+                <SortTh label="Triggered" col="triggered" sort={sort} onSort={onSort} align="right" style={{ ...ALERT_TH_STYLE, textAlign: 'right' }} />
                 <th style={{ ...ALERT_TH_STYLE, textAlign: 'right' }} aria-label="Actions" />
               </tr>
             </thead>

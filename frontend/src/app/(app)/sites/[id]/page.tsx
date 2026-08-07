@@ -6,7 +6,10 @@ import { useParams } from 'next/navigation';
 import { useApi } from '@/lib/api';
 import { StatusDot } from '@/components/StatusDot';
 import { DeviceForm, ImportModal } from '@/components/DeviceModals';
-import { StatusBadge, ErrorBox, Empty, fmtTime, fmtRel, PageHeader, TableSkeleton } from '@/components/ui';
+import {
+  StatusBadge, ErrorBox, Empty, fmtTime, fmtRel, PageHeader, TableSkeleton,
+  useTableSort, sortRows, SortTh,
+} from '@/components/ui';
 
 type Site = { id: number; name: string; code: string | null; city: string | null };
 type Device = {
@@ -73,6 +76,16 @@ function statusSummary(counts: { up: number; down: number; warning: number; unkn
   return parts.join(' · ');
 }
 
+// Column accessors for the Active Alerts table. The "Device" column shows the
+// service name for service-check alerts (device_id is null there), so sort on
+// whatever that cell actually renders.
+const ALERT_SORT: Record<string, (a: Alert) => unknown> = {
+  severity: (a) => a.severity,
+  device: (a) => (a.device_id == null && a.service_name ? a.service_name : (a.device_name || a.ip_address)),
+  message: (a) => a.message,
+  triggered: (a) => a.triggered_at,
+};
+
 export default function SiteDetailPage() {
   const { id } = useParams<{ id: string }>();
   const siteIdNum = parseInt(id, 10);
@@ -94,6 +107,9 @@ export default function SiteDetailPage() {
   const siteAlerts = (alerts.data || []).filter(
     (a) => deviceIds.has(a.device_id) || (a.service_check_id != null && serviceIds.has(a.service_check_id))
   );
+  // Sorting is applied on top of the site filter above, never in place of it.
+  const { sort: alertSort, onSort: onAlertSort } = useTableSort();
+  const sortedAlerts = sortRows(siteAlerts, alertSort, ALERT_SORT);
   const counts = countByStatus(deviceList);
 
   // Fall back to the site name carried on the devices if the site isn't in the active list.
@@ -202,10 +218,15 @@ export default function SiteDetailPage() {
         ) : siteAlerts.length ? (
           <table className="sv-table">
             <thead>
-              <tr><th>Severity</th><th>Device</th><th>Message</th><th>Triggered</th></tr>
+              <tr>
+                <SortTh label="Severity" col="severity" sort={alertSort} onSort={onAlertSort} />
+                <SortTh label="Device" col="device" sort={alertSort} onSort={onAlertSort} />
+                <SortTh label="Message" col="message" sort={alertSort} onSort={onAlertSort} />
+                <SortTh label="Triggered" col="triggered" sort={alertSort} onSort={onAlertSort} />
+              </tr>
             </thead>
             <tbody>
-              {siteAlerts.map((a) => (
+              {sortedAlerts.map((a) => (
                 <tr key={a.id}>
                   <td><StatusBadge status={a.severity} /></td>
                   <td>

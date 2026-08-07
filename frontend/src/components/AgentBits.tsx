@@ -1,8 +1,8 @@
 'use client';
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useApi, apiSend } from '@/lib/api';
-import { fmtRel } from '@/components/ui';
+import { fmtRel, useTableSort, sortRows, SortTh } from '@/components/ui';
 
 // Discovery rows never expire — a candidate this old may have been reassigned
 // by DHCP to a different device since the agent last saw it.
@@ -163,6 +163,16 @@ export function AgentDiscovery({ agentId, online }: { agentId: number; online: b
   const [communities, setCommunities] = useState('');
   const disc = useApi<Discovered[]>(`/api/agents/${agentId}/discovered`, scanning ? 4000 : 0);
   const rows = disc.data || [];
+  const { sort, onSort } = useTableSort();
+  // Sorting sits on top of whatever the API returned — no default sort, so the
+  // server's own ordering is what shows until a header is clicked.
+  const sortedRows = useMemo(() => sortRows(rows, sort, {
+    ip: (r) => r.ip_address,
+    name: (r) => r.sys_name,
+    snmp: (r) => (r.snmp_ok ? 1 : 0),
+    lastseen: (r) => r.last_seen_at,
+    status: (r) => (r.already_monitored || r.adopted ? 'monitored' : 'new'),
+  }), [rows, sort]);
 
   async function scan() {
     setMsg(null);
@@ -264,15 +274,15 @@ export function AgentDiscovery({ agentId, online }: { agentId: number; online: b
           <thead>
             <tr>
               <th style={{ ...DISC_TH, width: 34 }}></th>
-              <th style={DISC_TH}>IP</th>
-              <th style={DISC_TH}>Name</th>
-              <th style={DISC_TH}>SNMP</th>
-              <th style={DISC_TH}>Last Seen</th>
-              <th style={DISC_TH}>Status</th>
+              <SortTh label="IP" col="ip" sort={sort} onSort={onSort} style={DISC_TH} />
+              <SortTh label="Name" col="name" sort={sort} onSort={onSort} style={DISC_TH} />
+              <SortTh label="SNMP" col="snmp" sort={sort} onSort={onSort} style={DISC_TH} />
+              <SortTh label="Last Seen" col="lastseen" sort={sort} onSort={onSort} style={DISC_TH} />
+              <SortTh label="Status" col="status" sort={sort} onSort={onSort} style={DISC_TH} />
             </tr>
           </thead>
           <tbody>
-            {rows.map((r) => {
+            {sortedRows.map((r) => {
               const taken = r.already_monitored || r.adopted;
               const lastSeenMs = r.last_seen_at ? Date.now() - new Date(r.last_seen_at).getTime() : null;
               const stale = lastSeenMs != null && !isNaN(lastSeenMs) && lastSeenMs > STALE_DISCOVERY_MS;

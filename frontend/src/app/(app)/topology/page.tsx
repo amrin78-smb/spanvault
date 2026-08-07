@@ -3,7 +3,7 @@
 import { Fragment, useMemo, useState } from 'react';
 import { useApi, apiSend } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
-import { Loading, ErrorBox, Empty, fmtRel, fmtTime } from '@/components/ui';
+import { Loading, ErrorBox, Empty, fmtRel, fmtTime, useTableSort, sortRows, SortTh } from '@/components/ui';
 import { StatusDot } from '@/components/StatusDot';
 import TopologyMapView from '@/components/TopologyMapView';
 
@@ -328,6 +328,13 @@ function DependencyPanel({
   suggestions: DependencySuggestion[];
   onClose: () => void;
 }) {
+  const { sort, onSort } = useTableSort();
+  const sorted = useMemo(() => sortRows(suggestions, sort, {
+    device: (s) => s.name,
+    reason: (s) => s.reason,
+    confidence: (s) => s.confidence,
+  }), [suggestions, sort]);
+
   return (
     <div className="sv-panel" style={{ marginTop: 14 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -343,13 +350,13 @@ function DependencyPanel({
         <table className="sv-table" style={{ marginTop: 10 }}>
           <thead>
             <tr>
-              <th>Device</th>
-              <th>Reason</th>
-              <th style={{ textAlign: 'right' }}>Confidence</th>
+              <SortTh label="Device" col="device" sort={sort} onSort={onSort} />
+              <SortTh label="Reason" col="reason" sort={sort} onSort={onSort} />
+              <SortTh label="Confidence" col="confidence" sort={sort} onSort={onSort} align="right" />
             </tr>
           </thead>
           <tbody>
-            {suggestions.map((s: DependencySuggestion) => (
+            {sorted.map((s: DependencySuggestion) => (
               <tr key={s.device_id}>
                 <td>{s.name}</td>
                 <td style={{ color: 'var(--text-muted)' }}>{s.reason}</td>
@@ -499,7 +506,13 @@ function LinkTable({
       : all;
   }, [links.data, q]);
 
-  const groups = useMemo<FromDeviceGroup[]>(() => buildFromDeviceGroups(filtered), [filtered]);
+  // Sort runs AFTER the search filter + grouping, so the default (name-ordered)
+  // grouping still applies until a header is clicked.
+  const { sort, onSort } = useTableSort();
+  const groups = useMemo<FromDeviceGroup[]>(() => sortRows(buildFromDeviceGroups(filtered), sort, {
+    device: (g) => g.from_device_name,
+    lastseen: (g) => g.last_seen_at,
+  }), [filtered, sort]);
 
   if (links.loading && !links.data) {
     return <div className="sv-panel"><Loading /></div>;
@@ -539,8 +552,8 @@ function LinkTable({
           <table className="sv-table">
             <thead>
               <tr>
-                <th>Device</th>
-                <th style={{ whiteSpace: 'nowrap' }}>Last Seen</th>
+                <SortTh label="Device" col="device" sort={sort} onSort={onSort} />
+                <SortTh label="Last Seen" col="lastseen" sort={sort} onSort={onSort} />
                 <th style={{ width: 32 }} />
               </tr>
             </thead>
@@ -578,6 +591,16 @@ function FromDeviceRow({
   flash: (node: React.ReactNode) => void;
 }) {
   const count = group.links.length;
+  // Each expanded group keeps its own neighbour-table sort; default (null) keeps
+  // buildFromDeviceGroups' neighbour-name ordering.
+  const { sort, onSort } = useTableSort();
+  const links = useMemo(() => sortRows(group.links, sort, {
+    neighbor: (l) => neighborName(l),
+    monitored: (l) => (l.to_device_id != null ? 'Monitored' : 'Not monitored'),
+    protocol: (l) => l.protocol,
+    toport: (l) => l.to_port,
+    lastseen: (l) => l.last_seen_at,
+  }), [group.links, sort]);
 
   return (
     <Fragment>
@@ -617,16 +640,16 @@ function FromDeviceRow({
             <table className="sv-table" style={{ margin: 0 }}>
               <thead>
                 <tr>
-                  <th>Neighbor</th>
-                  <th>Monitored</th>
-                  <th>Protocol</th>
-                  <th>To Port</th>
-                  <th style={{ whiteSpace: 'nowrap' }}>Last Seen</th>
+                  <SortTh label="Neighbor" col="neighbor" sort={sort} onSort={onSort} />
+                  <SortTh label="Monitored" col="monitored" sort={sort} onSort={onSort} />
+                  <SortTh label="Protocol" col="protocol" sort={sort} onSort={onSort} />
+                  <SortTh label="To Port" col="toport" sort={sort} onSort={onSort} />
+                  <SortTh label="Last Seen" col="lastseen" sort={sort} onSort={onSort} />
                   <th style={{ textAlign: 'right' }} />
                 </tr>
               </thead>
               <tbody>
-                {group.links.map((l: TopologyLink) => (
+                {links.map((l: TopologyLink) => (
                   <NeighborDetailRow key={l.id} link={l} canEdit={canEdit} flash={flash} />
                 ))}
               </tbody>

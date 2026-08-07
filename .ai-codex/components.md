@@ -88,3 +88,19 @@ a component inside another component — causes remount/focus-loss on every
 keystroke") — the codebase currently follows it.
 
 (c) CornersToggle — Rounded/Square segmented row rendered INSIDE the avatar dropdown in TopBar.tsx (uses the sv-dropdown-item class, sits below ThemeToggle variant="item"). Not in Settings: that page is admin-only and this is a per-browser preference every role must reach. Not in the top bar either — it looked wrong there. Reads its value in useEffect, never at render (the <html> attribute does not exist during SSR — reading at render is a hydration mismatch).
+
+## Table sorting (shared, ui.tsx) — added 1.89.0
+ONE implementation for every sortable table. Do not hand-roll a comparator or a
+header cell: wireless/page.tsx and intelligence/page.tsx each carried a private
+copy (SortTh / IntelTH) and both were deleted in favour of this.
+```
+useTableSort(initial?)      -> { sort, onSort, setSort }; 1st click asc, click again flips
+sortRows(rows, sort, accs)  -> NEW array; null/empty LAST in both directions; numbers
+                               numeric, ISO dates chronological, strings numeric-aware
+SortTh({label,col,sort,onSort,align?,style?}) -> clickable <th> with the shared arrows
+```
+Rules when adding one: sort AFTER filtering, never instead of it; include the sort in
+any useClientPagination resetKey so changing sort returns to page 1; leave
+action/checkbox columns as plain <th>; and do NOT make configuration lists sortable
+(escalation steps, on-call shifts, notification routes, maintenance windows) — their
+existing order carries meaning. 132 sortable columns across 13 files as of 1.89.0.

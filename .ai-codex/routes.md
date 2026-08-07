@@ -181,6 +181,16 @@ deliberately skip it).
 - `GET /api/wireless/clients` [auth] [db]
 - `GET /api/wireless/clients/summary` [auth] [db]
 - `GET /api/wireless/rogues` [auth] [db] — returns [] gracefully if table not yet migrated
+  **BREAKING (1.89.0): returns an OBJECT, not an array** — {data, matched, returned,
+  truncated, summary}. summary holds SQL COUNTs over the whole site-scoped set
+  (total/threats/malicious/interfering/friendly/active_1h). The page used to derive its
+  headline cards from the returned rows against a hard LIMIT 500, so it read
+  "500 detected / 4 malicious" where the truth was 12,515 / 191 — under-reporting
+  threats ~48x on a security page. Filters are now server-side for the same reason
+  (filtering a truncated sample answers a different question): classification, search
+  (bssid/ssid/detecting_ap), controller_id, channel, band (2.4|5 only — 6GHz channel
+  numbers overlap 5GHz in these vendor tables, so it cannot be answered honestly),
+  min_rssi, since_hours, named, limit (default 1000, max 5000), offset.
 - `GET /api/wireless/clients/:mac` [auth] [db] — site-scoped (2026-07 security fix: previously readable cross-site by MAC)
 - `GET /api/wireless/clients/:mac/history` [auth] [db] — site-scoped (same fix)
 

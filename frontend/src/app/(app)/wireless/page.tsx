@@ -8,7 +8,7 @@ import {
 } from 'recharts';
 import { useApi, apiSend, apiGet } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
-import { Loading, ErrorBox, Empty, fmtRel, fmtTime, UtilBar, pctColor, PageHeader, Pager, useClientPagination, CHART_TOOLTIP, useConfirm } from '@/components/ui';
+import { Loading, ErrorBox, Empty, fmtRel, fmtTime, UtilBar, pctColor, PageHeader, Pager, useClientPagination, CHART_TOOLTIP, useConfirm, useTableSort, sortRows, SortTh } from '@/components/ui';
 import { StatusDot } from '@/components/StatusDot';
 import { IconCheck, IconWarning, IconRepeat, IconClose, IconTool, IconPin } from '@/components/icons';
 
@@ -345,6 +345,17 @@ interface RogueAp {
   controller_name: string | null;
   site_name: string | null;
   vendor: string | null;
+}
+
+// Response shape of GET /api/wireless/rogues. It returns an OBJECT, not a bare
+// array: `summary` carries COUNTs computed in SQL over the whole site-scoped set,
+// so the headline cards stay correct no matter how many rows this page holds.
+interface RogueResponse {
+  data: RogueAp[];
+  matched: number;
+  returned: number;
+  truncated: boolean;
+  summary: { total: number; threats: number; malicious: number; interfering: number; friendly: number; active_1h: number };
 }
 
 // Classification colour: malicious/rogue = red, interfering = yellow,
@@ -1058,53 +1069,87 @@ export default function WirelessPage() {
 function RogueApsTab() {
   const [search, setSearch] = useState('');
   const [classFilter, setClassFilter] = useState('');
+  const [band, setBand] = useState('');
+  const [channel, setChannel] = useState('');
+  const [minRssi, setMinRssi] = useState('');
+  const [sinceHours, setSinceHours] = useState('');
+  const [namedOnly, setNamedOnly] = useState(false);
+  const [controllerId, setControllerId] = useState('');
+  const { sort, onSort } = useTableSort({ key: 'lastseen', dir: 'desc' });
 
-  const roguesApi = useApi<RogueAp[]>('/api/wireless/rogues', 30000);
-  const all = useMemo(() => roguesApi.data || [], [roguesApi.data]);
+  const controllersApi = useApi<Controller[]>('/api/wireless/controllers', 60000);
 
-  const shown = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return all.filter((r) => {
-      if (classFilter && (r.classification || '').toLowerCase() !== classFilter) return false;
-      if (q && !(r.bssid || '').toLowerCase().includes(q) && !(r.ssid || '').toLowerCase().includes(q)) return false;
-      return true;
-    });
-  }, [all, search, classFilter]);
+  // Filters are applied SERVER-side. They used to run in the browser over
+  // whatever rows had been returned, which quietly answered a different
+  // question: the endpoint capped at 500 rows out of 12,514 here, so filtering
+  // for "malicious" searched the newest 500 detections rather than the estate.
+  const qs = new URLSearchParams();
+  if (search.trim()) qs.set('search', search.trim());
+  if (classFilter) qs.set('classification', classFilter);
+  if (band) qs.set('band', band);
+  if (channel) qs.set('channel', channel);
+  if (minRssi) qs.set('min_rssi', minRssi);
+  if (sinceHours) qs.set('since_hours', sinceHours);
+  if (namedOnly) qs.set('named', '1');
+  if (controllerId) qs.set('controller_id', controllerId);
+  const roguesApi = useApi<RogueResponse>(`/api/wireless/rogues?${qs.toString()}`, 30000);
 
-  const threatCount = useMemo(
-    () => all.filter((r) => ['rogue', 'malicious'].includes((r.classification || '').toLowerCase())).length,
-    [all],
-  );
+  const rows = useMemo(() => roguesApi.data?.data || [], [roguesApi.data]);
+  // Headline figures come from the API's own COUNT over the whole site-scoped
+  // set — never from rows.length, which is a page of results, not a total.
+  const summary = roguesApi.data?.summary;
+  const matched = roguesApi.data?.matched ?? 0;
+  const truncated = roguesApi.data?.truncated ?? false;
+
+  const shown = useMemo(() => sortRows(rows, sort, {
+    bssid: (r) => r.bssid,
+    ssid: (r) => r.ssid,
+    classification: (r) => r.classification,
+    rssi: (r) => r.rssi_dbm,
+    channel: (r) => r.channel,
+    detecting: (r) => r.detecting_ap,
+    controller: (r) => r.controller_name,
+    lastseen: (r) => r.last_seen_at,
+  }), [rows, sort]);
+
+  const anyFilter = Boolean(search || classFilter || band || channel || minRssi || sinceHours || namedOnly || controllerId);
+  function clearAll() {
+    setSearch(''); setClassFilter(''); setBand(''); setChannel('');
+    setMinRssi(''); setSinceHours(''); setNamedOnly(false); setControllerId('');
+  }
 
   return (
     <div>
       <div className="sv-cards">
         <div className="sv-card">
-          <div className="num">{all.length}</div>
+          <div className="num">{summary ? summary.total.toLocaleString() : '—'}</div>
           <div className="label">Detected APs</div>
         </div>
         <div className="sv-card" style={{ borderLeftColor: 'var(--red)' }}>
-          <div className="num" style={{ color: threatCount > 0 ? 'var(--red)' : undefined }}>{threatCount}</div>
+          <div className="num" style={{ color: (summary?.threats ?? 0) > 0 ? 'var(--red)' : undefined }}>
+            {summary ? summary.threats.toLocaleString() : '—'}
+          </div>
           <div className="label">Rogue / Malicious</div>
+        </div>
+        <div className="sv-card" style={{ borderLeftColor: 'var(--yellow)' }}>
+          <div className="num">{summary ? summary.interfering.toLocaleString() : '—'}</div>
+          <div className="label">Interfering</div>
+        </div>
+        <div className="sv-card">
+          <div className="num">{summary ? summary.active_1h.toLocaleString() : '—'}</div>
+          <div className="label">Seen in last hour</div>
         </div>
       </div>
 
-      <div style={{
-        display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', margin: '14px 0',
-      }}>
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', margin: '14px 0' }}>
         <input
           className="sv-input"
-          style={{ maxWidth: 320, flex: 1 }}
-          placeholder="Search by BSSID or SSID…"
+          style={{ maxWidth: 300, flex: 1 }}
+          placeholder="Search BSSID, SSID or detecting AP…"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
-        <select
-          className="sv-select"
-          style={{ maxWidth: 200 }}
-          value={classFilter}
-          onChange={(e) => setClassFilter(e.target.value)}
-        >
+        <select className="sv-select" style={{ maxWidth: 180 }} value={classFilter} onChange={(e) => setClassFilter(e.target.value)}>
           <option value="">All classifications</option>
           <option value="malicious">Malicious</option>
           <option value="rogue">Rogue</option>
@@ -1112,6 +1157,54 @@ function RogueApsTab() {
           <option value="friendly">Friendly</option>
           <option value="unclassified">Unclassified</option>
         </select>
+        <select className="sv-select" style={{ maxWidth: 140 }} value={band} onChange={(e) => setBand(e.target.value)}>
+          <option value="">All bands</option>
+          <option value="2.4">2.4 GHz</option>
+          <option value="5">5 GHz</option>
+        </select>
+        <input
+          className="sv-input"
+          style={{ maxWidth: 110 }}
+          placeholder="Channel"
+          inputMode="numeric"
+          value={channel}
+          onChange={(e) => setChannel(e.target.value.replace(/\D/g, ''))}
+        />
+        <select className="sv-select" style={{ maxWidth: 190 }} value={minRssi} onChange={(e) => setMinRssi(e.target.value)}>
+          <option value="">Any signal</option>
+          <option value="-60">Very strong (≥ -60 dBm)</option>
+          <option value="-70">Strong (≥ -70 dBm)</option>
+          <option value="-80">Moderate (≥ -80 dBm)</option>
+        </select>
+        <select className="sv-select" style={{ maxWidth: 170 }} value={sinceHours} onChange={(e) => setSinceHours(e.target.value)}>
+          <option value="">Any time</option>
+          <option value="1">Seen in last hour</option>
+          <option value="24">Seen in last 24h</option>
+          <option value="168">Seen in last 7d</option>
+        </select>
+        <select className="sv-select" style={{ maxWidth: 190 }} value={controllerId} onChange={(e) => setControllerId(e.target.value)}>
+          <option value="">All controllers</option>
+          {(controllersApi.data || []).map((c) => (
+            <option key={c.id} value={c.id}>{c.name}</option>
+          ))}
+        </select>
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 'var(--text-base)', color: 'var(--text-secondary)', cursor: 'pointer' }}>
+          <input type="checkbox" checked={namedOnly} onChange={(e) => setNamedOnly(e.target.checked)} />
+          Named SSIDs only
+        </label>
+        {anyFilter && (
+          <button className="sv-btn ghost sm" onClick={clearAll}>Clear filters</button>
+        )}
+      </div>
+
+      {/* Say plainly how much of the matching set is on screen — the old page
+          showed a capped list with no indication anything was missing. */}
+      <div className="sv-muted" style={{ fontSize: 'var(--text-sm)', marginBottom: 8 }}>
+        {roguesApi.data
+          ? `Showing ${shown.length.toLocaleString()} of ${matched.toLocaleString()} matching detection${matched === 1 ? '' : 's'}` +
+            (anyFilter && summary ? ` (of ${summary.total.toLocaleString()} total)` : '') +
+            (truncated ? ' — refine the filters to see the rest' : '')
+          : ''}
       </div>
 
       {roguesApi.error && <ErrorBox message={roguesApi.error} />}
@@ -1123,14 +1216,14 @@ function RogueApsTab() {
           <table className="sv-table">
             <thead>
               <tr>
-                <th style={STICKY_TH}>BSSID</th>
-                <th style={STICKY_TH}>SSID</th>
-                <th style={STICKY_TH}>Classification</th>
-                <th style={STICKY_TH}>RSSI</th>
-                <th style={STICKY_TH}>Channel</th>
-                <th style={STICKY_TH}>Detecting AP</th>
-                <th style={STICKY_TH}>Controller</th>
-                <th style={STICKY_TH}>Last Seen</th>
+                <SortTh label="BSSID" col="bssid" sort={sort} onSort={onSort} style={STICKY_TH} />
+                <SortTh label="SSID" col="ssid" sort={sort} onSort={onSort} style={STICKY_TH} />
+                <SortTh label="Classification" col="classification" sort={sort} onSort={onSort} style={STICKY_TH} />
+                <SortTh label="RSSI" col="rssi" sort={sort} onSort={onSort} style={STICKY_TH} />
+                <SortTh label="Channel" col="channel" sort={sort} onSort={onSort} style={STICKY_TH} />
+                <SortTh label="Detecting AP" col="detecting" sort={sort} onSort={onSort} style={STICKY_TH} />
+                <SortTh label="Controller" col="controller" sort={sort} onSort={onSort} style={STICKY_TH} />
+                <SortTh label="Last Seen" col="lastseen" sort={sort} onSort={onSort} style={STICKY_TH} />
               </tr>
             </thead>
             <tbody>
@@ -1159,7 +1252,7 @@ function RogueApsTab() {
           </table>
         </div>
       ) : (
-        <Empty message={all.length ? 'No rogue APs match your filters.' : 'No rogue APs detected. ✓'} />
+        <Empty message={anyFilter ? 'No rogue APs match your filters.' : 'No rogue APs detected. ✓'} />
       )}
     </div>
   );
@@ -1734,24 +1827,10 @@ function sortAps(aps: AccessPoint[], sort: ApSort | null): AccessPoint[] {
   });
 }
 
-// Clickable, sort-aware table header cell (top-level per the no-nested-components rule).
-function SortTh({ label, col, sort, onSort }: {
-  label: string; col: string; sort: ApSort | null; onSort: (col: string) => void;
-}) {
-  const active = sort?.key === col;
-  return (
-    <th
-      onClick={() => onSort(col)}
-      style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }}
-      title="Click to sort"
-    >
-      {label}
-      <span style={{ marginLeft: 4, color: active ? 'var(--sv-crimson)' : 'var(--text-muted)', fontSize: 'var(--text-xs)'}}>
-        {active ? (sort!.dir === 'asc' ? '▲' : '▼') : '↕'}
-      </span>
-    </th>
-  );
-}
+// SortTh now comes from @/components/ui. This file used to carry a private copy,
+// which is exactly how two tables end up sorting nulls differently. The shared
+// one also accepts a `style` prop, needed for the sticky headers on the Rogue
+// APs table, and its comparator handles nulls/numbers/dates consistently.
 
 // ── One controller's collapsible AP group (own search + collapse state) ───────
 function ApControllerGroup({

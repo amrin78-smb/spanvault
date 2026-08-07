@@ -1,7 +1,7 @@
 'use client';
 
 import type { CSSProperties } from 'react';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import {
@@ -9,7 +9,10 @@ import {
 } from 'recharts';
 import { useApi } from '@/lib/api';
 import { StatusDot } from '@/components/StatusDot';
-import { StatusBadge, Loading, ErrorBox, Empty, fmtTime, fmtRel, CHART_TOOLTIP } from '@/components/ui';
+import {
+  StatusBadge, Loading, ErrorBox, Empty, fmtTime, fmtRel, CHART_TOOLTIP,
+  useTableSort, sortRows, SortTh,
+} from '@/components/ui';
 
 // ── Types ──────────────────────────────────────────────────────
 type ServiceType = 'http' | 'tcp' | 'ssl' | 'dns';
@@ -53,6 +56,16 @@ function dotStatus(s: string): string {
 function typeLabel(t: string): string {
   return (t || '').toUpperCase();
 }
+
+// Recent-checks column sort accessors. Status is ordered worst-first (down = 0)
+// so the FIRST (ascending) click surfaces the failed checks.
+const STATUS_SORT_ORDER: Record<string, number> = { down: 0, warning: 1, unknown: 2, up: 3 };
+const RESULT_SORT_ACCESSORS: Record<string, (r: ResultRow) => unknown> = {
+  ts: (r) => r.ts,
+  status: (r) => STATUS_SORT_ORDER[dotStatus(r.status)] ?? 2,
+  response: (r) => r.response_ms,
+  detail: (r) => r.detail,
+};
 
 // ── Layout style constants ──────────────────────────────────────
 const SECTION_CARD: CSSProperties = {
@@ -112,6 +125,15 @@ export default function ServiceDetailPage() {
   const svc = useApi<ServiceDetail>(`/api/service-checks/${id}`, 20000);
   const results = useApi<ResultsResponse>(
     `/api/service-checks/${id}/results?range=${range}&limit=${HISTORY_LIMIT}`, 20000
+  );
+  // Sort state for the Recent Checks table only — declared above the early
+  // returns below so the hook order stays stable. Unsorted by default, which
+  // keeps the API's newest-first ordering. The chart deliberately keeps using
+  // the unsorted `rows` so re-sorting the table can't scramble the time axis.
+  const { sort, onSort } = useTableSort();
+  const sortedRows = useMemo(
+    () => sortRows(results.data?.rows || [], sort, RESULT_SORT_ACCESSORS),
+    [results.data, sort],
   );
 
   if (svc.loading && !svc.data) return <Loading />;
@@ -243,14 +265,14 @@ export default function ServiceDetailPage() {
           <table className="sv-table">
             <thead>
               <tr>
-                <th>Timestamp</th>
-                <th>Status</th>
-                <th style={{ textAlign: 'right' }}>Response</th>
-                <th>Detail</th>
+                <SortTh label="Timestamp" col="ts" sort={sort} onSort={onSort} />
+                <SortTh label="Status" col="status" sort={sort} onSort={onSort} />
+                <SortTh label="Response" col="response" sort={sort} onSort={onSort} align="right" />
+                <SortTh label="Detail" col="detail" sort={sort} onSort={onSort} />
               </tr>
             </thead>
             <tbody>
-              {rows.map((r, i) => {
+              {sortedRows.map((r, i) => {
                 const st = dotStatus(r.status);
                 const rowBg = st === 'down' ? 'var(--tint-danger)' : st === 'warning' ? 'var(--tint-warn)' : undefined;
                 return (

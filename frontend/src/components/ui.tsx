@@ -638,3 +638,110 @@ export function useToast(autoDismissMs = 5000) {
   ) : null;
   return { toast, ToastUI };
 }
+
+// ── Table sorting (shared) ───────────────────────────────────────────────────
+//
+// One implementation for every sortable table in the app. Before this, sorting
+// existed only inside wireless/page.tsx as a private SortTh plus a hand-written
+// comparator per table, which is how you end up with tables that sort nulls
+// differently or compare numbers as strings.
+//
+// Usage:
+//   const { sort, onSort } = useTableSort({ key: 'name', dir: 'asc' });
+//   const rows = useMemo(() => sortRows(filtered, sort, {
+//     name:     (r) => r.name,
+//     clients:  (r) => r.clients_total,
+//     lastseen: (r) => r.last_seen_at,
+//   }), [filtered, sort]);
+//   <SortTh label="AP Name" col="name" sort={sort} onSort={onSort} />
+export type SortDir = 'asc' | 'desc';
+export type SortState = { key: string; dir: SortDir } | null;
+
+export function useTableSort(initial: SortState = null) {
+  const [sort, setSort] = useState<SortState>(initial);
+  // First click on a column sorts ascending; clicking the same column flips it.
+  const onSort = useCallback((key: string) => {
+    setSort((s) => (s && s.key === key
+      ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' }
+      : { key, dir: 'asc' }));
+  }, []);
+  return { sort, onSort, setSort };
+}
+
+// Compare two extracted values. Rules that matter in practice:
+//  * null/undefined/'' always sort LAST regardless of direction — a device with
+//    no reading should not top the list just because the column is descending.
+//  * numbers compare numerically (so 9 < 10, not "10" < "9"), including numeric
+//    strings coming back from Postgres as text.
+//  * date-ish strings compare chronologically via Date.parse.
+//  * everything else compares case-insensitively, numeric-aware, so names like
+//    "AP-2" and "AP-10" order the way a human expects.
+function cmpValues(a: unknown, b: unknown): number {
+  const aEmpty = a === null || a === undefined || a === '';
+  const bEmpty = b === null || b === undefined || b === '';
+  if (aEmpty && bEmpty) return 0;
+  if (aEmpty) return 1;   // deliberately not negated by `dir` — see above
+  if (bEmpty) return -1;
+
+  const an = typeof a === 'number' ? a : Number(a);
+  const bn = typeof b === 'number' ? b : Number(b);
+  if (!Number.isNaN(an) && !Number.isNaN(bn) && String(a).trim() !== '' && String(b).trim() !== '') {
+    return an - bn;
+  }
+  const as = String(a);
+  const bs = String(b);
+  const ad = Date.parse(as);
+  const bd = Date.parse(bs);
+  if (!Number.isNaN(ad) && !Number.isNaN(bd) && /\d{4}-\d{2}-\d{2}/.test(as) && /\d{4}-\d{2}-\d{2}/.test(bs)) {
+    return ad - bd;
+  }
+  return as.localeCompare(bs, undefined, { numeric: true, sensitivity: 'base' });
+}
+
+/** Returns a NEW sorted array; never mutates the input. Unknown key = unchanged. */
+export function sortRows<T>(
+  rows: T[],
+  sort: SortState,
+  accessors: Record<string, (row: T) => unknown>,
+): T[] {
+  if (!sort) return rows;
+  const get = accessors[sort.key];
+  if (!get) return rows;
+  const dir = sort.dir === 'asc' ? 1 : -1;
+  return [...rows].sort((x, y) => {
+    const a = get(x);
+    const b = get(y);
+    const aEmpty = a === null || a === undefined || a === '';
+    const bEmpty = b === null || b === undefined || b === '';
+    // Empties stay last in BOTH directions, so don't let `dir` flip them.
+    if (aEmpty || bEmpty) return cmpValues(a, b);
+    return cmpValues(a, b) * dir;
+  });
+}
+
+/** Clickable sortable header cell. Matches the arrows used elsewhere: ▲ ▼ ↕ */
+export function SortTh({ label, col, sort, onSort, align = 'left', style }: {
+  label: string;
+  col: string;
+  sort: SortState;
+  onSort: (col: string) => void;
+  align?: 'left' | 'right' | 'center';
+  style?: React.CSSProperties;
+}) {
+  const active = sort?.key === col;
+  return (
+    <th
+      onClick={() => onSort(col)}
+      role="columnheader"
+      aria-sort={active ? (sort!.dir === 'asc' ? 'ascending' : 'descending') : 'none'}
+      title={`Sort by ${label}`}
+      style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap', textAlign: align, ...style }}
+    >
+      {label}
+      <span style={{ marginLeft: 4, fontSize: 'var(--text-xs)',
+        color: active ? 'var(--primary)' : 'var(--text-muted)', opacity: active ? 1 : 0.55 }}>
+        {active ? (sort!.dir === 'asc' ? '▲' : '▼') : '↕'}
+      </span>
+    </th>
+  );
+}

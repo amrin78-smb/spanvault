@@ -36,6 +36,12 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.89.0': [
+    'IMPORTANT — the Rogue APs page was under-reporting badly. It showed "500 Detected APs" because 500 was the maximum the page could load, not a count; this network actually has 12,515 detections. "Rogue / Malicious" read 4 for the same reason — it was counted from those 500 newest rows, when there are in fact 191 malicious detections. Both figures are now counted across everything, and the search and classification filters now search all of it rather than the newest 500.',
+    'New filters on the Rogue APs page: band (2.4 or 5 GHz), a specific channel, minimum signal strength, when it was last seen, which controller detected it, and an option to hide detections with no network name. Two more figures were added at the top — how many are merely interfering, and how many have been seen in the last hour. The page now states plainly how many detections it is showing out of how many match.',
+    'Every table across the application can now be sorted by clicking a column heading — click once for ascending, again for descending. This covers devices, alerts, services, wireless, intelligence, topology, agents, sites and the audit log: 132 sortable columns in all. Blanks always sort to the bottom whichever direction you choose, numbers sort as numbers rather than text, and dates sort chronologically.',
+    'Configuration lists were deliberately left unsorted — escalation steps, on-call shifts, notification rules and maintenance windows, where the existing order is meaningful rather than arbitrary.',
+  ],
   '1.88.4': [
     'Copying a public map link now works. It used the same clipboard method that is unavailable over plain HTTP, and the failure was silently discarded — the link was still shown on screen for manual copying, so nothing was lost, but the copy itself never happened.',
   ],
@@ -5982,26 +5988,93 @@ app.get('/api/wireless/clients/summary', wrap(async (req, res) => {
 // Rogue/unauthorized APs detected by controllers' SNMP rogue tables, populated
 // by the wireless collector into wireless_rogue_aps. Returns [] when the table
 // has not been migrated yet so the UI degrades gracefully.
+// Rogue/neighbouring AP detections.
+//
+// Returns an OBJECT, not a bare array. It used to return the array alone with a
+// hard `LIMIT 500`, and the page derived both headline figures from what it had
+// received — so on this deployment the "Detected APs" card read exactly 500 (the
+// limit, not a count) against 12,514 real rows, and "Rogue / Malicious" read 4
+// against 191 actual malicious detections, because only the newest 500 rows were
+// ever examined. Under-reporting threats by ~48x on a security page is worse
+// than showing nothing, so the counts are now computed in SQL over the whole
+// (site-scoped) set and returned alongside the page of rows.
+//
+// Filtering is server-side for the same reason: filtering a truncated 500-row
+// sample in the browser silently answers a different question than the user asked.
 app.get('/api/wireless/rogues', wrap(async (req, res) => {
   try {
     const where = [];
     const params = [];
-    if (req.query.controller_id) { params.push(parseInt(req.query.controller_id, 10)); where.push(`r.controller_id = $${params.length}`); }
-    if (req.query.classification) { params.push(String(req.query.classification)); where.push(`r.classification = $${params.length}`); }
-    if (req.query.search) { params.push(`%${String(req.query.search)}%`); where.push(`(r.bssid ILIKE $${params.length} OR r.ssid ILIKE $${params.length})`); }
+    const scopeWhere = [];          // site scope only — used for the headline counts
+    const scopeParams = [];
+
     const sc = siteFilterClause(getSiteFilter(req), params, 'c.site_id');
     if (sc) where.push(sc);
-    const r = await sv.query(`
-      SELECT r.*, c.name AS controller_name, c.site_name, c.vendor
-      FROM wireless_rogue_aps r
-      JOIN wireless_controllers c ON c.id = r.controller_id
-      ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
-      ORDER BY r.last_seen_at DESC
-      LIMIT 500
-    `, params);
-    res.json(r.rows);
+    const sc2 = siteFilterClause(getSiteFilter(req), scopeParams, 'c.site_id');
+    if (sc2) scopeWhere.push(sc2);
+
+    if (req.query.controller_id) { params.push(parseInt(req.query.controller_id, 10)); where.push(`r.controller_id = $${params.length}`); }
+    if (req.query.classification) { params.push(String(req.query.classification)); where.push(`r.classification = $${params.length}`); }
+    if (req.query.search) { params.push(`%${String(req.query.search)}%`); where.push(`(r.bssid ILIKE $${params.length} OR r.ssid ILIKE $${params.length} OR r.detecting_ap ILIKE $${params.length})`); }
+    if (req.query.channel) { params.push(parseInt(req.query.channel, 10)); where.push(`r.channel = $${params.length}`); }
+    // Band is derived from the channel number: 1-14 is 2.4GHz, 36-177 is 5GHz.
+    // 6GHz is deliberately NOT offered — its channel numbers overlap 5GHz in the
+    // vendor tables here, so a "6GHz" filter could not be answered honestly.
+    if (req.query.band === '2.4') where.push(`r.channel BETWEEN 1 AND 14`);
+    if (req.query.band === '5')   where.push(`r.channel BETWEEN 36 AND 177`);
+    // Signal floor: "stronger than X dBm" — the closer to 0, the nearer the rogue.
+    if (req.query.min_rssi) { params.push(parseInt(req.query.min_rssi, 10)); where.push(`r.rssi_dbm >= $${params.length}`); }
+    if (req.query.since_hours) { params.push(parseInt(req.query.since_hours, 10)); where.push(`r.last_seen_at > NOW() - make_interval(hours => $${params.length})`); }
+    if (req.query.named === '1') where.push(`NULLIF(btrim(r.ssid), '') IS NOT NULL`);
+
+    const whereSql = where.length ? 'WHERE ' + where.join(' AND ') : '';
+    const scopeSql = scopeWhere.length ? 'WHERE ' + scopeWhere.join(' AND ') : '';
+    const limit = Math.min(Math.max(parseInt(req.query.limit || '1000', 10) || 1000, 1), 5000);
+    const offset = Math.max(parseInt(req.query.offset || '0', 10) || 0, 0);
+
+    const [rows, matched, summary] = await Promise.all([
+      sv.query(`
+        SELECT r.*, c.name AS controller_name, c.site_name, c.vendor
+        FROM wireless_rogue_aps r
+        JOIN wireless_controllers c ON c.id = r.controller_id
+        ${whereSql}
+        ORDER BY r.last_seen_at DESC
+        LIMIT ${limit} OFFSET ${offset}
+      `, params),
+      sv.query(`
+        SELECT COUNT(*)::int AS n
+        FROM wireless_rogue_aps r
+        JOIN wireless_controllers c ON c.id = r.controller_id
+        ${whereSql}
+      `, params),
+      // Headline counts over everything this user may see, IGNORING the filters —
+      // so the cards keep telling the truth about the estate while the table
+      // shows the filtered subset.
+      sv.query(`
+        SELECT COUNT(*)::int AS total,
+               COUNT(*) FILTER (WHERE LOWER(COALESCE(r.classification,'')) IN ('rogue','malicious'))::int AS threats,
+               COUNT(*) FILTER (WHERE LOWER(COALESCE(r.classification,'')) = 'malicious')::int AS malicious,
+               COUNT(*) FILTER (WHERE LOWER(COALESCE(r.classification,'')) = 'interfering')::int AS interfering,
+               COUNT(*) FILTER (WHERE LOWER(COALESCE(r.classification,'')) = 'friendly')::int AS friendly,
+               COUNT(*) FILTER (WHERE r.last_seen_at > NOW() - make_interval(hours => 1))::int AS active_1h
+        FROM wireless_rogue_aps r
+        JOIN wireless_controllers c ON c.id = r.controller_id
+        ${scopeSql}
+      `, scopeParams),
+    ]);
+
+    res.json({
+      data: rows.rows,
+      matched: matched.rows[0].n,            // rows matching the current filters
+      returned: rows.rows.length,
+      truncated: rows.rows.length < matched.rows[0].n,
+      summary: summary.rows[0],              // unfiltered, site-scoped headline counts
+    });
   } catch (e) {
-    if (/wireless_rogue_aps/.test(e.message)) return res.json([]);
+    if (/wireless_rogue_aps/.test(e.message)) {
+      return res.json({ data: [], matched: 0, returned: 0, truncated: false,
+        summary: { total: 0, threats: 0, malicious: 0, interfering: 0, friendly: 0, active_1h: 0 } });
+    }
     throw e;
   }
 }));

@@ -6,7 +6,10 @@ import { useApi } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
 import { vendorLabel } from '@/lib/vendor';
 import { copyText } from '@/lib/clipboard';
-import { ErrorBox, fmtRel, PageHeader, TableSkeleton, EmptyState, useRefreshKey } from '@/components/ui';
+import {
+  ErrorBox, fmtRel, PageHeader, TableSkeleton, EmptyState, useRefreshKey,
+  useTableSort, sortRows, SortTh,
+} from '@/components/ui';
 import { StatusDot } from '@/components/StatusDot';
 import SiteScopeBanner from '@/components/SiteScopeBanner';
 import { IconDevices } from '@/components/icons';
@@ -173,6 +176,23 @@ function statusTooltip(d: Device): string {
   if (s === 'warning') return `Warning${ms ? ` — ${ms}` : ''} — last seen ${seen}`;
   return `Unknown — last seen ${seen}`;
 }
+
+// Column accessors for the per-site device table. Sorting is per-site (state
+// lives in SiteAccordion) so each site's table sorts independently and the
+// collapse/expand + site pagination above it are untouched.
+const DEVICE_SORT: Record<string, (d: Device) => unknown> = {
+  name: (d) => d.name,
+  type: (d) => d.device_type,
+  vendor: (d) => d.nv_vendor || vendorLabel(d.device_vendor),
+  ip: (d) => d.ip_address,
+  os: (d) => [d.os_type, d.os_version].filter(Boolean).join(' '),
+  status: (d) => d.current_status,
+  // health_score arrives as a numeric string (pg NUMERIC) or null — normalize so
+  // unscored devices sort last instead of comparing as text.
+  health: (d) => intelNum(d.health_score),
+  lastalert: (d) => d.last_alert_at,
+  lastseen: (d) => d.last_seen_at,
+};
 
 export default function DevicesPage() {
   const { canEdit } = useRbac();
@@ -543,6 +563,9 @@ function SiteAccordion({
   const gatewayDown = !!gateway && gateway.current_status === 'down';
   const suppressedCount = group.devices.filter((d) => d.alert_suppressed).length;
   const health = avgHealth(group.devices);
+  // Unsorted by default, so the API's own ordering is what the table opens with.
+  const { sort, onSort } = useTableSort();
+  const rows = useMemo(() => sortRows(group.devices, sort, DEVICE_SORT), [group.devices, sort]);
 
   return (
     <div className="sv-acc" style={{ marginBottom: 12 }}>
@@ -594,20 +617,20 @@ function SiteAccordion({
           <table className="sv-table sv-dev-table">
             <thead>
               <tr>
-                <th>Device</th>
-                <th>Type</th>
-                <th>Vendor / Model</th>
-                <th>IP Address</th>
-                {showOs && <th>Version / OS</th>}
-                <th>Status</th>
-                <th>Health Score</th>
-                <th>Last Alert</th>
-                <th>Last Seen</th>
+                <SortTh label="Device" col="name" sort={sort} onSort={onSort} />
+                <SortTh label="Type" col="type" sort={sort} onSort={onSort} />
+                <SortTh label="Vendor / Model" col="vendor" sort={sort} onSort={onSort} />
+                <SortTh label="IP Address" col="ip" sort={sort} onSort={onSort} />
+                {showOs && <SortTh label="Version / OS" col="os" sort={sort} onSort={onSort} />}
+                <SortTh label="Status" col="status" sort={sort} onSort={onSort} />
+                <SortTh label="Health Score" col="health" sort={sort} onSort={onSort} />
+                <SortTh label="Last Alert" col="lastalert" sort={sort} onSort={onSort} />
+                <SortTh label="Last Seen" col="lastseen" sort={sort} onSort={onSort} />
                 <th style={{ width: 44, textAlign: 'right' }}>Actions</th>
               </tr>
             </thead>
             <tbody>
-              {group.devices.map((d) => <DeviceRow key={d.id} device={d} showOs={showOs} />)}
+              {rows.map((d) => <DeviceRow key={d.id} device={d} showOs={showOs} />)}
             </tbody>
           </table>
         </div>
