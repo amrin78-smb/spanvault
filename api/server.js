@@ -36,6 +36,11 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.91.0': [
+    'The Rogue APs table has a new Band column showing whether each detection was heard on 2.4 GHz or 5 GHz, worked out from the channel. It is sortable, and it uses exactly the same rule as the band filter, so the two can never disagree. A detection with no channel recorded shows a dash rather than a guess.',
+    'You can now page through every detection. Previously the page loaded the first thousand and asked you to narrow the filters to see the rest; it now fetches one page at a time from the server, so all 12,576 detections are reachable — 252 pages — and sorting orders the whole set rather than just the rows already loaded.',
+    'Sorting a column now re-sorts everything that matches your filters, not only what was on screen. Changing a filter or a sort returns you to the first page.',
+  ],
   '1.90.3': [
     'Fixed the search box on the Rogue APs page. It offered to search the detecting access point but only ever matched the hardware address, so typing the name shown in the table found nothing. Searching by name now works — searching for AP505 returns its 807 detections where it previously returned none. Searching by network name or hardware address is unchanged.',
   ],
@@ -6060,6 +6065,20 @@ const ROGUE_FROM = `
         ) ap_near ON TRUE`;
 const DETECTING_AP_NAME = `COALESCE(ap_exact.name, ap_near.name)`;
 
+// Band, derived from the channel number. Defined once and used by BOTH the
+// displayed column and the band filter, so the two cannot classify the same
+// channel differently — the exact drift that made searching a detecting AP by
+// name return nothing until 1.90.3.
+//
+// 6GHz is deliberately absent rather than guessed: its channel numbers overlap
+// 5GHz in these vendor tables, so a row on channel 40 could be either and there
+// is nothing here to tell them apart. Such rows return NULL and the column shows
+// a dash, which is honest; labelling them "5 GHz" would not be.
+const ROGUE_BAND = `CASE
+  WHEN r.channel BETWEEN 1 AND 14 THEN '2.4 GHz'
+  WHEN r.channel BETWEEN 36 AND 177 THEN '5 GHz'
+  ELSE NULL END`;
+
 app.get('/api/wireless/rogues', wrap(async (req, res) => {
   try {
     const where = [];
@@ -6080,20 +6099,36 @@ app.get('/api/wireless/rogues', wrap(async (req, res) => {
     // while the placeholder promised "detecting AP".
     if (req.query.search) { params.push(`%${String(req.query.search)}%`); where.push(`(r.bssid ILIKE $${params.length} OR r.ssid ILIKE $${params.length} OR r.detecting_ap ILIKE $${params.length} OR ${DETECTING_AP_NAME} ILIKE $${params.length})`); }
     if (req.query.channel) { params.push(parseInt(req.query.channel, 10)); where.push(`r.channel = $${params.length}`); }
-    // Band is derived from the channel number: 1-14 is 2.4GHz, 36-177 is 5GHz.
-    // 6GHz is deliberately NOT offered — its channel numbers overlap 5GHz in the
-    // vendor tables here, so a "6GHz" filter could not be answered honestly.
-    if (req.query.band === '2.4') where.push(`r.channel BETWEEN 1 AND 14`);
-    if (req.query.band === '5')   where.push(`r.channel BETWEEN 36 AND 177`);
+    // Filters through ROGUE_BAND, the same expression the Band column displays,
+    // so the filter can never disagree with what the user sees in the column.
+    if (req.query.band === '2.4') { params.push('2.4 GHz'); where.push(`${ROGUE_BAND} = $${params.length}`); }
+    if (req.query.band === '5')   { params.push('5 GHz');   where.push(`${ROGUE_BAND} = $${params.length}`); }
     // Signal floor: "stronger than X dBm" — the closer to 0, the nearer the rogue.
     if (req.query.min_rssi) { params.push(parseInt(req.query.min_rssi, 10)); where.push(`r.rssi_dbm >= $${params.length}`); }
     if (req.query.since_hours) { params.push(parseInt(req.query.since_hours, 10)); where.push(`r.last_seen_at > NOW() - make_interval(hours => $${params.length})`); }
     if (req.query.named === '1') where.push(`NULLIF(btrim(r.ssid), '') IS NOT NULL`);
     if (req.query.detecting_ap) { params.push(String(req.query.detecting_ap)); where.push(`r.detecting_ap = $${params.length}`); }
 
+    // Sorting is server-side because paging is. With only one page of rows in
+    // the browser, sorting them client-side would reorder 50 rows out of 12,500
+    // and call it "sorted by RSSI" — true of the page, false of the data.
+    // Whitelisted: the value is interpolated into ORDER BY, so it must never come
+    // straight from the query string.
+    const SORTABLE = {
+      bssid: 'r.bssid', ssid: 'r.ssid', classification: 'r.classification',
+      rssi: 'r.rssi_dbm', channel: 'r.channel', band: ROGUE_BAND,
+      detecting: DETECTING_AP_NAME, controller: 'c.name', lastseen: 'r.last_seen_at',
+    };
+    const sortCol = SORTABLE[String(req.query.sort || '')] || 'r.last_seen_at';
+    const sortDir = String(req.query.dir || '').toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+    // NULLS LAST in both directions (a rogue with no reading shouldn't head the
+    // list), and r.id as a tiebreak so equal values can't shuffle between pages —
+    // without it, paging a column with many ties can repeat or skip rows.
+    const orderSql = `ORDER BY ${sortCol} ${sortDir} NULLS LAST, r.id ASC`;
+
     const whereSql = where.length ? 'WHERE ' + where.join(' AND ') : '';
     const scopeSql = scopeWhere.length ? 'WHERE ' + scopeWhere.join(' AND ') : '';
-    const limit = Math.min(Math.max(parseInt(req.query.limit || '1000', 10) || 1000, 1), 5000);
+    const limit = Math.min(Math.max(parseInt(req.query.limit || '50', 10) || 50, 1), 5000);
     const offset = Math.max(parseInt(req.query.offset || '0', 10) || 0, 0);
 
     const [rows, matched, summary, detectors] = await Promise.all([
@@ -6122,10 +6157,11 @@ app.get('/api/wireless/rogues', wrap(async (req, res) => {
       // Unresolved rows return NULL and the UI keeps displaying the MAC.
       sv.query(`
         SELECT r.*, c.name AS controller_name, c.site_name, c.vendor,
-               ${DETECTING_AP_NAME} AS detecting_ap_name
+               ${DETECTING_AP_NAME} AS detecting_ap_name,
+               ${ROGUE_BAND} AS band
         ${ROGUE_FROM}
         ${whereSql}
-        ORDER BY r.last_seen_at DESC
+        ${orderSql}
         LIMIT ${limit} OFFSET ${offset}
       `, params),
       // Uses ROGUE_FROM (not a bare join) because whereSql can reference the

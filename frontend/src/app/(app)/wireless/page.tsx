@@ -8,7 +8,7 @@ import {
 } from 'recharts';
 import { useApi, apiSend, apiGet } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
-import { Loading, ErrorBox, Empty, fmtRel, fmtTime, UtilBar, pctColor, PageHeader, Pager, useClientPagination, CHART_TOOLTIP, useConfirm, useTableSort, sortRows, SortTh } from '@/components/ui';
+import { Loading, ErrorBox, Empty, fmtRel, fmtTime, UtilBar, pctColor, PageHeader, Pager, useClientPagination, CHART_TOOLTIP, useConfirm, useTableSort, SortTh } from '@/components/ui';
 import { StatusDot } from '@/components/StatusDot';
 import { IconCheck, IconWarning, IconRepeat, IconClose, IconTool, IconPin } from '@/components/icons';
 
@@ -344,6 +344,10 @@ interface RogueAp {
   // maps to exactly one AP. Null when it cannot be resolved unambiguously, in
   // which case the UI keeps showing the raw MAC rather than guessing.
   detecting_ap_name: string | null;
+  // Derived from the channel by the API (same expression the band filter uses),
+  // so column and filter always agree. Null when the channel cannot identify a
+  // band unambiguously — the UI shows a dash rather than guessing.
+  band: string | null;
   first_seen_at: string | null;
   last_seen_at: string | null;
   controller_name: string | null;
@@ -1085,6 +1089,9 @@ function RogueApsTab() {
   const [namedOnly, setNamedOnly] = useState(false);
   const [controllerId, setControllerId] = useState('');
   const [detectingAp, setDetectingAp] = useState('');
+  // Zero-based server page. Any filter or sort change must reset it, or you can
+  // sit on page 12 of a result set that now has three pages and see nothing.
+  const [page, setPage] = useState(0);
   const { sort, onSort } = useTableSort({ key: 'lastseen', dir: 'desc' });
 
   const controllersApi = useApi<Controller[]>('/api/wireless/controllers', 60000);
@@ -1103,6 +1110,9 @@ function RogueApsTab() {
   if (namedOnly) qs.set('named', '1');
   if (controllerId) qs.set('controller_id', controllerId);
   if (detectingAp) qs.set('detecting_ap', detectingAp);
+  if (sort) { qs.set('sort', sort.key); qs.set('dir', sort.dir); }
+  qs.set('limit', String(ROGUES_PER_PAGE));
+  qs.set('offset', String(page * ROGUES_PER_PAGE));
   const roguesApi = useApi<RogueResponse>(`/api/wireless/rogues?${qs.toString()}`, 30000);
 
   const rows = useMemo(() => roguesApi.data?.data || [], [roguesApi.data]);
@@ -1110,29 +1120,29 @@ function RogueApsTab() {
   // set — never from rows.length, which is a page of results, not a total.
   const summary = roguesApi.data?.summary;
   const matched = roguesApi.data?.matched ?? 0;
-  const truncated = roguesApi.data?.truncated ?? false;
 
-  const shown = useMemo(() => sortRows(rows, sort, {
-    bssid: (r) => r.bssid,
-    ssid: (r) => r.ssid,
-    classification: (r) => r.classification,
-    rssi: (r) => r.rssi_dbm,
-    channel: (r) => r.channel,
-    detecting: (r) => r.detecting_ap_name || r.detecting_ap,
-    controller: (r) => r.controller_name,
-    lastseen: (r) => r.last_seen_at,
-  }), [rows, sort]);
+  // Rows arrive already sorted and already paged. Sorting and paging are BOTH
+  // server-side here, unlike every other table in the app, because there are
+  // 12.5k detections and only one page is ever in the browser: sorting the
+  // loaded 50 client-side would reorder the page and label it "sorted by RSSI",
+  // which is true of the page and false of the data. The server sorts the whole
+  // matching set, so paging now reaches every row rather than stopping at a cap.
+  const shown = rows;
+  const pageCount = Math.max(1, Math.ceil(matched / ROGUES_PER_PAGE));
+  const start = page * ROGUES_PER_PAGE;
 
-  // 12k+ detections exist and the API returns up to 1,000 per request — render
-  // those a page at a time rather than putting 1,000 rows in the DOM. Sort is
-  // part of the reset key so re-sorting returns to page 1.
-  const pg = useClientPagination(shown, ROGUES_PER_PAGE, JSON.stringify(sort));
+  // Any change to the filters or the sort makes the current page meaningless —
+  // page 12 of a set that just shrank to 3 pages renders an empty table with a
+  // pager insisting there is data. Reset to the first page on every such change.
+  useEffect(() => {
+    setPage(0);
+  }, [search, classFilter, band, channel, minRssi, sinceHours, namedOnly, controllerId, detectingAp, sort?.key, sort?.dir]);
 
   const anyFilter = Boolean(search || classFilter || band || channel || minRssi || sinceHours || namedOnly || controllerId || detectingAp);
   function clearAll() {
     setSearch(''); setClassFilter(''); setBand(''); setChannel('');
     setMinRssi(''); setSinceHours(''); setNamedOnly(false); setControllerId('');
-    setDetectingAp('');
+    setDetectingAp(''); setPage(0);
   }
 
   return (
@@ -1230,10 +1240,11 @@ function RogueApsTab() {
         {/* Describes what was LOADED versus what MATCHES. The Pager under the
             table already says which slice of the loaded rows is on screen
             ("1–50 of 1,000"), so saying "showing" here too would contradict it. */}
+        {/* Paging is server-side now, so every matching detection is reachable —
+            the old "narrow the filters to reach the rest" caveat is gone. The
+            pager below says which slice is on screen. */}
         {roguesApi.data
-          ? (truncated
-              ? `Loaded ${shown.length.toLocaleString()} of ${matched.toLocaleString()} matching detections — narrow the filters to reach the rest`
-              : `${matched.toLocaleString()} matching detection${matched === 1 ? '' : 's'}`)
+          ? `${matched.toLocaleString()} matching detection${matched === 1 ? '' : 's'}`
             + (anyFilter && summary ? ` · ${summary.total.toLocaleString()} detected in total` : '')
           : ''}
       </div>
@@ -1252,13 +1263,14 @@ function RogueApsTab() {
                 <SortTh label="Classification" col="classification" sort={sort} onSort={onSort} style={STICKY_TH} />
                 <SortTh label="RSSI" col="rssi" sort={sort} onSort={onSort} style={STICKY_TH} />
                 <SortTh label="Channel" col="channel" sort={sort} onSort={onSort} style={STICKY_TH} />
+                <SortTh label="Band" col="band" sort={sort} onSort={onSort} style={STICKY_TH} />
                 <SortTh label="Detecting AP" col="detecting" sort={sort} onSort={onSort} style={STICKY_TH} />
                 <SortTh label="Controller" col="controller" sort={sort} onSort={onSort} style={STICKY_TH} />
                 <SortTh label="Last Seen" col="lastseen" sort={sort} onSort={onSort} style={STICKY_TH} />
               </tr>
             </thead>
             <tbody>
-              {pg.pageRows.map((r) => {
+              {shown.map((r) => {
                 const color = rogueClassColor(r.classification);
                 return (
                   <tr key={r.id}>
@@ -1273,6 +1285,7 @@ function RogueApsTab() {
                       {r.rssi_dbm != null ? `${r.rssi_dbm} dBm` : '—'}
                     </td>
                     <td>{r.channel != null ? `Ch ${r.channel}` : '—'}</td>
+                    <td>{r.band || <span className="sv-muted">—</span>}</td>
                     <td>
                       {r.detecting_ap_name ? (
                         <>
@@ -1291,7 +1304,9 @@ function RogueApsTab() {
             </tbody>
           </table>
           <div style={{ padding: '0 12px 12px' }}>
-            <Pager page={pg.page} pageCount={pg.pageCount} start={pg.start} perPage={ROGUES_PER_PAGE} total={pg.total} onPrev={pg.prev} onNext={pg.next} />
+            <Pager page={page} pageCount={pageCount} start={start} perPage={ROGUES_PER_PAGE} total={matched}
+              onPrev={() => setPage((n) => Math.max(0, n - 1))}
+              onNext={() => setPage((n) => Math.min(pageCount - 1, n + 1))} />
           </div>
         </div>
       ) : (
