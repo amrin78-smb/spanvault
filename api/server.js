@@ -36,6 +36,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.89.1': [
+    'The Rogue APs table is now paged 50 at a time instead of drawing up to a thousand rows at once, which made the page slow to open and to scroll on a network with this many detections. The counts, filters and sorting are unchanged, and re-sorting returns you to the first page.',
+  ],
   '1.89.0': [
     'IMPORTANT — the Rogue APs page was under-reporting badly. It showed "500 Detected APs" because 500 was the maximum the page could load, not a count; this network actually has 12,515 detections. "Rogue / Malicious" read 4 for the same reason — it was counted from those 500 newest rows, when there are in fact 191 malicious detections. Both figures are now counted across everything, and the search and classification filters now search all of it rather than the newest 500.',
     'New filters on the Rogue APs page: band (2.4 or 5 GHz), a specific channel, minimum signal strength, when it was last seen, which controller detected it, and an option to hide detections with no network name. Two more figures were added at the top — how many are merely interfering, and how many have been seen in the last hour. The page now states plainly how many detections it is showing out of how many match.',

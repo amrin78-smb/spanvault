@@ -1066,6 +1066,8 @@ export default function WirelessPage() {
 // TAB — Rogue APs
 // ════════════════════════════════════════════════════════════
 
+const ROGUES_PER_PAGE = 50;
+
 function RogueApsTab() {
   const [search, setSearch] = useState('');
   const [classFilter, setClassFilter] = useState('');
@@ -1111,6 +1113,11 @@ function RogueApsTab() {
     controller: (r) => r.controller_name,
     lastseen: (r) => r.last_seen_at,
   }), [rows, sort]);
+
+  // 12k+ detections exist and the API returns up to 1,000 per request — render
+  // those a page at a time rather than putting 1,000 rows in the DOM. Sort is
+  // part of the reset key so re-sorting returns to page 1.
+  const pg = useClientPagination(shown, ROGUES_PER_PAGE, JSON.stringify(sort));
 
   const anyFilter = Boolean(search || classFilter || band || channel || minRssi || sinceHours || namedOnly || controllerId);
   function clearAll() {
@@ -1227,7 +1234,7 @@ function RogueApsTab() {
               </tr>
             </thead>
             <tbody>
-              {shown.map((r) => {
+              {pg.pageRows.map((r) => {
                 const color = rogueClassColor(r.classification);
                 return (
                   <tr key={r.id}>
@@ -1250,6 +1257,9 @@ function RogueApsTab() {
               })}
             </tbody>
           </table>
+          <div style={{ padding: '0 12px 12px' }}>
+            <Pager page={pg.page} pageCount={pg.pageCount} start={pg.start} perPage={ROGUES_PER_PAGE} total={pg.total} onPrev={pg.prev} onNext={pg.next} />
+          </div>
         </div>
       ) : (
         <Empty message={anyFilter ? 'No rogue APs match your filters.' : 'No rogue APs detected. ✓'} />
