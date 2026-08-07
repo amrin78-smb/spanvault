@@ -36,6 +36,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.90.2': [
+    'Every rogue detection now shows the name of the access point that heard it. After the previous release recorded the missing hardware addresses, all 12,578 detections and all 110 detecting access points resolve to a name — previously 1 in 100 did.',
+  ],
   '1.90.1': [
     'Added a "detected by" filter to the Rogue APs page, so you can see everything a particular access point is hearing. It lists every detecting access point with how many detections each has made, named where the name is known and by hardware address otherwise.',
     'The list is built from all detections rather than from the rows currently on screen, so an access point is never missing from the filter just because it did not appear on the first page.',
@@ -6049,16 +6052,28 @@ app.get('/api/wireless/rogues', wrap(async (req, res) => {
     const offset = Math.max(parseInt(req.query.offset || '0', 10) || 0, 0);
 
     const [rows, matched, summary, detectors] = await Promise.all([
-      // detecting_ap is stored as the detecting AP's RADIO MAC (it comes out of
-      // the Aruba monAPInfo table index), so it is resolved to a friendly AP name
-      // in two steps, and only when the answer is unambiguous:
-      //   1. exact match on wireless_aps.mac_address;
-      //   2. failing that, match on the first five octets — an AP's radios differ
-      //      only in the last octet, so this catches the radio-vs-base-MAC offset.
-      // Step 2 is applied ONLY when exactly one AP matches. Aruba allocates APs
-      // sequential MACs, so two different APs can share the first five octets;
-      // resolving that to whichever one sorted first would silently attribute a
-      // detection to the wrong AP, which is worse than showing the raw MAC.
+      // Resolve detecting_ap (a MAC, from the Aruba monAPInfo table index) to a
+      // friendly AP name, in two steps, and only when the answer is unambiguous.
+      //
+      // Step 1, exact match on wireless_aps.mac_address, does ALL the work in
+      // practice: measured after the 1.90.0 collector fix landed and the
+      // controllers had been re-polled, 12,578 of 12,578 rows (100%) resolve
+      // exactly, and step 2 fires zero times. The wlanAPTable index and the
+      // monAPInfo detecting-AP MAC are the same value.
+      //
+      // (An earlier measurement, taken BEFORE the collector fix, showed exact
+      // matching at 0% and everything resolving via step 2. That was misleading:
+      // the only 11 APs with a MAC at the time came from the aruba_central API
+      // path, whose MACs genuinely differ from the SNMP radio MAC. Do not
+      // conclude from that reading that the offset is normal — it is not.)
+      //
+      // Step 2 is kept as a guarded fallback for a vendor whose radio MAC differs
+      // from the stored AP MAC by the usual last-octet offset. It applies ONLY
+      // when exactly one AP matches: Aruba allocates APs consecutive MACs, so two
+      // APs can share the first five octets, and resolving that to whichever
+      // sorted first would attribute a detection to the wrong AP — worse than
+      // showing the raw MAC on a security page.
+      //
       // Unresolved rows return NULL and the UI keeps displaying the MAC.
       sv.query(`
         SELECT r.*, c.name AS controller_name, c.site_name, c.vendor,
