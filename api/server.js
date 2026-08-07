@@ -36,6 +36,11 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.92.0': [
+    'The search box in the top bar now finds wireless clients. Searching for an address you could plainly see on the Wireless page used to come back "no match", because that box only ever searched monitored devices — the client was there, but nothing the search looked at contained it. You can now find a client by address, hardware address or hostname.',
+    'The top-bar search and the Ctrl+K palette now cover exactly the same ground. They previously searched different things, so the same term could succeed in one and fail in the other with nothing on screen to explain why. Results also say what each hit is — device, access point, client, controller or service — and take you to the right page.',
+    'The connection remote polling agents use to send data can now be encrypted. Where it was previously plain text on the network, the server presents a certificate created during installation and the agent checks it against a known fingerprint, so a substituted server is refused before any data is exchanged.',
+  ],
   '1.91.0': [
     'The Rogue APs table has a new Band column showing whether each detection was heard on 2.4 GHz or 5 GHz, worked out from the channel. It is sortable, and it uses exactly the same rule as the band filter, so the two can never disagree. A detection with no channel recorded shows a dash rather than a guess.',
     'You can now page through every detection. Previously the page loaded the first thousand and asked you to narrow the filters to see the rest; it now fetches one page at a time from the server, so all 12,576 detections are reachable — 252 pages — and sorting orders the whole set rather than just the rows already loaded.',
@@ -2647,11 +2652,36 @@ app.get('/api/global-search', wrap(async (req, res) => {
     LIMIT 8
   `, svcParams);
 
+  // Wireless clients. Added because the search silently covered only the things
+  // SpanVault MONITORS, not everything it DISPLAYS: an IP plainly visible on the
+  // Wireless > Clients table returned "No devices match", since a client is not a
+  // monitored_device / AP / controller / service check. On this deployment a
+  // search for a client subnet matched 52 client rows and 0 of everything else.
+  //
+  // Site-scoped through the owning CONTROLLER (c.site_id), the same boundary
+  // wireless_rogue_aps and the wireless reports use — wireless_clients has no
+  // site_id of its own, and ap_id is nullable so joining through the AP would
+  // silently drop clients.
+  const cliParams = [like];
+  const cliWhere = ['(cl.ip_address ILIKE $1 OR cl.mac_address ILIKE $1 OR cl.hostname ILIKE $1)'];
+  const cliSc = siteFilterClause(siteFilter, cliParams, 'cc.site_id');
+  if (cliSc) cliWhere.push(cliSc);
+  const clients = await sv.query(`
+    SELECT cl.id, cl.mac_address, cl.ip_address, cl.hostname, cl.ap_name,
+           cl.ssid_name, cl.band, cl.rssi_dbm, cc.site_name
+    FROM wireless_clients cl
+    JOIN wireless_controllers cc ON cc.id = cl.controller_id
+    WHERE ${cliWhere.join(' AND ')}
+    ORDER BY cl.last_seen_at DESC
+    LIMIT 8
+  `, cliParams);
+
   res.json({
     devices: devices.rows,
     aps: aps.rows,
     controllers: controllers.rows,
     services: services.rows,
+    clients: clients.rows,
   });
 }));
 

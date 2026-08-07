@@ -269,7 +269,10 @@ function Resolve-Nssm($installDir, $appRoot) {
 # Unlike DDIVault/LogVault, this script does NOT need to back up/restore
 # .env.local for rollback: Write-EnvFile (below) never regenerates .env.local if
 # it already exists, and `git clean` explicitly excludes it - so it's never
-# mutated by a normal update run in the first place.
+# mutated by a normal update run in the first place. The two exceptions (the
+# SERVER_IP self-heal and the STEP 3b SV_WS_TLS_* wiring) are deliberately
+# additive and version-independent - the TLS branch in api/ws-server.js predates
+# this wiring, so a rolled-back build honours those vars exactly the same way.
 $StatusPath      = Join-Path $InstallDir "logs\last-update-status.json"
 $prevCommit      = $null
 $attemptedCommit = $null
@@ -745,6 +748,205 @@ if ((Test-Path $rootEnv) -and $ServerIp) {
     }
 }
 
+# ── 3b. Agent WebSocket TLS (wss://) ───────────────────────────
+# api/ws-server.js terminates wss:// on SV_WS_PORT (3010) whenever
+# SV_WS_TLS_CERT + SV_WS_TLS_KEY point at a readable PEM pair, and warns loudly
+# when they do not - the agent self-update path ships a SHA-256 over that socket,
+# so plain ws:// leaves it open to MITM tampering. The certificate is SELF-SIGNED
+# and minted here: an operator must never have to obtain or deploy one. The agent
+# pins it by SHA-256 fingerprint, so the pair is generated ONCE and NEVER
+# regenerated - a new key silently breaks every already-pinned agent.
+# Entirely best-effort: any failure leaves the install exactly as it was.
+$WsTlsCertDir = 'C:\ProgramData\NocVault\certs'
+$SVWsTls = $null
+
+# openssl.exe mints the pair because Node's https.createServer needs a PEM cert +
+# PEM key, and New-SelfSignedCertificate on Windows PowerShell 5.1 can only export
+# PFX (.NET Framework has no PKCS#8 private-key export). Git for Windows is a hard
+# dependency of the suite and bundles OpenSSL 3.x, so it is present.
+function Get-WsTlsOpenSsl {
+    $paths = @(
+        "$env:ProgramFiles\Git\usr\bin\openssl.exe",
+        "$env:ProgramFiles\Git\mingw64\bin\openssl.exe",
+        "${env:ProgramFiles(x86)}\Git\usr\bin\openssl.exe",
+        "C:\Program Files\PostgreSQL\16\bin\openssl.exe"
+    )
+    foreach ($p in $paths) { if ($p -and (Test-Path -LiteralPath $p)) { return $p } }
+    # PATH lookup last, via Get-Command - '& openssl' would THROW on a machine
+    # that genuinely lacks it (PowerShell command resolution fails before any
+    # process exists to redirect stderr from).
+    try { $c = Get-Command openssl.exe -ErrorAction SilentlyContinue; if ($c) { return $c.Source } } catch {}
+    return $null
+}
+
+# SHA-256 over the certificate DER. Byte-identical to Node's
+# tls.getPeerCertificate().fingerprint256, which is what the agent pins on.
+function Get-WsTlsFingerprint([string]$certPath) {
+    try {
+        $pem = Get-Content -LiteralPath $certPath -Raw
+        $b64 = ($pem -replace '-----BEGIN CERTIFICATE-----','' -replace '-----END CERTIFICATE-----','') -replace '\s',''
+        $der = [Convert]::FromBase64String($b64)
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        return (($sha.ComputeHash($der) | ForEach-Object { $_.ToString('X2') }) -join ':')
+    } catch { return $null }
+}
+
+# Generate (once) the wss:// cert+key for one app. IDEMPOTENT: if both files
+# already exist it re-reads them and returns the SAME fingerprint. NEVER throws.
+function New-WsTlsCert([string]$app, [string]$serverIp, [int]$years = 5) {
+    $dir = 'C:\ProgramData\NocVault\certs'
+    $res = [pscustomobject]@{
+        App         = $app
+        Cert        = (Join-Path $dir "$app-ws.crt")
+        Key         = (Join-Path $dir "$app-ws.key")
+        Fingerprint = $null
+        NotAfter    = $null
+        Created     = $false
+        Ok          = $false
+        Warning     = $null
+        Error       = $null
+    }
+    try {
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
+        if (-not ((Test-Path -LiteralPath $res.Cert) -and (Test-Path -LiteralPath $res.Key))) {
+            $ssl = Get-WsTlsOpenSsl
+            if (-not $ssl) {
+                $res.Error = 'openssl.exe not found (looked in Git for Windows, PostgreSQL and PATH)'
+                return $res
+            }
+            # A config FILE is used rather than -subj/-addext: no leading-slash
+            # argument that an MSYS-linked openssl could path-mangle, and no
+            # dependency on OpenSSL >= 1.1.1 for -addext. The SAN MUST carry the
+            # server IP - agents dial by IP, and an IP absent from the SAN fails
+            # certificate verification outright no matter what the CN says.
+            $cfg = Join-Path $env:TEMP ("nocvault-{0}-ws-{1}.cnf" -f $app, ([guid]::NewGuid().ToString('N')))
+            $cfgText = @"
+[ req ]
+default_bits       = 2048
+default_md         = sha256
+prompt             = no
+distinguished_name = nv_dn
+x509_extensions    = nv_ext
+
+[ nv_dn ]
+CN = $serverIp
+O  = NocVault
+
+[ nv_ext ]
+basicConstraints = critical,CA:FALSE
+keyUsage         = critical,digitalSignature,keyEncipherment
+extendedKeyUsage = serverAuth
+subjectAltName   = @nv_alt
+
+[ nv_alt ]
+IP.1  = $serverIp
+IP.2  = 127.0.0.1
+DNS.1 = $env:COMPUTERNAME
+DNS.2 = localhost
+"@
+            [System.IO.File]::WriteAllText($cfg, $cfgText, (New-Object System.Text.UTF8Encoding($false)))
+            $days = ($years * 365) + 2
+            # openssl streams key-generation progress dots to STDERR. Under a host
+            # that merges stderr into PowerShell's error stream (WinRM does) that
+            # reads as a failure even on exit 0, so relax ErrorActionPreference for
+            # the call and judge success on the files it produced instead.
+            $prevEA = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
+            try {
+                & $ssl req -x509 -new -newkey rsa:2048 -nodes -sha256 -days $days -config $cfg -keyout $res.Key -out $res.Cert
+            } finally {
+                $ErrorActionPreference = $prevEA
+                Remove-Item -LiteralPath $cfg -Force -ErrorAction SilentlyContinue
+            }
+            if (-not ((Test-Path -LiteralPath $res.Cert) -and (Test-Path -LiteralPath $res.Key))) {
+                $res.Error = "openssl did not produce $($res.Cert)"
+                return $res
+            }
+            $res.Created = $true
+            # The key is an unencrypted private key on disk - restrict it to
+            # SYSTEM (the NSSM service account) and Administrators.
+            try { & icacls.exe $res.Key /inheritance:r /grant '*S-1-5-18:(R)' /grant '*S-1-5-32-544:(F)' | Out-Null } catch {}
+        }
+        $res.Fingerprint = Get-WsTlsFingerprint $res.Cert
+        try {
+            $pem = Get-Content -LiteralPath $res.Cert -Raw
+            $b64 = ($pem -replace '-----BEGIN CERTIFICATE-----','' -replace '-----END CERTIFICATE-----','') -replace '\s',''
+            $x   = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2(,[Convert]::FromBase64String($b64))
+            $res.NotAfter = $x.NotAfter
+            $san = (($x.Extensions | Where-Object { $_.Oid.Value -eq '2.5.29.17' } | ForEach-Object { $_.Format($false) }) -join ' ')
+            if ($serverIp -and $san -and ($san -notmatch [regex]::Escape($serverIp))) {
+                $res.Warning = "existing certificate SAN does not cover $serverIp - agents dialling that IP will reject it"
+            }
+        } catch {}
+        $res.Ok = [bool]$res.Fingerprint
+    } catch {
+        $res.Error = $_.Exception.Message
+    }
+    return $res
+}
+
+# Idempotently set/remove KEY=VALUE lines in a .env file. Returns $true if the
+# file changed. An absent file is left alone (nothing to wire up).
+function Set-EnvFileVars([string]$path, [hashtable]$set, [string[]]$remove) {
+    if (-not (Test-Path -LiteralPath $path)) { return $false }
+    $text = Get-Content -LiteralPath $path -Raw
+    if ($null -eq $text) { $text = '' }
+    $orig = $text
+    foreach ($k in @($remove)) {
+        if (-not $k) { continue }
+        $text = [regex]::Replace($text, "(?m)^[ \t]*$([regex]::Escape($k))[ \t]*=.*\r?\n?", '')
+    }
+    foreach ($k in @($set.Keys)) {
+        # '$' is the only character special to a .NET replacement string; paths
+        # never contain one, but escape it so a value can never inject a capture.
+        $line = ("$k=" + $set[$k]).Replace('$', '$$')
+        if ($text -match "(?m)^[ \t]*$([regex]::Escape($k))[ \t]*=") {
+            $text = [regex]::Replace($text, "(?m)^[ \t]*$([regex]::Escape($k))[ \t]*=.*$", $line)
+        } else {
+            if ($text.Length -gt 0 -and -not $text.EndsWith("`n")) { $text += "`n" }
+            $text += ("$k=" + $set[$k] + "`n")
+        }
+    }
+    if ($text -ne $orig) {
+        [System.IO.File]::WriteAllText($path, $text, (New-Object System.Text.UTF8Encoding($false)))
+        return $true
+    }
+    return $false
+}
+
+Write-Step 'Agent WebSocket TLS certificate'
+# The IP the certificate must be valid for: the one actually configured in
+# .env.local (routine updates omit -ServerIp), falling back to the parameter.
+$wsIp = $null
+if (Test-Path $rootEnv) {
+    $m = Select-String -Path $rootEnv -Pattern '^\s*SERVER_IP\s*=\s*(.+?)\s*$' | Select-Object -First 1
+    if ($m) { $wsIp = $m.Matches[0].Groups[1].Value }
+}
+if (-not $wsIp) { $wsIp = $ServerIp }
+if (-not $wsIp -or $wsIp -eq 'your_server_ip') {
+    Write-Warn 'No SERVER_IP resolved - skipping agent WS TLS setup (port 3010 stays plain ws://)'
+} else {
+    $SVWsTls = New-WsTlsCert 'spanvault' $wsIp 5
+    if ($SVWsTls.Ok) {
+        if ($SVWsTls.Created) { Write-Ok "Created self-signed agent WS certificate (expires $($SVWsTls.NotAfter.ToString('yyyy-MM-dd')))" }
+        else                  { Write-Ok "Reused existing agent WS certificate - NOT regenerated, agent pins stay valid (expires $($SVWsTls.NotAfter.ToString('yyyy-MM-dd')))" }
+        if ($SVWsTls.Warning) { Write-Warn "Agent WS certificate: $($SVWsTls.Warning)" }
+        # SpanVault-API has no NSSM AppEnvironmentExtra block - api/server.js
+        # dotenv-loads the ROOT .env.local, so that file is the only place these
+        # can be set. Written to the frontend copy too, purely to keep the pair
+        # identical (the frontend never reads them).
+        $wsVars = @{ SV_WS_TLS_CERT = $SVWsTls.Cert; SV_WS_TLS_KEY = $SVWsTls.Key }
+        if (Set-EnvFileVars $rootEnv $wsVars @()) { Write-Ok "Set SV_WS_TLS_CERT / SV_WS_TLS_KEY in $rootEnv" }
+        else { Write-Ok 'SV_WS_TLS_CERT / SV_WS_TLS_KEY already set - unchanged' }
+        $null = Set-EnvFileVars $feEnv $wsVars @()
+        if ($SVWsTls.NotAfter -and $SVWsTls.NotAfter -lt (Get-Date).AddDays(90)) {
+            Write-Warn "Agent WS certificate expires $($SVWsTls.NotAfter.ToString('yyyy-MM-dd')) - the whole agent fleet drops when it does. Plan a re-issue + re-pin."
+        }
+    } else {
+        Write-Warn "Agent WS certificate not configured ($($SVWsTls.Error)) - port 3010 stays plain ws://"
+    }
+}
+
 # ── 4. Install dependencies ────────────────────────────────────
 Write-Step 'Installing dependencies (root)'
 $currentStage = 'npm-install-root'
@@ -1015,6 +1217,17 @@ if (-not $displayIp) { $displayIp = 'localhost' }
 Write-Host "`nSpanVault update complete." -ForegroundColor Green
 Write-Host "  Frontend:  http://$($displayIp):3008" -ForegroundColor Green
 Write-Host "  API:       http://127.0.0.1:3009 (loopback only)" -ForegroundColor Green
+# The agent WS certificate is self-signed, so there is no chain for an agent to
+# validate - it pins the SHA-256 fingerprint instead. Print it so the operator
+# can carry it into the agent install command.
+if ($SVWsTls -and $SVWsTls.Ok) {
+    Write-Host "  Agent WS:  wss://$($displayIp):3010" -ForegroundColor Green
+    Write-Host "  SpanVault agent WS TLS fingerprint: $($SVWsTls.Fingerprint)" -ForegroundColor Cyan
+    Write-Host "    (pass to the agent installer as -WsFingerprint)" -ForegroundColor Gray
+    Write-Host "    cert: $($SVWsTls.Cert)  expires: $($SVWsTls.NotAfter.ToString('yyyy-MM-dd'))" -ForegroundColor Gray
+} else {
+    Write-Host "  Agent WS:  ws://$($displayIp):3010 (NO TLS - agent traffic is unencrypted)" -ForegroundColor Yellow
+}
 
 } catch {
     # Global safety net (see the comment at the top of this try block) - any

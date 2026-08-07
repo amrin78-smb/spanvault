@@ -38,7 +38,7 @@ importing them are already client components.
 - `StatusDot`  (props not captured — animated up/down/warning/unknown dot; down/warning pulse via CSS keyframes)
 - (c) `ThemeToggle`  variant='icon'|'item' — default export, light/dark toggle
 - (c) `TopBar`  (no props) — default export, user avatar dropdown incl. "NocVault Hub" link (client-derived getHubUrl())
-- (c) `TopBarSearch`  (no props) — default export, top-bar search trigger
+- (c) `TopBarSearch`  (no props) — default export, top-bar search trigger. Queries `/api/global-search` (the SAME endpoint as `GlobalSearch`/Ctrl+K) and renders a per-kind badge; keep the two on one endpoint or their scopes silently diverge again
 - `SiteBox`  cluster — internal to TopologyMapView.tsx, not exported
 - `Connection`  (topology link line) — internal to TopologyMapView.tsx, not exported
 - `DeviceNode` (topology variant) — internal to TopologyMapView.tsx, not exported — NOTE: same name as SVGMapView's exported `DeviceNode`, different module, not a collision (both are module-scoped)
