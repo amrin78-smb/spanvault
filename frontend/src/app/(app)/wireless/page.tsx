@@ -933,6 +933,26 @@ export default function WirelessPage() {
       if (!isNaN(parsed)) setInitialApId(parsed);
     }
   }, []);
+
+  // The effect above only runs on MOUNT, which is enough for a link arriving from
+  // another route but not for one that lands on this page while it is already
+  // open: router.push('/wireless?tab=clients') from the top-bar search only
+  // changes the query string, so App Router re-renders without remounting and the
+  // tab silently never changes. Reading useSearchParams() instead would force
+  // this statically-prerendered page dynamic, so TopBarSearch fires an event and
+  // we honour it here — the same custom-event pattern as 'spanvault:focus-search'.
+  // Both paths are needed: arriving from another route mounts (effect above),
+  // arriving while mounted does not (this listener).
+  useEffect(() => {
+    function onTab(e: Event) {
+      const detail = (e as CustomEvent<{ tab?: string; apId?: number }>).detail || {};
+      const valid: TabKey[] = ['overview', 'aps', 'ssids', 'intelligence', 'clients', 'rogues', 'controllers'];
+      if (detail.tab && (valid as string[]).includes(detail.tab)) setTab(detail.tab as TabKey);
+      if (typeof detail.apId === 'number' && !isNaN(detail.apId)) setInitialApId(detail.apId);
+    }
+    window.addEventListener('spanvault:wireless-tab', onTab);
+    return () => window.removeEventListener('spanvault:wireless-tab', onTab);
+  }, []);
   const [siteFilter, setSiteFilter] = useState<number | null>(null);
   const [controllerFilter, setControllerFilter] = useState<number | null>(null);
   const [apStatusFilter, setApStatusFilter] = useState<string>('');

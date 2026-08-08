@@ -125,6 +125,16 @@ export default function TopBarSearch() {
     setOpenMenu(false);
     setExpanded(false);
     router.push(href);
+    // The Wireless page picks its tab from ?tab= in a mount-only effect. Pushing
+    // /wireless?tab=clients while already ON /wireless changes only the query
+    // string, so App Router re-renders without remounting and the tab would
+    // never change — the result would look like a dead click. Announce the tab
+    // as well; the page applies whichever of the two arrives (mount effect when
+    // navigating in from elsewhere, this event when already open).
+    const m = /^\/wireless\?tab=([a-z]+)/.exec(href);
+    if (m) {
+      window.dispatchEvent(new CustomEvent('spanvault:wireless-tab', { detail: { tab: m[1] } }));
+    }
   }
 
   function onKey(e: React.KeyboardEvent) {

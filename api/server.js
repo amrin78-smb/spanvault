@@ -36,6 +36,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.92.1': [
+    'Fixes search results that did nothing when you were already on the Wireless page. Selecting a client, access point or controller from the top-bar search changed the address but not the view, so the click looked ignored. It now switches to the right tab from anywhere in the app.',
+  ],
   '1.92.0': [
     'The search box in the top bar now finds wireless clients. Searching for an address you could plainly see on the Wireless page used to come back "no match", because that box only ever searched monitored devices — the client was there, but nothing the search looked at contained it. You can now find a client by address, hardware address or hostname.',
     'The top-bar search and the Ctrl+K palette now cover exactly the same ground. They previously searched different things, so the same term could succeed in one and fail in the other with nothing on screen to explain why. Results also say what each hit is — device, access point, client, controller or service — and take you to the right page.',
