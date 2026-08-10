@@ -840,6 +840,21 @@ const STICKY_TH: React.CSSProperties = {
   background: 'var(--bg-card)', boxShadow: '0 1px 0 var(--border)',
 };
 
+// Width of the right-hand slide-in panels (AP details, Intelligence AP, client
+// details). Roughly half the viewport: all three are chart-heavy — the AP panel
+// alone stacks ten of them — and at the previous fixed 520px the 24h trends were
+// too cramped to read a shape off.
+//
+// Read outside-in: 96vw keeps a phone-width screen from losing the backdrop
+// entirely; 50vw is the target; the 520px floor means this is never NARROWER
+// than it used to be on a small laptop, where half the viewport would be a
+// regression. The charts are all ResponsiveContainer width="100%", so they take
+// the extra room without any per-chart change.
+//
+// Defined once because the three panels must agree — they were three separate
+// copies of the same literal, which is how they would quietly drift apart.
+const DRAWER_WIDTH = 'min(96vw, max(520px, 50vw))';
+
 // CPU/Mem style 4px progress bar, green<60 yellow<80 red.
 function ProgressBar({ pct, width }: { pct: number | null | undefined; width?: number }) {
   const v = Number(pct);
@@ -2274,7 +2289,7 @@ function ApDetailDrawer({
       <div
         onMouseDown={(e) => e.stopPropagation()}
         style={{
-          position: 'fixed', top: 0, right: 0, bottom: 0, width: 'min(520px, 96vw)',
+          position: 'fixed', top: 0, right: 0, bottom: 0, width: DRAWER_WIDTH,
           background: 'var(--bg-card)', borderLeft: '1px solid var(--border)',
           boxShadow: '-8px 0 24px rgba(0,0,0,0.18)', overflowY: 'auto',
           padding: '20px 22px', zIndex: 60,
@@ -3023,7 +3038,7 @@ function IntelApDrawer({ apId, onClose, onViewAllClients }: { apId: number; onCl
         <div
           onMouseDown={(e) => e.stopPropagation()}
           style={{
-            position: 'fixed', top: 0, right: 0, bottom: 0, width: 'min(520px, 96vw)',
+            position: 'fixed', top: 0, right: 0, bottom: 0, width: DRAWER_WIDTH,
             background: 'var(--bg-card)', borderLeft: '1px solid var(--border)',
             padding: '20px 22px', zIndex: 60, overflowY: 'auto',
           }}
@@ -3979,7 +3994,7 @@ function ClientDetailPanel({ mac, onClose }: { mac: string; onClose: () => void 
       <div
         onMouseDown={(e) => e.stopPropagation()}
         style={{
-          position: 'fixed', top: 0, right: 0, bottom: 0, width: 'min(520px, 96vw)',
+          position: 'fixed', top: 0, right: 0, bottom: 0, width: DRAWER_WIDTH,
           background: 'var(--bg-card)', borderLeft: '1px solid var(--border)',
           boxShadow: '-8px 0 24px rgba(0,0,0,0.18)', overflowY: 'auto',
           padding: '20px 22px', zIndex: 60,

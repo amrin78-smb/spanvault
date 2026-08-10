@@ -36,6 +36,10 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.92.3': [
+    'The slide-in details panels on the Wireless page are now about half the screen wide instead of a fixed 520 pixels. These panels carry most of the trend charts in the app - the access point panel alone stacks ten - and at the old width the 24h trends were too cramped to read a shape off. On a typical desktop the charts get roughly twice the width.',
+    'The panel never gets narrower than it used to be: on a small laptop, where half the screen would be less than before, it keeps the old width. On a phone it still leaves a strip of the page behind it visible, so it is clear the panel is an overlay you can dismiss.',
+  ],
   '1.92.2': [
     'Fixed the scale on the 24h Noise Floor chart in the access point details panel. One of its labels was a long decimal such as -98.79166666666667, which did not fit the space available and spilled off the side of the chart as a stray run of digits. The scale now reads in whole dBm.',
     'This chart is the only one on that panel whose scale is derived from the readings themselves rather than being a fixed 0-100%, and those readings are averaged, so the ends of the scale landed on recurring decimals. The scale is now rounded outwards to whole numbers, which keeps the full margin above and below the plotted range.',
