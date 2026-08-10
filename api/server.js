@@ -36,6 +36,10 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.92.2': [
+    'Fixed the scale on the 24h Noise Floor chart in the access point details panel. One of its labels was a long decimal such as -98.79166666666667, which did not fit the space available and spilled off the side of the chart as a stray run of digits. The scale now reads in whole dBm.',
+    'This chart is the only one on that panel whose scale is derived from the readings themselves rather than being a fixed 0-100%, and those readings are averaged, so the ends of the scale landed on recurring decimals. The scale is now rounded outwards to whole numbers, which keeps the full margin above and below the plotted range.',
+  ],
   '1.92.1': [
     'Fixes search results that did nothing when you were already on the Wireless page. Selecting a client, access point or controller from the top-bar search changed the address but not the view, so the click looked ignored. It now switches to the right tab from anywhere in the app.',
   ],

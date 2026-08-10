@@ -2529,8 +2529,27 @@ function ApDetailDrawer({
                 {/* Noise floor dBm values normally cluster within a few dB — an
                     unpadded auto-domain ([dataMin, dataMax]) puts every point
                     right at the top/bottom edge, making a flat line look like
-                    constant spikes. Pad 4dB above/below the actual range. */}
-                <YAxis fontSize={11} domain={['dataMin - 4', 'dataMax + 4']} />
+                    constant spikes. Pad 4dB above/below the actual range.
+
+                    The bounds are ROUNDED OUT to whole dBm first. This is the
+                    only chart on the panel whose domain comes from the data
+                    rather than a fixed [0, 100], and the data is a 6-point
+                    moving average — so dataMin/dataMax are thirds, and the
+                    string form ('dataMin - 4') carried that straight into the
+                    axis. Recharts then labelled a tick -93.33333333333333,
+                    which is far wider than the axis gutter and rendered as a
+                    clipped run of 3s hanging off the top-left of the chart.
+                    Rounding out also keeps the 4dB padding intact (never less
+                    than 4dB) rather than eating into it. */}
+                <YAxis
+                  fontSize={11}
+                  domain={[
+                    (dataMin: number) => Math.floor(dataMin) - 4,
+                    (dataMax: number) => Math.ceil(dataMax) + 4,
+                  ]}
+                  allowDecimals={false}
+                  tickFormatter={(v: number) => String(Math.round(v))}
+                />
                 <Tooltip {...CHART_TOOLTIP} />
                 <Legend />
                 <Line type="monotone" dataKey="noise_floor_2g" name="2.4GHz" stroke={CHART_COLORS.g2} dot={false} connectNulls />
