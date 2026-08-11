@@ -201,3 +201,9 @@ cast when joining/importing from netvault's `devices` table.
   `WHERE` clause explicitly. Neither readonly role is used by the app itself
   (`api/server.js` always reads/writes `app_settings` as `spanvault_user`), so this has
   zero runtime effect.
+
+## wireless_channel_changes — 1.93.0
+`(id, ap_id FK CASCADE, ts, band '2.4'|'5'|'6', from_channel, to_channel, left_dfs, inferred_cause, util_pct, interference_pct, noise_floor, retry_rate)` + `idx_wchan_ap_ts (ap_id, ts DESC)` and `idx_wchan_ts (ts DESC)`.
+An EVENT table, not a column on `wireless_history`: history is ~3.6M rows/2 months (every AP, every 5 min) while an AP changes channel a handful of times a week, so recording only transitions keeps "how often does this AP move" a count rather than a `LAG()` over millions.
+RF context is stored IN the row because it cannot be reconstructed later — `wireless_history` is 5-minute buckets and `wireless_aps`' own columns are overwritten every poll.
+`from_channel`/`to_channel` are NOT NULL by design: a first sighting (no prior value) and a partial poll reporting NULL are **not** changes. That matters — aruba_central's 5-min main poll always reports channel NULL (its RF comes from the separate 15-min pass), so counting NULL would invent two bogus changes per AP per cycle.

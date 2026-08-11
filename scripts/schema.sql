@@ -1704,3 +1704,55 @@ BEGIN
   END IF;
 END
 $$;
+
+-- ── AP channel-change events ────────────────────────────────────────────────
+-- How often an AP moves channel, and what the RF looked like when it did.
+--
+-- Why an EVENT table rather than adding channel to wireless_history: history is
+-- written every poll for every AP (3.6M rows over two months here), while an AP
+-- changes channel maybe a handful of times a week. Recording only the
+-- transitions keeps "how often does this AP move" a trivial count instead of a
+-- LAG() window over millions of rows, and costs a row only when something
+-- actually happened.
+--
+-- The RF context is captured IN THIS ROW on purpose. After the fact there is no
+-- way to reconstruct what the interference or noise floor was at the moment of
+-- the change — wireless_history is 5-minute buckets and the AP's own columns are
+-- overwritten on every poll. Without this, every event would be a bare "it
+-- moved" with no way to judge why.
+--
+-- from_channel/to_channel are both NOT NULL: a row is only written when a real
+-- transition between two known channels is observed. A first sighting (no prior
+-- value) and a partial poll that reports NULL are NOT changes — see
+-- recordChannelChanges() in collector/wirelessCollector.js, which skips both.
+-- That matters for aruba_central, whose 5-minute main poll always reports a NULL
+-- channel and relies on the separate 15-minute RF pass; treating NULL as a
+-- transition would invent two bogus changes per AP per cycle.
+CREATE TABLE IF NOT EXISTS wireless_channel_changes (
+  id               BIGSERIAL PRIMARY KEY,
+  ap_id            INTEGER NOT NULL REFERENCES wireless_aps(id) ON DELETE CASCADE,
+  ts               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  band             TEXT NOT NULL,              -- '2.4' | '5' | '6'
+  from_channel     INTEGER NOT NULL,
+  to_channel       INTEGER NOT NULL,
+  -- True when the AP vacated a DFS channel (52-144) for a non-DFS one. That is
+  -- the behaviour DFS mandates on radar detection — vacate and stay off for 30
+  -- minutes — so it is the strongest radar signal obtainable without the
+  -- controller's own event feed.
+  left_dfs         BOOLEAN NOT NULL DEFAULT FALSE,
+  -- 'radar_suspected' | 'interference_suspected' | 'unknown'. SUSPECTED is not
+  -- confirmed: polling cannot see a radar event, only its consequence. Real
+  -- confirmation needs the controller's syslog/trap (Aruba wlsxNRadarDetected),
+  -- which is not currently reaching this suite.
+  inferred_cause   TEXT,
+  -- RF as measured on the band that moved, at the poll that saw the change.
+  util_pct         NUMERIC,
+  interference_pct NUMERIC,
+  noise_floor      INTEGER,
+  retry_rate       NUMERIC
+);
+-- Serves both "this AP's recent changes" (drawer) and "changes in the last N
+-- days" (site ranking) — the leading ap_id makes the per-AP lookup an index
+-- scan, and ts DESC gives the ordering for free.
+CREATE INDEX IF NOT EXISTS idx_wchan_ap_ts ON wireless_channel_changes(ap_id, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_wchan_ts    ON wireless_channel_changes(ts DESC);

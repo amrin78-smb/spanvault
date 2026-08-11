@@ -36,6 +36,13 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.93.0': [
+    'Access point detail now shows channel changes: how many times the access point has been moved off its channel in the last 7 and 30 days, and a list of each move with the channels involved.',
+    'Each entry records what the radio conditions were at that moment - airtime in use, interference and noise - because after the event there is no way to work out why it happened. Where an access point left a channel in the 52 to 144 range for one outside it, the move is marked as radar suspected: that is exactly what a radar detection obliges an access point to do, and it must then stay off that channel for thirty minutes. Nearly half the access points here currently sit in that range.',
+    'Radar suspected is inferred from the move itself, not read from the controller. Confirming a real radar event needs the controller to send its own logs, which it does not do today.',
+    'Only moves lasting longer than the five minute polling interval are counted, so the figures are a floor rather than an exact total. Radar and interference driven moves both persist well beyond that, so the ones that matter are captured.',
+    'History starts from this release. Channel was previously only ever stored as a current value and overwritten on each poll, so there is no earlier record to show.',
+  ],
   '1.92.3': [
     'The slide-in details panels on the Wireless page are now about half the screen wide instead of a fixed 520 pixels. These panels carry most of the trend charts in the app - the access point panel alone stacks ten - and at the old width the 24h trends were too cramped to read a shape off. On a typical desktop the charts get roughly twice the width.',
     'The panel never gets narrower than it used to be: on a small laptop, where half the screen would be less than before, it keeps the old width. On a phone it still leaves a strip of the page behind it visible, so it is clear the panel is an overlay you can dismiss.',
@@ -5456,7 +5463,42 @@ app.get('/api/wireless/aps/:id', wrap(async (req, res) => {
     congestion_level = scored.level;
   }
 
-  res.json({ ...ap, uptime_formatted: fmtUptime(ap.uptime_seconds), history: hist.rows, congestion_score, congestion_level });
+  // Channel-change history. Deliberately served from THIS route rather than a
+  // new /api/wireless/aps/:id/channel-changes one: the site-scoping guard above
+  // already applies here, and a sibling route with its own missing guard is
+  // exactly the bug this file's own release notes record twice (see the
+  // 2026-07-22 sweep entry for /api/wireless/aps/:id/clients).
+  //
+  // Degrades to empty rather than 500ing if the table has not been created yet —
+  // the collector writes it, and an API deployed a few minutes ahead of the
+  // schema step should not take the whole AP drawer down.
+  let channel_changes = [];
+  let channel_change_counts = { d7: 0, d30: 0, radar_suspected_7d: 0 };
+  try {
+    const cc = await sv.query(`
+      SELECT ts, band, from_channel, to_channel, left_dfs, inferred_cause,
+             util_pct, interference_pct, noise_floor, retry_rate
+        FROM wireless_channel_changes
+       WHERE ap_id = $1 AND ts > NOW() - INTERVAL '30 days'
+       ORDER BY ts DESC
+       LIMIT 50`, [id]);
+    channel_changes = cc.rows;
+    const counts = await sv.query(`
+      SELECT COUNT(*) FILTER (WHERE ts > NOW() - INTERVAL '7 days')::int  AS d7,
+             COUNT(*) FILTER (WHERE ts > NOW() - INTERVAL '30 days')::int AS d30,
+             COUNT(*) FILTER (WHERE ts > NOW() - INTERVAL '7 days'
+                              AND inferred_cause = 'radar_suspected')::int AS radar_suspected_7d
+        FROM wireless_channel_changes
+       WHERE ap_id = $1 AND ts > NOW() - INTERVAL '30 days'`, [id]);
+    channel_change_counts = counts.rows[0] || channel_change_counts;
+  } catch (e) {
+    console.error('[wireless/aps/:id] channel-change query failed:', e.message);
+  }
+
+  res.json({
+    ...ap, uptime_formatted: fmtUptime(ap.uptime_seconds), history: hist.rows,
+    congestion_score, congestion_level, channel_changes, channel_change_counts,
+  });
 }));
 
 // AP client/utilization history (bucketed by range).

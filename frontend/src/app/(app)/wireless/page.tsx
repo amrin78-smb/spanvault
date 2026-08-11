@@ -2597,6 +2597,8 @@ function ApDetailDrawer({
                 <Line type="monotone" dataKey="interference_pct_5g" name="5GHz %" stroke={CHART_COLORS.g5} dot={false} connectNulls />
               </LineChart>
             </ResponsiveContainer>
+
+            <ChannelChanges ap={ap} />
           </>
         )}
       </div>
@@ -2699,6 +2701,118 @@ function fmtBucket(ts: string): string {
 // doesn't widen or shift the other's window). Used to smooth naturally-jittery
 // per-poll telemetry (see the Noise Floor chart) without changing the
 // underlying bucket size the history endpoint returns.
+// ── AP channel-change history ────────────────────────────────────────────────
+// How often this AP has been moved off its channel, and the RF as it was at that
+// moment. Module level, not nested in the drawer — a component defined inside
+// another remounts on every render and loses focus/state.
+interface ChannelChange {
+  ts: string;
+  band: string;
+  from_channel: number;
+  to_channel: number;
+  left_dfs: boolean;
+  inferred_cause: string | null;
+  util_pct: number | string | null;
+  interference_pct: number | string | null;
+  noise_floor: number | null;
+  retry_rate: number | string | null;
+}
+
+const CAUSE_LABEL: Record<string, string> = {
+  radar_suspected: 'Radar suspected',
+  interference_suspected: 'Interference',
+  unknown: 'Cause unclear',
+};
+
+function causeStyle(cause: string | null): React.CSSProperties {
+  if (cause === 'radar_suspected') return { background: 'var(--tint-danger)', color: 'var(--tint-danger-fg)' };
+  if (cause === 'interference_suspected') return { background: 'var(--tint-warn)', color: 'var(--tint-warn-fg)' };
+  return { background: 'var(--surface-subtle)', color: 'var(--text-muted)' };
+}
+
+function ChannelChanges({ ap }: { ap: AccessPoint }) {
+  const changes: ChannelChange[] = Array.isArray((ap as any).channel_changes) ? (ap as any).channel_changes : [];
+  const counts = (ap as any).channel_change_counts || { d7: 0, d30: 0, radar_suspected_7d: 0 };
+
+  return (
+    <>
+      <h3 style={{ marginBottom: 6 }}>Channel changes</h3>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
+        {[
+          { label: 'Last 7 days', value: counts.d7 },
+          { label: 'Last 30 days', value: counts.d30 },
+          { label: 'Radar suspected (7d)', value: counts.radar_suspected_7d },
+        ].map(s => (
+          <div key={s.label} style={{
+            flex: '1 1 120px', background: 'var(--surface-subtle)', border: '1px solid var(--border)',
+            borderRadius: 'var(--radius-sm)', padding: '8px 10px',
+          }}>
+            <div style={{ fontSize: 'var(--text-2xl)', fontWeight: 700, lineHeight: 1.1 }}>{s.value ?? 0}</div>
+            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)' }}>{s.label}</div>
+          </div>
+        ))}
+      </div>
+
+      {changes.length === 0 ? (
+        <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', marginBottom: 16 }}>
+          No channel changes recorded in the last 30 days. Changes are detected by comparing each
+          poll against the last, so only moves that persist longer than the ~5 minute poll interval
+          are counted.
+        </div>
+      ) : (
+        <div style={{ marginBottom: 16, maxHeight: 260, overflowY: 'auto' }}>
+          <table className="sv-table" style={{ width: '100%' }}>
+            <thead>
+              <tr>
+                <th style={STICKY_TH}>When</th>
+                <th style={STICKY_TH}>Band</th>
+                <th style={STICKY_TH}>Change</th>
+                <th style={STICKY_TH}>Likely cause</th>
+                <th style={{ ...STICKY_TH, textAlign: 'right' }}>RF at the time</th>
+              </tr>
+            </thead>
+            <tbody>
+              {changes.map((c, i) => (
+                <tr key={i}>
+                  <td style={{ whiteSpace: 'nowrap' }}>{new Date(c.ts).toLocaleString()}</td>
+                  <td>{c.band} GHz</td>
+                  <td style={{ fontFamily: 'var(--font-mono)', whiteSpace: 'nowrap' }}>
+                    {c.from_channel} → {c.to_channel}
+                    {c.left_dfs && (
+                      <span title="Left a DFS channel (52-144). An AP that detects radar must vacate and stay off for 30 minutes."
+                            style={{ marginLeft: 6, fontSize: 'var(--text-xs)', color: 'var(--text-muted)' }}>
+                        off DFS
+                      </span>
+                    )}
+                  </td>
+                  <td>
+                    <span style={{
+                      ...causeStyle(c.inferred_cause), fontSize: 'var(--text-xs)', fontWeight: 700,
+                      padding: '2px 7px', borderRadius: 'var(--radius-pill)', whiteSpace: 'nowrap',
+                    }}>{CAUSE_LABEL[c.inferred_cause || 'unknown'] || 'Cause unclear'}</span>
+                  </td>
+                  <td style={{ textAlign: 'right', fontSize: 'var(--text-xs)', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+                    {[
+                      c.util_pct != null ? `util ${Math.round(Number(c.util_pct))}%` : null,
+                      c.interference_pct != null ? `intf ${Math.round(Number(c.interference_pct))}%` : null,
+                      c.noise_floor != null ? `noise ${c.noise_floor}dBm` : null,
+                    ].filter(Boolean).join(' · ') || '—'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', marginBottom: 16 }}>
+        “Radar suspected” means the AP left a DFS channel for a non-DFS one, which is what a radar
+        detection forces it to do — it is inferred from the move, not read from the controller.
+        Confirming an actual radar event needs the controller’s own log feed.
+      </div>
+    </>
+  );
+}
+
 function movingAverage<T extends Record<string, any>>(
   rows: T[], keys: string[], window: number
 ): T[] {

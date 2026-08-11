@@ -18,6 +18,7 @@ const { createSession, walk, get, OID } = require('./snmp-session');
 const { getWirelessParser, wirelessVendorFor } = require('./wireless');
 const { getClientParser } = require('./wireless/clients');
 const { runWirelessIntelligence } = require('./wirelessIntelligence');
+const { recordChannelChanges } = require('./wireless/channelChanges');
 
 // Vendor SNMP metric support matrix (what each parser actually returns):
 //   Aruba:        radio channel/util/clients/noise/retry/interference + per-radio
@@ -874,8 +875,12 @@ async function upsertAp(pool, controller, ap) {
   //   SELECT name, COUNT(DISTINCT controller_id) FROM wireless_aps
   //    GROUP BY name HAVING COUNT(DISTINCT controller_id) > 1;
   if (controller.site_id != null) {
+    // Channels come back too: they are the BEFORE side of the channel-change
+    // comparison, and once the UPDATE below runs they are gone. Reading them
+    // here costs nothing — the row is already being fetched.
     const existing = await pool.query(
-      `SELECT id FROM wireless_aps WHERE site_id = $1 AND name = $2 LIMIT 1`,
+      `SELECT id, radio_2g_channel, radio_5g_channel, radio_6g_channel
+         FROM wireless_aps WHERE site_id = $1 AND name = $2 LIMIT 1`,
       [controller.site_id, name]);
     if (existing.rows[0]) {
       // radio_2g/5g_channel, radio_2g/5g_util_pct, tx_power_2g/5g, and
@@ -943,6 +948,7 @@ async function upsertAp(pool, controller, ap) {
         RETURNING id
       `, [...vals, existing.rows[0].id]);
       apId = u.rows[0].id;
+      await recordChannelChanges(pool, apId, existing.rows[0], ap);
     }
   }
 
@@ -950,6 +956,15 @@ async function upsertAp(pool, controller, ap) {
   // the null-site case we keep the original per-(controller_id, name) upsert so we
   // never wrongly merge two distinct site-less APs from different controllers.
   if (apId == null) {
+    // Same BEFORE-snapshot as the (site_id, name) path above. This branch is an
+    // upsert, so it updates an existing row just as often as it inserts a new
+    // one — skipping the snapshot here would silently miss every channel change
+    // on a site-less AP. A miss on the INSERT case is correct and automatic:
+    // there is no prior row, so prev is undefined and nothing is recorded.
+    const prevRow = await pool.query(
+      `SELECT radio_2g_channel, radio_5g_channel, radio_6g_channel
+         FROM wireless_aps WHERE controller_id = $1 AND name = $2 LIMIT 1`,
+      [controller.id, name]);
     const r = await pool.query(`
       INSERT INTO wireless_aps
         (controller_id, monitored_device_id, name, mac_address, model, ip_address,
@@ -1019,6 +1034,7 @@ async function upsertAp(pool, controller, ap) {
       RETURNING id
     `, vals);
     apId = r.rows[0].id;
+    await recordChannelChanges(pool, apId, prevRow.rows[0], ap);
   }
   await pool.query(`
     INSERT INTO wireless_history

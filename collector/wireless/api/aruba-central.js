@@ -114,6 +114,10 @@ async function fetchJsonVerbose(url, options, timeoutMs, opLabel) {
   return bodyJson;
 }
 
+// Shared with wirelessCollector.js's upsertAp — this pass is the only writer of
+// channel for Central-managed APs, so it has to do its own change detection.
+const { recordChannelChanges } = require('../channelChanges');
+
 const TIMEOUT_MS = 20000;
 // Treat a stored token as needing refresh once it is within 5 minutes of its
 // recorded expiry, not only once it has strictly already expired — avoids a
@@ -655,6 +659,14 @@ async function pollRf(controller, pool) {
         // reporting) must not wipe the last known-good value — mirrors the
         // same precedent in wirelessCollector.js's pollController() for
         // controller-level metadata.
+        // Snapshot the channels BEFORE the update. This pass is the ONLY writer
+        // of channel for aruba_central APs — their main 5-minute poll reports
+        // channel as null by design (see mapAp) — so upsertAp's own
+        // change-detection never sees a transition here. Without this, every
+        // channel change on a Central-managed AP would go unrecorded.
+        const prevCh = await pool.query(
+          `SELECT radio_2g_channel, radio_5g_channel, radio_6g_channel
+             FROM wireless_aps WHERE id = $1`, [apRow.id]);
         await pool.query(
           `UPDATE wireless_aps SET
              radio_2g_channel  = COALESCE($2, radio_2g_channel),
@@ -670,6 +682,9 @@ async function pollRf(controller, pool) {
             rf.radio_2g_util_pct, rf.radio_5g_util_pct,
             rf.tx_power_2g, rf.tx_power_5g,
             rf.noise_floor_2g, rf.noise_floor_5g]);
+        // rf carries util and noise for the same moment, so the recorded event
+        // gets real RF context rather than a bare "it moved".
+        await recordChannelChanges(pool, apRow.id, prevCh.rows[0], rf);
       } catch (e) {
         // Per-AP isolation: one AP's RF call failing (timeout, a
         // decommissioned serial returning 404, etc.) must never abort the
