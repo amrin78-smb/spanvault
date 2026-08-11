@@ -36,6 +36,12 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.94.0': [
+    'The charts in the access point panel now have a range selector: 1h, 2h, 6h, 12h, 24h, 2d and 7d. Every chart on the panel follows the selection, so you can zoom in on the hour around an incident or step back to see a week of behaviour.',
+    'Short ranges show fewer points rather than finer ones. Access points are polled about every five minutes, so a finer bucket than that would produce one reading surrounded by empty slots - a gap-toothed line that looks like missing data rather than a closer look.',
+    'The axis switches to showing dates on the 2 day and 7 day views, where a time-only label would repeat each day and make the chart appear to loop.',
+    'Smoothing on the noise floor chart now scales with the range. It was tuned for a full day of readings, and on a one hour view it would have averaged away the very detail you zoomed in to see.',
+  ],
   '1.93.2': [
     'The Wireless Insights panel that reported on congestion now actually measures it. It listed access points above 70% airtime, but when none qualified it announced "No congestion detected" - so the overview showed a green all-clear while the Access Points tab, on the same data in the same refresh, showed an access point as highly congested.',
     'Airtime is only about a third of the congestion measure; the rest is retry rate, interference, an uneven split of clients between the two radios, and clients in poor condition. An access point at 31% airtime can be genuinely congested because its clients are retrying or fighting interference, and airtime alone would never show it.',
@@ -1381,6 +1387,11 @@ function signalQuality(rssi) {
 }
 function rangeToInterval(range) {
   switch (range) {
+    case '1h':  return '1 hour';
+    case '2h':  return '2 hours';
+    case '6h':  return '6 hours';
+    case '12h': return '12 hours';
+    case '2d':  return '2 days';
     case '7d':  return '7 days';
     case '30d': return '30 days';
     case '90d': return '90 days';
@@ -1388,13 +1399,28 @@ function rangeToInterval(range) {
     default:    return '24 hours';
   }
 }
+// Bucket sizes are chosen against the ~5-minute AP poll interval, not just to
+// look tidy. A bucket SMALLER than the poll interval cannot average anything —
+// it produces one point per poll interspersed with empty buckets, which renders
+// as a gap-toothed line that looks like data loss rather than a zoomed-in view.
+// So 5 minutes is the floor, and the short ranges simply show fewer points
+// rather than finer ones.
+//
+// Above that, buckets widen to keep the point count in a readable band (~70-290
+// across a chart a few hundred pixels wide) instead of letting a 7-day view try
+// to draw 2,000 points.
 function rangeToBucket(range) {
   switch (range) {
-    case '7d':  return '1 hour';
-    case '30d': return '6 hours';
-    case '90d': return '1 day';
+    case '1h':  return '5 minutes';   // ~12 points — one per poll, the finest real resolution
+    case '2h':  return '5 minutes';   // ~24
+    case '6h':  return '5 minutes';   // ~72
+    case '12h': return '10 minutes';  // ~72
+    case '2d':  return '15 minutes';  // ~192
+    case '7d':  return '1 hour';      // ~168
+    case '30d': return '6 hours';     // ~120
+    case '90d': return '1 day';       // ~90
     case '24h':
-    default:    return '5 minutes';
+    default:    return '5 minutes';   // ~288
   }
 }
 function toCsv(rows) {

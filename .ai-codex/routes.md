@@ -290,3 +290,5 @@ NextAuth's own handler manages its own caching/dynamic behavior — a
 `force-dynamic` export is not applicable/needed here. No other `frontend/src/app/api/**`
 route exists to check (see the dead-code corollary in gotchas.md for why one
 was attempted and removed).
+
+- `GET /api/wireless/history/:ap_id?range=` — AP chart history, bucketed. Ranges (1.94.0): `1h|2h|6h|12h|24h|2d|7d|30d|90d`, default 24h. Bucket sizes are chosen against the ~5-minute AP poll interval, NOT for tidy round numbers: a bucket smaller than the poll interval cannot average anything and renders as a gap-toothed line that looks like data loss, so 5 minutes is the floor and short ranges show FEWER points rather than finer ones. An unknown `range` value silently falls back to 24h — so the frontend's `ApRange` union must stay in step with `rangeToInterval`/`rangeToBucket` or the chart quietly disagrees with the button the user pressed.

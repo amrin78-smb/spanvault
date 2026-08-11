@@ -2270,6 +2270,7 @@ function ApDetailDrawer({
 }) {
   const mounted = useMountedPortal();
   const [history, setHistory] = useState<ApHistoryRow[]>([]);
+  const [range, setRange] = useState<ApRange>('24h');
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [apClients, setApClients] = useState<WirelessClient[]>([]);
@@ -2278,12 +2279,14 @@ function ApDetailDrawer({
     let cancelled = false;
     setLoading(true);
     setErr(null);
-    apiGet<ApHistoryRow[]>(`/api/wireless/history/${ap.id}?range=24h`)
+    apiGet<ApHistoryRow[]>(`/api/wireless/history/${ap.id}?range=${range}`)
       .then((rows) => { if (!cancelled) setHistory(rows); })
       .catch((e: any) => { if (!cancelled) setErr(e?.message || 'Failed to load history'); })
       .finally(() => { if (!cancelled) setLoading(false); });
+    // `range` is a dependency: without it the fetch keeps the 24h data on screen
+    // while the buttons show a different selection.
     return () => { cancelled = true; };
-  }, [ap.id]);
+  }, [ap.id, range]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2304,7 +2307,7 @@ function ApDetailDrawer({
   // A trailing moving average does that instead, without touching the shared
   // history endpoint/bucket size the other 4 charts on this panel also use.
   const smoothedNoiseHistory = useMemo(
-    () => movingAverage(history, ['noise_floor_2g', 'noise_floor_5g'], 6),
+    () => movingAverage(history, ['noise_floor_2g', 'noise_floor_5g'], smoothingWindow(history.length)),
     [history]
   );
 
@@ -2514,12 +2517,31 @@ function ApDetailDrawer({
           </div>
         )}
 
+        {/* Zoom control for every chart below. Rendered OUTSIDE the loading
+            branch so the buttons stay on screen (and stay clickable) while the
+            new range loads — otherwise picking a range makes the control vanish
+            under the spinner and reappear, which reads as the click failing. */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', margin: '4px 0 12px' }}>
+          <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', marginRight: 2 }}>Range</span>
+          {AP_RANGES.map((r) => (
+            <button
+              key={r.key}
+              onClick={() => setRange(r.key)}
+              style={range === r.key ? CLIENT_RANGE_BTN_ACTIVE : CLIENT_RANGE_BTN_BASE}
+              title={`Show the last ${r.label}`}
+            >
+              {r.label}
+            </button>
+          ))}
+          {loading && <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)' }}>loading…</span>}
+        </div>
+
         {err && <ErrorBox message={err} />}
         {loading ? (
           <Loading />
         ) : (
           <>
-            <h3 style={{ marginBottom: 6 }}>24h Client Count</h3>
+            <h3 style={{ marginBottom: 6 }}>Client Count</h3>
             {perBandUnavailable(ap.vendor) && (
               <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', marginBottom: 4 }}>
                 Per-band (2.4/5GHz) breakdown not reported by this vendor — showing total only.
@@ -2528,7 +2550,7 @@ function ApDetailDrawer({
             <ResponsiveContainer width="100%" height={200}>
               <LineChart data={history}>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-                <XAxis dataKey="bucket" tickFormatter={fmtBucket} fontSize={11} />
+                <XAxis dataKey="bucket" tickFormatter={(t: string) => fmtBucket(t, range)} fontSize={11} />
                 <YAxis fontSize={11} allowDecimals={false} />
                 <Tooltip {...CHART_TOOLTIP} />
                 <Legend />
@@ -2542,7 +2564,7 @@ function ApDetailDrawer({
               </LineChart>
             </ResponsiveContainer>
 
-            <h3 style={{ marginBottom: 6 }}>24h Channel Utilization</h3>
+            <h3 style={{ marginBottom: 6 }}>Channel Utilization</h3>
             {utilUnavailable(ap.vendor) ? (
               <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', marginBottom: 8 }}>
                 Channel utilization not reported by this vendor.
@@ -2551,7 +2573,7 @@ function ApDetailDrawer({
               <ResponsiveContainer width="100%" height={200}>
                 <LineChart data={history}>
                   <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-                  <XAxis dataKey="bucket" tickFormatter={fmtBucket} fontSize={11} />
+                  <XAxis dataKey="bucket" tickFormatter={(t: string) => fmtBucket(t, range)} fontSize={11} />
                   <YAxis fontSize={11} domain={[0, 100]} />
                   <Tooltip {...CHART_TOOLTIP} />
                   <Legend />
@@ -2561,11 +2583,11 @@ function ApDetailDrawer({
               </ResponsiveContainer>
             )}
 
-            <h3 style={{ marginBottom: 6 }}>24h Noise Floor (dBm)</h3>
+            <h3 style={{ marginBottom: 6 }}>Noise Floor (dBm)</h3>
             <ResponsiveContainer width="100%" height={200}>
               <LineChart data={smoothedNoiseHistory}>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-                <XAxis dataKey="bucket" tickFormatter={fmtBucket} fontSize={11} />
+                <XAxis dataKey="bucket" tickFormatter={(t: string) => fmtBucket(t, range)} fontSize={11} />
                 {/* Noise floor dBm values normally cluster within a few dB — an
                     unpadded auto-domain ([dataMin, dataMax]) puts every point
                     right at the top/bottom edge, making a flat line look like
@@ -2597,11 +2619,11 @@ function ApDetailDrawer({
               </LineChart>
             </ResponsiveContainer>
 
-            <h3 style={{ marginBottom: 6 }}>24h Retry Rate (%)</h3>
+            <h3 style={{ marginBottom: 6 }}>Retry Rate (%)</h3>
             <ResponsiveContainer width="100%" height={200}>
               <LineChart data={history}>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-                <XAxis dataKey="bucket" tickFormatter={fmtBucket} fontSize={11} />
+                <XAxis dataKey="bucket" tickFormatter={(t: string) => fmtBucket(t, range)} fontSize={11} />
                 <YAxis fontSize={11} domain={[0, 100]} />
                 <Tooltip {...CHART_TOOLTIP} />
                 <Legend />
@@ -2610,11 +2632,11 @@ function ApDetailDrawer({
               </LineChart>
             </ResponsiveContainer>
 
-            <h3 style={{ marginBottom: 6 }}>24h Interference (%)</h3>
+            <h3 style={{ marginBottom: 6 }}>Interference (%)</h3>
             <ResponsiveContainer width="100%" height={200}>
               <LineChart data={history}>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-                <XAxis dataKey="bucket" tickFormatter={fmtBucket} fontSize={11} />
+                <XAxis dataKey="bucket" tickFormatter={(t: string) => fmtBucket(t, range)} fontSize={11} />
                 <YAxis fontSize={11} domain={[0, 100]} />
                 <Tooltip {...CHART_TOOLTIP} />
                 <Legend />
@@ -2715,10 +2737,43 @@ function RadioBandStats({
   );
 }
 
-function fmtBucket(ts: string): string {
+// Zoom levels for the AP detail charts. Values must match rangeToInterval /
+// rangeToBucket in api/server.js — an unknown value there silently falls back to
+// 24h, so the chart would quietly disagree with the button the user pressed.
+type ApRange = '1h' | '2h' | '6h' | '12h' | '24h' | '2d' | '7d';
+const AP_RANGES: { key: ApRange; label: string }[] = [
+  { key: '1h', label: '1h' },
+  { key: '2h', label: '2h' },
+  { key: '6h', label: '6h' },
+  { key: '12h', label: '12h' },
+  { key: '24h', label: '24h' },
+  { key: '2d', label: '2d' },
+  { key: '7d', label: '7d' },
+];
+
+// Anything spanning more than a day needs a date on the axis: at 2d and 7d a
+// time-only tick repeats every 24h, so "08:00" appears several times and the
+// chart reads as though it loops.
+const spansMultipleDays = (r: ApRange) => r === '2d' || r === '7d';
+
+function fmtBucket(ts: string, range: ApRange = '24h'): string {
   const d = new Date(ts);
   if (isNaN(d.getTime())) return String(ts);
-  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return spansMultipleDays(range)
+    ? d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+    : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+// The noise-floor chart's smoothing window, scaled to how many points the chosen
+// range actually returns. A fixed window of 6 was tuned for 24h (~288 points);
+// applied to a 1h view (~12 points) it would average away half the window and
+// flatten exactly the detail the user zoomed in to see. Below ~40 points the
+// data is already sparse enough to read raw, so smoothing is switched off
+// entirely rather than fudged.
+function smoothingWindow(pointCount: number): number {
+  if (pointCount > 150) return 6;
+  if (pointCount > 40) return 3;
+  return 1;
 }
 
 // Trailing moving average over the given numeric keys, computed independently
