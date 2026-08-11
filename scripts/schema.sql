@@ -1756,3 +1756,24 @@ CREATE TABLE IF NOT EXISTS wireless_channel_changes (
 -- scan, and ts DESC gives the ordering for free.
 CREATE INDEX IF NOT EXISTS idx_wchan_ap_ts ON wireless_channel_changes(ap_id, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_wchan_ts    ON wireless_channel_changes(ts DESC);
+
+-- Diagnostic read access. PER-TABLE on purpose: the blanket
+-- `GRANT SELECT ON ALL TABLES IN SCHEMA public` form must never be re-run here,
+-- because it would silently re-widen wireless_controllers/monitored_devices/
+-- agents/app_settings back to table-wide SELECT and undo their column-level
+-- secret exclusions (see the privilege notes earlier in this file).
+--
+-- This lives in schema.sql rather than being applied by hand against the live
+-- DB: schema.sql is re-applied on every deploy, so a grant that exists only in
+-- production is one routine re-apply away from being correct by accident. There
+-- are no secrets in this table — it is channel telemetry.
+DO $$
+BEGIN
+  IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'claude_readonly') THEN
+    GRANT SELECT ON wireless_channel_changes TO claude_readonly;
+  END IF;
+  IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'nocvault_readonly') THEN
+    GRANT SELECT ON wireless_channel_changes TO nocvault_readonly;
+  END IF;
+END
+$$;
