@@ -1551,10 +1551,30 @@ function OverviewTab({
     [clientSummary.data],
   );
   const offlineAps = useMemo(() => aps.filter((a) => a.status === 'offline'), [aps]);
-  const highUtilAps = useMemo(
-    // apUtil() is null for an AP with no util reading yet — null > 70 is
-    // false, so it's naturally excluded here instead of falsely flagged.
-    () => aps.filter((a) => (apUtil(a) ?? -1) > 70).sort((a, b) => (apUtil(b) ?? 0) - (apUtil(a) ?? 0)),
+  // APs that are actually congested — the same congestion_level the Access
+  // Points tab shows, from the same /api/wireless/aps response.
+  //
+  // This used to filter on raw utilisation > 70% alone while its empty state
+  // announced "No congestion detected". Utilisation is only 35% of the
+  // congestion score (retry 25, interference 15, band imbalance 15, weak
+  // clients 10 — see collector/wirelessScore.js), so an AP can sit at 31%
+  // airtime and still be High because clients are retrying or fighting
+  // interference. The overview therefore showed a green all-clear on congestion
+  // while the AP list one tab away showed High for the same AP, in the same
+  // render, off the same data. A false all-clear is worse than no card: it
+  // asserts the opposite of the truth rather than merely omitting it.
+  //
+  // Utilisation > 70% is KEPT as a qualifier rather than dropped: an AP that
+  // busy is worth surfacing even if the blended score has not crossed 60 yet.
+  const congestedAps = useMemo(
+    // apUtil() is null for an AP with no util reading yet — null > 70 is false,
+    // so it is naturally excluded instead of falsely flagged. congestion_level
+    // is likewise null for an offline AP (never a misleading 'low').
+    () => aps
+      .filter((a) => a.congestion_level === 'high' || (apUtil(a) ?? -1) > 70)
+      .sort((a, b) =>
+        (b.congestion_score ?? 0) - (a.congestion_score ?? 0) ||
+        (apUtil(b) ?? 0) - (apUtil(a) ?? 0)),
     [aps],
   );
 
@@ -1752,19 +1772,24 @@ function OverviewTab({
           )}
         </SectionCard>
 
-        <SectionCard title="High Utilization APs (>70%)"
-          action={highUtilAps.length > 0 ? <DrillHint /> : undefined}
+        <SectionCard title="Congested APs"
+          action={congestedAps.length > 0 ? <DrillHint /> : undefined}
           maxHeight={160} minWidth={280}>
-          {highUtilAps.length ? (
+          {congestedAps.length ? (
             <table className="sv-table">
               <thead><tr>
-                <th style={STICKY_TH}>AP</th><th style={STICKY_TH}>Util%</th><th style={STICKY_TH}>Clients</th>
+                {/* Utilisation stays visible next to the level so a row flagged
+                    at low airtime reads as deliberate rather than as a mistake —
+                    that combination is the whole point of the blended score. */}
+                <th style={STICKY_TH}>AP</th><th style={STICKY_TH}>Congestion</th>
+                <th style={STICKY_TH}>Util%</th><th style={STICKY_TH}>Clients</th>
               </tr></thead>
               <tbody>
-                {highUtilAps.map((ap) => (
+                {congestedAps.map((ap) => (
                   <tr key={ap.id} style={{ cursor: 'pointer' }}
                     onClick={() => setSelectedApId(ap.id)} title="View access point details">
                     <td style={{ fontWeight: 600 }}>{ap.name}</td>
+                    <td><CongestionPill level={ap.congestion_level} /></td>
                     <td style={{ color: apUtilColor(ap), fontWeight: 600 }}>{fmtPct(apUtil(ap))}</td>
                     <td>{ap.clients_total}</td>
                   </tr>
@@ -1772,7 +1797,7 @@ function OverviewTab({
               </tbody>
             </table>
           ) : (
-            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: 'var(--green)', fontWeight: 600, fontSize: 'var(--text-base)' }}><IconCheck width={14} height={14} /> No congestion detected</div>
+            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: 'var(--green)', fontWeight: 600, fontSize: 'var(--text-base)' }}><IconCheck width={14} height={14} /> No congested APs</div>
           )}
         </SectionCard>
       </EqualRow>

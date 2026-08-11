@@ -36,6 +36,11 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.93.2': [
+    'The Wireless Insights panel that reported on congestion now actually measures it. It listed access points above 70% airtime, but when none qualified it announced "No congestion detected" - so the overview showed a green all-clear while the Access Points tab, on the same data in the same refresh, showed an access point as highly congested.',
+    'Airtime is only about a third of the congestion measure; the rest is retry rate, interference, an uneven split of clients between the two radios, and clients in poor condition. An access point at 31% airtime can be genuinely congested because its clients are retrying or fighting interference, and airtime alone would never show it.',
+    'The panel is now "Congested APs" and lists whatever is rated highly congested, still including anything above 70% airtime. Each row shows the congestion rating next to the airtime figure, so an access point flagged at low airtime reads as deliberate rather than as an error.',
+  ],
   '1.93.0': [
     'Access point detail now shows channel changes: how many times the access point has been moved off its channel in the last 7 and 30 days, and a list of each move with the channels involved.',
     'Each entry records what the radio conditions were at that moment - airtime in use, interference and noise - because after the event there is no way to work out why it happened. Where an access point left a channel in the 52 to 144 range for one outside it, the move is marked as radar suspected: that is exactly what a radar detection obliges an access point to do, and it must then stay off that channel for thirty minutes. Nearly half the access points here currently sit in that range.',
