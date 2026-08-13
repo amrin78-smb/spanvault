@@ -36,6 +36,12 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.94.1': [
+    'Capacity Forecasting was reporting "No bandwidth sensors configured for this device" on devices that had SNMP enabled, discovery already run, and a fortnight of bandwidth readings recorded. Five of the eight devices with bandwidth data were affected, each with a full 15 days available.',
+    'Interface readings are stored per interface, with the interface number forming part of the name. The forecast was looking only for a generic name that is never actually stored, so it found nothing and told you to enable something that was already enabled. Other parts of the app, including the reports, always looked for both forms.',
+    'The same mistake meant no bandwidth baseline was ever built for those devices, so bandwidth anomalies could not be detected for them either. That failure was silent - an absent baseline simply looks like a quiet network.',
+    'Where a device has more than one monitored interface they are averaged into a single figure for the device, which matches how this already worked for the unaffected devices.',
+  ],
   '1.94.0': [
     'The charts in the access point panel now have a range selector: 1h, 2h, 6h, 12h, 24h, 2d and 7d. Every chart on the panel follows the selection, so you can zoom in on the hour around an incident or step back to see a week of behaviour.',
     'Short ranges show fewer points rather than finer ones. Access points are polled about every five minutes, so a finer bucket than that would produce one reading surrounded by empty slots - a gap-toothed line that looks like missing data rather than a closer look.',

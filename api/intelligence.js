@@ -73,11 +73,27 @@ async function computeBaselines() {
       `);
 
       // SNMP metric baselines from snmp_results.
-      const metrics = ['cpu_pct', 'mem_pct', 'if_in_bps', 'if_out_bps'];
+      //
+      // The bandwidth entries match a PATTERN, not a literal name, for the same
+      // reason as the capacity forecast above: discovery persists the indexed
+      // per-interface name ('if_2_in_bps'), so an equality test on 'if_in_bps'
+      // silently built no bandwidth baseline at all for any normally-discovered
+      // device — and with no baseline there is nothing for anomaly detection to
+      // deviate from, so bandwidth anomalies could never fire either. Same bug,
+      // second symptom, quieter: a missing baseline looks like a calm network.
+      //
+      // The baseline is still STORED under the canonical name, so downstream
+      // consumers keep seeing 'if_in_bps' regardless of how the device names it.
+      const metrics = [
+        { name: 'cpu_pct',    match: "metric_name = 'cpu_pct'" },
+        { name: 'mem_pct',    match: "metric_name = 'mem_pct'" },
+        { name: 'if_in_bps',  match: "metric_name LIKE '%in_bps'" },
+        { name: 'if_out_bps', match: "metric_name LIKE '%out_bps'" },
+      ];
       for (const metric of metrics) {
-        await computeMetricBaseline(deviceId, metric, `
+        await computeMetricBaseline(deviceId, metric.name, `
           SELECT value FROM snmp_results
-          WHERE device_id = $1 AND metric_name = '${metric}'
+          WHERE device_id = $1 AND ${metric.match}
             AND ts >= NOW() - INTERVAL '30 days' AND value IS NOT NULL
         `);
       }
@@ -357,15 +373,38 @@ async function computeServiceHealthScores() {
 // ── Capacity forecasting ───────────────────────────────────────
 async function computeCapacityForecasts(deviceId) {
   // Daily average + peak bandwidth for the last 30 days.
+  // Bandwidth metrics carry TWO naming conventions and both must be matched.
+  //
+  // collector/discovery.js builds each interface sensor with a canonical
+  // `std_metric` ('if_in_bps') AND a per-interface `metric`
+  // ('if_2_in_bps' — the ifIndex is baked into the name). It is the INDEXED one
+  // that gets persisted to device_sensors.metric_name and therefore into
+  // snmp_results. So matching only 'if_in_bps' matched nothing for every device
+  // whose interface sensors were discovered normally — the Capacity tab told the
+  // operator "No bandwidth sensors configured for this device. Enable SNMP and
+  // run discovery", on devices where SNMP was enabled, discovery HAD run, and 15
+  // days of bandwidth were sitting in the table.
+  //
+  // api/server.js and api/reportsPdf.js already matched both conventions; this
+  // file was the one that never got updated.
+  //
+  // LIKE '%in_bps' covers 'if_in_bps', 'if_2_in_bps' and the vendor parsers'
+  // 'bandwidth_in_bps' without matching '%out_bps'.
+  //
+  // Known limitation: a device with several monitored interfaces has them
+  // averaged together into one device-level figure. That is the pre-existing
+  // behaviour for the un-indexed devices and is right for the common case here
+  // (one WAN link per device); a per-interface forecast would be the better
+  // shape if multi-interface devices ever need it.
   const bwData = await sv.query(`
     SELECT DATE(ts) AS day,
-           AVG(CASE WHEN metric_name='if_in_bps' THEN value END) AS avg_in,
-           AVG(CASE WHEN metric_name='if_out_bps' THEN value END) AS avg_out,
-           MAX(CASE WHEN metric_name='if_in_bps' THEN value END) AS max_in,
-           MAX(CASE WHEN metric_name='if_out_bps' THEN value END) AS max_out
+           AVG(CASE WHEN metric_name LIKE '%in_bps'  THEN value END) AS avg_in,
+           AVG(CASE WHEN metric_name LIKE '%out_bps' THEN value END) AS avg_out,
+           MAX(CASE WHEN metric_name LIKE '%in_bps'  THEN value END) AS max_in,
+           MAX(CASE WHEN metric_name LIKE '%out_bps' THEN value END) AS max_out
     FROM snmp_results
     WHERE device_id=$1 AND ts >= NOW() - INTERVAL '30 days'
-      AND metric_name IN ('if_in_bps','if_out_bps')
+      AND (metric_name LIKE '%in_bps' OR metric_name LIKE '%out_bps')
     GROUP BY DATE(ts) ORDER BY day
   `, [deviceId]);
 
