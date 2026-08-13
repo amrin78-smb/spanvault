@@ -259,7 +259,7 @@ deliberately skip it).
 ## Intelligence layer (api/intelligence.js analytics)
 - `GET /api/intelligence/overview` [auth] [db] — network-wide summary for Overview tab + dashboard card
 - `GET /api/intelligence/health` [auth] [db] — health scores; service checks have no anomaly component (always anomalies_7d=0)
-- `GET /api/intelligence/anomalies` [auth] [db] — filter by status/device
+- `GET /api/intelligence/anomalies` [auth] [db] — filter by status/device; `?limit=` (default 200, max 2000). Body stays a bare ARRAY; `X-Total-Count` / `X-Returned-Count` headers report the true total so a capped page is distinguishable from a complete set
 - `PATCH /api/intelligence/anomalies/:id` [auth+write:admin+] [db] — sets review status (active/resolved/reviewed/suppressed/escalated); engine leaves human-reviewed rows alone
 - `POST /api/intelligence/anomalies/:id/create-rule` [auth+write:admin+] [db] — creates an alert rule that fires on a comparable deviation
 - `GET /api/intelligence/capacity` [auth] [db] — on-demand capacity forecast for one device

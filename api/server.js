@@ -36,6 +36,13 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.95.0': [
+    'The Anomalies list was capped at 200 rows with nothing on screen saying so. With around 2,100 anomalies stored, the "All" view was hiding roughly nine out of ten of them and looked identical to a complete list. It now states how many it is showing out of how many exist, with a button to load the rest.',
+    'The "N active" count next to the filter chips was counted from whichever 200 rows happened to be loaded, so it under-reported on every view except Active. It is now the real count.',
+    'Pattern confidence was calculated from how many samples a pattern had rather than how often it recurred, so every pattern scored between 0.96 and 0.99 and the column told you nothing. It now means what it says: a pattern seen on 8 of 14 days scores 0.57. Weak one-off spikes no longer qualify as patterns at all.',
+    'Pattern detection only ever examined latency. It now also examines CPU and memory, and can identify day-of-week patterns rather than only time-of-day ones. Patterns that stop recurring are retired instead of sitting in the list at their last known confidence.',
+    'The Patterns tab said patterns were learned from "30+ days of history". Raw samples are deleted after 14 days by default, so that was never true - the engine now uses your configured retention window and the wording matches.',
+  ],
   '1.94.1': [
     'Capacity Forecasting was reporting "No bandwidth sensors configured for this device" on devices that had SNMP enabled, discovery already run, and a fortnight of bandwidth readings recorded. Five of the eight devices with bandwidth data were affected, each with a full 15 days available.',
     'Interface readings are stored per interface, with the interface number forming part of the name. The forecast was looking only for a generic name that is never actually stored, so it found nothing and told you to enable something that was already enabled. Other parts of the app, including the reports, always looked for both forms.',
@@ -9350,6 +9357,27 @@ app.get('/api/intelligence/anomalies', wrap(async (req, res) => {
   const anSc = siteFilterClause(getSiteFilter(req), params, 'd.site_id');
   if (anSc) where.push(anSc);
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+
+  // Count FIRST, while `params` still holds only the WHERE bindings — the LIMIT
+  // placeholder is appended below and would break this query's bind count.
+  //
+  // Why count at all: the row list is capped, and with ~2,100 anomalies stored
+  // the "All" filter was dropping ~90% of them with nothing on screen saying so
+  // — a truncated page was indistinguishable from a complete one. The response
+  // body stays an ARRAY (existing consumers read it directly); the totals ride
+  // in headers, and the caller can raise `limit` to pull more.
+  const totalRes = await sv.query(`
+    SELECT COUNT(*)::int AS total
+    FROM device_anomalies an
+    JOIN monitored_devices d ON d.id = an.device_id
+    ${whereSql}
+  `, params);
+  const total = totalRes.rows[0] ? totalRes.rows[0].total : 0;
+
+  // Default stays 200 so nothing gets slower by accident; 2000 is the ceiling so
+  // a hand-crafted ?limit= can't ask for an unbounded scan.
+  const limit = Math.min(2000, Math.max(1, safeInt(req.query.limit, 200)));
+  params.push(limit);
   const r = await sv.query(`
     SELECT an.id, an.device_id, d.name AS device_name, d.site_id, d.site_name,
            an.metric, an.value, an.baseline_mean, an.baseline_stddev,
@@ -9358,8 +9386,11 @@ app.get('/api/intelligence/anomalies', wrap(async (req, res) => {
     JOIN monitored_devices d ON d.id = an.device_id
     ${whereSql}
     ORDER BY an.detected_at DESC
-    LIMIT 200
+    LIMIT $${params.length}
   `, params);
+
+  res.set('X-Total-Count', String(total));
+  res.set('X-Returned-Count', String(r.rows.length));
   res.json(r.rows);
 }));
 

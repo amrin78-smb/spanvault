@@ -461,65 +461,232 @@ async function computeCapacityForecasts(deviceId) {
 }
 
 // ── Pattern detection ──────────────────────────────────────────
+//
+// A "pattern" is a recurring, time-of-day or day-of-week elevation in a metric
+// relative to that device's own 30-day baseline. Three things were wrong with
+// the original and are fixed here:
+//
+//  1. CONFIDENCE MEASURED THE WRONG THING. It was min(0.99, samples/30), which
+//     saturates at 0.99 for any bucket with 30+ samples — and every hourly
+//     bucket accumulates hundreds of samples within days. So confidence
+//     answered "do we have data?" rather than "is this pattern real?", and
+//     every one of the 58 live patterns scored 0.96-0.99. A field that never
+//     varies cannot help anyone triage. It now measures RECURRENCE: of the days
+//     we observed this bucket, on how many was it actually elevated. A spike on
+//     2 days out of 14 now scores 0.14, not 0.99.
+//
+//  2. ONLY ONE PATTERN TYPE existed. `pattern_type` was hardcoded 'hourly'
+//     even though the table has a `day_of_week` column and the unique key
+//     includes it — weekly patterns were designed for and never implemented.
+//
+//  3. ONLY response_ms WAS EXAMINED. CPU and memory are collected on the same
+//     devices and are just as prone to recurring load patterns.
+//
+// Everything is evaluated against per-day buckets so recurrence can be counted;
+// the old code averaged the whole window into one number per hour, which threw
+// away exactly the information needed to tell a habit from a one-off.
+//
+// LOOKBACK IS NOT 30 DAYS. The old code queried `INTERVAL '30 days'` and the UI
+// said "learned from 30+ days of history", but `collector.js`'s retentionTick
+// purges ping_results/snmp_results at `retention_raw_days` (default 14) — so the
+// query could only ever see 14 days no matter what it asked for. The window now
+// reads that same setting, which matters because the day-count floors below are
+// only meaningful relative to how much history actually exists.
+const PATTERN_RATIO = 1.5;      // 50%+ above baseline counts as "elevated"
+const PATTERN_MIN_DAYS = 5;     // need this many observed days to judge recurrence
+const PATTERN_MIN_CONF = 0.3;   // below this it is an incident, not a pattern
+const PATTERN_MAX_LOOKBACK = 30;
+// Each weekday occurs once per 7 days, so a weekly verdict needs 7 * this many
+// days of history. At the default 14-day retention that is 2 occurrences —
+// nowhere near enough to call something recurring — so the weekly pass stays
+// dormant until an operator raises retention_raw_days to 21+.
+const PATTERN_WEEKLY_MIN_OCCURRENCES = 3;
+
+const DOW_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+/** Days of raw history actually available, capped at the analysis horizon. */
+async function patternLookbackDays() {
+  try {
+    const r = await sv.query(`SELECT value FROM app_settings WHERE key = 'retention_raw_days'`);
+    const v = parseInt(r.rows[0] && r.rows[0].value, 10);
+    if (Number.isFinite(v) && v > 0) return Math.min(PATTERN_MAX_LOOKBACK, v);
+  } catch (e) { /* fall through to the collector's own default */ }
+  return 14;
+}
+
+/**
+ * Turn per-(bucket, day) averages into recurring patterns.
+ *
+ * `rows` must be {bucket, day, avg} — one row per bucket per calendar day.
+ * Confidence = elevated_days / observed_days for that bucket.
+ */
+function summarisePattern(rows, baselineMean) {
+  const byBucket = new Map();
+  for (const r of rows) {
+    const bucket = parseInt(r.bucket, 10);
+    const avg = parseFloat(r.avg);
+    if (!Number.isFinite(bucket) || !Number.isFinite(avg)) continue;
+    if (!byBucket.has(bucket)) byBucket.set(bucket, { days: 0, elevated: 0, sum: 0, elevatedSum: 0 });
+    const b = byBucket.get(bucket);
+    b.days++;
+    b.sum += avg;
+    if (avg >= baselineMean * PATTERN_RATIO) { b.elevated++; b.elevatedSum += avg; }
+  }
+  const out = [];
+  for (const [bucket, b] of byBucket) {
+    if (b.days < PATTERN_MIN_DAYS || b.elevated === 0) continue;
+    const confidence = b.elevated / b.days;
+    if (confidence < PATTERN_MIN_CONF) continue;
+    // Report the average of the ELEVATED occurrences — averaging in the quiet
+    // days would understate the very thing being flagged.
+    out.push({
+      bucket,
+      avg: b.elevatedSum / b.elevated,
+      confidence: Math.min(0.99, confidence),
+      observedDays: b.days,
+      elevatedDays: b.elevated,
+    });
+  }
+  return out;
+}
+
+async function upsertPattern(deviceId, patternType, metric, description, hourOfDay, dayOfWeek, avgValue, baselineValue, confidence) {
+  await sv.query(`
+    INSERT INTO device_patterns
+      (device_id, pattern_type, metric, description, hour_of_day, day_of_week,
+       avg_value, baseline_value, confidence)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    ON CONFLICT (device_id, pattern_type, metric,
+                 COALESCE(hour_of_day, -1), COALESCE(day_of_week, -1))
+    DO UPDATE SET
+      description=EXCLUDED.description,
+      avg_value=EXCLUDED.avg_value,
+      baseline_value=EXCLUDED.baseline_value,
+      confidence=EXCLUDED.confidence,
+      last_seen_at=NOW(),
+      occurrence_count=device_patterns.occurrence_count + 1
+  `, [deviceId, patternType, metric, description, hourOfDay, dayOfWeek, avgValue, baselineValue, confidence]);
+}
+
 async function detectPatterns() {
   try {
     const devices = await sv.query('SELECT id, name FROM monitored_devices WHERE active = TRUE');
+    const lookback = await patternLookbackDays();
+    // Weekly needs 7 days per occurrence; skip the pass outright rather than
+    // emitting a "pattern" backed by two samples.
+    const doWeekly = lookback >= 7 * PATTERN_WEEKLY_MIN_OCCURRENCES;
 
     for (const device of devices.rows) {
-      // Hourly pattern: is response time consistently high at certain hours?
-      const hourly = await sv.query(`
-        SELECT EXTRACT(HOUR FROM ts) AS hour,
-               AVG(response_ms) AS avg_ms,
-               COUNT(*) AS samples
-        FROM ping_results
-        WHERE device_id=$1 AND ts >= NOW() - INTERVAL '30 days' AND status='up'
-          AND response_ms IS NOT NULL
-        GROUP BY EXTRACT(HOUR FROM ts)
-        HAVING COUNT(*) >= 5
-        ORDER BY avg_ms DESC
-      `, [device.id]);
+      // Baselines for every metric we examine, in one read.
+      const baselines = await sv.query(
+        `SELECT metric, mean FROM device_baselines WHERE device_id=$1`, [device.id]);
+      const baseOf = new Map(baselines.rows.map(r => [r.metric, parseFloat(r.mean)]));
 
-      const baseline = await sv.query(`
-        SELECT mean FROM device_baselines
-        WHERE device_id=$1 AND metric='response_ms'
-      `, [device.id]);
+      // ── response_ms, from ping_results ──
+      const pingBase = baseOf.get('response_ms');
+      if (pingBase > 0) {
+        // Per hour PER DAY, so recurrence across days can be counted.
+        const byHour = await sv.query(`
+          SELECT EXTRACT(HOUR FROM ts) AS bucket, DATE(ts) AS day, AVG(response_ms) AS avg
+          FROM ping_results
+          WHERE device_id=$1 AND ts >= NOW() - make_interval(days => $2)
+            AND status='up' AND response_ms IS NOT NULL
+          GROUP BY 1, 2
+        `, [device.id, lookback]);
+        for (const p of summarisePattern(byHour.rows, pingBase)) {
+          const next = (p.bucket + 1) % 24;
+          const pct = Math.round((p.avg / pingBase) * 100 - 100);
+          await upsertPattern(device.id, 'hourly', 'response_ms',
+            `High latency at ${pad2(p.bucket)}:00-${pad2(next)}:00 (${pct}% above normal, ${p.elevatedDays} of ${p.observedDays} days)`,
+            p.bucket, null, p.avg, pingBase, p.confidence);
+        }
 
-      const baselineMean = parseFloat(baseline.rows[0] ? baseline.rows[0].mean : 0);
-      if (!(baselineMean > 0)) continue;
+        // ── Weekly: is a particular DAY consistently slower? ──
+        if (doWeekly) {
+          const byDow = await sv.query(`
+            SELECT EXTRACT(DOW FROM ts) AS bucket, DATE(ts) AS day, AVG(response_ms) AS avg
+            FROM ping_results
+            WHERE device_id=$1 AND ts >= NOW() - make_interval(days => $2)
+              AND status='up' AND response_ms IS NOT NULL
+            GROUP BY 1, 2
+          `, [device.id, lookback]);
+          // summarisePatternWeekly, not summarisePattern: a weekday recurs only
+          // once per 7 days, so the hourly path's 5-day floor would reject every
+          // weekly pattern outright even with a full 30-day window.
+          for (const p of summarisePatternWeekly(byDow.rows, pingBase)) {
+            const pct = Math.round((p.avg / pingBase) * 100 - 100);
+            await upsertPattern(device.id, 'weekly', 'response_ms',
+              `High latency on ${DOW_NAMES[p.bucket] || 'day ' + p.bucket} (${pct}% above normal, ${p.elevatedDays} of ${p.observedDays} occurrences)`,
+              null, p.bucket, p.avg, pingBase, p.confidence);
+          }
+        }
+      }
 
-      for (const row of hourly.rows) {
-        const avgMs = parseFloat(row.avg_ms);
-        const ratio = avgMs / baselineMean;
-        if (ratio >= 1.5) { // 50%+ above baseline at this hour
-          const hour = parseInt(row.hour, 10);
-          const nextHour = (hour + 1) % 24;
-          const pct = Math.round(ratio * 100 - 100);
-          const desc = `High latency at ${pad2(hour)}:00-${pad2(nextHour)}:00 (${pct}% above normal)`;
-          const confidence = Math.min(0.99, parseFloat(row.samples) / 30);
-          // Upsert against the (device, type, metric, hour, day) slot so recurring
-          // detections bump occurrence_count / last_seen_at instead of duplicating.
-          await sv.query(`
-            INSERT INTO device_patterns
-              (device_id, pattern_type, metric, description, hour_of_day,
-               avg_value, baseline_value, confidence)
-            VALUES ($1, 'hourly', 'response_ms', $2, $3, $4, $5, $6)
-            ON CONFLICT (device_id, pattern_type, metric,
-                         COALESCE(hour_of_day, -1), COALESCE(day_of_week, -1))
-            DO UPDATE SET
-              description=EXCLUDED.description,
-              avg_value=EXCLUDED.avg_value,
-              baseline_value=EXCLUDED.baseline_value,
-              confidence=EXCLUDED.confidence,
-              last_seen_at=NOW(),
-              occurrence_count=device_patterns.occurrence_count + 1
-          `, [device.id, desc, hour, avgMs, baselineMean, confidence]);
+      // ── CPU and memory, from snmp_results ──
+      for (const metric of ['cpu_pct', 'mem_pct']) {
+        const base = baseOf.get(metric);
+        if (!(base > 0)) continue;
+        const rows = await sv.query(`
+          SELECT EXTRACT(HOUR FROM ts) AS bucket, DATE(ts) AS day, AVG(value) AS avg
+          FROM snmp_results
+          WHERE device_id=$1 AND metric_name=$2 AND ts >= NOW() - make_interval(days => $3)
+            AND value IS NOT NULL
+          GROUP BY 1, 2
+        `, [device.id, metric, lookback]);
+        const label = metric === 'cpu_pct' ? 'CPU' : 'Memory';
+        for (const p of summarisePattern(rows.rows, base)) {
+          const next = (p.bucket + 1) % 24;
+          const pct = Math.round((p.avg / base) * 100 - 100);
+          await upsertPattern(device.id, 'hourly', metric,
+            `High ${label} at ${pad2(p.bucket)}:00-${pad2(next)}:00 (${Math.round(p.avg)}%, ${pct}% above normal, ${p.elevatedDays} of ${p.observedDays} days)`,
+            p.bucket, null, p.avg, base, p.confidence);
         }
       }
     }
-    console.log('[Intelligence] Patterns detected');
+
+    // Retire patterns that stopped recurring. Without this, a row written once
+    // is never revisited — the upsert only touches slots that still qualify —
+    // so the table accumulates patterns that were true weeks ago and reports
+    // them at their last-known confidence forever. This runs every 6h, so a
+    // still-valid pattern gets ~12 refreshes inside the 3-day window; only a
+    // slot that has genuinely stopped qualifying ages out.
+    const purged = await sv.query(
+      `DELETE FROM device_patterns WHERE last_seen_at < NOW() - INTERVAL '3 days'`);
+    console.log(`[Intelligence] Patterns detected over ${lookback}d`
+      + `${doWeekly ? '' : ' (weekly pass skipped — needs retention_raw_days >= 21)'}`
+      + `${purged.rowCount ? `; ${purged.rowCount} stale retired` : ''}`);
   } catch (e) {
     console.error('[Intelligence] detectPatterns error:', e.message);
   }
+}
+
+/**
+ * Weekly variant of summarisePattern: buckets are days-of-week, and each
+ * calendar day is one occurrence of its weekday. Kept separate from the hourly
+ * path only because the minimum-occurrence floor differs — a weekday recurs
+ * once per 7 days, so PATTERN_MIN_DAYS (5) would demand 35 days of history and
+ * reject every weekly pattern outright.
+ */
+function summarisePatternWeekly(rows, baselineMean) {
+  const byBucket = new Map();
+  for (const r of rows) {
+    const bucket = parseInt(r.bucket, 10);
+    const avg = parseFloat(r.avg);
+    if (!Number.isFinite(bucket) || !Number.isFinite(avg)) continue;
+    if (!byBucket.has(bucket)) byBucket.set(bucket, { days: 0, elevated: 0, elevatedSum: 0 });
+    const b = byBucket.get(bucket);
+    b.days++;
+    if (avg >= baselineMean * PATTERN_RATIO) { b.elevated++; b.elevatedSum += avg; }
+  }
+  const out = [];
+  for (const [bucket, b] of byBucket) {
+    if (b.days < PATTERN_WEEKLY_MIN_OCCURRENCES || b.elevated === 0) continue;
+    const confidence = b.elevated / b.days;
+    if (confidence < PATTERN_MIN_CONF) continue;
+    out.push({ bucket, avg: b.elevatedSum / b.elevated, confidence: Math.min(0.99, confidence),
+      observedDays: b.days, elevatedDays: b.elevated });
+  }
+  return out;
 }
 
 function pad2(n) { return String(n).padStart(2, '0'); }

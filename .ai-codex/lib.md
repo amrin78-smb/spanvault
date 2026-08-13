@@ -97,9 +97,9 @@ wirelessScore.js
 
 ### api.ts — fetch wrappers for the Express API via the same-origin `/api/*` proxy
 ```
-apiGet<T>(path, signal?) — GET + JSON parse
+apiGet<T>(path, signal?, onMeta?) — GET + JSON parse; onMeta(headers) fires before the body is parsed (read X-Total-Count on result-capped routes)
 apiSend<T>(path, method, body?) — POST/PUT/PATCH/DELETE + JSON parse
-useApi<T>(path, pollMs=0) — React hook: fetch + optional interval polling
+useApi<T>(path, pollMs=0) — React hook: fetch + optional interval polling. Returns { data, error, loading, reload, headers } — `headers` is the last successful response's
 ```
 
 ### auth.ts — NextAuth config

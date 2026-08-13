@@ -404,6 +404,17 @@ const ANOMALY_STATUS_META: Record<string, { label: string; badge: string }> = {
   resolved: { label: 'Resolved', badge: 'resolved' },
 };
 const ANOMALY_FILTERS = ['active', 'reviewed', 'escalated', 'suppressed', 'all'] as const;
+// Must match the API's own default/ceiling in /api/intelligence/anomalies.
+const DEFAULT_ANOMALY_LIMIT = 200;
+const MAX_ANOMALY_LIMIT = 2000;
+
+/** Read a result-set total the API reports out of band. Null when absent/unparseable. */
+function headerCount(h: Headers | null | undefined): number | null {
+  const raw = h?.get('X-Total-Count');
+  if (raw == null) return null;
+  const v = Number(raw);
+  return Number.isFinite(v) ? v : null;
+}
 
 function AnomalyStatusBadge({ status }: { status: string }) {
   const m = ANOMALY_STATUS_META[(status || '').toLowerCase()] || { label: status || '—', badge: 'resolved' };
@@ -416,9 +427,20 @@ function AnomaliesTab() {
   const [q, setQ] = useState('');
   const [busy, setBusy] = useState<number | null>(null);
   const [toast, setToast] = useState<string | null>(null);
-  const path = filter === 'all' ? '/api/intelligence/anomalies' : `/api/intelligence/anomalies?status=${filter}`;
+  // The list is server-capped. Default 200 (unchanged), raisable on demand so a
+  // full history is reachable without making every page load scan the table.
+  const [limit, setLimit] = useState(DEFAULT_ANOMALY_LIMIT);
+  const path = `/api/intelligence/anomalies?limit=${limit}${filter === 'all' ? '' : `&status=${filter}`}`;
   const api = useApi<AnomalyRow[]>(path, REFRESH_MS);
+  // Count-only companion request: the "N active" badge used to count actives
+  // within the loaded page, so under the "All" filter it reported a fraction of
+  // the real number. limit=1 makes this a count query with one throwaway row.
+  const activeApi = useApi<AnomalyRow[]>('/api/intelligence/anomalies?status=active&limit=1', REFRESH_MS);
   const { sort, onSort } = useTableSort();
+
+  // A filter change resets the window — "show all" on one status shouldn't
+  // silently carry a 2000-row fetch over to the next.
+  useEffect(() => { setLimit(DEFAULT_ANOMALY_LIMIT); }, [filter]);
 
   useEffect(() => {
     if (!toast) return;
@@ -442,7 +464,12 @@ function AnomaliesTab() {
     detected: (a) => a.detected_at,
     status: (a) => a.status,
   }), [filtered, sort]);
-  const activeCount = (api.data || []).filter((a) => a.status === 'active').length;
+
+  const activeCount = headerCount(activeApi.headers);
+  // How many rows the server actually holds for this filter vs how many it sent.
+  const total = headerCount(api.headers);
+  const loaded = (api.data || []).length;
+  const truncated = total != null && loaded < total;
 
   async function setStatus(a: AnomalyRow, status: string) {
     setBusy(a.id);
@@ -481,10 +508,36 @@ function AnomaliesTab() {
             {f.charAt(0).toUpperCase() + f.slice(1)}
           </button>
         ))}
-        <span className="sv-badge warning" style={{ marginLeft: 2 }}>{activeCount} active</span>
+        {activeCount != null && (
+          <span className="sv-badge warning" style={{ marginLeft: 2 }}>{activeCount} active</span>
+        )}
         <input className="sv-input" placeholder="Filter by device…" value={q} onChange={(e) => setQ(e.target.value)}
           style={{ marginLeft: 'auto', minWidth: 160, maxWidth: 280, height: 32, padding: '0 12px' }} />
       </div>
+
+      {/* Never present a capped page as if it were the whole set. */}
+      {truncated && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+          background: 'var(--tint-info)', color: 'var(--tint-info-fg)',
+          border: '1px solid var(--border)', borderRadius: 8,
+          padding: '8px 12px', fontSize: 'var(--text-sm)',
+        }}>
+          <span>
+            Showing the {loaded.toLocaleString()} most recent of {total!.toLocaleString()} anomalies
+            {filter !== 'all' ? ` in "${filter}"` : ''}.
+          </span>
+          <button
+            className="sv-btn ghost sm"
+            onClick={() => setLimit(Math.min(MAX_ANOMALY_LIMIT, total!))}
+            disabled={limit >= MAX_ANOMALY_LIMIT}
+          >
+            {total! > MAX_ANOMALY_LIMIT
+              ? `Load ${MAX_ANOMALY_LIMIT.toLocaleString()} (max)`
+              : `Load all ${total!.toLocaleString()}`}
+          </button>
+        </div>
+      )}
 
       <SectionCard title="Anomaly Detection &amp; Review" flush={rows.length > 0}>
         {api.loading && !api.data ? (
@@ -619,7 +672,9 @@ function PatternsTab() {
         border: '1px solid var(--border)', borderLeft: '3px solid var(--primary)',
         display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
       }}>
-        <span>Recurring behavioural patterns learned from 30+ days of history — periodic spikes and weekday/time-of-day cycles per device.</span>
+        {/* Copy tracks retention_raw_days (default 14d), not an aspirational 30 —
+            raw samples are purged at that window, so that is all the engine sees. */}
+        <span>Recurring time-of-day patterns in latency, CPU and memory, learned across the raw-history window (default 14 days). Confidence is how often the pattern actually repeated — 8 of 14 days reads 0.57, not "we have lots of samples".</span>
         <input className="sv-input" placeholder="Filter by device or metric…" value={q} onChange={(e) => setQ(e.target.value)}
           style={{ marginLeft: 'auto', minWidth: 160, maxWidth: 280, height: 32, padding: '0 12px' }} />
       </div>
@@ -630,7 +685,7 @@ function PatternsTab() {
         ) : api.error ? (
           <ErrorBox message={api.error} />
         ) : !rows.length ? (
-          <Empty message="No recurring patterns detected yet — patterns surface after ~30 days of monitoring history." />
+          <Empty message="No recurring patterns detected — a metric has to run 50% above its own baseline in the same hour on several separate days to qualify." />
         ) : (
           <div style={{ overflowX: 'auto' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>

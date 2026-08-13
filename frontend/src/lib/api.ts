@@ -2,10 +2,22 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-/** Same-origin fetch — Next rewrites /api/* (except /api/auth/*) to the Express API. */
-export async function apiGet<T = any>(path: string, signal?: AbortSignal): Promise<T> {
+/**
+ * Same-origin fetch — Next rewrites /api/* (except /api/auth/*) to the Express API.
+ *
+ * `onMeta` receives the response headers before the body is parsed. Routes that
+ * cap their result set (e.g. /api/intelligence/anomalies) report the true total
+ * in `X-Total-Count` so the UI can say "showing 200 of 2,137" instead of
+ * presenting a truncated page as if it were everything.
+ */
+export async function apiGet<T = any>(
+  path: string,
+  signal?: AbortSignal,
+  onMeta?: (headers: Headers) => void
+): Promise<T> {
   const res = await fetch(path, { headers: { Accept: 'application/json' }, signal });
   if (!res.ok) throw new Error(`GET ${path} → ${res.status}`);
+  if (onMeta) onMeta(res.headers);
   return res.json();
 }
 
@@ -37,6 +49,9 @@ export function useApi<T = any>(path: string | null, pollMs = 0) {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  // Response headers of the most recent successful GET. Additive — existing
+  // callers ignore it; callers of a result-capped route read `X-Total-Count`.
+  const [headers, setHeaders] = useState<Headers | null>(null);
   const pathRef = useRef(path);
   pathRef.current = path;
   // Out-of-order guard: a monotonic sequence + an AbortController so a slow
@@ -54,9 +69,11 @@ export function useApi<T = any>(path: string | null, pollMs = 0) {
     const ctrl = new AbortController();
     abortRef.current = ctrl;
     try {
-      const d = await apiGet<T>(p, ctrl.signal);
+      let h: Headers | null = null;
+      const d = await apiGet<T>(p, ctrl.signal, (hh) => { h = hh; });
       if (seq !== seqRef.current) return; // superseded by a newer request
       setData(d);
+      setHeaders(h);
       setError(null);
     } catch (e: any) {
       if (ctrl.signal.aborted || seq !== seqRef.current) return; // aborted/stale
@@ -78,5 +95,5 @@ export function useApi<T = any>(path: string | null, pollMs = 0) {
   // Abort any in-flight request on unmount.
   useEffect(() => () => { if (abortRef.current) abortRef.current.abort(); }, []);
 
-  return { data, error, loading, reload };
+  return { data, error, loading, reload, headers };
 }
