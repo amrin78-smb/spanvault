@@ -36,6 +36,12 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.95.1': [
+    'Patterns were being reported on the strength of a ratio alone, with no sense of scale. A switch idling at 2.5% CPU rising to 6% is "137% above normal" on 13 of 14 days, so it passed every test while being something nobody would ever act on. Twenty-four of the twenty-five patterns found on this network were of that kind: CPU between 5% and 13%, latency between 4ms and 8ms.',
+    'A metric must now also reach a level that matters in its own right: 25% for CPU and memory, 20ms for latency. On this network that leaves one genuine pattern (SMT_Core, raised latency around midnight) instead of twenty-five that read as findings but were not.',
+    'The thresholds are adjustable in app_settings as pattern_min_cpu_pct, pattern_min_mem_pct and pattern_min_latency_ms, for estates that run quieter or busier than this one.',
+    'The Patterns tab now explains what qualifies, so an empty list reads as "nothing recurring worth acting on" rather than "this feature is broken".',
+  ],
   '1.95.0': [
     'The Anomalies list was capped at 200 rows with nothing on screen saying so. With around 2,100 anomalies stored, the "All" view was hiding roughly nine out of ten of them and looked identical to a complete list. It now states how many it is showing out of how many exist, with a button to load the rest.',
     'The "N active" count next to the filter chips was counted from whichever 200 rows happened to be loaded, so it under-reported on every view except Active. It is now the real count.',

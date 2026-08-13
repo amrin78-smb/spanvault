@@ -502,16 +502,45 @@ const PATTERN_MAX_LOOKBACK = 30;
 // dormant until an operator raises retention_raw_days to 21+.
 const PATTERN_WEEKLY_MIN_OCCURRENCES = 3;
 
+// ── Absolute floors — a ratio alone is not a finding ──
+// A relative test has no sense of scale: a switch idling at 2.5% CPU that rises
+// to 6% is "137% above normal" and recurs 13 of 14 days, so it clears both the
+// ratio and the recurrence bar while being something no operator would ever act
+// on. Detection with ratio only produced 25 such rows on this install — every
+// CPU pattern between 5% and 13%, every latency pattern between 3.8ms and 33ms.
+// A metric must therefore also reach a level that is worth a human's attention
+// in its own right. Code-level defaults with no Settings UI, matching the
+// wireless alert thresholds' pattern — override in `app_settings` if a quieter
+// or busier estate needs a different bar.
+const PATTERN_FLOORS = {
+  cpu_pct:     { setting: 'pattern_min_cpu_pct',     value: 25 },   // percent
+  mem_pct:     { setting: 'pattern_min_mem_pct',     value: 25 },   // percent
+  response_ms: { setting: 'pattern_min_latency_ms',  value: 20 },   // milliseconds
+};
+
 const DOW_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+/** Read one integer app_setting, falling back to the code-level default. */
+async function settingNum(key, fallback) {
+  try {
+    const r = await sv.query(`SELECT value FROM app_settings WHERE key = $1`, [key]);
+    const v = parseFloat(r.rows[0] && r.rows[0].value);
+    if (Number.isFinite(v) && v >= 0) return v;
+  } catch (e) { /* fall through */ }
+  return fallback;
+}
+
+/** Resolve the absolute floor for a metric (0 = no floor for unknown metrics). */
+async function patternFloor(metric) {
+  const f = PATTERN_FLOORS[metric];
+  if (!f) return 0;
+  return settingNum(f.setting, f.value);
+}
 
 /** Days of raw history actually available, capped at the analysis horizon. */
 async function patternLookbackDays() {
-  try {
-    const r = await sv.query(`SELECT value FROM app_settings WHERE key = 'retention_raw_days'`);
-    const v = parseInt(r.rows[0] && r.rows[0].value, 10);
-    if (Number.isFinite(v) && v > 0) return Math.min(PATTERN_MAX_LOOKBACK, v);
-  } catch (e) { /* fall through to the collector's own default */ }
-  return 14;
+  const v = await settingNum('retention_raw_days', 14);
+  return Math.min(PATTERN_MAX_LOOKBACK, Math.max(1, Math.round(v)));
 }
 
 /**
@@ -520,7 +549,7 @@ async function patternLookbackDays() {
  * `rows` must be {bucket, day, avg} — one row per bucket per calendar day.
  * Confidence = elevated_days / observed_days for that bucket.
  */
-function summarisePattern(rows, baselineMean) {
+function summarisePattern(rows, baselineMean, floor) {
   const byBucket = new Map();
   for (const r of rows) {
     const bucket = parseInt(r.bucket, 10);
@@ -539,9 +568,12 @@ function summarisePattern(rows, baselineMean) {
     if (confidence < PATTERN_MIN_CONF) continue;
     // Report the average of the ELEVATED occurrences — averaging in the quiet
     // days would understate the very thing being flagged.
+    const avg = b.elevatedSum / b.elevated;
+    // ...and that elevated level still has to be high enough to matter.
+    if (floor > 0 && avg < floor) continue;
     out.push({
       bucket,
-      avg: b.elevatedSum / b.elevated,
+      avg,
       confidence: Math.min(0.99, confidence),
       observedDays: b.days,
       elevatedDays: b.elevated,
@@ -584,6 +616,7 @@ async function detectPatterns() {
 
       // ── response_ms, from ping_results ──
       const pingBase = baseOf.get('response_ms');
+      const pingFloor = await patternFloor('response_ms');
       if (pingBase > 0) {
         // Per hour PER DAY, so recurrence across days can be counted.
         const byHour = await sv.query(`
@@ -593,7 +626,7 @@ async function detectPatterns() {
             AND status='up' AND response_ms IS NOT NULL
           GROUP BY 1, 2
         `, [device.id, lookback]);
-        for (const p of summarisePattern(byHour.rows, pingBase)) {
+        for (const p of summarisePattern(byHour.rows, pingBase, pingFloor)) {
           const next = (p.bucket + 1) % 24;
           const pct = Math.round((p.avg / pingBase) * 100 - 100);
           await upsertPattern(device.id, 'hourly', 'response_ms',
@@ -613,7 +646,7 @@ async function detectPatterns() {
           // summarisePatternWeekly, not summarisePattern: a weekday recurs only
           // once per 7 days, so the hourly path's 5-day floor would reject every
           // weekly pattern outright even with a full 30-day window.
-          for (const p of summarisePatternWeekly(byDow.rows, pingBase)) {
+          for (const p of summarisePatternWeekly(byDow.rows, pingBase, pingFloor)) {
             const pct = Math.round((p.avg / pingBase) * 100 - 100);
             await upsertPattern(device.id, 'weekly', 'response_ms',
               `High latency on ${DOW_NAMES[p.bucket] || 'day ' + p.bucket} (${pct}% above normal, ${p.elevatedDays} of ${p.observedDays} occurrences)`,
@@ -626,6 +659,7 @@ async function detectPatterns() {
       for (const metric of ['cpu_pct', 'mem_pct']) {
         const base = baseOf.get(metric);
         if (!(base > 0)) continue;
+        const floor = await patternFloor(metric);
         const rows = await sv.query(`
           SELECT EXTRACT(HOUR FROM ts) AS bucket, DATE(ts) AS day, AVG(value) AS avg
           FROM snmp_results
@@ -634,7 +668,7 @@ async function detectPatterns() {
           GROUP BY 1, 2
         `, [device.id, metric, lookback]);
         const label = metric === 'cpu_pct' ? 'CPU' : 'Memory';
-        for (const p of summarisePattern(rows.rows, base)) {
+        for (const p of summarisePattern(rows.rows, base, floor)) {
           const next = (p.bucket + 1) % 24;
           const pct = Math.round((p.avg / base) * 100 - 100);
           await upsertPattern(device.id, 'hourly', metric,
@@ -667,7 +701,7 @@ async function detectPatterns() {
  * once per 7 days, so PATTERN_MIN_DAYS (5) would demand 35 days of history and
  * reject every weekly pattern outright.
  */
-function summarisePatternWeekly(rows, baselineMean) {
+function summarisePatternWeekly(rows, baselineMean, floor) {
   const byBucket = new Map();
   for (const r of rows) {
     const bucket = parseInt(r.bucket, 10);
@@ -683,7 +717,9 @@ function summarisePatternWeekly(rows, baselineMean) {
     if (b.days < PATTERN_WEEKLY_MIN_OCCURRENCES || b.elevated === 0) continue;
     const confidence = b.elevated / b.days;
     if (confidence < PATTERN_MIN_CONF) continue;
-    out.push({ bucket, avg: b.elevatedSum / b.elevated, confidence: Math.min(0.99, confidence),
+    const avg = b.elevatedSum / b.elevated;
+    if (floor > 0 && avg < floor) continue;   // same absolute floor as the hourly path
+    out.push({ bucket, avg, confidence: Math.min(0.99, confidence),
       observedDays: b.days, elevatedDays: b.elevated });
   }
   return out;

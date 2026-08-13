@@ -674,7 +674,7 @@ function PatternsTab() {
       }}>
         {/* Copy tracks retention_raw_days (default 14d), not an aspirational 30 —
             raw samples are purged at that window, so that is all the engine sees. */}
-        <span>Recurring time-of-day patterns in latency, CPU and memory, learned across the raw-history window (default 14 days). Confidence is how often the pattern actually repeated — 8 of 14 days reads 0.57, not "we have lots of samples".</span>
+        <span>Recurring time-of-day patterns in latency, CPU and memory, learned across the raw-history window (default 14 days). A metric qualifies only if it runs well above its own baseline <em>and</em> reaches a level worth acting on — a switch idling at 2% CPU rising to 6% is not a finding. Confidence is how often the pattern actually repeated: 8 of 14 days reads 0.57.</span>
         <input className="sv-input" placeholder="Filter by device or metric…" value={q} onChange={(e) => setQ(e.target.value)}
           style={{ marginLeft: 'auto', minWidth: 160, maxWidth: 280, height: 32, padding: '0 12px' }} />
       </div>
@@ -685,7 +685,7 @@ function PatternsTab() {
         ) : api.error ? (
           <ErrorBox message={api.error} />
         ) : !rows.length ? (
-          <Empty message="No recurring patterns detected — a metric has to run 50% above its own baseline in the same hour on several separate days to qualify." />
+          <Empty message="No recurring patterns detected — a metric has to run 50% above its own baseline in the same hour on several separate days, and reach a level worth acting on (25% CPU/memory, 20ms latency), to qualify. A quiet estate legitimately has none." />
         ) : (
           <div style={{ overflowX: 'auto' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
