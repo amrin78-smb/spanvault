@@ -526,16 +526,21 @@ function AnomaliesTab() {
           <span>
             Showing the {loaded.toLocaleString()} most recent of {total!.toLocaleString()} anomalies
             {filter !== 'all' ? ` in "${filter}"` : ''}.
+            {/* Once the cap is reached the remainder is not loadable here at all,
+                so say why rather than leaving a dead "Load 2,000 (max)" button
+                sitting next to a list that already holds 2,000. */}
+            {limit >= MAX_ANOMALY_LIMIT && ` ${MAX_ANOMALY_LIMIT.toLocaleString()} is the most this view loads — narrow by status or device to see the rest.`}
           </span>
-          <button
-            className="sv-btn ghost sm"
-            onClick={() => setLimit(Math.min(MAX_ANOMALY_LIMIT, total!))}
-            disabled={limit >= MAX_ANOMALY_LIMIT}
-          >
-            {total! > MAX_ANOMALY_LIMIT
-              ? `Load ${MAX_ANOMALY_LIMIT.toLocaleString()} (max)`
-              : `Load all ${total!.toLocaleString()}`}
-          </button>
+          {limit < MAX_ANOMALY_LIMIT && (
+            <button
+              className="sv-btn ghost sm"
+              onClick={() => setLimit(Math.min(MAX_ANOMALY_LIMIT, total!))}
+            >
+              {total! > MAX_ANOMALY_LIMIT
+                ? `Load ${MAX_ANOMALY_LIMIT.toLocaleString()} (max)`
+                : `Load all ${total!.toLocaleString()}`}
+            </button>
+          )}
         </div>
       )}
 

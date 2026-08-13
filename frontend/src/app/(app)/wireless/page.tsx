@@ -894,7 +894,7 @@ function trendLabel(iso: string, hours: number): string {
  * plain SUM over wireless_history counts each AP once per 5-minute poll and
  * reports ~13x the real client count. Don't reproduce the maths client-side.
  */
-function ClientTrendChart({ hours, onHours }: { hours: number; onHours: (h: number) => void }) {
+function ClientTrendChart({ hours }: { hours: number }) {
   const api = useApi<TrendResp>(`/api/wireless/trend?hours=${hours}`, 60000);
   const data = useMemo(() => (api.data?.points || []).map((p) => ({
     label: trendLabel(p.h, hours),
@@ -949,7 +949,7 @@ function ClientTrendChart({ hours, onHours }: { hours: number; onHours: (h: numb
 }
 
 /** Client signal-quality split. A proportion — the one shape a donut beats a table at. */
-function SignalQualityDonut({ data }: { data: DistributionResp | null }) {
+function SignalQualityDonut({ data, error }: { data: DistributionResp | null; error?: string | null }) {
   const rows = useMemo(() => {
     const by = new Map((data?.signal || []).map((s) => [s.bucket, s.clients]));
     return SIGNAL_ORDER
@@ -957,6 +957,10 @@ function SignalQualityDonut({ data }: { data: DistributionResp | null }) {
       .filter((r) => r.value > 0);
   }, [data]);
   const total = rows.reduce((s, r) => s + r.value, 0);
+  // Error BEFORE the null check: /api/wireless/distribution failing leaves data
+  // null forever, so a bare `if (!data) return <Loading/>` spins indefinitely
+  // and reads as "still working" rather than "this is broken".
+  if (error) return <ErrorBox message={error} />;
   if (!data) return <Loading />;
   if (!total) return <Empty message="No client signal readings yet." />;
   // Weak = fair + poor. That is the number an operator acts on, so state it
@@ -1008,7 +1012,7 @@ function SignalQualityDonut({ data }: { data: DistributionResp | null }) {
  * because that distinction is what makes a channel radar-exposed — the same
  * 52-144 range the channel-change detector infers radar from.
  */
-function ChannelDistributionChart({ data }: { data: DistributionResp | null }) {
+function ChannelDistributionChart({ data, error }: { data: DistributionResp | null; error?: string | null }) {
   const bars = useMemo(() => {
     if (!data) return { g2: [], g5: [] };
     const g2 = data.channels_2g.map((c) => ({
@@ -1023,6 +1027,7 @@ function ChannelDistributionChart({ data }: { data: DistributionResp | null }) {
     return { g2, g5 };
   }, [data]);
 
+  if (error) return <ErrorBox message={error} />;   // same reason as the donut above
   if (!data) return <Loading />;
   const dfsAps = bars.g5.filter((b) => b.color === '#d97706').reduce((s, b) => s + b.aps, 0);
   const g5Total = bars.g5.reduce((s, b) => s + b.aps, 0);
@@ -2035,18 +2040,18 @@ function OverviewTab({
           )}
           scroll={false}
         >
-          <ClientTrendChart hours={trendHours} onHours={setTrendHours} />
+          <ClientTrendChart hours={trendHours} />
         </SectionCard>
 
         <SectionCard title="Client Signal Quality" minWidth={280} scroll={false}>
-          <SignalQualityDonut data={distribution.data} />
+          <SignalQualityDonut data={distribution.data} error={distribution.error} />
         </SectionCard>
       </EqualRow>
 
       {/* Row 1.6 — channel occupancy per band. */}
       <EqualRow>
         <SectionCard title="Channel Occupancy" minWidth={320} scroll={false}>
-          <ChannelDistributionChart data={distribution.data} />
+          <ChannelDistributionChart data={distribution.data} error={distribution.error} />
         </SectionCard>
       </EqualRow>
 

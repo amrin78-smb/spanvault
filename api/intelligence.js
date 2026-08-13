@@ -608,6 +608,17 @@ async function detectPatterns() {
     // emitting a "pattern" backed by two samples.
     const doWeekly = lookback >= 7 * PATTERN_WEEKLY_MIN_OCCURRENCES;
 
+    // Floors are estate-wide settings, not per-device — read them ONCE. These
+    // were being fetched inside the device loop (one query for response_ms plus
+    // one per cpu/mem metric, per device), so a 12-device estate issued ~36
+    // redundant app_settings round trips per run, growing linearly with the
+    // device count for a value that cannot change mid-run.
+    const floors = {
+      response_ms: await patternFloor('response_ms'),
+      cpu_pct:     await patternFloor('cpu_pct'),
+      mem_pct:     await patternFloor('mem_pct'),
+    };
+
     for (const device of devices.rows) {
       // Baselines for every metric we examine, in one read.
       const baselines = await sv.query(
@@ -616,7 +627,7 @@ async function detectPatterns() {
 
       // ── response_ms, from ping_results ──
       const pingBase = baseOf.get('response_ms');
-      const pingFloor = await patternFloor('response_ms');
+      const pingFloor = floors.response_ms;
       if (pingBase > 0) {
         // Per hour PER DAY, so recurrence across days can be counted.
         const byHour = await sv.query(`
@@ -659,7 +670,7 @@ async function detectPatterns() {
       for (const metric of ['cpu_pct', 'mem_pct']) {
         const base = baseOf.get(metric);
         if (!(base > 0)) continue;
-        const floor = await patternFloor(metric);
+        const floor = floors[metric];
         const rows = await sv.query(`
           SELECT EXTRACT(HOUR FROM ts) AS bucket, DATE(ts) AS day, AVG(value) AS avg
           FROM snmp_results

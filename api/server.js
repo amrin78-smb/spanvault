@@ -36,6 +36,13 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.98.2': [
+    'Bug sweep over everything changed today. Fixed: if the wireless distribution data failed to load, the Signal Quality and Channel Occupancy panels showed a loading spinner forever instead of an error - they read as "still working" when they were broken. Both now report the failure.',
+    'Fixed: the cache behind the new chart data was meant to hold at most 64 entries but only ever discarded already-expired ones, so it could not shrink in precisely the situation the limit existed for. It now discards the oldest entries.',
+    'The pattern detector was re-reading its threshold settings inside the per-device loop - about 36 redundant database round trips per run on this estate, growing with the device count, for values that cannot change mid-run. Read once now.',
+    'The anomalies list no longer leaves a dead "Load 2,000 (max)" button next to a list that already holds 2,000; it explains that 2,000 is the limit and suggests narrowing the filter instead.',
+    'Verified across the whole estate: every new endpoint clamps bad input (limit, days, hours, controller id) rather than erroring, all site-scoping is applied per query, and the anomalies count, patterns, channel instability and both dashboards were confirmed in a real browser.',
+  ],
   '1.98.1': [
     'Fixed: the airtime lines on the Client Activity chart and the critical-alert line on Alert Volume were not drawn at all. Both charts mix two shapes (an area or bars, plus a line), which the charting library only renders from a combined chart type - given the wrong one it silently draws nothing, with no error and no gap in the legend.',
     'Added a time index to the wireless history table. It was only indexed by access point, so a question about the whole fleet over a date range - which is exactly what the new 7-day chart asks - had to read all 3.7 million rows, taking about 3.2 seconds.',
@@ -5667,10 +5674,17 @@ function cachedAgg(key, ttlMs, fn) {
   if (hit && Date.now() - hit.at < ttlMs) return hit.val;
   const val = fn().catch((e) => { aggCache.delete(key); throw e; });
   aggCache.set(key, { at: Date.now(), val });
-  // Unbounded growth guard — these keys are low-cardinality, but a hand-crafted
-  // querystring should not be able to grow this map forever.
-  if (aggCache.size > 64) {
-    for (const [k, v] of aggCache) if (Date.now() - v.at > ttlMs) aggCache.delete(k);
+  // Growth guard. `hours` is clamped to 1..720 rather than validated against a
+  // fixed set, so an authenticated caller looping hours=1..720 mints 720 live
+  // keys inside one 60s TTL — each holding up to 721 result rows. Dropping only
+  // EXPIRED entries (the first version of this) therefore evicted nothing in
+  // exactly the case the cap exists for. Evict oldest-first, unconditionally,
+  // until back under the cap; Map preserves insertion order, so the first key
+  // is the oldest.
+  while (aggCache.size > 64) {
+    const oldest = aggCache.keys().next().value;
+    if (oldest === undefined || oldest === key) break;  // never evict what we just stored
+    aggCache.delete(oldest);
   }
   return val;
 }
