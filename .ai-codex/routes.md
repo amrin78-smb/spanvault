@@ -168,7 +168,7 @@ deliberately skip it).
 - `GET /api/wireless/aps/:id` [auth] [db] — RBAC site-scoping fixed 2026-07-22 bug sweep (was missing; sibling list + `/clients` already had it) — see gotchas.md
 - `GET /api/wireless/history/:ap_id` [auth] [db] — client/utilization history, bucketed by range
 - `GET /api/wireless/summary` [auth] [db] — overview tab + dashboard card
-- `GET /api/wireless/channel-changes/top` [auth] [db] [site-scoped] — fleet channel-change leaderboard for the Insights tab. `?days=` (1-30, default 7), `?limit=` (1-50, default 10). Returns `{days, rows[], total_changes, total_aps_moving, total_radar_suspected, tracking_since}`. `tracking_since` is the earliest record in the table, so the UI can distinguish "nothing moved" from "we only started watching on the 11th". Degrades to empty ONLY on 42P01 (missing table); every other error re-throws
+- `GET /api/wireless/channel-changes/top` [auth] [db] [site-scoped] — fleet channel-change leaderboard for the Insights tab. `?days=` (1-30, default 7), `?limit=` (1-50, default 10), `?controller_id=`. Returns `{days, controller_id, rows[], total_changes, total_aps_moving, total_radar_suspected, tracking_since}`. All three internal queries share one `buildScope()` predicate builder so the table, the totals and `tracking_since` can never describe different AP sets. `tracking_since` is the earliest record in the table, so the UI can distinguish "nothing moved" from "we only started watching on the 11th". Degrades to empty ONLY on 42P01 (missing table); every other error re-throws
 - `GET /api/wireless/ssids` [auth] [db]
 - `GET /api/wireless/ssids/summary` [auth] [db]
 - `GET /api/wireless/aps/:id/clients` [auth] [db] — site-scoped (fixed alongside the mac/history routes below)

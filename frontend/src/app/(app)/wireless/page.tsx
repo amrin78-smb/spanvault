@@ -87,6 +87,8 @@ interface ChannelChangeRow {
 }
 interface ChannelChangeTop {
   days: number;
+  /** Echoes the applied controller filter; null = all controllers. */
+  controller_id: number | null;
   rows: ChannelChangeRow[];
   total_changes: number;
   total_aps_moving: number;
@@ -860,11 +862,13 @@ function EqualRow({ children, marginTop }: { children: React.ReactNode; marginTo
  *  - It does not call radar-suspected moves confirmed radar. That column is
  *    inferred from an AP leaving a DFS channel, not read from the controller.
  */
-function ChannelChangeCard({ data, loading, error, onSelectAp }: {
+function ChannelChangeCard({ data, loading, error, onSelectAp, filtered }: {
   data: ChannelChangeTop | null;
   loading: boolean;
   error: string | null;
   onSelectAp: (id: number) => void;
+  /** True when a controller filter is applied — changes what "empty" means. */
+  filtered?: boolean;
 }) {
   if (loading && !data) return <Loading />;
   if (error) return <ErrorBox message={error} />;
@@ -877,8 +881,10 @@ function ChannelChangeCard({ data, loading, error, onSelectAp }: {
   const windowStart = new Date(Date.now() - data.days * 86400000);
   const partial = since != null && since > windowStart;
 
+  // Deliberately does not restate "nothing recorded" when there is no history —
+  // the empty state below already says that; this explains WHY it can be empty.
   const note = since == null
-    ? 'No channel changes have been recorded yet. Changes are detected by comparing each poll against the last, so only moves that persist longer than the ~5 minute poll interval are counted.'
+    ? 'Changes are detected by comparing each poll against the last, so only moves that persist longer than the ~5 minute poll interval are counted.'
     : partial
       ? `Tracking since ${fmtTime(data.tracking_since!)} — less than the full ${data.days} days, so counts will keep rising as history builds.`
       : null;
@@ -898,6 +904,18 @@ function ChannelChangeCard({ data, loading, error, onSelectAp }: {
             </span>
           )}
         </div>
+      )}
+
+      {/* ABOVE the table on purpose. The card is a 280px scroll box, so anything
+          rendered after ten rows is off-screen — and this note is precisely the
+          caveat that must not be missed: without it a short list reads as a
+          clean bill of health rather than "we started watching two days ago". */}
+      {note && (
+        <div style={{
+          marginBottom: 10, padding: '6px 10px', borderRadius: 6,
+          background: 'var(--tint-info)', color: 'var(--tint-info-fg)',
+          fontSize: 'var(--text-sm)',
+        }}>{note}</div>
       )}
 
       {data.rows.length ? (
@@ -929,17 +947,20 @@ function ChannelChangeCard({ data, loading, error, onSelectAp }: {
           </tbody>
         </table>
       ) : (
-        // Only a genuine "we have watched a full window and nothing moved" earns
-        // the green tick. Otherwise say why the list is empty.
+        // Only a genuine "we watched a full window and nothing moved" earns the
+        // green tick. With a controller filter applied the statement is about
+        // that controller, not the estate, so say so rather than implying a
+        // fleet-wide all-clear.
         !partial && since != null ? (
           <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: 'var(--green)', fontWeight: 600, fontSize: 'var(--text-base)' }}>
-            <IconCheck width={14} height={14} /> No channel changes in {data.days} days
+            <IconCheck width={14} height={14} />
+            No channel changes in {data.days} days{filtered ? ' on this controller' : ''}
           </div>
-        ) : <Empty message="No channel changes recorded yet." />
-      )}
-
-      {note && (
-        <div style={{ marginTop: 10, fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>{note}</div>
+        ) : (
+          <Empty message={filtered
+            ? 'No channel changes recorded for this controller yet.'
+            : 'No channel changes recorded yet.'} />
+        )
       )}
     </div>
   );
@@ -1661,7 +1682,15 @@ function OverviewTab({
   const clientSummary = useApi<ClientSummary>('/api/wireless/clients/summary', 30000);
   // Channel-change leaderboard. 7 days matches the AP drawer's own headline
   // count, so a number here and a number there mean the same thing.
-  const chanChanges = useApi<ChannelChangeTop>('/api/wireless/channel-changes/top?days=7&limit=10', 30000);
+  //
+  // The controller filter lives here rather than inside the card because the
+  // server does the filtering — an operator who owns one WLC needs their own
+  // ranking, not the fleet's top 10 filtered down to whatever happens to remain.
+  const [ccController, setCcController] = useState<number | 'all'>('all');
+  const chanChanges = useApi<ChannelChangeTop>(
+    `/api/wireless/channel-changes/top?days=7&limit=10${ccController === 'all' ? '' : `&controller_id=${ccController}`}`,
+    30000,
+  );
 
   const aps = useMemo(() => apsApi.data || [], [apsApi.data]);
 
@@ -1932,12 +1961,29 @@ function OverviewTab({
       <EqualRow>
         <SectionCard
           title="Channel Instability (7 days)"
-          action={(chanChanges.data?.rows.length ?? 0) > 0 ? <DrillHint /> : undefined}
+          action={(
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10 }}>
+              {(chanChanges.data?.rows.length ?? 0) > 0 && <DrillHint />}
+              <select
+                className="sv-input"
+                style={{ height: 28, padding: '0 8px', fontSize: 'var(--text-sm)' }}
+                value={String(ccController)}
+                onChange={(e) => setCcController(e.target.value === 'all' ? 'all' : Number(e.target.value))}
+                title="Filter the ranking by controller"
+              >
+                <option value="all">All controllers</option>
+                {(controllers.data || []).map((c) => (
+                  <option key={c.id} value={c.id}>{c.name}</option>
+                ))}
+              </select>
+            </span>
+          )}
           maxHeight={280}
           minWidth={280}
         >
           <ChannelChangeCard data={chanChanges.data} loading={chanChanges.loading}
-            error={chanChanges.error} onSelectAp={setSelectedApId} />
+            error={chanChanges.error} onSelectAp={setSelectedApId}
+            filtered={ccController !== 'all'} />
         </SectionCard>
       </EqualRow>
 

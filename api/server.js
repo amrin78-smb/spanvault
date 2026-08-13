@@ -36,6 +36,12 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.97.0': [
+    'The Channel Instability panel can now be filtered by controller. This matters more than it sounds: SMT_WLC accounts for 1,219 of the 1,294 recorded changes, so it fills all ten places in the fleet ranking and TUFS-OKF-WLC-1\'s 26 moving access points cannot be seen at all without the filter.',
+    'The headline figures (changes, APs, radar suspected) follow the filter, so they always describe the same set of access points as the table beneath them.',
+    'Fixed: the "tracking since" note explaining that channel history only goes back to 11 August was rendered below the table, inside a fixed-height scrolling panel, so it was never visible. It now sits above the table. That note is the difference between a short list meaning "nothing is moving" and "we have only been watching for two days".',
+    'With a controller selected, an empty result now says so for that controller instead of implying the whole estate is stable.',
+  ],
   '1.96.0': [
     'New "Channel Instability" panel on Wireless Insights, ranking the access points that change channel most often over the last 7 days, with the 2.4GHz/5GHz split, how many of the moves look like radar, and when each last moved. Clicking a row opens that AP.',
     'The per-AP counts already existed, but only inside each access point\'s own panel, so finding an unstable one meant opening them one at a time. On this network 79 APs are moving: the worst averages a channel change every 28 minutes, oscillating between channels 157 and 161 through the night, and every move disrupts the clients on it.',
@@ -5627,9 +5633,23 @@ app.get('/api/wireless/history/:ap_id', wrap(async (req, res) => {
 app.get('/api/wireless/channel-changes/top', wrap(async (req, res) => {
   const days = Math.min(30, Math.max(1, safeInt(req.query.days, 7)));
   const limit = Math.min(50, Math.max(1, safeInt(req.query.limit, 10)));
-  const params = [days];
-  const sc = siteFilterClause(getSiteFilter(req), params, 'a.site_id');
-  const scAnd = sc ? ` AND ${sc}` : '';
+  const controllerId = safeInt(req.query.controller_id, 0);
+
+  // Every query below shares this predicate builder so the leaderboard, the
+  // header totals and the tracking-since read can never disagree about which
+  // APs they are describing — a filtered table over unfiltered totals would
+  // read as "10 of 1,294 changes" while showing one controller's 200.
+  const buildScope = (arr, withDays) => {
+    const parts = [];
+    if (withDays) { arr.push(days); parts.push(`cc.ts > NOW() - make_interval(days => $${arr.length})`); }
+    if (controllerId) { arr.push(controllerId); parts.push(`a.controller_id = $${arr.length}`); }
+    const sc = siteFilterClause(getSiteFilter(req), arr, 'a.site_id');
+    if (sc) parts.push(sc);
+    return parts.length ? ` WHERE ${parts.join(' AND ')}` : '';
+  };
+
+  const params = [];
+  const where = buildScope(params, true);
 
   // Same degrade-to-empty contract as the AP drawer's own channel-change block:
   // an API deployed minutes ahead of the schema step must not 500 the Insights
@@ -5648,13 +5668,16 @@ app.get('/api/wireless/channel-changes/top', wrap(async (req, res) => {
         -- controller_name lives on wireless_controllers, not wireless_aps.
         -- LEFT so an AP with no controller still ranks.
         LEFT JOIN wireless_controllers c ON c.id = a.controller_id
-       WHERE cc.ts > NOW() - make_interval(days => $1)${scAnd}
+       ${where}
        GROUP BY a.id, a.name, a.site_name, c.name
        ORDER BY changes DESC, last_change_at DESC
        LIMIT ${limit}
     `, params);
 
-    // Fleet totals for the window, so the card can show what the top N is out of.
+    // Totals for the window under the SAME scope, so the header describes
+    // exactly the set the table is drawn from.
+    const totalParams = [];
+    const totalWhere = buildScope(totalParams, true);
     const totals = await sv.query(`
       SELECT COUNT(*)::int AS changes,
              COUNT(DISTINCT cc.ap_id)::int AS aps,
@@ -5662,27 +5685,29 @@ app.get('/api/wireless/channel-changes/top', wrap(async (req, res) => {
              MIN(cc.ts) AS tracking_since
         FROM wireless_channel_changes cc
         JOIN wireless_aps a ON a.id = cc.ap_id
-       WHERE cc.ts > NOW() - make_interval(days => $1)${scAnd}
-    `, params);
+       ${totalWhere}
+    `, totalParams);
 
-    // Earliest record overall (not window-limited) — this is what tells the UI
-    // whether the window is actually covered by data.
+    // Earliest record overall (NOT window-limited — that is the point) with the
+    // same controller/site scope. This is what tells the UI whether the window
+    // asked for is actually covered by recorded history.
     //
-    // Built with its OWN params array: `sc` above numbers its placeholders from
-    // $2 (days is $1), so reusing it here against a sliced array would shift
-    // every binding by one and silently scope to the wrong sites.
+    // Its own params array: placeholder numbering is positional, so reusing
+    // another query's clause against a different array shifts every binding and
+    // silently scopes to the wrong controller or sites.
     const sinceParams = [];
-    const sinceSc = siteFilterClause(getSiteFilter(req), sinceParams, 'a.site_id');
+    const sinceWhere = buildScope(sinceParams, false);
     const since = await sv.query(`
       SELECT MIN(cc.ts) AS first_ever
         FROM wireless_channel_changes cc
         JOIN wireless_aps a ON a.id = cc.ap_id
-       ${sinceSc ? `WHERE ${sinceSc}` : ''}
+       ${sinceWhere}
     `, sinceParams);
 
     const t = totals.rows[0] || {};
     res.json({
       days,
+      controller_id: controllerId || null,
       rows: rows.rows,
       total_changes: t.changes || 0,
       total_aps_moving: t.aps || 0,
@@ -5700,8 +5725,8 @@ app.get('/api/wireless/channel-changes/top', wrap(async (req, res) => {
     // would have turned that into a permanently empty green widget.
     if (e.code !== '42P01') throw e;
     console.error('[wireless/channel-changes/top] table missing, degrading:', e.message);
-    res.json({ days, rows: [], total_changes: 0, total_aps_moving: 0,
-      total_radar_suspected: 0, tracking_since: null });
+    res.json({ days, controller_id: controllerId || null, rows: [], total_changes: 0,
+      total_aps_moving: 0, total_radar_suspected: 0, tracking_since: null });
   }
 }));
 
