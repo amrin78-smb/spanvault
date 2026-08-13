@@ -73,6 +73,28 @@ interface WirelessSummary {
   rf_by_site: RfBySite[];
 }
 
+/** GET /api/wireless/channel-changes/top — fleet channel-change leaderboard. */
+interface ChannelChangeRow {
+  ap_id: number;
+  ap_name: string;
+  site_name: string | null;
+  controller_name: string | null;
+  changes: number;
+  changes_2g: number;
+  changes_5g: number;
+  radar_suspected: number;
+  last_change_at: string | null;
+}
+interface ChannelChangeTop {
+  days: number;
+  rows: ChannelChangeRow[];
+  total_changes: number;
+  total_aps_moving: number;
+  total_radar_suspected: number;
+  /** Earliest record in the table — null when nothing has been recorded yet. */
+  tracking_since: string | null;
+}
+
 interface Ssid {
   id: number;
   controller_id: number;
@@ -823,6 +845,106 @@ function EqualRow({ children, marginTop }: { children: React.ReactNode; marginTo
 
 // Subtle muted caption shown in a clickable container's header area, hinting
 // that rows can be drilled into. Understated, matches existing muted styling.
+/**
+ * Fleet channel-change leaderboard for the Insights tab.
+ *
+ * An AP that keeps re-picking its channel disrupts every client on it each
+ * time it moves, but the per-AP counts only exist inside the AP drawer — so
+ * finding the unstable ones means opening drawers one by one. This ranks them.
+ *
+ * Two things it deliberately does NOT do:
+ *  - It never renders a bare "all stable" when the table simply has not been
+ *    collecting long enough. `tracking_since` drives an explicit note instead,
+ *    because an empty leaderboard that looks like a green light is the same
+ *    false-all-clear the congestion card shipped with (see 1.93.2).
+ *  - It does not call radar-suspected moves confirmed radar. That column is
+ *    inferred from an AP leaving a DFS channel, not read from the controller.
+ */
+function ChannelChangeCard({ data, loading, error, onSelectAp }: {
+  data: ChannelChangeTop | null;
+  loading: boolean;
+  error: string | null;
+  onSelectAp: (id: number) => void;
+}) {
+  if (loading && !data) return <Loading />;
+  if (error) return <ErrorBox message={error} />;
+  if (!data) return <Empty message="No channel-change data yet." />;
+
+  // Is the requested window actually covered by recorded history? Channel
+  // tracking only starts when the collector first runs with it, so early on the
+  // window is longer than the data behind it.
+  const since = data.tracking_since ? new Date(data.tracking_since) : null;
+  const windowStart = new Date(Date.now() - data.days * 86400000);
+  const partial = since != null && since > windowStart;
+
+  const note = since == null
+    ? 'No channel changes have been recorded yet. Changes are detected by comparing each poll against the last, so only moves that persist longer than the ~5 minute poll interval are counted.'
+    : partial
+      ? `Tracking since ${fmtTime(data.tracking_since!)} — less than the full ${data.days} days, so counts will keep rising as history builds.`
+      : null;
+
+  return (
+    <div>
+      {data.rows.length > 0 && (
+        <div style={{
+          display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'baseline',
+          marginBottom: 10, fontSize: 'var(--text-sm)', color: 'var(--text-secondary)',
+        }}>
+          <span><strong style={{ color: 'var(--text-primary)' }}>{data.total_changes.toLocaleString()}</strong> changes</span>
+          <span>across <strong style={{ color: 'var(--text-primary)' }}>{data.total_aps_moving}</strong> APs</span>
+          {data.total_radar_suspected > 0 && (
+            <span title="Inferred from an AP leaving a DFS channel — not read from the controller">
+              <strong style={{ color: 'var(--text-primary)' }}>{data.total_radar_suspected}</strong> radar suspected
+            </span>
+          )}
+        </div>
+      )}
+
+      {data.rows.length ? (
+        <table className="sv-table">
+          <thead><tr>
+            <th style={STICKY_TH}>AP</th>
+            <th style={STICKY_TH}>Site</th>
+            <th style={STICKY_TH}>Changes</th>
+            <th style={STICKY_TH}>2.4 / 5GHz</th>
+            <th style={STICKY_TH}>Radar susp.</th>
+            <th style={STICKY_TH}>Last change</th>
+          </tr></thead>
+          <tbody>
+            {data.rows.map((r) => (
+              <tr key={r.ap_id} style={{ cursor: 'pointer' }}
+                onClick={() => onSelectAp(r.ap_id)} title="View access point details">
+                <td style={{ fontWeight: 600 }}>{r.ap_name}</td>
+                <td style={{ color: 'var(--text-muted)' }}>{r.site_name || '—'}</td>
+                <td style={{ fontWeight: 700 }}>{r.changes}</td>
+                <td style={{ color: 'var(--text-muted)' }}>{r.changes_2g} / {r.changes_5g}</td>
+                <td style={{ color: r.radar_suspected > 0 ? 'var(--tint-warn-fg)' : 'var(--text-muted)' }}>
+                  {r.radar_suspected || '—'}
+                </td>
+                <td style={{ color: 'var(--text-muted)' }} title={fmtTime(r.last_change_at)}>
+                  {fmtRel(r.last_change_at)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : (
+        // Only a genuine "we have watched a full window and nothing moved" earns
+        // the green tick. Otherwise say why the list is empty.
+        !partial && since != null ? (
+          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: 'var(--green)', fontWeight: 600, fontSize: 'var(--text-base)' }}>
+            <IconCheck width={14} height={14} /> No channel changes in {data.days} days
+          </div>
+        ) : <Empty message="No channel changes recorded yet." />
+      )}
+
+      {note && (
+        <div style={{ marginTop: 10, fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>{note}</div>
+      )}
+    </div>
+  );
+}
+
 function DrillHint({ label }: { label?: string }) {
   return (
     <span style={{
@@ -1537,6 +1659,9 @@ function OverviewTab({
   const ssidSummary = useApi<SsidSummary>('/api/wireless/ssids/summary', 30000);
   const controllers = useApi<Controller[]>('/api/wireless/controllers', 30000);
   const clientSummary = useApi<ClientSummary>('/api/wireless/clients/summary', 30000);
+  // Channel-change leaderboard. 7 days matches the AP drawer's own headline
+  // count, so a number here and a number there mean the same thing.
+  const chanChanges = useApi<ChannelChangeTop>('/api/wireless/channel-changes/top?days=7&limit=10', 30000);
 
   const aps = useMemo(() => apsApi.data || [], [apsApi.data]);
 
@@ -1799,6 +1924,20 @@ function OverviewTab({
           ) : (
             <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: 'var(--green)', fontWeight: 600, fontSize: 'var(--text-base)' }}><IconCheck width={14} height={14} /> No congested APs</div>
           )}
+        </SectionCard>
+      </EqualRow>
+
+      {/* Row 3.5 — Channel instability. Own row: 10 rows of data do not fit the
+          160px triple-card band above, and this is a scan-and-act list. */}
+      <EqualRow>
+        <SectionCard
+          title="Channel Instability (7 days)"
+          action={(chanChanges.data?.rows.length ?? 0) > 0 ? <DrillHint /> : undefined}
+          maxHeight={280}
+          minWidth={280}
+        >
+          <ChannelChangeCard data={chanChanges.data} loading={chanChanges.loading}
+            error={chanChanges.error} onSelectAp={setSelectedApId} />
         </SectionCard>
       </EqualRow>
 

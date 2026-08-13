@@ -36,6 +36,13 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.96.0': [
+    'New "Channel Instability" panel on Wireless Insights, ranking the access points that change channel most often over the last 7 days, with the 2.4GHz/5GHz split, how many of the moves look like radar, and when each last moved. Clicking a row opens that AP.',
+    'The per-AP counts already existed, but only inside each access point\'s own panel, so finding an unstable one meant opening them one at a time. On this network 79 APs are moving: the worst averages a channel change every 28 minutes, oscillating between channels 157 and 161 through the night, and every move disrupts the clients on it.',
+    'The panel shows how long channel history has actually been recorded. Tracking started on 11 August, so a short list is reported as "less than the full 7 days" rather than presented as a clean bill of health - an empty leaderboard should never read as a green light when the real reason is that nothing has been watched yet.',
+    'Radar-suspected moves stay labelled as suspected. They are inferred from an access point leaving a DFS channel, not read from the controller, and confirming an actual radar event needs the controller\'s own log feed.',
+    'Both channel-change queries now only fall back to an empty result when the underlying table genuinely does not exist yet. Previously any error at all was swallowed into a confident "no channel changes", which would have shown a permanently empty, reassuring panel if the query were ever wrong.',
+  ],
   '1.95.2': [
     'Patterns that no longer qualify are now retired after a day rather than three. The retirement step only runs after a detection pass that completed successfully, and every such pass has just re-checked every pattern against the current data, so a three-day wait was mostly delaying the correction rather than guarding against anything.',
     'In practice this means the twenty-four low-level patterns that 1.95.1 stopped generating clear out of the list within a day instead of lingering for three.',
@@ -5546,7 +5553,11 @@ app.get('/api/wireless/aps/:id', wrap(async (req, res) => {
        WHERE ap_id = $1 AND ts > NOW() - INTERVAL '30 days'`, [id]);
     channel_change_counts = counts.rows[0] || channel_change_counts;
   } catch (e) {
-    console.error('[wireless/aps/:id] channel-change query failed:', e.message);
+    // Same rule as /api/wireless/channel-changes/top: only an absent table
+    // (42P01) may degrade quietly. Anything else swallowed here renders a
+    // confident "0 changes in the last 30 days" for an AP we failed to read.
+    if (e.code !== '42P01') throw e;
+    console.error('[wireless/aps/:id] channel-change table missing, degrading:', e.message);
   }
 
   res.json({
@@ -5601,6 +5612,99 @@ app.get('/api/wireless/history/:ap_id', wrap(async (req, res) => {
 }));
 
 // Wireless summary for the overview tab + dashboard card.
+// Fleet-wide channel-change leaderboard — the APs moving channel most often.
+// The per-AP counts already exist in the AP drawer, but finding an unstable AP
+// that way means opening drawers one at a time across the whole estate; on this
+// install 79 APs were moving and the worst averaged a move every 28 minutes,
+// which is invisible until the fleet is ranked.
+//
+// `days` is clamped rather than trusted, and the response reports `tracking_since`
+// so the UI can say "tracking since <date>" when history is younger than the
+// window asked for. That matters: this table only starts filling when the
+// feature is deployed, and a leaderboard that looks empty or short would
+// otherwise read as "the estate is stable" rather than "we have not been
+// watching very long" — the same false-all-clear trap the congestion card hit.
+app.get('/api/wireless/channel-changes/top', wrap(async (req, res) => {
+  const days = Math.min(30, Math.max(1, safeInt(req.query.days, 7)));
+  const limit = Math.min(50, Math.max(1, safeInt(req.query.limit, 10)));
+  const params = [days];
+  const sc = siteFilterClause(getSiteFilter(req), params, 'a.site_id');
+  const scAnd = sc ? ` AND ${sc}` : '';
+
+  // Same degrade-to-empty contract as the AP drawer's own channel-change block:
+  // an API deployed minutes ahead of the schema step must not 500 the Insights
+  // tab. Site scoping is applied here, in this route — not inherited.
+  try {
+    const rows = await sv.query(`
+      SELECT a.id AS ap_id, a.name AS ap_name, a.site_name,
+             c.name AS controller_name,
+             COUNT(*)::int AS changes,
+             COUNT(*) FILTER (WHERE cc.band = '2.4')::int AS changes_2g,
+             COUNT(*) FILTER (WHERE cc.band = '5')::int   AS changes_5g,
+             COUNT(*) FILTER (WHERE cc.inferred_cause = 'radar_suspected')::int AS radar_suspected,
+             MAX(cc.ts) AS last_change_at
+        FROM wireless_channel_changes cc
+        JOIN wireless_aps a ON a.id = cc.ap_id
+        -- controller_name lives on wireless_controllers, not wireless_aps.
+        -- LEFT so an AP with no controller still ranks.
+        LEFT JOIN wireless_controllers c ON c.id = a.controller_id
+       WHERE cc.ts > NOW() - make_interval(days => $1)${scAnd}
+       GROUP BY a.id, a.name, a.site_name, c.name
+       ORDER BY changes DESC, last_change_at DESC
+       LIMIT ${limit}
+    `, params);
+
+    // Fleet totals for the window, so the card can show what the top N is out of.
+    const totals = await sv.query(`
+      SELECT COUNT(*)::int AS changes,
+             COUNT(DISTINCT cc.ap_id)::int AS aps,
+             COUNT(*) FILTER (WHERE cc.inferred_cause = 'radar_suspected')::int AS radar_suspected,
+             MIN(cc.ts) AS tracking_since
+        FROM wireless_channel_changes cc
+        JOIN wireless_aps a ON a.id = cc.ap_id
+       WHERE cc.ts > NOW() - make_interval(days => $1)${scAnd}
+    `, params);
+
+    // Earliest record overall (not window-limited) — this is what tells the UI
+    // whether the window is actually covered by data.
+    //
+    // Built with its OWN params array: `sc` above numbers its placeholders from
+    // $2 (days is $1), so reusing it here against a sliced array would shift
+    // every binding by one and silently scope to the wrong sites.
+    const sinceParams = [];
+    const sinceSc = siteFilterClause(getSiteFilter(req), sinceParams, 'a.site_id');
+    const since = await sv.query(`
+      SELECT MIN(cc.ts) AS first_ever
+        FROM wireless_channel_changes cc
+        JOIN wireless_aps a ON a.id = cc.ap_id
+       ${sinceSc ? `WHERE ${sinceSc}` : ''}
+    `, sinceParams);
+
+    const t = totals.rows[0] || {};
+    res.json({
+      days,
+      rows: rows.rows,
+      total_changes: t.changes || 0,
+      total_aps_moving: t.aps || 0,
+      total_radar_suspected: t.radar_suspected || 0,
+      tracking_since: (since.rows[0] && since.rows[0].first_ever) || null,
+    });
+  } catch (e) {
+    // ONLY an absent table degrades to empty (42P01 = undefined_table), which
+    // is the real race this guards: an API deployed minutes ahead of the schema
+    // step. Any other error is a bug, and swallowing it here would render a
+    // confident "no channel changes" — asserting stability we have not
+    // measured. Re-throw so wrap() 500s and the card shows an error instead.
+    // This is not hypothetical: the first version of the query above selected
+    // a.controller_name, which does not exist on wireless_aps, and this catch
+    // would have turned that into a permanently empty green widget.
+    if (e.code !== '42P01') throw e;
+    console.error('[wireless/channel-changes/top] table missing, degrading:', e.message);
+    res.json({ days, rows: [], total_changes: 0, total_aps_moving: 0,
+      total_radar_suspected: 0, tracking_since: null });
+  }
+}));
+
 app.get('/api/wireless/summary', wrap(async (req, res) => {
   const params = [];
   const sc = siteFilterClause(getSiteFilter(req), params, 'a.site_id');
