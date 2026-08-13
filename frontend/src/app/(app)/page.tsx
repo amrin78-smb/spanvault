@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine, ResponsiveContainer,
-  BarChart, Bar, Line,
+  Bar, Line, ComposedChart, Legend,
 } from 'recharts';
 import { useApi } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
@@ -1018,8 +1018,12 @@ function AlertVolumeCard({ api }: { api: Api<AlertTrendResp> }) {
           : api.error ? <ErrorBox message={api.error} />
           : !data.length ? <Empty message="No alerts in this window." />
           : (
+            // ComposedChart, NOT BarChart — recharts silently drops a <Line>
+            // child inside a <BarChart>, so the critical series rendered as
+            // nothing at all, with no error and no gap in the legend. Any
+            // Bar+Line or Area+Line combination has to be a ComposedChart.
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={data} margin={{ top: 4, right: 4, left: -24, bottom: 0 }}>
+              <ComposedChart data={data} margin={{ top: 4, right: 4, left: -24, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--border-light)" vertical={false} />
                 <XAxis dataKey="label" tick={{ fontSize: 11 }} interval="preserveStartEnd" minTickGap={16} />
                 <YAxis yAxisId="w" tick={{ fontSize: 11 }} />
@@ -1027,11 +1031,12 @@ function AlertVolumeCard({ api }: { api: Api<AlertTrendResp> }) {
                     flatten them to an invisible sliver. */}
                 <YAxis yAxisId="c" orientation="right" tick={{ fontSize: 11 }} width={30} allowDecimals={false} />
                 <Tooltip {...CHART_TOOLTIP} />
+                <Legend wrapperStyle={{ fontSize: 11 }} />
                 <Bar yAxisId="w" dataKey="warning" name="Warning" stackId="a" fill="#f59e0b" radius={[0, 0, 0, 0]} />
                 <Bar yAxisId="w" dataKey="other" name="Other" stackId="a" fill="#94a3b8" radius={[3, 3, 0, 0]} />
-                <Line yAxisId="c" type="monotone" dataKey="critical" name="Critical"
+                <Line yAxisId="c" type="monotone" dataKey="critical" name="Critical (right axis)"
                   stroke="var(--red)" strokeWidth={2} dot={{ r: 2 }} />
-              </BarChart>
+              </ComposedChart>
             </ResponsiveContainer>
           )}
       </div>

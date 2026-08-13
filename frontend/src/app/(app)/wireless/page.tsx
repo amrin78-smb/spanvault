@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend,
-  BarChart, Bar, ReferenceLine, Cell, AreaChart, Area, PieChart, Pie,
+  BarChart, Bar, ReferenceLine, Cell, Area, PieChart, Pie, ComposedChart,
 } from 'recharts';
 import { useApi, apiSend, apiGet } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
@@ -918,8 +918,12 @@ function ClientTrendChart({ hours, onHours }: { hours: number; onHours: (h: numb
           Airtime is averaged across APs reporting it; 2.4GHz usually runs hotter than 5GHz.
         </span>
       </div>
+      {/* ComposedChart, NOT AreaChart. Recharts renders only the child types a
+          given chart owns, so <Line> inside <AreaChart> is silently dropped —
+          the airtime series vanished with no error and no gap in the legend.
+          Any Area+Line or Bar+Line combination has to be a ComposedChart. */}
       <ResponsiveContainer width="100%" height={230}>
-        <AreaChart data={data} margin={{ top: 4, right: 8, left: -18, bottom: 0 }}>
+        <ComposedChart data={data} margin={{ top: 4, right: 8, left: -18, bottom: 0 }}>
           <defs>
             <linearGradient id="cliFill" x1="0" y1="0" x2="0" y2="1">
               <stop offset="0%" stopColor="var(--primary)" stopOpacity={0.35} />
@@ -938,7 +942,7 @@ function ClientTrendChart({ hours, onHours }: { hours: number; onHours: (h: numb
             stroke="#0ea5e9" strokeWidth={1.5} dot={false} connectNulls />
           <Line yAxisId="u" type="monotone" dataKey="util5" name="5GHz airtime %"
             stroke="#16a34a" strokeWidth={1.5} dot={false} connectNulls />
-        </AreaChart>
+        </ComposedChart>
       </ResponsiveContainer>
     </div>
   );

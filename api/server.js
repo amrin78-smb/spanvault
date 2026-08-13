@@ -36,6 +36,11 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.98.1': [
+    'Fixed: the airtime lines on the Client Activity chart and the critical-alert line on Alert Volume were not drawn at all. Both charts mix two shapes (an area or bars, plus a line), which the charting library only renders from a combined chart type - given the wrong one it silently draws nothing, with no error and no gap in the legend.',
+    'Added a time index to the wireless history table. It was only indexed by access point, so a question about the whole fleet over a date range - which is exactly what the new 7-day chart asks - had to read all 3.7 million rows, taking about 3.2 seconds.',
+    'The alert chart now carries a legend, and the critical series is labelled as using the right-hand axis so the two scales are not mistaken for one.',
+  ],
   '1.98.0': [
     'Wireless Insights described 227 access points and 1,200 clients using eight tables and no charts at all. It now leads with a Client Activity chart (24h/7d) showing the fleet client count against 2.4GHz and 5GHz airtime, a Client Signal Quality donut, and Channel Occupancy bars for both bands.',
     'The channel bars are colour-coded to be actionable rather than decorative: on 2.4GHz the non-overlapping 1/6/11 channels are blue and anything else amber, and on 5GHz the DFS range (52-144) is amber because those are the radios exposed to radar eviction.',

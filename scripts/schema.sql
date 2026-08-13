@@ -1007,6 +1007,13 @@ CREATE TABLE IF NOT EXISTS wireless_history (
 );
 CREATE INDEX IF NOT EXISTS idx_wireless_hist_ap_ts
   ON wireless_history(ap_id, ts DESC);
+-- Leading-column rule: the (ap_id, ts) index above serves per-AP history, but a
+-- FLEET-wide time range ("every AP over the last 7 days", the Wireless Insights
+-- Client Activity chart) has no ap_id predicate, so it cannot use that index and
+-- degrades to a full scan of a 3.7M-row table — measured at ~3.2s on the live
+-- API for the 7-day window. This ts-only index is what makes that query usable.
+CREATE INDEX IF NOT EXISTS idx_wireless_hist_ts
+  ON wireless_history(ts DESC);
 
 -- ── Expanded wireless radio metrics (Aruba/Cisco/Ruckus richer SNMP) ─────────
 -- Per-band noise floor (negative dBm), frame retry rate (%), rx/tx frame error
