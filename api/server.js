@@ -36,6 +36,10 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.95.2': [
+    'Patterns that no longer qualify are now retired after a day rather than three. The retirement step only runs after a detection pass that completed successfully, and every such pass has just re-checked every pattern against the current data, so a three-day wait was mostly delaying the correction rather than guarding against anything.',
+    'In practice this means the twenty-four low-level patterns that 1.95.1 stopped generating clear out of the list within a day instead of lingering for three.',
+  ],
   '1.95.1': [
     'Patterns were being reported on the strength of a ratio alone, with no sense of scale. A switch idling at 2.5% CPU rising to 6% is "137% above normal" on 13 of 14 days, so it passed every test while being something nobody would ever act on. Twenty-four of the twenty-five patterns found on this network were of that kind: CPU between 5% and 13%, latency between 4ms and 8ms.',
     'A metric must now also reach a level that matters in its own right: 25% for CPU and memory, 20ms for latency. On this network that leaves one genuine pattern (SMT_Core, raised latency around midnight) instead of twenty-five that read as findings but were not.',

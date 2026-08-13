@@ -678,14 +678,22 @@ async function detectPatterns() {
       }
     }
 
-    // Retire patterns that stopped recurring. Without this, a row written once
+    // Retire patterns that stopped qualifying. Without this, a row written once
     // is never revisited — the upsert only touches slots that still qualify —
     // so the table accumulates patterns that were true weeks ago and reports
-    // them at their last-known confidence forever. This runs every 6h, so a
-    // still-valid pattern gets ~12 refreshes inside the 3-day window; only a
-    // slot that has genuinely stopped qualifying ages out.
+    // them at their last-known confidence forever.
+    //
+    // This statement is INSIDE the try, so it only runs after a complete
+    // successful pass — a run that threw partway through never purges, and a
+    // run that reaches here has just refreshed every slot that still qualifies.
+    // That is what makes a 24h window safe rather than reckless: it is 4
+    // detection cycles of tolerance on top of the completeness guarantee. It
+    // used to be 3 days, which mostly just delayed correctness — each pass
+    // recomputes the same fixed window from scratch, so a slot that fails one
+    // pass will fail the next. Anything longer leaves rows the current rules
+    // would reject sitting in the UI looking like findings.
     const purged = await sv.query(
-      `DELETE FROM device_patterns WHERE last_seen_at < NOW() - INTERVAL '3 days'`);
+      `DELETE FROM device_patterns WHERE last_seen_at < NOW() - INTERVAL '24 hours'`);
     console.log(`[Intelligence] Patterns detected over ${lookback}d`
       + `${doWeekly ? '' : ' (weekly pass skipped — needs retention_raw_days >= 21)'}`
       + `${purged.rowCount ? `; ${purged.rowCount} stale retired` : ''}`);
