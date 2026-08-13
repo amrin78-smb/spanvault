@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine, ResponsiveContainer,
+  BarChart, Bar, Line,
 } from 'recharts';
 import { useApi } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
@@ -120,6 +121,11 @@ const REFRESH_MS = 30000;
 type Api<T> = { data: T | null; error: string | null; loading: boolean; reload: () => void };
 
 // ── Shared inline-style tokens (global sizing spec) ────────────
+// Uniform card height. Was 220, which left the 5th row of a 36px list clipped
+// in half — the cut row reads as a rendering fault rather than as "scroll for
+// more". 248 lands on a row boundary for every list card on this page.
+const CARD_H = 248;
+
 const CARD_STYLE: React.CSSProperties = {
   padding: '16px 20px',
   borderRadius: 'var(--radius-sm)',
@@ -258,6 +264,8 @@ export default function DashboardPage() {
   const ops = useApi<OpsSummary>('/api/dashboard/ops-summary', REFRESH_MS);
   const incidents = useApi<OpenIncident[]>('/api/dashboard/incidents', REFRESH_MS);
   const sla = useApi<Sla>('/api/dashboard/sla', REFRESH_MS);
+  // Daily counts change slowly — no point re-fetching 14 days on the 30s tick.
+  const alertTrend = useApi<AlertTrendResp>('/api/dashboard/alert-trend?days=14', 300000);
   const capacity = useApi<CapacityRow[]>('/api/dashboard/capacity', REFRESH_MS);
   const patterns = useApi<PatternRow[]>('/api/dashboard/patterns', REFRESH_MS);
   const leastReliable = useApi<LeastReliable[]>('/api/dashboard/least-reliable', REFRESH_MS);
@@ -382,11 +390,19 @@ export default function DashboardPage() {
         <LeastReliableDevices api={leastReliable} />
       </div>
 
-      {/* ── Availability (3-up): site health · trend · SLA breaches ── */}
+      {/* ── Availability. Split across two rows so both charts get double width:
+             a 24h availability trace and 14 days of alert volume are the two
+             time-series on this page, and at 1/3 width each was ~380px — enough
+             for a sparkline, not enough to read a dip against a target line.
+             SLA Breaches keeps a narrow column: it is a tick most days, so it
+             was the card paying the widest price for the least information. ── */}
       <div style={GROUP_LABEL}>Availability</div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, alignItems: 'stretch', marginBottom: 10 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 10, alignItems: 'stretch', marginBottom: 10 }}>
         <SiteHealthCard api={sites} />
         <NetworkAvailabilityCard api={trend} />
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 10, alignItems: 'stretch', marginBottom: 10 }}>
+        <AlertVolumeCard api={alertTrend} />
         <SlaBreaches api={sla} />
       </div>
 
@@ -401,7 +417,7 @@ export default function DashboardPage() {
       {/* ── Recent events + wireless health (wireless self-hides → events fills) ── */}
       <div style={GROUP_LABEL}>Recent Activity</div>
       <div style={{ display: 'flex', gap: 10, alignItems: 'stretch', marginBottom: 16 }}>
-        <div style={{ ...CARD_STYLE, flex: 1, minWidth: 0, height: 220 }}>
+        <div style={{ ...CARD_STYLE, flex: 1, minWidth: 0, height: CARD_H }}>
           <div style={SECTION_HEADING}>Recent Events</div>
           <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', margin: '0 -4px' }}>
             <RecentEvents api={events} />
@@ -650,7 +666,7 @@ function ServiceProblems({ checks }: { checks: ServiceCheck[] }) {
     .sort((a, b) => statusRank(a.current_status.toLowerCase()) - statusRank(b.current_status.toLowerCase()));
   if (!rows.length) return null;
   return (
-    <div style={{ ...CARD_STYLE, flex: 1, minWidth: 0, height: 220 }}>
+    <div style={{ ...CARD_STYLE, flex: 1, minWidth: 0, height: CARD_H }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
         <StatusDot status="down" size={11} />
         <span style={SECTION_HEADING}>Service Problems</span>
@@ -716,7 +732,7 @@ function AtRiskDevices({ data }: { data: Overview | null }) {
   const atRisk = (data && data.at_risk_devices ? data.at_risk_devices : [])
     .filter((d: HealthRow) => { const s = intelNum(d.score); return s != null && s < 70; });
   return (
-    <div style={{ ...CARD_STYLE, borderLeft: '3px solid var(--yellow)', height: 220, display: 'flex', flexDirection: 'column' }}>
+    <div style={{ ...CARD_STYLE, borderLeft: '3px solid var(--yellow)', height: CARD_H, display: 'flex', flexDirection: 'column' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
         <StatusDot status="warning" size={11} />
         <span style={SECTION_HEADING}>At Risk</span>
@@ -772,7 +788,7 @@ function ActiveProblems({ api }: { api: Api<Problem[]> }) {
   const hasProblems = sorted.length > 0;
 
   return (
-    <div style={{ ...CARD_STYLE, height: 220 }}>
+    <div style={{ ...CARD_STYLE, height: CARD_H }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
         {hasProblems && <StatusDot status="down" size={11} />}
         <span style={SECTION_HEADING}>Active Problems</span>
@@ -844,7 +860,7 @@ function ActiveProblems({ api }: { api: Api<Problem[]> }) {
 function SlowestDevices({ api }: { api: Api<Worst[]> }) {
   const rows = (api.data || []).slice(0, 5);
   return (
-    <div style={{ ...CARD_STYLE, height: 220 }}>
+    <div style={{ ...CARD_STYLE, height: CARD_H }}>
       <div style={SECTION_HEADING}>Slowest Devices (Last 1h)</div>
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', margin: '0 -4px' }}>
         {api.loading && !api.data ? (
@@ -922,7 +938,7 @@ function SiteHealthCard({ api }: { api: Api<SiteHealth[]> }) {
     return ua - ub;
   });
   return (
-    <div style={{ ...CARD_STYLE, height: 220 }}>
+    <div style={{ ...CARD_STYLE, height: CARD_H }}>
       <div style={SECTION_HEADING}>Site Health (24h)</div>
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', margin: '0 -4px', padding: '0 4px' }}>
         {api.loading && !api.data ? (
@@ -965,9 +981,67 @@ function SiteHealthCard({ api }: { api: Api<SiteHealth[]> }) {
 }
 
 // ── Network availability card (top-level component) ────────────
+// ── Alert volume (14d) ────────────────────────────────────────────────────
+// The dashboard could say how many alerts are open right now but not whether
+// that is normal. This is a stacked daily count by severity, which also makes
+// alert NOISE visible: on this install warnings run 250-880/day against a
+// handful of criticals, so the critical series is drawn on its own axis —
+// stacked on one axis it would be a flat line hidden under the warnings.
+interface AlertTrendPoint {
+  bucket: string; total: number; critical: number; warning: number; other: number;
+}
+interface AlertTrendResp { days: number; points: AlertTrendPoint[] }
+
+function AlertVolumeCard({ api }: { api: Api<AlertTrendResp> }) {
+  const points = api.data?.points || [];
+  const data = points.map((p) => {
+    const d = new Date(p.bucket);
+    return {
+      label: `${d.getDate()}/${d.getMonth() + 1}`,
+      warning: p.warning, critical: p.critical, other: p.other, total: p.total,
+    };
+  });
+  const totalAlerts = points.reduce((s, p) => s + p.total, 0);
+  const totalCrit = points.reduce((s, p) => s + p.critical, 0);
+  const perDay = data.length ? Math.round(totalAlerts / data.length) : 0;
+
+  return (
+    <div style={{ ...CARD_STYLE, height: CARD_H }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+        <span style={SECTION_HEADING}>Alert Volume (14d)</span>
+        <span style={{ marginLeft: 'auto', fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>
+          {perDay.toLocaleString()}/day avg · {totalCrit} critical
+        </span>
+      </div>
+      <div style={{ flex: 1, minHeight: 0 }}>
+        {api.loading && !api.data ? <Skeleton height={150} />
+          : api.error ? <ErrorBox message={api.error} />
+          : !data.length ? <Empty message="No alerts in this window." />
+          : (
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={data} margin={{ top: 4, right: 4, left: -24, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--border-light)" vertical={false} />
+                <XAxis dataKey="label" tick={{ fontSize: 11 }} interval="preserveStartEnd" minTickGap={16} />
+                <YAxis yAxisId="w" tick={{ fontSize: 11 }} />
+                {/* Criticals are ~1% of volume; sharing the warning axis would
+                    flatten them to an invisible sliver. */}
+                <YAxis yAxisId="c" orientation="right" tick={{ fontSize: 11 }} width={30} allowDecimals={false} />
+                <Tooltip {...CHART_TOOLTIP} />
+                <Bar yAxisId="w" dataKey="warning" name="Warning" stackId="a" fill="#f59e0b" radius={[0, 0, 0, 0]} />
+                <Bar yAxisId="w" dataKey="other" name="Other" stackId="a" fill="#94a3b8" radius={[3, 3, 0, 0]} />
+                <Line yAxisId="c" type="monotone" dataKey="critical" name="Critical"
+                  stroke="var(--red)" strokeWidth={2} dot={{ r: 2 }} />
+              </BarChart>
+            </ResponsiveContainer>
+          )}
+      </div>
+    </div>
+  );
+}
+
 function NetworkAvailabilityCard({ api }: { api: Api<TrendPoint[]> }) {
   return (
-    <div style={{ ...CARD_STYLE, height: 220 }}>
+    <div style={{ ...CARD_STYLE, height: CARD_H }}>
       <div style={SECTION_HEADING}>Network Availability (24h)</div>
       <div style={{ flex: 1, minHeight: 0 }}>
         {api.loading && !api.data ? (
@@ -1184,7 +1258,7 @@ function OpenIncidents({ api }: { api: Api<OpenIncident[]> }) {
   const rows = api.data || [];
   const has = rows.length > 0;
   return (
-    <div style={{ ...CARD_STYLE, height: 220 }}>
+    <div style={{ ...CARD_STYLE, height: CARD_H }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
         {has && <StatusDot status="down" size={11} />}
         <span style={SECTION_HEADING}>Open Incidents</span>
@@ -1261,7 +1335,7 @@ function SlaBreaches({ api }: { api: Api<Sla> }) {
   const target = api.data ? api.data.sla_target : null;
   const hasBreaches = rows.length > 0;
   return (
-    <div style={{ ...CARD_STYLE, height: 220 }}>
+    <div style={{ ...CARD_STYLE, height: CARD_H }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
         <span style={SECTION_HEADING}>SLA Breaches (30d)</span>
         {target != null && (
@@ -1325,7 +1399,7 @@ function ApproachingCapacity({ api }: { api: Api<CapacityRow[]> }) {
   const rows = api.data || [];
   const hasRows = rows.length > 0;
   return (
-    <div style={{ ...CARD_STYLE, borderLeft: '3px solid var(--yellow)', height: 220 }}>
+    <div style={{ ...CARD_STYLE, borderLeft: '3px solid var(--yellow)', height: CARD_H }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
         {hasRows && <StatusDot status="warning" size={11} />}
         <span style={SECTION_HEADING}>Approaching Capacity</span>
@@ -1414,7 +1488,7 @@ function confColor(c: number): string {
 function RecurringPatterns({ api }: { api: Api<PatternRow[]> }) {
   const rows = api.data || [];
   return (
-    <div style={{ ...CARD_STYLE, height: 220 }}>
+    <div style={{ ...CARD_STYLE, height: CARD_H }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
         <span style={SECTION_HEADING}>Recurring Patterns</span>
         {rows.length > 0 && <span style={{ marginLeft: 'auto', fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>{rows.length}</span>}
@@ -1464,7 +1538,7 @@ function RecurringPatterns({ api }: { api: Api<PatternRow[]> }) {
 function LeastReliableDevices({ api }: { api: Api<LeastReliable[]> }) {
   const rows = (api.data || []).slice(0, 10);
   return (
-    <div style={{ ...CARD_STYLE, height: 220 }}>
+    <div style={{ ...CARD_STYLE, height: CARD_H }}>
       <div style={SECTION_HEADING}>Least Reliable (30d)</div>
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', margin: '0 -4px' }}>
         {api.loading && !api.data ? (
@@ -1522,7 +1596,7 @@ function fmtBps(n: number | null | undefined): string {
 function TopTalkers({ api }: { api: Api<TopTalker[]> }) {
   const rows = api.data || [];
   return (
-    <div style={{ ...CARD_STYLE, height: 220 }}>
+    <div style={{ ...CARD_STYLE, height: CARD_H }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
         <span style={SECTION_HEADING}>Top Talkers</span>
         {rows.length > 0 && (
@@ -1624,7 +1698,7 @@ function WirelessHealthCard() {
   if (!d || !d.has_data || d.total_controllers === 0) return null;
   const c = scoreColor(d.overall_score);
   return (
-    <div style={{ ...CARD_STYLE, flex: 1, minWidth: 0, borderLeft: `3px solid ${c}`, height: 220, overflow: 'hidden' }}>
+    <div style={{ ...CARD_STYLE, flex: 1, minWidth: 0, borderLeft: `3px solid ${c}`, height: CARD_H, overflow: 'hidden' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
         <span style={SECTION_HEADING}>Wireless Health</span>
         <Link href="/wireless" className="sv-dash-link" style={{ marginLeft: 'auto', fontSize: 'var(--text-sm)' }}>View →</Link>

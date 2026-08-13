@@ -36,6 +36,13 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.98.0': [
+    'Wireless Insights described 227 access points and 1,200 clients using eight tables and no charts at all. It now leads with a Client Activity chart (24h/7d) showing the fleet client count against 2.4GHz and 5GHz airtime, a Client Signal Quality donut, and Channel Occupancy bars for both bands.',
+    'The channel bars are colour-coded to be actionable rather than decorative: on 2.4GHz the non-overlapping 1/6/11 channels are blue and anything else amber, and on 5GHz the DFS range (52-144) is amber because those are the radios exposed to radar eviction.',
+    'The dashboard gains an Alert Volume chart for the last 14 days. Criticals are drawn on their own axis - they are about 1% of the volume here (roughly 500 warnings a day against a handful of criticals) and would otherwise be an invisible sliver at the bottom of the bars.',
+    'The availability trend and the new alert chart are now double width. SLA Breaches, which is a single tick most days, moves to a narrow column - it was the card paying the most space for the least information.',
+    'Fixed cards that quietly hid their contents: "Offline APs" reported 13 in its heading while showing 2, and every dashboard list clipped its fifth row in half. Card heights now land on a row boundary, and the Offline and Congested AP cards carry their totals in the header.',
+  ],
   '1.97.0': [
     'The Channel Instability panel can now be filtered by controller. This matters more than it sounds: SMT_WLC accounts for 1,219 of the 1,294 recorded changes, so it fills all ten places in the fleet ranking and TUFS-OKF-WLC-1\'s 26 moving access points cannot be seen at all without the filter.',
     'The headline figures (changes, APs, radar suspected) follow the filter, so they always describe the same set of access points as the table beneath them.',
@@ -2122,6 +2129,32 @@ app.get('/api/dashboard/network-trend', wrap(async (req, res) => {
       : null,
   }));
   res.json(rows);
+}));
+
+// Daily alert volume for the dashboard timeline, split by severity.
+//
+// Counts by `triggered_at` (when the condition fired), NOT resolved_at or the
+// current status — the point of the chart is "how noisy was each day", and a
+// row that has since resolved still cost someone attention on the day it fired.
+app.get('/api/dashboard/alert-trend', wrap(async (req, res) => {
+  const days = Math.min(90, Math.max(1, safeInt(req.query.days, 14)));
+  const params = [days];
+  const sc = siteFilterClause(getSiteFilter(req), params, 'd.site_id');
+  const r = await sv.query(`
+    -- Alias is "bucket", not "day": DAY is reserved in Postgres and a bare
+    -- AS day is a syntax error.
+    SELECT DATE(a.triggered_at) AS bucket,
+           COUNT(*)::int AS total,
+           COUNT(*) FILTER (WHERE a.severity = 'critical')::int AS critical,
+           COUNT(*) FILTER (WHERE a.severity = 'warning')::int  AS warning,
+           COUNT(*) FILTER (WHERE a.severity NOT IN ('critical','warning'))::int AS other
+      FROM alerts a
+      ${sc ? 'LEFT JOIN monitored_devices d ON d.id = a.device_id' : ''}
+     WHERE a.triggered_at >= NOW() - make_interval(days => $1)${sc ? ` AND (${sc} OR a.device_id IS NULL)` : ''}
+     GROUP BY 1
+     ORDER BY 1
+  `, params);
+  res.json({ days, points: r.rows });
 }));
 
 // Per-site health: device counts + 24h uptime (reachable = not down).
@@ -5618,6 +5651,127 @@ app.get('/api/wireless/history/:ap_id', wrap(async (req, res) => {
 }));
 
 // Wireless summary for the overview tab + dashboard card.
+// ── Small TTL cache for the dashboard aggregates ───────────────────────────
+// The trend/distribution queries below scan a wide slice of wireless_history
+// (3.7M rows) and the pages polling them refresh every 30s. Without this each
+// open tab re-runs a ~400ms aggregate on a timer. Keyed by the full query
+// signature so a controller/window change is a different entry, not a stale hit.
+const aggCache = new Map();
+function cachedAgg(key, ttlMs, fn) {
+  const hit = aggCache.get(key);
+  if (hit && Date.now() - hit.at < ttlMs) return hit.val;
+  const val = fn().catch((e) => { aggCache.delete(key); throw e; });
+  aggCache.set(key, { at: Date.now(), val });
+  // Unbounded growth guard — these keys are low-cardinality, but a hand-crafted
+  // querystring should not be able to grow this map forever.
+  if (aggCache.size > 64) {
+    for (const [k, v] of aggCache) if (Date.now() - v.at > ttlMs) aggCache.delete(k);
+  }
+  return val;
+}
+
+// Fleet client/utilisation trend for the Wireless Insights chart.
+//
+// ⚠ THE AGGREGATION SHAPE IS LOAD-BEARING. wireless_history holds one row per AP
+// per ~5-minute poll, so a naive `SUM(clients_total) GROUP BY hour` counts every
+// AP ~12 times: it returns 15,334 clients on an estate that has 1,172. The fleet
+// figure has to average each AP WITHIN the bucket first, then sum across APs —
+// which is what the subquery does. Do not "simplify" it to a single GROUP BY.
+app.get('/api/wireless/trend', wrap(async (req, res) => {
+  const hours = Math.min(720, Math.max(1, safeInt(req.query.hours, 24)));
+  const params = [hours];
+  const sc = siteFilterClause(getSiteFilter(req), params, 'a.site_id');
+  const scAnd = sc ? ` AND ${sc}` : '';
+  const key = `trend:${hours}:${sc ? JSON.stringify(params.slice(1)) : 'all'}`;
+
+  const rows = await cachedAgg(key, 60000, async () => {
+    const r = await sv.query(`
+      SELECT h,
+             SUM(clients)::int            AS clients,
+             ROUND(AVG(util_5g)::numeric, 1)  AS util_5g,
+             ROUND(AVG(util_2g)::numeric, 1)  AS util_2g
+        FROM (
+          SELECT date_trunc('hour', wh.ts) AS h,
+                 wh.ap_id,
+                 AVG(wh.clients_total)  AS clients,
+                 -- NULLIF(...,0): aruba_central writes 0/NULL util into history
+                 -- (its RF data arrives on a separate slower pass), and counting
+                 -- those as confirmed-idle drags the fleet average down.
+                 AVG(NULLIF(wh.radio_5g_util, 0)) AS util_5g,
+                 AVG(NULLIF(wh.radio_2g_util, 0)) AS util_2g
+            FROM wireless_history wh
+            JOIN wireless_aps a ON a.id = wh.ap_id
+           WHERE wh.ts > NOW() - make_interval(hours => $1)${scAnd}
+           GROUP BY 1, 2
+        ) q
+       GROUP BY h
+       ORDER BY h
+    `, params);
+    return r.rows;
+  });
+  res.json({ hours, points: rows });
+}));
+
+// Channel / signal / band distributions — the chartable shape of the estate.
+app.get('/api/wireless/distribution', wrap(async (req, res) => {
+  const params = [];
+  const sc = siteFilterClause(getSiteFilter(req), params, 'a.site_id');
+  const scWhere = sc ? ` AND ${sc}` : '';
+  const key = `dist:${sc ? JSON.stringify(params) : 'all'}`;
+
+  const out = await cachedAgg(key, 60000, async () => {
+    const chan = async (col) => (await sv.query(`
+      SELECT ${col} AS channel, COUNT(*)::int AS aps
+        FROM wireless_aps a
+       WHERE ${col} IS NOT NULL AND a.status = 'online'${scWhere}
+       GROUP BY 1 ORDER BY 1
+    `, params)).rows;
+
+    const channels_2g = await chan('a.radio_2g_channel');
+    const channels_5g = await chan('a.radio_5g_channel');
+
+    // Signal quality of currently-associated clients. Thresholds are the
+    // conventional Wi-Fi RSSI bands, not invented ones.
+    const cparams = [];
+    const csc = siteFilterClause(getSiteFilter(req), cparams, 'a.site_id');
+    const signal = (await sv.query(`
+      SELECT CASE WHEN c.rssi_dbm >= -55 THEN 'excellent'
+                  WHEN c.rssi_dbm >= -67 THEN 'good'
+                  WHEN c.rssi_dbm >= -75 THEN 'fair'
+                  ELSE 'poor' END AS bucket,
+             COUNT(*)::int AS clients
+        FROM wireless_clients c
+        JOIN wireless_aps a ON a.id = c.ap_id
+       WHERE c.rssi_dbm IS NOT NULL${csc ? ` AND ${csc}` : ''}
+       GROUP BY 1
+    `, cparams)).rows;
+
+    // Band split. aruba_central reports no per-band breakdown — its clients_2g/5g
+    // are 0 rather than a confirmed zero — so those APs are EXCLUDED here instead
+    // of silently inflating the 2.4GHz-looks-empty story. `covered` lets the UI
+    // say how much of the fleet the split actually describes.
+    const bparams = [];
+    const bsc = siteFilterClause(getSiteFilter(req), bparams, 'a.site_id');
+    const band = (await sv.query(`
+      SELECT COALESCE(SUM(a.clients_2g), 0)::int AS g24,
+             COALESCE(SUM(a.clients_5g), 0)::int AS g5,
+             COALESCE(SUM(a.clients_6g), 0)::int AS g6,
+             COUNT(*)::int AS covered_aps
+        FROM wireless_aps a
+        LEFT JOIN wireless_controllers wc ON wc.id = a.controller_id
+       WHERE COALESCE(wc.vendor, '') <> 'aruba_central'${bsc ? ` AND ${bsc}` : ''}
+    `, bparams)).rows[0] || { g24: 0, g5: 0, g6: 0, covered_aps: 0 };
+
+    const tparams = [];
+    const tsc = siteFilterClause(getSiteFilter(req), tparams, 'a.site_id');
+    const totalAps = (await sv.query(
+      `SELECT COUNT(*)::int n FROM wireless_aps a${tsc ? ` WHERE ${tsc}` : ''}`, tparams)).rows[0].n;
+
+    return { channels_2g, channels_5g, signal, band, total_aps: totalAps };
+  });
+  res.json(out);
+}));
+
 // Fleet-wide channel-change leaderboard — the APs moving channel most often.
 // The per-AP counts already exist in the AP drawer, but finding an unstable AP
 // that way means opening drawers one at a time across the whole estate; on this

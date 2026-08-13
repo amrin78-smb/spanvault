@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend,
-  BarChart, Bar, ReferenceLine, Cell,
+  BarChart, Bar, ReferenceLine, Cell, AreaChart, Area, PieChart, Pie,
 } from 'recharts';
 import { useApi, apiSend, apiGet } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
@@ -95,6 +95,26 @@ interface ChannelChangeTop {
   total_radar_suspected: number;
   /** Earliest record in the table — null when nothing has been recorded yet. */
   tracking_since: string | null;
+}
+
+/** GET /api/wireless/trend — fleet client + utilisation over time. */
+interface TrendPoint {
+  h: string;
+  clients: number;
+  util_5g: string | number | null;
+  util_2g: string | number | null;
+}
+interface TrendResp { hours: number; points: TrendPoint[] }
+
+/** GET /api/wireless/distribution — chartable shape of the estate. */
+interface ChannelBucket { channel: number; aps: number }
+interface SignalBucket { bucket: 'excellent' | 'good' | 'fair' | 'poor'; clients: number }
+interface DistributionResp {
+  channels_2g: ChannelBucket[];
+  channels_5g: ChannelBucket[];
+  signal: SignalBucket[];
+  band: { g24: number; g5: number; g6: number; covered_aps: number };
+  total_aps: number;
 }
 
 interface Ssid {
@@ -847,6 +867,203 @@ function EqualRow({ children, marginTop }: { children: React.ReactNode; marginTo
 
 // Subtle muted caption shown in a clickable container's header area, hinting
 // that rows can be drilled into. Understated, matches existing muted styling.
+// ── Insights charts ──────────────────────────────────────────────────────────
+// The Insights tab described 227 APs and ~1,200 clients using eight tables and
+// zero charts. These three cover the shapes a table reads worst: change over
+// time, a distribution, and a proportion.
+
+const SIGNAL_META: Record<string, { label: string; color: string }> = {
+  excellent: { label: 'Excellent (≥ -55 dBm)', color: '#16a34a' },
+  good:      { label: 'Good (-56 to -67)',     color: '#65a30d' },
+  fair:      { label: 'Fair (-68 to -75)',     color: '#d97706' },
+  poor:      { label: 'Poor (< -75)',          color: '#dc2626' },
+};
+const SIGNAL_ORDER = ['excellent', 'good', 'fair', 'poor'];
+
+/** Local hour label. Timestamps arrive UTC; the estate reads them in its own tz. */
+function trendLabel(iso: string, hours: number): string {
+  const d = new Date(iso);
+  if (hours <= 24) return `${String(d.getHours()).padStart(2, '0')}:00`;
+  return `${d.getDate()}/${d.getMonth() + 1} ${String(d.getHours()).padStart(2, '0')}h`;
+}
+
+/**
+ * Fleet client count + per-band airtime over time.
+ *
+ * Reads /api/wireless/trend, which does the per-AP-then-sum aggregation — a
+ * plain SUM over wireless_history counts each AP once per 5-minute poll and
+ * reports ~13x the real client count. Don't reproduce the maths client-side.
+ */
+function ClientTrendChart({ hours, onHours }: { hours: number; onHours: (h: number) => void }) {
+  const api = useApi<TrendResp>(`/api/wireless/trend?hours=${hours}`, 60000);
+  const data = useMemo(() => (api.data?.points || []).map((p) => ({
+    label: trendLabel(p.h, hours),
+    clients: p.clients,
+    util5: p.util_5g == null ? null : Number(p.util_5g),
+    util2: p.util_2g == null ? null : Number(p.util_2g),
+  })), [api.data, hours]);
+
+  const peak = useMemo(() => data.reduce((m, d) => Math.max(m, d.clients), 0), [data]);
+
+  if (api.loading && !api.data) return <Loading />;
+  if (api.error) return <ErrorBox message={api.error} />;
+  if (!data.length) return <Empty message="No wireless history for this window yet." />;
+
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 14, marginBottom: 6,
+        fontSize: 'var(--text-sm)', color: 'var(--text-secondary)' }}>
+        <span>Peak <strong style={{ color: 'var(--text-primary)' }}>{peak.toLocaleString()}</strong> clients</span>
+        <span style={{ color: 'var(--text-muted)' }}>
+          Airtime is averaged across APs reporting it; 2.4GHz usually runs hotter than 5GHz.
+        </span>
+      </div>
+      <ResponsiveContainer width="100%" height={230}>
+        <AreaChart data={data} margin={{ top: 4, right: 8, left: -18, bottom: 0 }}>
+          <defs>
+            <linearGradient id="cliFill" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="var(--primary)" stopOpacity={0.35} />
+              <stop offset="100%" stopColor="var(--primary)" stopOpacity={0.02} />
+            </linearGradient>
+          </defs>
+          <CartesianGrid strokeDasharray="3 3" stroke="var(--border-light)" vertical={false} />
+          <XAxis dataKey="label" tick={{ fontSize: 11 }} interval="preserveStartEnd" minTickGap={28} />
+          <YAxis yAxisId="c" tick={{ fontSize: 11 }} />
+          <YAxis yAxisId="u" orientation="right" tick={{ fontSize: 11 }} unit="%" width={38} domain={[0, 'auto']} />
+          <Tooltip {...CHART_TOOLTIP} />
+          <Legend wrapperStyle={{ fontSize: 11 }} />
+          <Area yAxisId="c" type="monotone" dataKey="clients" name="Clients"
+            stroke="var(--primary)" fill="url(#cliFill)" strokeWidth={2} dot={false} />
+          <Line yAxisId="u" type="monotone" dataKey="util2" name="2.4GHz airtime %"
+            stroke="#0ea5e9" strokeWidth={1.5} dot={false} connectNulls />
+          <Line yAxisId="u" type="monotone" dataKey="util5" name="5GHz airtime %"
+            stroke="#16a34a" strokeWidth={1.5} dot={false} connectNulls />
+        </AreaChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+/** Client signal-quality split. A proportion — the one shape a donut beats a table at. */
+function SignalQualityDonut({ data }: { data: DistributionResp | null }) {
+  const rows = useMemo(() => {
+    const by = new Map((data?.signal || []).map((s) => [s.bucket, s.clients]));
+    return SIGNAL_ORDER
+      .map((k) => ({ key: k, name: SIGNAL_META[k].label, value: by.get(k as SignalBucket['bucket']) || 0 }))
+      .filter((r) => r.value > 0);
+  }, [data]);
+  const total = rows.reduce((s, r) => s + r.value, 0);
+  if (!data) return <Loading />;
+  if (!total) return <Empty message="No client signal readings yet." />;
+  // Weak = fair + poor. That is the number an operator acts on, so state it
+  // rather than making them add two slices together.
+  const weak = rows.filter((r) => r.key === 'fair' || r.key === 'poor').reduce((s, r) => s + r.value, 0);
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      <div style={{ width: 132, height: 132, flex: '0 0 auto', position: 'relative' }}>
+        <ResponsiveContainer width="100%" height="100%">
+          <PieChart>
+            <Pie data={rows} dataKey="value" nameKey="name" innerRadius={40} outerRadius={62}
+              paddingAngle={2} stroke="none">
+              {rows.map((r) => <Cell key={r.key} fill={SIGNAL_META[r.key].color} />)}
+            </Pie>
+            <Tooltip {...CHART_TOOLTIP} />
+          </PieChart>
+        </ResponsiveContainer>
+        <div style={{
+          position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column',
+          alignItems: 'center', justifyContent: 'center', pointerEvents: 'none',
+        }}>
+          <span style={{ fontSize: 'var(--text-lg)', fontWeight: 700 }}>
+            {Math.round(((total - weak) / total) * 100)}%
+          </span>
+          <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)' }}>healthy</span>
+        </div>
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 }}>
+        {rows.map((r) => (
+          <div key={r.key} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--text-sm)' }}>
+            <span style={{ width: 9, height: 9, borderRadius: 2, background: SIGNAL_META[r.key].color, flex: '0 0 auto' }} />
+            <span style={{ color: 'var(--text-secondary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              {r.name}
+            </span>
+            <strong style={{ marginLeft: 'auto' }}>{r.value}</strong>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Channel occupancy per band.
+ *
+ * 2.4GHz has only three non-overlapping channels, so its bar chart is a
+ * co-channel readout by construction. 5GHz is bucketed into DFS vs non-DFS
+ * because that distinction is what makes a channel radar-exposed — the same
+ * 52-144 range the channel-change detector infers radar from.
+ */
+function ChannelDistributionChart({ data }: { data: DistributionResp | null }) {
+  const bars = useMemo(() => {
+    if (!data) return { g2: [], g5: [] };
+    const g2 = data.channels_2g.map((c) => ({
+      ch: String(c.channel), aps: c.aps,
+      // 1/6/11 are the non-overlapping trio; anything else overlaps its neighbours.
+      color: [1, 6, 11].includes(c.channel) ? '#0ea5e9' : '#d97706',
+    }));
+    const g5 = data.channels_5g.map((c) => ({
+      ch: String(c.channel), aps: c.aps,
+      color: c.channel >= 52 && c.channel <= 144 ? '#d97706' : '#16a34a',
+    }));
+    return { g2, g5 };
+  }, [data]);
+
+  if (!data) return <Loading />;
+  const dfsAps = bars.g5.filter((b) => b.color === '#d97706').reduce((s, b) => s + b.aps, 0);
+  const g5Total = bars.g5.reduce((s, b) => s + b.aps, 0);
+
+  return (
+    <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap' }}>
+      <div style={{ flex: '1 1 260px', minWidth: 240 }}>
+        <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', marginBottom: 4 }}>
+          2.4GHz — {bars.g2.reduce((s, b) => s + b.aps, 0)} radios over {bars.g2.length} channels
+        </div>
+        <ResponsiveContainer width="100%" height={150}>
+          <BarChart data={bars.g2} margin={{ top: 4, right: 6, left: -22, bottom: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="var(--border-light)" vertical={false} />
+            <XAxis dataKey="ch" tick={{ fontSize: 11 }} />
+            <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
+            <Tooltip {...CHART_TOOLTIP} />
+            <Bar dataKey="aps" name="APs" radius={[3, 3, 0, 0]}>
+              {bars.g2.map((b) => <Cell key={b.ch} fill={b.color} />)}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+      <div style={{ flex: '1 1 320px', minWidth: 260 }}>
+        <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', marginBottom: 4 }}>
+          5GHz — {g5Total} radios over {bars.g5.length} channels
+          {dfsAps > 0 && (
+            <span style={{ color: 'var(--tint-warn-fg)' }}> · {dfsAps} on DFS (radar-exposed)</span>
+          )}
+        </div>
+        <ResponsiveContainer width="100%" height={150}>
+          <BarChart data={bars.g5} margin={{ top: 4, right: 6, left: -22, bottom: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="var(--border-light)" vertical={false} />
+            <XAxis dataKey="ch" tick={{ fontSize: 10 }} interval={0} angle={-45} textAnchor="end" height={40} />
+            <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
+            <Tooltip {...CHART_TOOLTIP} />
+            <Bar dataKey="aps" name="APs" radius={[3, 3, 0, 0]}>
+              {bars.g5.map((b) => <Cell key={b.ch} fill={b.color} />)}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+}
+
 /**
  * Fleet channel-change leaderboard for the Insights tab.
  *
@@ -1687,6 +1904,8 @@ function OverviewTab({
   // server does the filtering — an operator who owns one WLC needs their own
   // ranking, not the fleet's top 10 filtered down to whatever happens to remain.
   const [ccController, setCcController] = useState<number | 'all'>('all');
+  const [trendHours, setTrendHours] = useState(24);
+  const distribution = useApi<DistributionResp>('/api/wireless/distribution', 60000);
   const chanChanges = useApi<ChannelChangeTop>(
     `/api/wireless/channel-changes/top?days=7&limit=10${ccController === 'all' ? '' : `&controller_id=${ccController}`}`,
     30000,
@@ -1795,9 +2014,41 @@ function OverviewTab({
         <StatCard value={fmtPct(avgUtil)} valueColor={pctColor(avgUtil)} label="Avg Utilization" />
       </StatRow>
 
+      {/* Row 1.5 — the two charts that carry the page: change over time and a
+          proportion. Both are shapes a table reads badly. */}
+      <EqualRow>
+        <SectionCard
+          title="Client Activity"
+          flex="2 1 0"
+          minWidth={420}
+          action={(
+            <span style={{ display: 'inline-flex', gap: 4 }}>
+              {[24, 168].map((h) => (
+                <button key={h} className={`sv-chip ${trendHours === h ? 'active' : ''}`}
+                  onClick={() => setTrendHours(h)}>{h === 24 ? '24h' : '7d'}</button>
+              ))}
+            </span>
+          )}
+          scroll={false}
+        >
+          <ClientTrendChart hours={trendHours} onHours={setTrendHours} />
+        </SectionCard>
+
+        <SectionCard title="Client Signal Quality" minWidth={280} scroll={false}>
+          <SignalQualityDonut data={distribution.data} />
+        </SectionCard>
+      </EqualRow>
+
+      {/* Row 1.6 — channel occupancy per band. */}
+      <EqualRow>
+        <SectionCard title="Channel Occupancy" minWidth={320} scroll={false}>
+          <ChannelDistributionChart data={distribution.data} />
+        </SectionCard>
+      </EqualRow>
+
       {/* Row 2 — Site breakdown | Top APs | Top SSIDs */}
       <EqualRow>
-        <SectionCard title="Site Breakdown" maxHeight={200} minWidth={240}>
+        <SectionCard title="Site Breakdown" maxHeight={250} minWidth={240}>
           {s.by_site.length ? (
             <table className="sv-table">
               <thead><tr>
@@ -1820,7 +2071,7 @@ function OverviewTab({
           ) : <Empty message="No site data." />}
         </SectionCard>
 
-        <SectionCard title="Top APs by Clients" action={<DrillHint />} maxHeight={200} minWidth={240}>
+        <SectionCard title="Top APs by Clients" action={<DrillHint />} maxHeight={250} minWidth={240}>
           {topApsByClients.length ? (
             <table className="sv-table">
               <thead><tr>
@@ -1840,7 +2091,7 @@ function OverviewTab({
           ) : <Empty message="No AP data." />}
         </SectionCard>
 
-        <SectionCard title="Top SSIDs by Clients" action={<DrillHint />} maxHeight={200} minWidth={240}>
+        <SectionCard title="Top SSIDs by Clients" action={<DrillHint />} maxHeight={250} minWidth={240}>
           {ssidSummary.data && ssidSummary.data.top_ssids.length ? (
             <table className="sv-table">
               <thead><tr>
@@ -1865,7 +2116,7 @@ function OverviewTab({
 
       {/* Row 3 — Top Clients by Bandwidth | Offline APs | High utilization APs */}
       <EqualRow>
-        <SectionCard title="Top Clients by Bandwidth" action={<DrillHint />} maxHeight={160} minWidth={280}>
+        <SectionCard title="Top Clients by Bandwidth" action={<DrillHint />} maxHeight={250} minWidth={280}>
           {topClientsByBandwidth.length ? (
             <table className="sv-table">
               <thead><tr>
@@ -1889,6 +2140,12 @@ function OverviewTab({
           title="Offline APs"
           action={(
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10 }}>
+              {/* The count belongs in the header. This card is a scroll box and
+                  showed 2 of 13 offline APs with nothing saying so — the header
+                  is the only place a total is unconditionally visible. */}
+              {offlineAps.length > 0 && (
+                <span className="sv-badge down">{offlineAps.length}</span>
+              )}
               {offlineAps.length > 0 && <DrillHint />}
               <button className="sv-btn ghost sm" onClick={onViewProblemClients}
                 title="View clients with connectivity / performance problems">
@@ -1896,7 +2153,7 @@ function OverviewTab({
               </button>
             </span>
           )}
-          maxHeight={160}
+          maxHeight={250}
           minWidth={280}
         >
           {offlineAps.length ? (
@@ -1927,8 +2184,13 @@ function OverviewTab({
         </SectionCard>
 
         <SectionCard title="Congested APs"
-          action={congestedAps.length > 0 ? <DrillHint /> : undefined}
-          maxHeight={160} minWidth={280}>
+          action={congestedAps.length > 0 ? (
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+              <span className="sv-badge warning">{congestedAps.length}</span>
+              <DrillHint />
+            </span>
+          ) : undefined}
+          maxHeight={250} minWidth={280}>
           {congestedAps.length ? (
             <table className="sv-table">
               <thead><tr>
@@ -1990,7 +2252,7 @@ function OverviewTab({
       {/* Row 4 — Controller status strip (from already-fetched controllers) */}
       {controllers.data && controllers.data.length > 0 && (
         <EqualRow>
-          <SectionCard title="Controller Status" action={<DrillHint />} maxHeight={200} minWidth={280}>
+          <SectionCard title="Controller Status" action={<DrillHint />} maxHeight={250} minWidth={280}>
             <ControllerStatusCard controllers={controllers.data} onSelect={onFilterController} />
           </SectionCard>
         </EqualRow>

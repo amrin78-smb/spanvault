@@ -293,3 +293,8 @@ route exists to check (see the dead-code corollary in gotchas.md for why one
 was attempted and removed).
 
 - `GET /api/wireless/history/:ap_id?range=` — AP chart history, bucketed. Ranges (1.94.0): `1h|2h|6h|12h|24h|2d|7d|30d|90d`, default 24h. Bucket sizes are chosen against the ~5-minute AP poll interval, NOT for tidy round numbers: a bucket smaller than the poll interval cannot average anything and renders as a gap-toothed line that looks like data loss, so 5 minutes is the floor and short ranges show FEWER points rather than finer ones. An unknown `range` value silently falls back to 24h — so the frontend's `ApRange` union must stay in step with `rangeToInterval`/`rangeToBucket` or the chart quietly disagrees with the button the user pressed.
+
+### Dashboard/wireless visualisation aggregates (1.98.0)
+- `GET /api/wireless/trend` [auth] [db] [site-scoped] — fleet client count + per-band airtime over time. `?hours=` (1-720, default 24). **The per-AP-then-sum subquery is load-bearing**: `wireless_history` holds ~1 row per AP per 5-min poll, so a flat `SUM(clients_total) GROUP BY hour` returns ~13x the real count (15,334 vs 1,172). 60s TTL cache.
+- `GET /api/wireless/distribution` [auth] [db] [site-scoped] — `{channels_2g, channels_5g, signal, band, total_aps}`. Channel buckets are online APs only; `signal` buckets clients by `rssi_dbm` on the conventional RSSI bands; `band` EXCLUDES `aruba_central` APs (no per-band breakdown — their `clients_2g/5g` are 0, not a confirmed zero) and reports `covered_aps`. 60s TTL cache.
+- `GET /api/dashboard/alert-trend` [auth] [db] [site-scoped] — daily alert counts by severity. `?days=` (1-90, default 14). Counts by `triggered_at`, not current status.
