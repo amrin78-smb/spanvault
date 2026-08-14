@@ -6,7 +6,8 @@ import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine, ResponsiveContainer,
   Bar, Line, ComposedChart, Legend,
 } from 'recharts';
-import { useApi } from '@/lib/api';
+import { useApi } from '@/lib/api'
+import { wirelessHref } from '@/lib/wirelessLinks';
 import { useRbac } from '@/lib/rbac';
 import { StatusDot } from '@/components/StatusDot';
 import { useLicense, LicenseDisabledScreen } from '@/components/LicenseGuard';
@@ -1158,7 +1159,11 @@ function EventSubject({ e }: { e: EventRow }) {
   }
   if (e.device_id == null && e.wireless_name) {
     return (
-      <Link href="/wireless" style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
+      // Was a bare "/wireless", which landed on Wireless Insights and left the
+      // user to hunt for the AP themselves. The row already carries
+      // wireless_ap_id, so deep-link into that AP's drawer — same rule the
+      // Alerts page uses, now shared so the two cannot drift apart.
+      <Link href={wirelessHref(e.wireless_ap_id, e.wireless_controller_id)} style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
         {e.wireless_name}
       </Link>
     );

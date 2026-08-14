@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import { useApi, apiSend } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
+import { wirelessHref as sharedWirelessHref } from '@/lib/wirelessLinks';
 import { StatusBadge, ErrorBox, fmtTime, fmtRel, PageHeader, TableSkeleton, EmptyState, useRefreshKey, Pager, useClientPagination, useTableSort, sortRows, SortTh } from '@/components/ui';
 import { StatusDot } from '@/components/StatusDot';
 import SiteScopeBanner from '@/components/SiteScopeBanner';
@@ -66,10 +67,12 @@ function prettyType(t: string): string {
 // drawer on the Access Points tab; controller-scoped alerts (no AP, but
 // wireless_controller_id set) go to the Controllers tab — there's no
 // per-controller drawer deep-link today, so the tab is as specific as we can get.
+// Thin wrapper over the shared rule in @/lib/wirelessLinks. The dashboard's
+// Recent Events widget had its own bare '/wireless' link instead of this logic,
+// so the same click behaved differently in two places; the rule now lives in
+// one module so a third caller cannot diverge again.
 function wirelessHref(a: Alert): string {
-  if (a.wireless_ap_id != null) return `/wireless?tab=aps&apId=${a.wireless_ap_id}`;
-  if (a.wireless_controller_id != null) return `/wireless?tab=controllers`;
-  return '/wireless';
+  return sharedWirelessHref(a.wireless_ap_id, a.wireless_controller_id);
 }
 
 // Same target the entity-name link in a row points to, used to make the

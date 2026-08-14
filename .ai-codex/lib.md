@@ -166,3 +166,6 @@ MapGlyph({kind,x,y,size,color,strokeWidth}) / GlyphSwatch({kind,size,color}) —
 ```
 
 (lib) frontend/src/lib/corners.ts — rounded/square corner switch. getCorners/applyCorners/toggleCorners/CORNERS_INIT_SCRIPT. Key sv-corners (matches theme.ts sv- prefix, NOT spanvault-), event sv:corners, attribute data-corners="square" on <html>; rounded = ABSENCE of the attribute (there is deliberately no [data-corners="rounded"] rule). Overrides --radius/--radius-sm/--radius-pill ONLY, so any hardcoded numeric borderRadius opts that component out SILENTLY — always use the token.
+
+### `lib/wirelessLinks.ts`
+wirelessHref(wirelessApId?, wirelessControllerId?) — canonical target for a wireless alert/event subject link. AP-scoped → `/wireless?tab=aps&apId=<id>` (deep-links into that AP's drawer); controller-scoped → `/wireless?tab=controllers`; neither → `/wireless`. Takes the two ids rather than a row type because callers' shapes differ (`Alert` vs `EventRow`). Used by `alerts/page.tsx` and the dashboard's Recent Events widget — added 1.98.4 after the two had diverged (the dashboard hardcoded a bare `/wireless`).

@@ -36,6 +36,11 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.98.4': [
+    'Clicking an access point name in the dashboard\'s Recent Events list now opens that access point directly, instead of dropping you on the Wireless Insights page to find it yourself.',
+    'Wireless events carry no device, so they hang off an access point or a controller and the link has to be worked out from that. The Alerts page already did this correctly; the dashboard did not, so the same click behaved differently in two places.',
+    'That rule now lives in one shared place used by both, so a third screen cannot quietly get it wrong again. Controller-level events still go to the Controllers tab, which is as specific as it can be until controllers have their own panel.',
+  ],
   '1.98.3': [
     'Fixed: the access point panel reported "0" channel changes and "No channel changes recorded in the last 30 days" for access points that genuinely had them. AP01-Office-MKT-Shrimp, for instance, had two recorded changes on 11 and 12 August that the panel showed as none.',
     'Channel-change history is only returned when an access point is requested individually, not in the list. Opening the panel from the Access Points tab handed it the list entry, which carries no history, and the panel treated the missing data as a confirmed zero. Opening the same access point from Wireless Insights fetched the full record and showed the real numbers - which is why it appeared to come and go.',
