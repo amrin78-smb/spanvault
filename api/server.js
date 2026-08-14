@@ -36,6 +36,13 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.99.0': [
+    'The access point panel now shows WHY an access point is rated congested, instead of only asserting that it is. A "Why this score" table lists each of the five contributing factors with its reading, its share of the score and its points, largest contributor first.',
+    'This was genuinely confusing before, and the badge was the misleading part: the level sat next to Utilisation, which is usually the SMALLEST contributor. On AP505-P-TON, utilisation supplied 11 points of 58 while the retry rate supplied 25 and a 100% band imbalance supplied 15 - so "High" looked like it contradicted the "39%" printed next to it.',
+    'Factors that have hit their ceiling are marked "maxed". Each reading is scaled and capped before it is weighted, so past a threshold a factor stops responding - a 38% and a 95% retry rate score exactly the same. That is now visible rather than something you would have to know.',
+    'The panel also states that the score is measured over the last 15 minutes, while the charts below it default to 24 hours. A genuine short spike (38% retry over 15 minutes against a 10.2% daily average) is real in the score and averaged out of sight in the chart; narrowing the chart range brings it back.',
+    'Band imbalance is included, which matters because it can contribute 15 points and is not drawn on any chart - previously there was no way at all to see it was involved.',
+  ],
   '1.98.4': [
     'Clicking an access point name in the dashboard\'s Recent Events list now opens that access point directly, instead of dropping you on the Wireless Insights page to find it yourself.',
     'Wireless events carry no device, so they hang off an access point or a controller and the link has to be worked out from that. The Alerts page already did this correctly; the dashboard did not, so the same click behaved differently in two places.',
@@ -5552,9 +5559,11 @@ app.get('/api/wireless/aps/:id', wrap(async (req, res) => {
     GROUP BY bucket ORDER BY bucket
   `, [id]);
 
-  // Same congestion scoring as the list endpoint, scoped to this one AP.
+  // Same congestion scoring as the list endpoint, scoped to this one AP —
+  // plus the per-factor breakdown, which only this route returns.
   let congestion_score = null;
   let congestion_level = null;
+  let congestion_factors = null;
   if (ap.status === 'online') {
     let agg = null;
     try {
@@ -5584,6 +5593,13 @@ app.get('/api/wireless/aps/:id', wrap(async (req, res) => {
     const scored = computeCongestionScore({ util, retry, interference, imbalancePct, weakClientRatioPct });
     congestion_score = scored.score;
     congestion_level = scored.level;
+    // Per-factor breakdown so the drawer can justify the level rather than just
+    // display it. `window_minutes` is exported alongside because it is half the
+    // confusion: the score is a 15-minute reading while the drawer's charts
+    // default to 24h, so a genuine short spike (measured live: 38% retry over
+    // 15 min against a 10.2% 24h average) is real in the score and invisible in
+    // the chart. Stated explicitly, that stops reading as a contradiction.
+    congestion_factors = { window_minutes: 15, factors: scored.factors };
   }
 
   // Channel-change history. Deliberately served from THIS route rather than a
@@ -5624,7 +5640,7 @@ app.get('/api/wireless/aps/:id', wrap(async (req, res) => {
 
   res.json({
     ...ap, uptime_formatted: fmtUptime(ap.uptime_seconds), history: hist.rows,
-    congestion_score, congestion_level, channel_changes, channel_change_counts,
+    congestion_score, congestion_level, congestion_factors, channel_changes, channel_change_counts,
   });
 }));
 

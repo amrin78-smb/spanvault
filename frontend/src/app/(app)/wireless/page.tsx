@@ -97,6 +97,26 @@ interface ChannelChangeTop {
   tracking_since: string | null;
 }
 
+/**
+ * Per-factor congestion breakdown — returned by GET /api/wireless/aps/:id ONLY
+ * (the list route omits it: 227 APs x 5 factors of payload for a column that
+ * only renders the level).
+ */
+interface CongestionFactor {
+  key: string;
+  label: string;
+  input: number;
+  unit: string;
+  points: number;
+  max: number;
+  saturatesAt: number;
+  saturated: boolean;
+}
+interface CongestionFactors {
+  window_minutes: number;
+  factors: CongestionFactor[];
+}
+
 /** GET /api/wireless/trend — fleet client + utilisation over time. */
 interface TrendPoint {
   h: string;
@@ -1824,6 +1844,97 @@ function CongestionPill({ level }: { level: 'low' | 'medium' | 'high' | null }) 
   );
 }
 
+/**
+ * Why an AP scored what it scored.
+ *
+ * The badge alone was unexplainable. It sat next to UTILISATION, which is
+ * usually the SMALLEST real contributor — on a live example (AP505-P-TON) util
+ * supplied 11 points of 58 while a saturated retry rate supplied 25 and a 100%
+ * band imbalance supplied 15. So "High" appeared to contradict the "39%" printed
+ * beside it, and nothing in the drawer's charts explained the gap:
+ *
+ *  - the score is a 15-MINUTE reading while the charts default to 24h, so a
+ *    real spike (38% retry over 15 min vs a 10.2% 24h average) is true in the
+ *    score and invisible in the chart; and
+ *  - band imbalance is not charted anywhere at all, yet can contribute 15 pts.
+ *
+ * Both are stated here rather than left to be inferred.
+ */
+function CongestionBreakdown({ data, score, level }: {
+  data: CongestionFactors | null | undefined;
+  score: number | null;
+  level: 'low' | 'medium' | 'high' | null;
+}) {
+  if (!data || !data.factors?.length || score == null) return null;
+  // congestionTint takes a non-null level; the guard above only proves `score`
+  // is present, and an online AP always has both — fall back rather than assert.
+  const { fg } = congestionTint(level ?? 'low');
+  // Biggest contributor first — that is the answer to "why?".
+  const rows = [...data.factors].sort((a, b) => b.points - a.points);
+  const topLabel = rows[0] && rows[0].points > 0 ? rows[0].label.toLowerCase() : null;
+
+  return (
+    <div style={{ marginTop: 10, marginBottom: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+        <h3 style={{ margin: 0 }}>Why this score</h3>
+        <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>
+          measured over the last {data.window_minutes} minutes
+          {topLabel ? ` · driven mostly by ${topLabel}` : ''}
+        </span>
+      </div>
+      <table className="sv-table" style={{ width: '100%' }}>
+        <thead>
+          <tr>
+            <th style={STICKY_TH}>Factor</th>
+            <th style={STICKY_TH}>Reading</th>
+            <th style={{ ...STICKY_TH, width: '38%' }}>Contribution</th>
+            <th style={{ ...STICKY_TH, textAlign: 'right' }}>Points</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((f) => {
+            const pct = f.max > 0 ? Math.min(100, (f.points / f.max) * 100) : 0;
+            return (
+              <tr key={f.key}>
+                <td style={{ fontWeight: 600 }}>{f.label}</td>
+                <td style={{ whiteSpace: 'nowrap' }}>
+                  {f.input.toFixed(1)}{f.unit}
+                  {f.saturated && (
+                    <span
+                      title={`This factor stops responding at ${f.saturatesAt}${f.unit} — it is already contributing its full ${f.max} points, so a worse reading would not raise the score.`}
+                      style={{
+                        marginLeft: 6, fontSize: 'var(--text-xs)', fontWeight: 700,
+                        padding: '1px 6px', borderRadius: 'var(--radius-pill)',
+                        background: 'var(--tint-warn)', color: 'var(--tint-warn-fg)',
+                      }}
+                    >maxed</span>
+                  )}
+                </td>
+                <td>
+                  <span style={{ display: 'block', height: 6, borderRadius: 3, background: 'var(--surface-subtle)', overflow: 'hidden' }}>
+                    <span style={{ display: 'block', height: '100%', width: `${pct}%`, background: f.points > 0 ? fg : 'transparent' }} />
+                  </span>
+                </td>
+                <td style={{ textAlign: 'right', whiteSpace: 'nowrap', fontWeight: f.points > 0 ? 600 : 400, color: f.points > 0 ? undefined : 'var(--text-muted)' }}>
+                  {f.points} <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>/ {f.max}</span>
+                </td>
+              </tr>
+            );
+          })}
+          <tr>
+            <td colSpan={3} style={{ fontWeight: 700, textAlign: 'right' }}>Total</td>
+            <td style={{ textAlign: 'right', fontWeight: 700 }}>{score} <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>/ 100</span></td>
+          </tr>
+        </tbody>
+      </table>
+      <div style={{ marginTop: 6, fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>
+        High is 60+, medium 35+. The charts below default to 24 hours, so a short spike that
+        drives this score can be averaged out of view — narrow the range to see it.
+      </div>
+    </div>
+  );
+}
+
 // Labeled badge for the AP detail drawer's summary area — "Congestion: 62 (Medium)".
 // Renders nothing when the AP is offline (score/level null) rather than a
 // misleading "0".
@@ -3122,6 +3233,17 @@ function ApDetailDrawer({
                 <Line type="monotone" dataKey="interference_pct_5g" name="5GHz %" stroke={CHART_COLORS.g5} dot={false} connectNulls />
               </LineChart>
             </ResponsiveContainer>
+
+            {/* Placed directly ABOVE the channel-change section and BELOW the
+                charts, so the explanation sits next to the charts it is telling
+                you to re-scope. Sourced from `detail`, never the list object —
+                congestion_factors is detail-only (same shape trap as
+                channel_changes; see ApDetailDrawer's fetch). */}
+            <CongestionBreakdown
+              data={(detail as any)?.congestion_factors}
+              score={(detail ?? ap).congestion_score}
+              level={(detail ?? ap).congestion_level}
+            />
 
             <ChannelChanges ap={detail ?? ap} state={detailState} />
           </>
