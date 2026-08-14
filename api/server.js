@@ -36,6 +36,12 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.98.3': [
+    'Fixed: the access point panel reported "0" channel changes and "No channel changes recorded in the last 30 days" for access points that genuinely had them. AP01-Office-MKT-Shrimp, for instance, had two recorded changes on 11 and 12 August that the panel showed as none.',
+    'Channel-change history is only returned when an access point is requested individually, not in the list. Opening the panel from the Access Points tab handed it the list entry, which carries no history, and the panel treated the missing data as a confirmed zero. Opening the same access point from Wireless Insights fetched the full record and showed the real numbers - which is why it appeared to come and go.',
+    'The panel now loads the history itself however it was opened, and shows a dash rather than a zero while it is loading or if it fails. Absent data is no longer reported as "nothing happened".',
+    'No data was lost: every change recorded since tracking began is still stored, and none of the other panels were affected.',
+  ],
   '1.98.2': [
     'Bug sweep over everything changed today. Fixed: if the wireless distribution data failed to load, the Signal Quality and Channel Occupancy panels showed a loading spinner forever instead of an error - they read as "still working" when they were broken. Both now report the failure.',
     'Fixed: the cache behind the new chart data was meant to hold at most 64 entries but only ever discarded already-expired ones, so it could not shrink in precisely the situation the limit existed for. It now discards the oldest entries.',

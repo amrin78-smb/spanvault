@@ -2731,6 +2731,28 @@ function ApDetailDrawer({
   const [err, setErr] = useState<string | null>(null);
   const [apClients, setApClients] = useState<WirelessClient[]>([]);
 
+  // Detail-only fields. This drawer is opened two ways: from an Access Points
+  // row (which hands over the LIST object) and from a detail fetch (deep link,
+  // IntelApDrawer). Only `GET /api/wireless/aps/:id` returns channel_changes /
+  // channel_change_counts, so opened the first way the drawer had no history at
+  // all and rendered a confident 0/0/0 — which is what hid 2 real changes on
+  // AP01-Office-MKT-Shrimp. Fetch it here so the drawer is self-sufficient
+  // regardless of how it was opened; skip the round trip when the caller
+  // already passed a detail-shaped object.
+  const hasDetail = (ap as any).channel_change_counts != null;
+  const [detail, setDetail] = useState<AccessPoint | null>(hasDetail ? ap : null);
+  const [detailState, setDetailState] = useState<'loading' | 'ready' | 'error'>(hasDetail ? 'ready' : 'loading');
+  useEffect(() => {
+    if (hasDetail) { setDetail(ap); setDetailState('ready'); return; }
+    let cancelled = false;
+    setDetail(null);
+    setDetailState('loading');
+    apiGet<AccessPoint>(`/api/wireless/aps/${ap.id}`)
+      .then((full) => { if (!cancelled) { setDetail(full); setDetailState('ready'); } })
+      .catch(() => { if (!cancelled) setDetailState('error'); })
+    return () => { cancelled = true; };
+  }, [ap.id, hasDetail]);
+
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
@@ -3101,7 +3123,7 @@ function ApDetailDrawer({
               </LineChart>
             </ResponsiveContainer>
 
-            <ChannelChanges ap={ap} />
+            <ChannelChanges ap={detail ?? ap} state={detailState} />
           </>
         )}
       </div>
@@ -3266,30 +3288,56 @@ function causeStyle(cause: string | null): React.CSSProperties {
   return { background: 'var(--surface-subtle)', color: 'var(--text-muted)' };
 }
 
-function ChannelChanges({ ap }: { ap: AccessPoint }) {
+/**
+ * Channel-change history for one AP.
+ *
+ * `state` matters: `channel_changes` / `channel_change_counts` are returned ONLY
+ * by `GET /api/wireless/aps/:id`, never by the list. This drawer can be opened
+ * with either shape — from a list row (list-shaped, no counts) or from a detail
+ * fetch — and the original `counts = ap.channel_change_counts || {d7:0,...}`
+ * fallback turned "this object was never given the data" into a confident
+ * "0 / 0 / 0" plus "No channel changes recorded in the last 30 days".
+ *
+ * That was wrong on real data: AP01-Office-MKT-Shrimp had 2 recorded changes
+ * that the API returned correctly while the drawer showed zero. Absent data now
+ * renders as unknown, never as an assertion that nothing happened.
+ */
+function ChannelChanges({ ap, state }: { ap: AccessPoint; state: 'loading' | 'ready' | 'error' }) {
   const changes: ChannelChange[] = Array.isArray((ap as any).channel_changes) ? (ap as any).channel_changes : [];
-  const counts = (ap as any).channel_change_counts || { d7: 0, d30: 0, radar_suspected_7d: 0 };
+  const counts = (ap as any).channel_change_counts as { d7: number; d30: number; radar_suspected_7d: number } | undefined;
+  const ready = state === 'ready' && counts != null;
 
   return (
     <>
       <h3 style={{ marginBottom: 6 }}>Channel changes</h3>
       <div style={{ display: 'flex', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
         {[
-          { label: 'Last 7 days', value: counts.d7 },
-          { label: 'Last 30 days', value: counts.d30 },
-          { label: 'Radar suspected (7d)', value: counts.radar_suspected_7d },
+          { label: 'Last 7 days', value: counts?.d7 },
+          { label: 'Last 30 days', value: counts?.d30 },
+          { label: 'Radar suspected (7d)', value: counts?.radar_suspected_7d },
         ].map(s => (
           <div key={s.label} style={{
             flex: '1 1 120px', background: 'var(--surface-subtle)', border: '1px solid var(--border)',
             borderRadius: 'var(--radius-sm)', padding: '8px 10px',
           }}>
-            <div style={{ fontSize: 'var(--text-2xl)', fontWeight: 700, lineHeight: 1.1 }}>{s.value ?? 0}</div>
+            <div style={{
+              fontSize: 'var(--text-2xl)', fontWeight: 700, lineHeight: 1.1,
+              color: ready ? undefined : 'var(--text-muted)',
+            }}>
+              {ready ? (s.value ?? 0) : '—'}
+            </div>
             <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)' }}>{s.label}</div>
           </div>
         ))}
       </div>
 
-      {changes.length === 0 ? (
+      {!ready ? (
+        <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', marginBottom: 16 }}>
+          {state === 'error'
+            ? 'Channel-change history could not be loaded for this access point. The counts above are unknown, not zero.'
+            : 'Loading channel-change history…'}
+        </div>
+      ) : changes.length === 0 ? (
         <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', marginBottom: 16 }}>
           No channel changes recorded in the last 30 days. Changes are detected by comparing each
           poll against the last, so only moves that persist longer than the ~5 minute poll interval
