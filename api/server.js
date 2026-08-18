@@ -36,6 +36,11 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.99.1': [
+    'The "License expires in N days" warning now appears in SpanVault. It has been showing in NetVault and DDIVault for some time, but never here, so the licence could quietly approach expiry without any warning on this app.',
+    'The banner returned early for any active licence and never looked at how many days were left, so it only appeared once the licence had already expired or entered its grace period - by which point a warning is too late to be useful. It now warns from 30 days out, the same as the other apps.',
+    'The customer name in the banner is now labelled "Licensed to:" rather than appearing as a bare trailing name, matching NetVault and DDIVault.',
+  ],
   '1.99.0': [
     'The access point panel now shows WHY an access point is rated congested, instead of only asserting that it is. A "Why this score" table lists each of the five contributing factors with its reading, its share of the score and its points, largest contributor first.',
     'This was genuinely confusing before, and the badge was the misleading part: the level sat next to Utilisation, which is usually the SMALLEST contributor. On AP505-P-TON, utilisation supplied 11 points of 58 while the retry rate supplied 25 and a 100% band imbalance supplied 15 - so "High" looked like it contradicted the "39%" printed next to it.',

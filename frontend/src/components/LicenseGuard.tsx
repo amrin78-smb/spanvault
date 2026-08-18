@@ -76,10 +76,19 @@ export function useLicense() {
   return useContext(LicenseContext);
 }
 
+/** Days before expiry at which an ACTIVE licence starts warning. Suite-wide. */
+const EXPIRY_WARNING_DAYS = 30;
+
 export function LicenseBanner() {
   const { license, state } = useLicense();
   const hubUrl = getHubUrl();
-  if (!license || state.mode === 'active') return null;
+  // Guard-with-exception, NOT a flat `mode === 'active' -> return null`. An
+  // active licence that is nearly expired still has to warn — that is the whole
+  // point of a renewal notice. The flat return was why SpanVault showed nothing
+  // while DDIVault and NetVault showed "License expires in 13 days"; this file
+  // simply never received that half of the pattern (it has been absent since
+  // the original port).
+  if (!license || (state.mode === 'active' && license.daysRemaining > EXPIRY_WARNING_DAYS)) return null;
 
   const configs: Record<string, { bg: string; message: string }> = {
     trial:       { bg: '#1d4ed8', message: `Trial license — ${license.daysRemaining} day${license.daysRemaining !== 1 ? 's' : ''} remaining.` },
@@ -87,10 +96,16 @@ export function LicenseBanner() {
     disabled:    { bg: '#b91c1c', message: 'License expired and grace period ended. Please renew your NocVault license.' },
     unreachable: { bg: '#374151', message: 'License server unreachable — running in offline mode.' },
   };
+  if (state.mode === 'active' && license.daysRemaining <= EXPIRY_WARNING_DAYS) {
+    configs.expiring = {
+      bg: '#92400e',
+      message: `License expires in ${license.daysRemaining} day${license.daysRemaining !== 1 ? 's' : ''}. Renew now to avoid service interruption.`,
+    };
+  }
 
-  // Note: an 'active' license already returned null above, so there is no
-  // separate "expiring soon" banner here — only the non-active modes show one.
-  const cfg = configs[state.mode] || null;
+  // There is no configs.active, so an active-but-expiring licence falls through
+  // to the `expiring` variant built above.
+  const cfg = configs[state.mode] || (license.daysRemaining <= EXPIRY_WARNING_DAYS ? configs.expiring : null);
   if (!cfg) return null;
 
   return (
@@ -102,7 +117,9 @@ export function LicenseBanner() {
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <span>⚠️</span>
         <span>{cfg.message}</span>
-        {license.customer && <span style={{ opacity: 0.7, marginLeft: 8 }}>· {license.customer}</span>}
+        {/* "Licensed to:" label matches DDIVault/NetVault — without it the bar
+            reads as a bare trailing name rather than attribution. */}
+        {license.customer && <span style={{ opacity: 0.7, marginLeft: 8 }}>· Licensed to: {license.customer}</span>}
       </div>
       <a href={`${hubUrl}/settings/license`} target="_blank" rel="noopener noreferrer"
         style={{ color: '#fff', textDecoration: 'underline', fontSize: 'var(--text-sm)', whiteSpace: 'nowrap', marginLeft: 16 }}>
