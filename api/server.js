@@ -36,6 +36,10 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.100.1': [
+    'Fixed: the Alerts & Anomalies report did not work at all - it returned an error rather than a report. Its "Top Alerted" table grouped results by a column name that exists on two of the joined tables at once, which the database rejects as ambiguous, so the entire request failed. The fault pre-dates the 1.100.0 changes.',
+    'This was found by running every report against the live server after deploying, not by reading the code. It passes every build and type check, because the failure only happens when the query actually runs.',
+  ],
   '1.100.0': [
     'SECURITY: five wireless reports - Overview, AP Health, Client, RF and Capacity - were not restricted to the sites a user is assigned to. Anyone with a site-limited account opening those reports saw every site\'s access points, clients, SSIDs and RF data, not just their own. Wireless Security and Bandwidth were always restricted correctly, which is why this went unnoticed.',
     'The exported PDF versions of those same reports HAD always applied the restriction. That mismatch is how this was found: the same report showed different numbers on screen and in the export.',
@@ -7865,7 +7869,7 @@ app.get('/api/reports/alert-analysis', wrap(async (req, res) => {
               -- GROUP BY ORDINALS, not output names. "site_name" is both an
               -- output alias here AND a real column on d and sc2, and Postgres
               -- resolves GROUP BY names against the input columns first — so
-              -- the previous `GROUP BY ..., device_name, site_name, source`
+              -- the previous GROUP BY on device_name, site_name, source
               -- raised 'column reference "site_name" is ambiguous' and this
               -- endpoint returned a 500 for every request. (device_name and
               -- source are unambiguous only by luck; ordinals remove the whole
