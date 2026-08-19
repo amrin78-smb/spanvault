@@ -7862,7 +7862,16 @@ app.get('/api/reports/alert-analysis', wrap(async (req, res) => {
                      ROUND(AVG(EXTRACT(EPOCH FROM (a.resolved_at - a.triggered_at)) / 60.0)
                        FILTER (WHERE a.resolved_at IS NOT NULL)::numeric, 1) AS mttr_minutes
               ${base} AND (a.device_id IS NOT NULL OR a.service_check_id IS NOT NULL)
-              GROUP BY d.id, sc2.id, device_name, site_name, source ORDER BY count DESC LIMIT 10`, params),
+              -- GROUP BY ORDINALS, not output names. "site_name" is both an
+              -- output alias here AND a real column on d and sc2, and Postgres
+              -- resolves GROUP BY names against the input columns first — so
+              -- the previous `GROUP BY ..., device_name, site_name, source`
+              -- raised 'column reference "site_name" is ambiguous' and this
+              -- endpoint returned a 500 for every request. (device_name and
+              -- source are unambiguous only by luck; ordinals remove the whole
+              -- class.) Ordinals map to the SELECT list: 1=d.id, 2=sc2.id,
+              -- 3=device_name, 4=site_name, 5=source.
+              GROUP BY 1, 2, 3, 4, 5 ORDER BY count DESC LIMIT 10`, params),
     sv.query(`SELECT ROUND(AVG(EXTRACT(EPOCH FROM (a.resolved_at - a.triggered_at)) / 60.0)::numeric, 1) AS mttr
               ${base} AND a.resolved_at IS NOT NULL`, params),
     sv.query(`SELECT EXTRACT(HOUR FROM a.triggered_at)::int AS key, COUNT(*)::int AS count ${base} GROUP BY 1 ORDER BY count DESC LIMIT 1`, params),
