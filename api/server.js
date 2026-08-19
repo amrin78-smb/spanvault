@@ -36,6 +36,13 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.100.0': [
+    'SECURITY: five wireless reports - Overview, AP Health, Client, RF and Capacity - were not restricted to the sites a user is assigned to. Anyone with a site-limited account opening those reports saw every site\'s access points, clients, SSIDs and RF data, not just their own. Wireless Security and Bandwidth were always restricted correctly, which is why this went unnoticed.',
+    'The exported PDF versions of those same reports HAD always applied the restriction. That mismatch is how this was found: the same report showed different numbers on screen and in the export.',
+    'Top 10 Worst and Alerts & Anomalies ignored the site you had chosen. The report was headed with the site name while ranking and totalling the entire network; the PDF export applied the filter correctly. Both now honour it. Expect smaller, correct numbers on those two reports when scoped to a site - that is the fix, not a regression.',
+    'The AP Detail PDF now contains what the on-screen report shows: RF intelligence with its issues and recommendations, the current-client list and recent events. Previously the export was charts and four figures only, and dropped four whole sections.',
+    'AP Detail PDF charts are no longer simplified. Radio utilisation and noise floor show 2.4GHz and 5GHz separately instead of merging them into one line, throughput shows outbound as well as inbound, connected clients is split by band, and noise floor is plotted in real dBm rather than as a positive number with the scale reading backwards.',
+  ],
   '1.99.1': [
     'The "License expires in N days" warning now appears in SpanVault. It has been showing in NetVault and DDIVault for some time, but never here, so the licence could quietly approach expiry without any warning on this app.',
     'The banner returned early for any active licence and never looked at how many days were left, so it only appeared once the licence had already expired or entered its grace period - by which point a warning is too late to be useful. It now warns from 30 days out, the same as the other apps.',
@@ -7790,8 +7797,16 @@ app.get('/api/reports/top-worst', wrap(async (req, res) => {
   const limit = safeInt(req.query.limit, 10, 100);
   const params = [win.start, win.end];
   const sc = siteFilterClause(getSiteFilter(req), params, 'd.site_id');
+  // The report page sends site_id whenever the user scopes to a Site, and the
+  // header then renders "Site: <name>". This endpoint ignored it and ranked the
+  // WHOLE estate under that header, while the PDF export (reportsPdf.js's
+  // gatherTopWorst) applied it — so the same report named different devices on
+  // screen and in the export. RBAC scoping (sc) still applies on top.
+  let extra = sc ? ` AND ${sc}` : '';
+  const siteId = parseInt(req.query.site_id, 10);
+  if (!isNaN(siteId)) { params.push(siteId); extra += ` AND d.site_id = $${params.length}`; }
   const caps = await getReportCaps();
-  const r = await sv.query(perDeviceAggSql(sc ? ` AND ${sc}` : '', caps), params);
+  const r = await sv.query(perDeviceAggSql(extra, caps), params);
   let rows = r.rows.map((d) => ({
     device_id: d.id, device_name: d.device_name, site_name: d.site_name,
     uptime_pct: d.uptime_pct, avg_response_ms: d.avg_response_ms, alerts_count: d.alerts_count,
@@ -7818,6 +7833,17 @@ app.get('/api/reports/alert-analysis', wrap(async (req, res) => {
   if (siteFilter && siteFilter.length) {
     params.push(siteFilter);
     siteClause = ` AND (d.site_id = ANY($${params.length}::int[]) OR sc2.site_id = ANY($${params.length}::int[]))`;
+  }
+  // Same omission as /api/reports/top-worst: the page sends site_id when the
+  // user scopes to a Site and labels the report with that site, but this
+  // endpoint ranked/aggregated the whole estate. The PDF applied it, so every
+  // figure — total, MTTR, busiest hour/day and all four breakdown tables —
+  // disagreed between screen and export, and the "By Site" table listed sites
+  // the report claimed not to cover.
+  const aSiteId = parseInt(req.query.site_id, 10);
+  if (!isNaN(aSiteId)) {
+    params.push(aSiteId);
+    siteClause += ` AND (d.site_id = $${params.length} OR sc2.site_id = $${params.length})`;
   }
   const base = `FROM alerts a
     LEFT JOIN monitored_devices d ON d.id = a.device_id
@@ -8158,6 +8184,58 @@ function wlCtrl(req) {
   const id = parseInt(req.query.controller_id, 10);
   return isNaN(id) ? { has: false, id: null } : { has: true, id };
 }
+
+/**
+ * Scope builder for the wireless REPORT endpoints — controller filter AND RBAC.
+ *
+ * ⚠ `wlCtrl()` on its own is NOT an access-control boundary. It honours a
+ * caller-supplied `controller_id` and nothing else, so an endpoint filtered
+ * only by `wlCtrl()` returns the WHOLE estate to any authenticated user.
+ * Five of these endpoints shipped that way — wireless-overview, -ap-health,
+ * -clients, -rf and -capacity — meaning a `site_admin` could read every other
+ * site's APs, clients, SSIDs and RF data from them. (-security and -bandwidth
+ * always called getSiteFilter correctly, which is what made the omission easy
+ * to miss.) The PDF path in api/reportsPdf.js DID apply the site filter all
+ * along, so the same report silently disagreed between screen and export —
+ * that disagreement is how this was found.
+ *
+ * Returns a factory so every query gets its OWN params array: node-postgres
+ * sends whatever array you pass, and Postgres rejects a bind with more
+ * parameters than the statement has placeholders, so a single shared array
+ * cannot be reused across queries that need different fragments.
+ *
+ * mk(ctrlCol, siteCol) -> { where, and, params }
+ *   ctrlCol — column holding controller_id (null to skip)
+ *   siteCol — column holding site_id (null to skip)
+ */
+function wlScope(req) {
+  const c = wlCtrl(req);
+  const sf = getSiteFilter(req);
+  return function mk(ctrlCol, siteCol) {
+    const params = [];
+    const parts = [];
+    if (c.has && ctrlCol) { params.push(c.id); parts.push(`${ctrlCol} = $${params.length}`); }
+    if (siteCol === '@ctrl') {
+      // Tables with no site_id of their own (wireless_clients,
+      // wireless_client_events, wireless_intelligence) scope through the
+      // controller. Identical subquery to api/reportsPdf.js's wlCtrlClauses so
+      // the screen and the export resolve the same rows.
+      if (sf && sf.length) {
+        params.push(sf);
+        parts.push(`${ctrlCol} IN (SELECT id FROM wireless_controllers WHERE site_id = ANY($${params.length}::int[]))`);
+      }
+    } else if (siteCol) {
+      const s = siteFilterClause(sf, params, siteCol);
+      if (s) parts.push(s);
+    }
+    const joined = parts.join(' AND ');
+    return {
+      where: parts.length ? `WHERE ${joined}` : '',
+      and: parts.length ? ` AND ${joined}` : '',
+      params,
+    };
+  };
+}
 // SQL expression for an AP's effective utilisation (higher of the two bands).
 const WL_UTIL = 'GREATEST(COALESCE(a.radio_2g_util_pct,0), COALESCE(a.radio_5g_util_pct,0))';
 // Coerce a JSONB issues/recommendations element to a display string.
@@ -8175,23 +8253,30 @@ const mean = (arr) => (arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length 
 
 // ── Wireless overview ─────────────────────────────────────────
 app.get('/api/reports/wireless-overview', wrap(async (req, res) => {
-  const c = wlCtrl(req);
-  const p = c.has ? [c.id] : [];
-  const apW = c.has ? 'WHERE a.controller_id = $1' : '';
-  const ctrlW = c.has ? 'WHERE id = $1' : '';
+  // See wlScope(): this endpoint previously filtered by controller only, so a
+  // site_admin saw every site's wireless estate here.
+  const mk = wlScope(req);
+  const ap = mk('a.controller_id', 'a.site_id');
+  const ctrl = mk('id', 'site_id');
+  const wi = mk('controller_id', null);
+  const ssid = mk('controller_id', null);
 
   const sum = await sv.query(`
     SELECT
-      (SELECT COUNT(*)::int FROM wireless_controllers ${ctrlW}) AS total_controllers,
       COUNT(*)::int AS total_aps,
       COUNT(*) FILTER (WHERE a.status = 'online')::int  AS online_aps,
       COUNT(*) FILTER (WHERE a.status = 'offline')::int AS offline_aps,
       COALESCE(SUM(a.clients_total), 0)::int AS total_clients,
       ROUND(AVG(${WL_UTIL})::numeric, 1) AS avg_utilization
-    FROM wireless_aps a ${apW}`, p);
+    FROM wireless_aps a ${ap.where}`, ap.params);
+  // Controller count is its own query now: it was a scalar subquery sharing the
+  // AP filter's params, so it could not carry its own site predicate and always
+  // counted every controller in the estate.
+  const ctrlCount = await sv.query(
+    `SELECT COUNT(*)::int AS n FROM wireless_controllers ${ctrl.where}`, ctrl.params);
   const intel = await sv.query(`
     SELECT ROUND(AVG(overall_score)::numeric, 0) AS score
-    FROM wireless_intelligence ${c.has ? 'WHERE controller_id = $1' : ''}`, p).catch(() => ({ rows: [] }));
+    FROM wireless_intelligence ${wi.where}`, wi.params).catch(() => ({ rows: [] }));
 
   const bySite = await sv.query(`
     SELECT COALESCE(a.site_name, 'Unassigned') AS site_name,
@@ -8200,33 +8285,35 @@ app.get('/api/reports/wireless-overview', wrap(async (req, res) => {
            COUNT(*) FILTER (WHERE a.status = 'online')::int AS online_aps,
            COALESCE(SUM(a.clients_total), 0)::int AS clients,
            ROUND(AVG(${WL_UTIL})::numeric, 1) AS avg_utilization
-    FROM wireless_aps a ${apW}
-    GROUP BY 1 ORDER BY 1`, p);
+    FROM wireless_aps a ${ap.where}
+    GROUP BY 1 ORDER BY 1`, ap.params);
   const topAps = await sv.query(`
     SELECT a.name, COALESCE(a.site_name, 'Unassigned') AS site_name,
            COALESCE(a.clients_total, 0)::int AS clients,
            ROUND(${WL_UTIL}::numeric, 1) AS util
-    FROM wireless_aps a ${apW}
-    ORDER BY a.clients_total DESC NULLS LAST LIMIT 5`, p);
+    FROM wireless_aps a ${ap.where}
+    ORDER BY a.clients_total DESC NULLS LAST LIMIT 5`, ap.params);
   const topSsids = await sv.query(`
     SELECT ssid_name, COALESCE(clients_total, 0)::int AS client_count
-    FROM wireless_ssids ${c.has ? 'WHERE controller_id = $1' : ''}
-    ORDER BY clients_total DESC NULLS LAST LIMIT 5`, p);
+    FROM wireless_ssids ${ssid.where}
+    ORDER BY clients_total DESC NULLS LAST LIMIT 5`, ssid.params);
+  const offlineS = mk('a.controller_id', 'a.site_id');
   const offline = await sv.query(`
     SELECT a.name, COALESCE(a.site_name, 'Unassigned') AS site_name, a.last_seen_at AS last_seen
-    FROM wireless_aps a WHERE a.status = 'offline'${c.has ? ' AND a.controller_id = $1' : ''}
-    ORDER BY a.last_seen_at ASC NULLS LAST LIMIT 50`, p);
+    FROM wireless_aps a WHERE a.status = 'offline'${offlineS.and}
+    ORDER BY a.last_seen_at ASC NULLS LAST LIMIT 50`, offlineS.params);
+  const highS = mk('a.controller_id', 'a.site_id');
   const highUtil = await sv.query(`
     SELECT a.name, COALESCE(a.site_name, 'Unassigned') AS site_name, ROUND(${WL_UTIL}::numeric, 1) AS util
-    FROM wireless_aps a WHERE ${WL_UTIL} > 70${c.has ? ' AND a.controller_id = $1' : ''}
-    ORDER BY util DESC LIMIT 50`, p);
+    FROM wireless_aps a WHERE ${WL_UTIL} > 70${highS.and}
+    ORDER BY util DESC LIMIT 50`, highS.params);
 
   const s = sum.rows[0] || {};
   const score = intel.rows[0] && intel.rows[0].score != null ? Number(intel.rows[0].score) : null;
   res.json({
     period: req.query.range || '30d',
     summary: {
-      total_controllers: s.total_controllers || 0,
+      total_controllers: (ctrlCount.rows[0] && ctrlCount.rows[0].n) || 0,
       total_aps: s.total_aps || 0,
       online_aps: s.online_aps || 0,
       offline_aps: s.offline_aps || 0,
@@ -8247,9 +8334,9 @@ app.get('/api/reports/wireless-overview', wrap(async (req, res) => {
 
 // ── Wireless AP health ────────────────────────────────────────
 app.get('/api/reports/wireless-ap-health', wrap(async (req, res) => {
-  const c = wlCtrl(req);
-  const p = c.has ? [c.id] : [];
-  const where = c.has ? 'WHERE a.controller_id = $1' : '';
+  const apS = wlScope(req)('a.controller_id', 'a.site_id');
+  const p = apS.params;
+  const where = apS.where;
   const baseCols = `
     a.name, c.name AS controller_name, COALESCE(a.site_name, 'Unassigned') AS site_name,
     a.status, COALESCE(a.clients_total, 0)::int AS clients,
@@ -8310,10 +8397,10 @@ app.get('/api/reports/wireless-ap-health', wrap(async (req, res) => {
 
 // ── Wireless client analysis ──────────────────────────────────
 app.get('/api/reports/wireless-clients', wrap(async (req, res) => {
-  const c = wlCtrl(req);
-  const p = c.has ? [c.id] : [];
-  const w = c.has ? 'WHERE controller_id = $1' : '';
-  const and = c.has ? 'AND controller_id = $1' : '';
+  const clS = wlScope(req)('controller_id', '@ctrl');
+  const p = clS.params;
+  const w = clS.where;
+  const and = clS.and;
 
   const sum = await sv.query(`
     SELECT COUNT(*)::int AS total_clients,
@@ -8371,10 +8458,13 @@ app.get('/api/reports/wireless-clients', wrap(async (req, res) => {
 
 // ── Wireless RF health ────────────────────────────────────────
 app.get('/api/reports/wireless-rf', wrap(async (req, res) => {
-  const c = wlCtrl(req);
-  const p = c.has ? [c.id] : [];
-  const intelW = c.has ? 'WHERE controller_id = $1' : '';
-  const apW = c.has ? 'WHERE a.controller_id = $1' : '';
+  const rfMk = wlScope(req);
+  const intelS = rfMk('controller_id', '@ctrl');
+  const apS2 = rfMk('a.controller_id', 'a.site_id');
+  const p = intelS.params;
+  const intelW = intelS.where;
+  const apW = apS2.where;
+  const apP = apS2.params;
 
   const agg = await sv.query(`
     SELECT ROUND(AVG(overall_score)::numeric, 0)      AS overall_score,
@@ -8390,11 +8480,11 @@ app.get('/api/reports/wireless-rf', wrap(async (req, res) => {
     SELECT recommendations FROM wireless_intelligence ${intelW}`, p).catch(() => ({ rows: [] }));
   const chans = await sv.query(`
     SELECT a.radio_2g_channel AS ch2, a.radio_5g_channel AS ch5
-    FROM wireless_aps a ${apW}`, p);
+    FROM wireless_aps a ${apW}`, apP);
   const grades = await sv.query(`
     SELECT ai.health_grade AS g, COUNT(*)::int AS n
     FROM wireless_ap_intelligence ai JOIN wireless_aps a ON a.id = ai.ap_id ${apW}
-    GROUP BY 1`, p).catch(() => ({ rows: [] }));
+    GROUP BY 1`, apP).catch(() => ({ rows: [] }));
   // Real measured airtime interference (Aruba SNMP: channelBusy - ownRxAirtime - ownTxAirtime),
   // distinct from the channel-plan-based interference_score above.
   const interf = await sv.query(`
@@ -8402,15 +8492,15 @@ app.get('/api/reports/wireless-rf', wrap(async (req, res) => {
            ROUND(AVG(a.interference_pct_5g)::numeric, 1) AS avg_5g,
            COUNT(*) FILTER (WHERE a.interference_pct_2g IS NOT NULL OR a.interference_pct_5g IS NOT NULL)::int AS reporting,
            COUNT(*) FILTER (WHERE a.interference_pct_2g >= 25 OR a.interference_pct_5g >= 25)::int AS high
-    FROM wireless_aps a ${apW}`, p).catch(() => ({ rows: [] }));
+    FROM wireless_aps a ${apW}`, apP).catch(() => ({ rows: [] }));
   const worstInterf = await sv.query(`
     SELECT a.name, COALESCE(a.site_name, 'Unassigned') AS site_name,
            CASE WHEN COALESCE(a.interference_pct_2g, -1) >= COALESCE(a.interference_pct_5g, -1)
                 THEN '2.4GHz' ELSE '5GHz' END AS band,
            GREATEST(COALESCE(a.interference_pct_2g, 0), COALESCE(a.interference_pct_5g, 0)) AS pct
     FROM wireless_aps a
-    WHERE (a.interference_pct_2g IS NOT NULL OR a.interference_pct_5g IS NOT NULL)${c.has ? ' AND a.controller_id = $1' : ''}
-    ORDER BY pct DESC LIMIT 10`, p).catch(() => ({ rows: [] }));
+    WHERE (a.interference_pct_2g IS NOT NULL OR a.interference_pct_5g IS NOT NULL)${apS2.and}
+    ORDER BY pct DESC LIMIT 10`, apP).catch(() => ({ rows: [] }));
 
   const recommendations = [];
   const seen = new Set();
@@ -8462,13 +8552,15 @@ app.get('/api/reports/wireless-rf', wrap(async (req, res) => {
 
 // ── Wireless capacity ─────────────────────────────────────────
 app.get('/api/reports/wireless-capacity', wrap(async (req, res) => {
-  const c = wlCtrl(req);
-  const p = c.has ? [c.id] : [];
-  const apW = c.has ? 'WHERE a.controller_id = $1' : '';
+  const capMk = wlScope(req);
+  const capCtrl = capMk('id', 'site_id');
+  const capAp = capMk('a.controller_id', 'a.site_id');
+  const p = capAp.params;
+  const apW = capAp.where;
 
   const lic = await sv.query(`
     SELECT COALESCE(SUM(licensed_aps), 0)::int AS licensed
-    FROM wireless_controllers ${c.has ? 'WHERE id = $1' : ''}`, p);
+    FROM wireless_controllers ${capCtrl.where}`, capCtrl.params);
   const used = await sv.query(`
     SELECT COUNT(*)::int AS used, COALESCE(SUM(a.clients_total), 0)::int AS total_clients
     FROM wireless_aps a ${apW}`, p);
@@ -8476,14 +8568,14 @@ app.get('/api/reports/wireless-capacity', wrap(async (req, res) => {
     WITH per_poll AS (
       SELECT date_trunc('hour', h.ts) AS bucket, SUM(h.clients_total) AS total
       FROM wireless_history h JOIN wireless_aps a ON a.id = h.ap_id
-      WHERE h.ts >= NOW() - INTERVAL '30 days'${c.has ? ' AND a.controller_id = $1' : ''}
+      WHERE h.ts >= NOW() - INTERVAL '30 days'${capAp.and}
       GROUP BY 1
     )
     SELECT to_char(date_trunc('day', bucket), 'YYYY-MM-DD') AS day, ROUND(AVG(total))::int AS clients
     FROM per_poll GROUP BY 1 ORDER BY 1`, p).catch(() => ({ rows: [] }));
   const highUtil = await sv.query(`
     SELECT a.name, COALESCE(a.site_name, 'Unassigned') AS site_name, ROUND(${WL_UTIL}::numeric, 1) AS util
-    FROM wireless_aps a WHERE ${WL_UTIL} > 70${c.has ? ' AND a.controller_id = $1' : ''}
+    FROM wireless_aps a WHERE ${WL_UTIL} > 70${capAp.and}
     ORDER BY util DESC LIMIT 50`, p);
 
   const licensed = lic.rows[0] ? lic.rows[0].licensed : 0;

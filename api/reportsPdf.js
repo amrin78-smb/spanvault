@@ -2933,7 +2933,63 @@ function renderEntitySection(doc, layout, ent) {
     return;
   }
   ent.charts.forEach((c) => renderChartBlock(doc, layout, c.title, c.points,
-    { yMax: c.yMax, ySuffix: c.ySuffix, color: c.color, rangeLabel: c.rangeLabel }));
+    { series: c.series, yMin: c.yMin, yMax: c.yMax, ySuffix: c.ySuffix, color: c.color, rangeLabel: c.rangeLabel }));
+
+  renderEntityBlocks(doc, layout, ent);
+}
+
+/**
+ * Ordered non-chart sections for a per-entity page.
+ *
+ * renderEntitySection could previously emit only three things — header, KPI
+ * tiles, charts — while the on-screen reports have six kinds (header, tiles,
+ * prose, table, chart, and per-report panels). Every section missing from the
+ * PDFs fell into the kinds this function adds, so growing the vocabulary here
+ * closes the gap for ap-detail and gives device-detail/service-detail the same
+ * capability without another renderer.
+ *
+ * ent.blocks = [{ kind: 'text'|'bullets'|'table', ... }] rendered in order.
+ * Absent/empty blocks are skipped rather than emitting a bare heading.
+ */
+function renderEntityBlocks(doc, layout, ent) {
+  const { left, contentW, pageH } = layout;
+  const blocks = ent.blocks || [];
+  for (const b of blocks) {
+    if (!b) continue;
+
+    if (b.kind === 'text' || b.kind === 'bullets') {
+      const items = b.kind === 'bullets' ? (b.items || []) : null;
+      if (b.kind === 'bullets' && !items.length && !b.emptyText) continue;
+      if (b.kind === 'text' && !b.text) continue;
+      if (doc.y + 46 > pageH - doc.page.margins.bottom) doc.addPage();
+      doc.fillColor(NAVY).fontSize(12).font('Helvetica-Bold')
+        .text(b.title, left, doc.y + 6, { width: contentW });
+      if (b.kind === 'bullets') bulletList(doc, layout, items, b.emptyText);
+      else {
+        doc.fillColor('#334155').fontSize(10).font('Helvetica')
+          .text(String(b.text), left, doc.y + 4, { width: contentW });
+      }
+      doc.y += 6;
+      continue;
+    }
+
+    if (b.kind === 'table') {
+      const rows = b.rows || [];
+      if (!rows.length) continue;
+      // continueOnPage keeps a short table on the current page instead of
+      // drawTable's default of starting a fresh one — otherwise every entity
+      // page would be followed by three near-empty pages.
+      if (doc.y + 90 > pageH - doc.page.margins.bottom) doc.addPage();
+      doc.fillColor(NAVY).fontSize(12).font('Helvetica-Bold')
+        .text(b.title, left, doc.y + 6, { width: contentW });
+      drawTable(doc, { columns: b.columns, rows }, layout, { continueOnPage: true });
+      if (b.note) {
+        doc.fillColor(MUTED).fontSize(8).font('Helvetica-Oblique')
+          .text(b.note, left, doc.y + 4, { width: contentW });
+      }
+      doc.y += 6;
+    }
+  }
 }
 
 // Shared entry point for both granular reports. Produces a valid "nothing
@@ -3088,7 +3144,24 @@ function renderDeviceDetail(doc, data, layout) { renderEntityReport(doc, data, l
 // ── AP Detail — mirror of GET /api/reports/ap-detail/:id ──
 // Metric keys (frontend DETAIL_METRICS['ap-detail']): clients, radio_util,
 // noise, throughput.
+// Band colours match the on-screen chart exactly (ApDetailReport.tsx) so the
+// PDF and the screen are readable as the same chart, not merely the same data.
 const AP_COLORS = { clients: '#7c3aed', util: YELLOW, noise: '#f97316', throughput: '#2563eb' };
+// Row cap for the per-AP client/event tables — an AP with hundreds of clients
+// must not turn an 11-AP export into hundreds of pages. Always paired with a
+// "showing N of M" note so a truncated table never reads as a complete one.
+const AP_TABLE_CAP = 25;
+function fmtDateTime(t) {
+  if (!t) return '—';
+  const d = t instanceof Date ? t : new Date(t);
+  if (isNaN(d.getTime())) return '—';
+  const p = (n) => (n < 10 ? '0' + n : String(n));
+  return `${p(d.getDate())}/${p(d.getMonth() + 1)} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+const BAND_2G = '#f97316';   // orange - 2.4 GHz
+const BAND_5G = '#2563eb';   // blue   - 5 GHz
+const TP_IN = '#2563eb';
+const TP_OUT = '#f97316';
 
 async function gatherApDetail(db, params) {
   const q = params || {};
@@ -3120,17 +3193,37 @@ async function gatherApDetail(db, params) {
     const seriesQ = await runQ('series', `
       SELECT date_bin($2::interval, ts, TIMESTAMPTZ '2000-01-01') AS ts,
              ROUND(AVG(clients_total)::numeric, 1)  AS clients_total,
+             ROUND(AVG(clients_2g)::numeric, 1)     AS clients_2g,
+             ROUND(AVG(clients_5g)::numeric, 1)     AS clients_5g,
              ROUND(AVG(radio_2g_util)::numeric, 1)  AS radio_2g_util,
              ROUND(AVG(radio_5g_util)::numeric, 1)  AS radio_5g_util,
              ROUND(AVG(noise_floor_2g)::numeric, 1) AS noise_floor_2g,
              ROUND(AVG(noise_floor_5g)::numeric, 1) AS noise_floor_5g,
-             ROUND(AVG(throughput_in_bps)::numeric, 0)  AS throughput_in_bps
+             ROUND(AVG(throughput_in_bps)::numeric, 0)  AS throughput_in_bps,
+             ROUND(AVG(throughput_out_bps)::numeric, 0) AS throughput_out_bps
       FROM wireless_history
       WHERE ap_id = $1 AND ts BETWEEN $3 AND $4
       GROUP BY 1 ORDER BY 1`, [id, range.intervalSql, range.from, range.to], []);
     const disco = await runQ('disco', `
       SELECT COUNT(*)::int AS c FROM wireless_client_events
       WHERE from_ap_id = $1 AND event_type = 'leave' AND ts BETWEEN $2 AND $3`, [id, range.from, range.to], [{ c: 0 }]);
+
+    // Sections the on-screen report shows but the PDF used to omit entirely.
+    // Same SQL as GET /api/reports/ap-detail/:id so the two cannot disagree.
+    const intelQ = await runQ('intel', `
+      SELECT health_score, health_grade, load_status, load_pct, co_channel_neighbors,
+             channel_recommendation, band_ratio_healthy, issues, recommendations
+      FROM wireless_ap_intelligence WHERE ap_id = $1`, [id], []);
+    const clientsQ = await runQ('clients', `
+      SELECT mac_address, hostname, ip_address, ssid_name, band, channel,
+             rssi_dbm, tx_rate_mbps, roaming_count, is_problem, is_sticky
+      FROM wireless_clients WHERE ap_id = $1
+      ORDER BY last_seen_at DESC`, [id], []);
+    const eventsQ = await runQ('events', `
+      SELECT ts, event_type, from_ap_name, to_ap_name, rssi_dbm, ssid_name
+      FROM wireless_client_events
+      WHERE (from_ap_id = $1 OR to_ap_id = $1) AND ts BETWEEN $2 AND $3
+      ORDER BY ts DESC LIMIT 200`, [id, range.from, range.to], []);
 
     const seriesRows = seriesQ.rows;
     const sampleCount = seriesRows.length;
@@ -3139,28 +3232,77 @@ async function gatherApDetail(db, params) {
     const downEvents = Math.max(0, expected - online);
     const disconnects = disco.rows[0] ? disco.rows[0].c : 0;
 
+    // Charts now mirror the on-screen ones band-for-band. renderTrendChart
+    // gained multi-series + a yMin, so the three lossy workarounds this used to
+    // need (max() of both bands, |dBm|, in-only throughput) are all gone.
+    const bandPts = (col) => {
+      const out = [];
+      for (const r of seriesRows) { if (r[col] != null) out.push({ t: r.ts, v: Number(r[col]) }); }
+      return out;
+    };
     const charts = [];
-    if (want('clients')) { const pts = seriesPointsCol(seriesRows, 'clients_total'); if (pts.length) charts.push({ title: 'Connected clients', points: pts, yMax: autoYMax(pts), ySuffix: '', color: AP_COLORS.clients, rangeLabel }); }
-    if (want('radio_util')) {
-      const pts = [];
-      for (const r of seriesRows) {
-        if (r.radio_2g_util == null && r.radio_5g_util == null) continue;
-        pts.push({ t: r.ts, v: Math.max(Number(r.radio_2g_util || 0), Number(r.radio_5g_util || 0)) });
+    if (want('clients')) {
+      // Total + per-band, same three series the screen draws. clients_2g/5g are
+      // already in the series SELECT below; only clients_total was being used.
+      const tot = seriesPointsCol(seriesRows, 'clients_total');
+      const c2 = bandPts('clients_2g'), c5 = bandPts('clients_5g');
+      if (tot.length || c2.length || c5.length) {
+        charts.push({
+          title: 'Connected clients', yMax: autoYMax(tot.concat(c2, c5)), ySuffix: '', rangeLabel,
+          series: [
+            { name: 'Total', color: AP_COLORS.clients, points: tot },
+            { name: '2.4 GHz', color: BAND_2G, points: c2 },
+            { name: '5 GHz', color: BAND_5G, points: c5 },
+          ],
+        });
       }
-      if (pts.length) charts.push({ title: 'Radio utilization (%)', points: pts, yMax: 100, ySuffix: '%', color: AP_COLORS.util, rangeLabel });
+    }
+    if (want('radio_util')) {
+      const g2 = bandPts('radio_2g_util'), g5 = bandPts('radio_5g_util');
+      if (g2.length || g5.length) {
+        charts.push({
+          title: 'Radio utilization (%)', yMax: 100, ySuffix: '%', rangeLabel,
+          series: [{ name: '2.4 GHz', color: BAND_2G, points: g2 }, { name: '5 GHz', color: BAND_5G, points: g5 }],
+        });
+      }
     }
     if (want('noise')) {
-      // Noise floor is negative dBm; the chart renderer plots [0..yMax], so we
-      // chart its magnitude (|dBm|) as a trend indicator.
-      const pts = [];
-      for (const r of seriesRows) {
-        const n = r.noise_floor_5g != null ? r.noise_floor_5g : r.noise_floor_2g;
-        if (n == null) continue;
-        pts.push({ t: r.ts, v: Math.abs(Number(n)) });
+      // Real negative dBm now that the axis supports a yMin — the axis reads the
+      // same direction as on screen (lower = noisier) instead of inverted.
+      const g2 = bandPts('noise_floor_2g'), g5 = bandPts('noise_floor_5g');
+      const all = g2.concat(g5);
+      if (all.length) {
+        let lo = Infinity, hi = -Infinity;
+        for (const p of all) { if (p.v < lo) lo = p.v; if (p.v > hi) hi = p.v; }
+        const pad = Math.max(2, Math.round((hi - lo) * 0.15));
+        charts.push({
+          title: 'Noise floor (dBm)', yMin: Math.floor(lo - pad), yMax: Math.ceil(hi + pad), ySuffix: '', rangeLabel,
+          series: [{ name: '2.4 GHz', color: BAND_2G, points: g2 }, { name: '5 GHz', color: BAND_5G, points: g5 }],
+        });
       }
-      if (pts.length) charts.push({ title: 'Noise floor (|dBm|)', points: pts, yMax: autoYMax(pts), ySuffix: '', color: AP_COLORS.noise, rangeLabel });
     }
-    if (want('throughput')) { const pts = seriesPointsCol(seriesRows, 'throughput_in_bps', (v) => Math.round(v / 1e6 * 100) / 100); if (pts.length) charts.push({ title: 'Throughput in (Mbps)', points: pts, yMax: autoYMax(pts), ySuffix: ' Mb', color: AP_COLORS.throughput, rangeLabel }); }
+    if (want('throughput')) {
+      const toMb = (rows, col) => rows.filter((r) => r[col] != null)
+        .map((r) => ({ t: r.ts, v: Math.round(Number(r[col]) / 1e6 * 100) / 100 }));
+      const tin = toMb(seriesRows, 'throughput_in_bps'), tout = toMb(seriesRows, 'throughput_out_bps');
+      if (tin.length || tout.length) {
+        charts.push({
+          title: 'Throughput (Mbps)', yMax: autoYMax(tin.concat(tout)), ySuffix: ' Mb', rangeLabel,
+          series: [{ name: 'In', color: TP_IN, points: tin }, { name: 'Out', color: TP_OUT, points: tout }],
+        });
+      }
+    }
+
+    // ── the three previously-absent sections ──
+    const intel = intelQ.rows[0] || null;
+    const asList = (v) => (Array.isArray(v) ? v : []);
+    const rf = intel ? {
+      grade: intel.health_grade, score: intel.health_score,
+      loadStatus: intel.load_status, loadPct: intel.load_pct,
+      coChannel: intel.co_channel_neighbors, channelRec: intel.channel_recommendation,
+      bandHealthy: intel.band_ratio_healthy,
+      issues: asList(intel.issues), recommendations: asList(intel.recommendations),
+    } : null;
 
     const subline = [ap.model, ap.ip_address, ap.controller_name, ap.site_name].filter((x) => x != null && x !== '').join(' · ');
     entities.push({
@@ -3172,6 +3314,70 @@ async function gatherApDetail(db, params) {
         { value: String(disconnects), label: 'Disconnects', color: YELLOW },
       ],
       charts,
+      // The sections the PDF used to drop entirely. Order matches the on-screen
+      // report: RF intelligence, then current clients, then recent events.
+      blocks: [
+        rf ? {
+          kind: 'text', title: 'RF intelligence',
+          text: [
+            `Health ${rf.score == null ? '—' : Math.round(Number(rf.score))}/100${rf.grade ? ` (grade ${rf.grade})` : ''}`,
+            `load ${rf.loadStatus || 'unknown'}${rf.loadPct == null ? '' : ` at ${Math.round(Number(rf.loadPct))}%`}`,
+            `${rf.coChannel == null ? 0 : rf.coChannel} co-channel neighbour${rf.coChannel === 1 ? '' : 's'}`,
+            rf.bandHealthy === false ? 'band ratio unhealthy' : 'band ratio healthy',
+            rf.channelRec ? `Channel recommendation: ${rf.channelRec}` : null,
+          ].filter(Boolean).join(' · '),
+        } : null,
+        rf && rf.issues.length ? { kind: 'bullets', title: 'Issues', items: rf.issues.map(String) } : null,
+        rf && rf.recommendations.length ? { kind: 'bullets', title: 'Recommendations', items: rf.recommendations.map(String) } : null,
+        {
+          kind: 'table', title: `Current clients (${clientsQ.rows.length})`,
+          columns: [
+            { key: 'host', label: 'Client', width: 130 },
+            { key: 'ip', label: 'IP', width: 80 },
+            { key: 'ssid', label: 'SSID', width: 80 },
+            { key: 'band', label: 'Band', width: 44 },
+            { key: 'ch', label: 'Ch', width: 32 },
+            { key: 'rssi', label: 'RSSI', width: 50 },
+            { key: 'rate', label: 'Rate', width: 56 },
+            { key: 'flags', label: 'Flags', width: 62 },
+          ],
+          // Capped so one AP with hundreds of clients cannot turn an 11-AP
+          // export into hundreds of pages; the count is stated either way.
+          rows: clientsQ.rows.slice(0, AP_TABLE_CAP).map((c) => ({
+            host: c.hostname || c.mac_address || '—',
+            ip: c.ip_address || '—',
+            ssid: c.ssid_name || '—',
+            band: c.band == null ? '—' : `${c.band}G`,
+            ch: c.channel == null ? '—' : String(c.channel),
+            rssi: c.rssi_dbm == null ? '—' : `${c.rssi_dbm} dBm`,
+            rate: c.tx_rate_mbps == null ? '—' : `${c.tx_rate_mbps} Mbps`,
+            flags: [c.is_problem ? 'problem' : null, c.is_sticky ? 'sticky' : null].filter(Boolean).join(', ') || '—',
+          })),
+          note: clientsQ.rows.length > AP_TABLE_CAP
+            ? `Showing the first ${AP_TABLE_CAP} of ${clientsQ.rows.length} clients.` : null,
+        },
+        {
+          kind: 'table', title: `Recent events (${eventsQ.rows.length})`,
+          columns: [
+            { key: 'when', label: 'When', width: 110 },
+            { key: 'type', label: 'Event', width: 70 },
+            { key: 'from', label: 'From AP', width: 120 },
+            { key: 'to', label: 'To AP', width: 120 },
+            { key: 'ssid', label: 'SSID', width: 90 },
+            { key: 'rssi', label: 'RSSI', width: 54 },
+          ],
+          rows: eventsQ.rows.slice(0, AP_TABLE_CAP).map((e) => ({
+            when: fmtDateTime(e.ts),
+            type: e.event_type || '—',
+            from: e.from_ap_name || '—',
+            to: e.to_ap_name || '—',
+            ssid: e.ssid_name || '—',
+            rssi: e.rssi_dbm == null ? '—' : `${e.rssi_dbm} dBm`,
+          })),
+          note: eventsQ.rows.length > AP_TABLE_CAP
+            ? `Showing the first ${AP_TABLE_CAP} of ${eventsQ.rows.length} events.` : null,
+        },
+      ].filter(Boolean),
     });
   }
 
