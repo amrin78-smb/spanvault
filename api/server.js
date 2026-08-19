@@ -36,6 +36,12 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.100.2': [
+    'Detail report PDFs (AP, Device, Service) now show the TIME you picked, not just the date. Choosing 08:00 to 17:00 on one day printed "18/08/2026 to 18/08/2026" - identical to the whole day - because the cover and the chart captions dropped the time. Times are shown whenever the window is not a whole day.',
+    'Chart date axes on those PDFs now include the time on windows shorter than three days. Every tick previously read the same date, so the axis carried no information at all on a same-day report.',
+    'Report PDFs now state the time zone on the cover page. Times in the PDF are rendered in the time zone of the SERVER, while the on-screen report uses the time zone of your browser - the two agree only while both are in the same zone, and a scheduled report is read away from the server entirely.',
+    'Fixed: picking a custom range on a detail report and then switching to any other report returned an error instead of a report. The time part of the range was carried over into a control that only accepts dates, producing a range the server could not read. Affected the on-screen report and the PDF export alike.',
+  ],
   '1.100.1': [
     'Fixed: the Alerts & Anomalies report did not work at all - it returned an error rather than a report. Its "Top Alerted" table grouped results by a column name that exists on two of the joined tables at once, which the database rejects as ambiguous, so the entire request failed. The fault pre-dates the 1.100.0 changes.',
     'This was found by running every report against the live server after deploying, not by reading the code. It passes every build and type check, because the failure only happens when the query actually runs.',
@@ -6908,11 +6914,25 @@ function getDateRange(query) {
   const dateFrom = query.date_from || query.from;
   const dateTo = query.date_to || query.to;
   if (range === 'custom' && dateFrom && dateTo) {
-    return {
-      start: new Date(dateFrom).toISOString(),
-      end: new Date(dateTo + 'T23:59:59').toISOString(),
-      label: `${dateFrom} to ${dateTo}`,
-    };
+    // A date-only "2026-08-18" means the WHOLE day, so the end is pushed to the
+    // last second. A value that ALREADY carries a time must be used as-is:
+    // appending T23:59:59 to "2026-08-18T17:00" yields "2026-08-18T17:00T23:59:59",
+    // an Invalid Date whose .toISOString() THROWS and 500s the whole report.
+    // That is reachable from the UI - the granular detail templates use
+    // datetime-local pickers and the from/to state survives a switch to a
+    // non-granular template, which sends the leftover value here.
+    const hasTime = String(dateTo).indexOf('T') > 0;
+    const startD = new Date(dateFrom);
+    const endD = new Date(hasTime ? dateTo : dateTo + 'T23:59:59');
+    if (isFinite(startD.getTime()) && isFinite(endD.getTime())) {
+      return {
+        start: startD.toISOString(),
+        end: endD.toISOString(),
+        label: `${dateFrom} to ${dateTo}`,
+      };
+    }
+    // Unparseable input falls through to the default preset window below
+    // rather than throwing - a report with a sane default window beats a 500.
   }
   const days = range === '7d' ? 7 : range === '90d' ? 90 : range === '24h' ? 1 : 30;
   const end = new Date();

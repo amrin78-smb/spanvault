@@ -597,6 +597,19 @@ export default function ReportsPage() {
 
   // Select a template from the catalog rail: set the template and surface the View tab.
   function selectTemplate(key: string) {
+    // Granular templates render datetime-local pickers, the rest render date
+    // pickers, but the from/to state is shared between them. Handing a
+    // "2026-08-18T08:00" value to a date input leaves the FIELD blank while the
+    // state keeps the time, so the user sees an empty picker and still submits
+    // a time - which the API cannot parse. Truncate on the way down so the
+    // control and the state can never disagree. (The API also tolerates this
+    // now; this stops the bad value being produced in the first place.)
+    const nextGranular = !!TEMPLATE_BY_KEY[key]?.granular;
+    if (!nextGranular) {
+      const dayOnly = (v: string) => (v && v.includes('T') ? v.split('T')[0] : v);
+      setFrom(dayOnly);
+      setTo(dayOnly);
+    }
     setTemplate(key);
     setTab('view');
   }

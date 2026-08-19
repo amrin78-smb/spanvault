@@ -51,10 +51,21 @@ function pad2(n) {
   return n < 10 ? '0' + n : '' + n;
 }
 
-// short label like "08 Jun"
-function fmtDate(ms) {
+// Axis tick label. Date-only ("08 Jun") reads fine across a multi-day window,
+// but on a sub-day window every tick lands on the SAME date, so all four labels
+// render identically and the axis stops carrying any information at all - which
+// is exactly what a custom same-day range produced. Below the threshold the
+// label gains a time ("08 Jun 14:30"), matching what the on-screen recharts
+// axis shows. Rendered in the server's local timezone, like every other stamp
+// in these PDFs.
+var TICK_TIME_SPAN_MS = 3 * 24 * 3600 * 1000;
+function fmtDate(ms, span) {
   var d = new Date(ms);
-  return pad2(d.getDate()) + ' ' + MONTHS[d.getMonth()];
+  var base = pad2(d.getDate()) + ' ' + MONTHS[d.getMonth()];
+  if (span != null && span > 0 && span < TICK_TIME_SPAN_MS) {
+    return base + ' ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+  }
+  return base;
 }
 
 // Normalize + validate the incoming series. Returns ascending array of
@@ -268,13 +279,15 @@ function renderTrendChart(doc, opts) {
     doc.moveTo(tx, baseY).lineTo(tx, baseY + 2)
        .lineWidth(0.5).strokeColor(AXIS).stroke();
     // label, anchored so first is left-aligned, last right-aligned, mid centered
-    var lw = 48;
+    // Wide enough for the longest form ("08 Jun 14:30" at 7pt); with 4 ticks
+    // across the plot the boxes still cannot collide.
+    var lw = 56;
     var align = 'center';
     var lx = tx - lw / 2;
     if (k === 0) { align = 'left'; lx = tx; }
     else if (k === tickCount - 1) { align = 'right'; lx = tx - lw; }
     doc.fillColor(MUTED)
-       .text(fmtDate(ms), lx, labelY, { width: lw, align: align, lineBreak: false });
+       .text(fmtDate(ms, span), lx, labelY, { width: lw, align: align, lineBreak: false });
   }
 
   for (var s2 = 0; s2 < seriesPts.length; s2++) {
