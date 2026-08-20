@@ -3410,7 +3410,7 @@ async function gatherApDetail(db, params) {
             ? `Showing the first ${AP_TABLE_CAP} of ${clientsQ.rows.length} clients.` : null,
         },
         {
-          kind: 'table', title: `Recent events (${eventsQ.rows.length})`,
+          kind: 'table', title: 'Recent events',
           columns: [
             { key: 'when', label: 'When', width: 110 },
             { key: 'type', label: 'Event', width: 70 },
@@ -3427,8 +3427,10 @@ async function gatherApDetail(db, params) {
             ssid: e.ssid_name || '—',
             rssi: e.rssi_dbm == null ? '—' : `${e.rssi_dbm} dBm`,
           })),
+          // "most recent" because the query itself caps at 200 - saying
+          // "of N events" would restate that page size as a total.
           note: eventsQ.rows.length > AP_TABLE_CAP
-            ? `Showing the first ${AP_TABLE_CAP} of ${eventsQ.rows.length} events.` : null,
+            ? `Showing the first ${AP_TABLE_CAP} of the ${eventsQ.rows.length} most recent events in this window.` : null,
         },
       ].filter(Boolean),
     });

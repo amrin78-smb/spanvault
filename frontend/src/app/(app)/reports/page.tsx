@@ -549,6 +549,15 @@ export default function ReportsPage() {
   }
 
   function loadSaved(s: SavedReport) {
+    // Same shared-state hazard as selectTemplate: a saved NON-granular report
+    // loaded while from/to still hold datetime-local values leaves the date
+    // pickers visually blank with Run still enabled, because customRangeValid
+    // only checks that both endpoints are set and ordered.
+    if (!TEMPLATE_BY_KEY[s.template]?.granular) {
+      const dayOnly = (v: string) => (v && v.includes('T') ? v.split('T')[0] : v);
+      setFrom(dayOnly);
+      setTo(dayOnly);
+    }
     setTemplate(s.template);
     setRange(s.date_range && s.date_range !== 'custom' ? s.date_range : '30d');
     const mode = (s.scope_type as 'all' | 'site' | 'device') || 'all';

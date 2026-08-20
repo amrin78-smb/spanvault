@@ -36,6 +36,11 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.100.3': [
+    'SECURITY: the Wireless Overview report still showed every site in two places after the 1.100.0 fix - the "Top SSIDs" list and the wireless health score. The rest of that report was restricted correctly, so the page looked right while those two panels quietly covered the whole network.',
+    "A site-limited account could go further than seeing an estate-wide summary: by naming another site's controller directly it got back exactly that controller's SSID list and health score, while every other figure on the page correctly showed zero.",
+    "Found by sweeping the previous day's own changes rather than by a report of anything looking wrong. The exported PDF had always restricted both panels, so - as with the original fault - the screen and the export disagreed.",
+  ],
   '1.100.2': [
     'Detail report PDFs (AP, Device, Service) now show the TIME you picked, not just the date. Choosing 08:00 to 17:00 on one day printed "18/08/2026 to 18/08/2026" - identical to the whole day - because the cover and the chart captions dropped the time. Times are shown whenever the window is not a whole day.',
     'Chart date axes on those PDFs now include the time on windows shorter than three days. Every tick previously read the same date, so the axis carried no information at all on a same-day report.',
@@ -8249,10 +8254,12 @@ function wlScope(req) {
     const parts = [];
     if (c.has && ctrlCol) { params.push(c.id); parts.push(`${ctrlCol} = $${params.length}`); }
     if (siteCol === '@ctrl') {
-      // Tables with no site_id of their own (wireless_clients,
-      // wireless_client_events, wireless_intelligence) scope through the
-      // controller. Identical subquery to api/reportsPdf.js's wlCtrlClauses so
-      // the screen and the export resolve the same rows.
+      // For tables with no site_id of their own (wireless_clients,
+      // wireless_client_events, wireless_intelligence), scoping through the
+      // controller is the only option. wireless_ssids DOES carry a site_id but
+      // uses this path too, because the PDF counterpart resolves it through the
+      // controller — and these two must agree row-for-row, not merely be
+      // "both scoped". Identical subquery to api/reportsPdf.js's wlCtrlClauses.
       if (sf && sf.length) {
         params.push(sf);
         parts.push(`${ctrlCol} IN (SELECT id FROM wireless_controllers WHERE site_id = ANY($${params.length}::int[]))`);
@@ -8291,8 +8298,15 @@ app.get('/api/reports/wireless-overview', wrap(async (req, res) => {
   const mk = wlScope(req);
   const ap = mk('a.controller_id', 'a.site_id');
   const ctrl = mk('id', 'site_id');
-  const wi = mk('controller_id', null);
-  const ssid = mk('controller_id', null);
+  // '@ctrl', NOT null: both scope through the owning controller — exactly what
+  // the PDF counterpart (gatherWirelessOverview's wlCtrlClauses) has always
+  // done, so screen and export resolve identical rows.
+  // Passing null left them estate-wide while every OTHER field on this same
+  // response narrowed correctly, so a site-scoped user could name another
+  // site's controller_id and read back precisely that controller's SSID list
+  // and RF health score while APs/clients/controllers all reported zero.
+  const wi = mk('controller_id', '@ctrl');
+  const ssid = mk('controller_id', '@ctrl');
 
   const sum = await sv.query(`
     SELECT
