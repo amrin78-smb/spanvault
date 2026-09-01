@@ -106,8 +106,6 @@ collector/wirelessCollector.js    ← wireless (AP/controller/client) SNMP polli
 collector/wirelessIntelligence.js ← wireless RF statistical analytics
 collector/parsers/     ← per-vendor SNMP parsers (Cisco, Aruba, HPE, Juniper, Fortinet, etc.)
 collector/wireless/    ← per-vendor wireless parsers (Aruba, Cisco, Ruckus, HPE, etc.)
-agent/agent.js         ← remote polling agent (poll + ship + offline buffer over WS)
-agent/install.ps1      ← agent NSSM service installer
 frontend/              ← Next.js 14 app (App Router, port 3008)
   src/app/(app)/       ← Pages: dashboard, devices, sites, alerts, services, reports,
                           maps, wireless, topology, agents, intelligence, settings
@@ -183,10 +181,14 @@ next.config.js does NOT have `output: 'standalone'`. The NSSM service runs
   server before `npm run build` runs (the update script handles this).
 
 ### Remote agents, the WebSocket server, and SV_PUBLIC_URL
-SpanVault supports distributed polling via remote agents (`agent/agent.js`,
-installed with `agent/install.ps1` as an NSSM service on the remote host). Agents
-connect back over WebSocket to `api/ws-server.js`, started from `api/server.js` on
-`SV_WS_PORT` (default 3010, all interfaces — see the port list in "What this is").
+SpanVault supports distributed polling via remote agents. **SpanVault no longer
+ships or installs an agent of its own** — agents are centralised in NetVault, which
+deploys them (the unified NocVault agent, `netvault/agent`, installed from the hub
+and self-updating from the hub's signed bundle). SpanVault's role is the receiving
+end: its `span` module connects back over WebSocket to `api/ws-server.js`, started
+from `api/server.js` on `SV_WS_PORT` (default 3010, all interfaces — see the port
+list in "What this is"). The legacy `agent/` directory and the unauthenticated
+`/api/agent/*` distribution routes that served it were removed in 1.101.0.
 
 `SV_PUBLIC_URL` (`.env.local.example`) is the base URL agents use to download the
 installer/config and dial back to this app. `api/server.js`'s `getServerUrl(req)`
@@ -219,8 +221,10 @@ on purpose.
 Related env vars (`.env.local.example`): `SV_WS_PORT` (WS server port, default
 3010), `SV_WS_TLS_CERT`/`SV_WS_TLS_KEY` (optional, terminate `wss://` on the
 agent WebSocket — leave blank for plain `ws://` on a trusted LAN/behind a
-proxy), `SV_NSSM_PATH` (nssm.exe path the server hands to the agent installer,
-defaults to NetVault's bundled copy).
+proxy), `SV_NSSM_PATH` (full path to nssm.exe, read by
+`installer/Update-SpanVault.ps1` to manage the three Windows services during a
+SYSTEM-scheduled update — nssm is not on the SYSTEM PATH; defaults to NetVault's
+bundled copy).
 
 ### Remote agents, Phase 3/4a — hub-JWT auth, `hub_agent_id`, and the restart/logs split
 SpanVault's agent WebSocket (`api/ws-server.js`) migrated from a standalone
@@ -818,7 +822,10 @@ full detail on any one of them):
    offline-buffer agent that connects to `api/ws-server.js` over WebSocket
    (port 3010); `/agents` page (admin-only), zero-touch device discovery,
    agent fleet health/self-update, and per-user app-access enforcement layered
-   on top (`4c77651`, `035af3e`).
+   on top (`4c77651`, `035af3e`). **Superseded:** agents were centralised into
+   NetVault (the unified NocVault agent); SpanVault's own `agent/` directory and
+   its `/api/agent/*` distribution routes were removed in 1.101.0. The WS ingest
+   listener, the `/agents` fleet page and `/api/agents/*` all remain.
 10. **Topology mapping** (`f156876`) — LLDP/CDP discovery (`collector/discovery.js`,
     `collector/topology.js`), `/topology` page with a visual link map grouped
     by site.

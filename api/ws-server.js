@@ -15,7 +15,6 @@ require('dotenv').config({ path: require('path').join(__dirname, '..', '.env.loc
 
 const fs = require('fs');
 const path = require('path');
-const crypto = require('crypto');
 const { WebSocketServer } = require('ws');
 const { Pool } = require('pg');
 const { verifyHubAgentJwt } = require('./agent-identity');
@@ -25,32 +24,9 @@ const {
   collectCandidates, candidatesToSamples, buildFetchPlan, PrefetchedSession,
 } = require('../collector/discovery');
 
-const AGENT_JS = path.join(__dirname, '..', 'agent', 'agent.js');
-
 // Per-device interface octet history for bps deltas on agent-polled devices
 // (mirrors the collector's ifPrev for locally-polled devices).
 const agentIfPrev = new Map();
-
-// Fingerprint + version of the canonical agent.js, advertised to agents so they
-// can self-update. Cached and refreshed when the file's mtime changes.
-let _agentMeta = null;
-function agentMeta() {
-  try {
-    const stat = fs.statSync(AGENT_JS);
-    if (_agentMeta && _agentMeta.mtimeMs === stat.mtimeMs) return _agentMeta;
-    const buf = fs.readFileSync(AGENT_JS);
-    const txt = buf.toString('utf8');
-    const m = txt.match(/const VERSION = '([^']+)'/);
-    _agentMeta = {
-      mtimeMs: stat.mtimeMs,
-      sha: crypto.createHash('sha256').update(buf).digest('hex'),
-      version: m ? m[1] : null,
-    };
-  } catch (_e) {
-    _agentMeta = { mtimeMs: 0, sha: '', version: null };
-  }
-  return _agentMeta;
-}
 
 // agents.health is a later migration — probe once so heartbeats don't error on
 // an un-migrated DB.
@@ -188,9 +164,9 @@ async function mergeAgentRows(legacyId, duplicateId, hubAgentId) {
 // real identifying signal available for this connection. The JWT itself
 // carries none (the hub mints it before it has ever seen the agent's
 // hostname); the hostname only becomes known once the agent's first
-// `heartbeat` message arrives, sent immediately on WS open (agent/agent.js's
-// `ws.on('open', ...)` calls `sendHeartbeat()` before anything else) — so
-// this runs from the message handler, not the connect handler.
+// `heartbeat` message arrives, which the agent sends immediately on WS open,
+// before anything else — so this runs from the message handler, not the
+// connect handler.
 //
 // Only eligible rows: `agent.hub_agent_id` set, `agent.api_key` NULL (a
 // hub-JWT row), and `agent.name === agent.hub_agent_id` — i.e. still carrying
@@ -479,11 +455,9 @@ async function pushConfigToAgent(ws, agentId) {
       serviceChecks = checks.rows;
     } catch (_e) { serviceChecks = []; }
 
-    const meta = agentMeta();
     ws.send(JSON.stringify({
       type: 'config', devices: devices.rows, settings: settingsMap,
       service_checks: serviceChecks,
-      agent_sha: meta.sha, agent_version: meta.version,
     }));
   } catch (err) {
     console.error('[WS] pushConfigToAgent error:', err.message);
@@ -780,5 +754,5 @@ async function handleAgentMessage(agent, msg) {
 
 module.exports = {
   startWsServer, connectedAgents, agentLogs, pushConfigToAgent, pushConfigToAgentId,
-  disconnectAgent, sendToAgentId, agentMeta, mergeAgentRows,
+  disconnectAgent, sendToAgentId, mergeAgentRows,
 };

@@ -34,7 +34,7 @@ type AgentDetail = {
   hub_agent_id?: string | null;
   last_seen_at: string | null; connected_at: string | null; created_at: string;
   sites: AgentSite[]; devices: AgentDevice[]; service_checks: AgentServiceCheck[];
-  health?: AgentHealthData; latest_agent_version?: string | null;
+  health?: AgentHealthData;
 };
 type Site = { id: number; name: string };
 
@@ -364,12 +364,6 @@ export default function AgentDetailPage({ params }: { params: { id: string } }) 
         </div>
       </div>
 
-      {a.version && a.latest_agent_version && a.version !== a.latest_agent_version && (
-        <div style={{ ...CARD_STYLE, borderLeft: '3px solid var(--primary)', marginBottom: 12, fontSize: 'var(--text-base)' }}>
-          ⬆ This agent is running v{a.version}; latest is v{a.latest_agent_version}. It updates itself
-          automatically on its next config sync — no action needed.
-        </div>
-      )}
 
       {/* Row 2.25 — Agent host health, full width */}
       <div style={{ ...CARD_STYLE, marginBottom: 12 }}>

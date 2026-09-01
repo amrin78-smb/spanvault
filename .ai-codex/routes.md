@@ -29,14 +29,6 @@ deliberately skip it).
 - `POST /api/internal/agents/disconnect` [loopback] [db] — hub calls this on agent revoke to actively kick a live WS session; body {hub_agent_id} → resolves local agents.id → disconnectAgent; no-op 200 if not connected/linked; registered before enforceLicense/RBAC (Phase 3)
 - `POST /api/internal/agents/forget` [loopback] [db] — hub-driven removal of a hub-enrolled agent's local row after the hub deletes it; shares `deleteAgentRow()` with the admin DELETE (devices released to central polling, live socket dropped); registered before enforceLicense/RBAC like its siblings (1.86.3)
 
-## Agent bootstrap files (unauthenticated — no session possible pre-install)
-- `GET /api/agent/install.ps1` [public] — serves the agent installer script
-- `GET /api/agent/agent.js` [public] — serves the agent runtime
-- `GET /api/agent/package.json` [public] — serves the agent's package.json
-- `GET /api/agent/agent.js.sha256` [public] — sha256 + version of the bundled agent.js, for install-time integrity check
-- `GET /api/agent/nssm.exe` [public] — serves NSSM binary (own bundle, or NetVault's, or SV_NSSM_PATH) so a remote host doesn't need internet access to nssm.cc
-- `GET /api/agent/nssm.exe.sha256` [public] — sha256 of the served nssm.exe
-
 ## Health / stats / system
 - `GET /api/health` [public] [db] — liveness + version, used by suite health checks
 - `GET /api/stats` [public] [db] — 3 aggregate counts (monitored_devices/availability/active_alerts) for the NocVault launcher tile; never 500s, degrades to zeros
@@ -278,7 +270,7 @@ accept-both (Phase 3): a hub-signed JWT (`Authorization: Bearer <jwt>`, verified
 or legacy URL param) unchanged. Handles `message`/`close`/`error` per-socket; the `message`
 handler also runs the auto-link-by-hostname check (see gotchas.md) on each agent's first
 `heartbeat`. Exports `startWsServer`, `connectedAgents`, `agentLogs`, `pushConfigToAgentId`,
-`sendToAgentId`, `disconnectAgent`, `agentMeta`, `mergeAgentRows` (Phase 3 — shared merge
+`sendToAgentId`, `disconnectAgent`, `mergeAgentRows` (Phase 3 — shared merge
 routine behind both the automatic hostname link and the admin `/api/agents/:id/link-legacy`
 manual fallback) — consumed by `api/server.js` for the `/api/agents/*` routes above.
 

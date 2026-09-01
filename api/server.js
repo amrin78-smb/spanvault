@@ -23,7 +23,7 @@ const topology = require('../collector/topology');
 const wireless = require('../collector/wirelessCollector');
 const { wirelessVendorFor } = require('../collector/wireless');
 const { computeCongestionScore } = require('../collector/wirelessScore');
-const { startWsServer, connectedAgents, agentLogs, pushConfigToAgent, pushConfigToAgentId, disconnectAgent, sendToAgentId, agentMeta, mergeAgentRows } = require('./ws-server');
+const { startWsServer, connectedAgents, agentLogs, pushConfigToAgent, pushConfigToAgentId, disconnectAgent, sendToAgentId, mergeAgentRows } = require('./ws-server');
 const intelligence = require('./intelligence');
 const { getLicense, getLicenseState } = require('./licenseCheck');
 const reportScheduler = require('./reportScheduler');
@@ -36,6 +36,12 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.101.0': [
+    'Removed the legacy SpanVault agent. Agents are centralised in NetVault, which deploys them, so this app no longer ships or installs an agent of its own. The unused agent/ directory and the six unauthenticated /api/agent/* routes that served its installer, runtime and a copy of nssm.exe have been deleted.',
+    'SECURITY: those routes were public and needed no session, and the agent they served self-updated with an integrity check but no signature check. Nothing was running that code - every deployed agent is hub-enrolled - so this was not an active exposure, but the download path existed for anyone who chose to install one.',
+    'Removed the "outdated agent" count and banner from the Agents pages. They compared a hub-managed agent against the old bundled agent\'s version line, which produced nonsense like "running v2.5.3; latest is v1.4.0"; that comparison was already suppressed, so the pill and banner could never appear. Agent versions and updates are the hub\'s responsibility now.',
+    'No change to how agents connect or report: the WebSocket ingest listener on port 3010, the Agents fleet page, /api/agents/* and the hub revoke/disconnect path are all untouched.',
+  ],
   '1.100.3': [
     'SECURITY: the Wireless Overview report still showed every site in two places after the 1.100.0 fix - the "Top SSIDs" list and the wireless health score. The rest of that report was restricted correctly, so the page looked right while those two panels quietly covered the whole network.',
     "A site-limited account could go further than seeing an estate-wide summary: by naming another site's controller directly it got back exactly that controller's SSID list and health score, while every other figure on the page correctly showed zero.",
@@ -1606,64 +1612,6 @@ function getServerUrl(req) {
   return `${proto}://${host}`;
 }
 
-// ══════════════════════════════════════════════════════════════
-// Agent files (served unauthenticated for the bootstrap installer)
-// ══════════════════════════════════════════════════════════════
-app.get('/api/agent/install.ps1', (req, res) => {
-  res.setHeader('Content-Type', 'text/plain');
-  res.sendFile(path.join(__dirname, '..', 'agent', 'install.ps1'));
-});
-app.get('/api/agent/agent.js', (req, res) => {
-  res.sendFile(path.join(__dirname, '..', 'agent', 'agent.js'));
-});
-app.get('/api/agent/package.json', (req, res) => {
-  res.sendFile(path.join(__dirname, '..', 'agent', 'package.json'));
-});
-// Integrity check for the bootstrap install: install.ps1 downloads agent.js over
-// plain HTTP with zero verification otherwise. This mirrors the check the agent's
-// OWN maybeSelfUpdate() already does (compares against the sha256 the server
-// advertises via the WS `config` message's agent_sha, from the same agentMeta()
-// helper) so the very first install gets the same integrity bar as every
-// self-update after it. Public/unauthenticated like the other /api/agent/* routes
-// above - a not-yet-installed agent has no session.
-app.get('/api/agent/agent.js.sha256', (req, res) => {
-  const meta = agentMeta();
-  res.json({ sha256: meta.sha, version: meta.version });
-});
-// Serve NSSM to the installer from the SpanVault server itself, so a remote agent
-// host never needs to reach the public nssm.cc (which can be down/blocked). The
-// binary is taken from a bundled copy or a configured path (NetVault ships one on
-// the same server). 404 if unavailable — the installer then falls back to nssm.cc.
-function resolveNssmPath() {
-  const fs = require('fs');
-  const candidates = [
-    process.env.SV_NSSM_PATH,
-    path.join(__dirname, '..', 'agent', 'nssm.exe'),
-    'C:\\Apps\\NetVault\\nssm\\nssm-2.24\\win64\\nssm.exe',
-  ].filter(Boolean);
-  return candidates.find((p) => { try { return fs.existsSync(p); } catch (_e) { return false; } });
-}
-app.get('/api/agent/nssm.exe', (req, res) => {
-  const found = resolveNssmPath();
-  if (!found) return res.status(404).send('nssm not available on server');
-  res.sendFile(found);
-});
-// Hash of whatever nssm.exe /api/agent/nssm.exe currently serves (same resolution
-// order), so install.ps1 can verify it the same way as agent.js when the server's
-// own copy is used. Only covers the SpanVault-served copy - if the installer falls
-// back to the public nssm.cc zip, there is nothing here to check that against.
-app.get('/api/agent/nssm.exe.sha256', (req, res) => {
-  const found = resolveNssmPath();
-  if (!found) return res.status(404).json({ error: 'nssm not available on server' });
-  try {
-    const fs = require('fs');
-    const crypto = require('crypto');
-    const sha256 = crypto.createHash('sha256').update(fs.readFileSync(found)).digest('hex');
-    res.json({ sha256 });
-  } catch (e) {
-    res.status(500).json({ error: 'failed to hash nssm.exe' });
-  }
-});
 
 // ══════════════════════════════════════════════════════════════
 // Health
@@ -3571,25 +3519,6 @@ async function agentColExists(col) {
 }
 const agentDisabledCol = () => agentColExists('disabled');
 
-// Latest canonical agent.js version (parsed from the file the server serves), so
-// the UI can flag agents running an older build (they self-update on next config).
-// The LEGACY (api_key) agent's bundled version — read from this repo's own
-// agent/agent.js, which SpanVault self-updates over the span WS (the config push
-// carries agent_sha/agent_version). It is NOT the version line of the unified
-// NocVault agent a hub-managed agent runs (netvault/agent, 2.x, updated by the hub
-// via its signed bundle). Comparing the two produced the nonsense banner "running
-// v2.5.3; latest is v1.4.0" plus a wrong claim that a config sync would update it,
-// so callers MUST null this out for a hub_agent_id row.
-let _latestAgentVersion;
-function latestAgentVersion() {
-  if (_latestAgentVersion !== undefined) return _latestAgentVersion;
-  try {
-    const txt = require('fs').readFileSync(path.join(__dirname, '..', 'agent', 'agent.js'), 'utf8');
-    const m = txt.match(/const VERSION = '([^']+)'/);
-    _latestAgentVersion = m ? m[1] : null;
-  } catch (_e) { _latestAgentVersion = null; }
-  return _latestAgentVersion;
-}
 
 // Auto-assign a device to whichever agent owns its site (NULL = local polling).
 // Returns the resolved agent_id (or null). Updates the device row in place.
@@ -3625,14 +3554,10 @@ app.get('/api/agents', wrap(async (_req, res) => {
     FROM agents a
     ORDER BY a.name
   `);
-  const latest = latestAgentVersion();
-  // Only meaningful for LEGACY agents — see latestAgentVersion(). A hub-managed
-  // agent runs the unified NocVault agent on a different version line entirely and
-  // is updated by the hub, so null here suppresses the "outdated" banner/count.
-  res.json(r.rows.map((a) => ({
-    ...a,
-    latest_agent_version: a.hub_agent_id ? null : latest,
-  })));
+  // Agent versions are the hub's concern: a hub-managed agent runs the unified
+  // NocVault agent and is updated by the hub via its signed bundle. SpanVault no
+  // longer ships an agent of its own, so there is nothing here to compare against.
+  res.json(r.rows);
 }));
 
 // legacy: agent provisioning (POST /api/agents — mint api_key + install command)
@@ -3666,7 +3591,6 @@ app.get('/api/agents/:id', wrap(async (req, res) => {
     sites: sites.rows,
     devices: devices.rows,
     service_checks: serviceChecks.rows,
-    latest_agent_version: agent.hub_agent_id ? null : latestAgentVersion(),
   });
 }));
 

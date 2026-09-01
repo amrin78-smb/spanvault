@@ -22,7 +22,7 @@ export type Agent = {
   hub_agent_id?: string | null;
   last_seen_at: string | null; connected_at: string | null; created_at: string;
   device_count: number; sites: AgentSite[];
-  health?: AgentHealthData; latest_agent_version?: string | null;
+  health?: AgentHealthData;
 };
 
 // Fleet-health threshold: flag an agent whose self-reported host disk usage
@@ -181,8 +181,7 @@ export default function AgentsPage() {
   // the fleet is clean).
   const offlineCount = list.filter((a) => agentMatchesStatus(a, 'offline')).length;
   const highDiskCount = list.filter((a) => (a.health?.disk_pct ?? -1) >= DISK_WARN_PCT).length;
-  const outdatedCount = list.filter((a) => a.version && a.latest_agent_version && a.version !== a.latest_agent_version).length;
-  const hasRollup = offlineCount > 0 || highDiskCount > 0 || outdatedCount > 0;
+  const hasRollup = offlineCount > 0 || highDiskCount > 0;
 
   const filtered = list.filter((a) => {
     if (!agentMatchesStatus(a, statusFilter)) return false;
@@ -247,18 +246,6 @@ export default function AgentsPage() {
               title={`Agent(s) with host disk usage at or above ${DISK_WARN_PCT}%`}
             >
               {highDiskCount} over {DISK_WARN_PCT}% disk
-            </span>
-          )}
-          {outdatedCount > 0 && (
-            <span
-              className="sv-chip"
-              style={{
-                height: 28, padding: '0 12px', fontSize: 'var(--text-sm)', display: 'inline-flex', alignItems: 'center',
-                color: 'var(--tint-info-fg)', background: 'var(--tint-info)', cursor: 'default',
-              }}
-              title="Agent(s) running an outdated version"
-            >
-              {outdatedCount} outdated
             </span>
           )}
         </div>

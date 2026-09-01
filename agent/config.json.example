@@ -1,5 +1,0 @@
-{
-  "serverUrl": "http://SERVER_IP:3008",
-  "apiKey": "REPLACE_WITH_AGENT_API_KEY",
-  "wsPort": 3010
-}
