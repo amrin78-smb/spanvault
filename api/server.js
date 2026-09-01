@@ -36,6 +36,13 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.101.1': [
+    'Fixed: the "Top Alerted" table in the Alerts & Anomalies PDF was always empty, while the same table on screen was correctly populated. The PDF\'s query grouped on a column name that exists on two of the joined tables at once, which the database rejects as ambiguous.',
+    'It never showed as an error. The PDF query runner catches a failed query, logs it, and substitutes an empty result, so the report still downloaded and still looked complete - just missing that one table. It had been broken since 1.69.0, when a join was added that created the ambiguity.',
+    'The on-screen version of this exact query was fixed in 1.100.1. The two are hand-maintained copies and only one was changed, so the fault moved from the screen to the export rather than being closed. Both now use the same form.',
+    'Hardened one other query in the same file that reads the same way and works today only because a single joined table carries the column - the shape that broke the first one when a second table was joined.',
+    'Found by reading the production error log after an unrelated deploy, and confirmed by running both versions of the query against the live database before and after the change.',
+  ],
   '1.101.0': [
     'Removed the legacy SpanVault agent. Agents are centralised in NetVault, which deploys them, so this app no longer ships or installs an agent of its own. The unused agent/ directory and the six unauthenticated /api/agent/* routes that served its installer, runtime and a copy of nssm.exe have been deleted.',
     'SECURITY: those routes were public and needed no session, and the agent they served self-updated with an integrity check but no signature check. Nothing was running that code - every deployed agent is hub-enrolled - so this was not an active exposure, but the download path existed for anyone who chose to install one.',

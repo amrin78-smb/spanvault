@@ -1327,7 +1327,14 @@ async function gatherCapacity(db, params) {
            AVG(s.value) FILTER (WHERE s.ts >= $3) AS second_half
     FROM snmp_results s JOIN monitored_devices d ON d.id = s.device_id
     WHERE ${filters.join(' AND ')}
-    GROUP BY s.device_id, d.name, site_name, s.if_name, s.metric_name`, p, []);
+    -- Ordinals, same reasoning as the alert-analysis byDevice query below:
+    -- "site_name" is an output alias AND a real column on monitored_devices.
+    -- Unambiguous today only because d is the sole joined table carrying it;
+    -- joining a second such table would break this exactly as it broke there.
+    -- (Grouping on the COALESCE rather than the raw column also merges a NULL
+    -- site with a literal 'Unassigned' instead of emitting two rows that both
+    -- display "Unassigned".)
+    GROUP BY 1, 2, 3, 4, 5`, p, []);
 
   const toMbps = (v) => (v == null ? null : Math.round(Number(v) / 1e6 * 100) / 100);
   const map = new Map();
@@ -2750,7 +2757,19 @@ async function gatherAlertAnalysis(db, params) {
            ROUND(AVG(EXTRACT(EPOCH FROM (a.resolved_at - a.triggered_at)) / 60.0)
              FILTER (WHERE a.resolved_at IS NOT NULL)::numeric, 1) AS mttr_minutes
     ${base} AND (a.device_id IS NOT NULL OR a.service_check_id IS NOT NULL)
-    GROUP BY d.id, sc2.id, device_name, site_name, source ORDER BY count DESC LIMIT 10`, p, []);
+    -- GROUP BY ORDINALS, not output names. "site_name" is both an output alias
+    -- here AND a real column on d and sc2, and Postgres resolves GROUP BY names
+    -- against the input columns first, so grouping by name raised 'column
+    -- reference "site_name" is ambiguous'. runQ swallows the error and returns
+    -- the [] fallback, so this did NOT 500 - the PDF rendered fine with an empty
+    -- "Top Alerted" table while the same table on screen was populated. That
+    -- silent screen-vs-PDF drift is why it survived from 1.69.0 (which added the
+    -- service_checks join that created the ambiguity) until 1.101.1.
+    -- THIS QUERY IS HAND-SYNCED with api/server.js's on-screen alert-analysis
+    -- byDevice query - 1.100.1 fixed that copy only. Change both together.
+    -- Ordinals map to the SELECT list: 1=d.id, 2=sc2.id, 3=device_name,
+    -- 4=site_name, 5=source.
+    GROUP BY 1, 2, 3, 4, 5 ORDER BY count DESC LIMIT 10`, p, []);
   const mttr = await runQ('mttr', `
     SELECT ROUND(AVG(EXTRACT(EPOCH FROM (a.resolved_at - a.triggered_at)) / 60.0)::numeric, 1) AS mttr
     ${base} AND a.resolved_at IS NOT NULL`, p, [{ mttr: null }]);
