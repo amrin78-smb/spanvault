@@ -36,6 +36,13 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.102.0': [
+    'The collector now shuts down cleanly when the service is stopped, instead of being killed wherever it happened to be. It stops scheduling new work, then waits for the one operation that cannot safely be interrupted before exiting.',
+    'That operation is the Aruba Central token renewal. Central cancels the old token the moment it issues a replacement, so a stop landing between receiving the new token and saving it leaves nothing usable and the wireless integration has to be re-authorised by hand in Central. The wait is scoped to just that step - a second or two - rather than to a whole five-minute polling round, so stopping the service is not slowed down.',
+    'Every other job the collector runs writes repeatable data, so those are not waited for. Losing one costs a single reading.',
+    'Device pings now ask the ping tool for the number of attempts through its own setting rather than appending an extra command-line flag. The old approach passed the count twice and worked only because the tool happened to use the last one it saw.',
+    'Groundwork note: the service manager was previously configured to allow only 1.5 seconds for a service to stop, which was not enough for any of this. That was raised to 15 seconds first.',
+  ],
   '1.101.1': [
     'Fixed: the "Top Alerted" table in the Alerts & Anomalies PDF was always empty, while the same table on screen was correctly populated. The PDF\'s query grouped on a column name that exists on two of the joined tables at once, which the database rejects as ambiguous.',
     'It never showed as an error. The PDF query runner catches a failed query, logs it, and substitutes an empty result, so the report still downloaded and still looked complete - just missing that one table. It had been broken since 1.69.0, when a join was added that created the ambiguity.',

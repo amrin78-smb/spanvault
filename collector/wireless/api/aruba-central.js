@@ -284,6 +284,20 @@ async function persistTokens(pool, controllerId, accessToken, refreshToken, expi
     [controllerId, accessToken, refreshToken, expiresAt]);
 }
 
+// True while a token rotate-then-persist is in flight. This is DELIBERATELY
+// narrow: it covers only the window between Central issuing a rotated token pair
+// (which invalidates the old refresh_token on their side, irreversibly) and that
+// pair being committed here. A shutdown inside that window is the one failure
+// this whole file is written to prevent, and it has no programmatic recovery.
+//
+// The collector shutdown handler waits on THIS rather than on the wireless poll
+// cycle as a whole - that turns the wait from "up to a five-minute AP poll" into
+// "one HTTP round-trip plus one UPDATE", which comfortably fits the service
+// manager stop window. A counter rather than a boolean so concurrent controllers
+// cannot clear each other flag.
+let _refreshInFlight = 0;
+function isTokenRefreshInFlight() { return _refreshInFlight > 0; }
+
 // Perform the OAuth2 refresh_token exchange against Central, PERSIST the
 // rotated { access_token, refresh_token, expires_at } to the DB, and only
 // THEN return the new access token to the caller. Never returns before the
@@ -323,6 +337,10 @@ async function refreshAndPersist(controller, pool) {
   // "normalise" this to send a JSON body: Central's authorization_code grant
   // DOES take one, but the refresh_token grant does not, and sending one here
   // produces the same opaque 400 this function exists to stop guessing at.
+  // Mark in-flight BEFORE the request leaves: Central rotates when it PROCESSES
+  // the request, so the danger window opens at send time, not at response time.
+  _refreshInFlight++;
+  try {
   const body = await fetchJsonVerbose(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -345,6 +363,11 @@ async function refreshAndPersist(controller, pool) {
   await persistTokens(pool, controller.id, accessToken, refreshToken, expiresAt);
 
   return { accessToken, refreshToken, expiresAt };
+  } finally {
+    // Cleared on the error path too: a refresh that THREW may still have rotated
+    // the token on Central side, but there is nothing further to wait for here.
+    _refreshInFlight--;
+  }
 }
 
 // Map one Central AP object + its radios[] into the shared wireless_aps
@@ -1253,6 +1276,7 @@ async function pollTopBandwidth(controller, pool, windowSec, marginSec, count) {
 
 module.exports = {
   name: 'aruba_central',
+  isTokenRefreshInFlight,
   pollRf,
   fetchClients,
   pollEvents,

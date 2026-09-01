@@ -2113,32 +2113,47 @@ function startWirelessCollector(pool, alertHooks) {
   cleanupBadAutoControllers(pool).catch((e) => console.error('[wireless] startup cleanup:', e.message));
   // One-shot startup cleanup of stale decimal-MAC AP records (old bad SNMP parsing).
   cleanupDecimalMacAps(pool).catch((e) => console.error('[wireless] decimal-MAC cleanup:', e.message));
-  setTimeout(() => pollAll(pool), 20 * 1000);
-  setInterval(() => pollAll(pool), WIRELESS_POLL_INTERVAL);
+  _wOnce(() => pollAll(pool), 20 * 1000);
+  _wEvery(() => pollAll(pool), WIRELESS_POLL_INTERVAL);
   // Client polling on its own (slower) schedule, separate from the AP poll.
-  setTimeout(() => pollAllClients(pool, alertHooks), 30 * 1000);
-  setInterval(() => pollAllClients(pool, alertHooks), CLIENT_POLL_INTERVAL);
+  _wOnce(() => pollAllClients(pool, alertHooks), 30 * 1000);
+  _wEvery(() => pollAllClients(pool, alertHooks), CLIENT_POLL_INTERVAL);
   // Aruba Central RF enrichment on its own (slower still) schedule — see
   // ARUBA_RF_POLL_INTERVAL above. First pass at 60s so it runs after the
   // first main AP poll (20s) has had a chance to create the AP rows this
   // pass enriches.
-  setTimeout(() => pollAllArubaCentralRf(pool), 60 * 1000);
-  setInterval(() => pollAllArubaCentralRf(pool), ARUBA_RF_POLL_INTERVAL);
+  _wOnce(() => pollAllArubaCentralRf(pool), 60 * 1000);
+  _wEvery(() => pollAllArubaCentralRf(pool), ARUBA_RF_POLL_INTERVAL);
   // Aruba Central native events + top-N bandwidth — each their own cycle,
   // both independent of the main poll and of each other (a failure in one
   // must never affect the other — see their own never-throws contracts in
   // aruba-central.js). First pass at 70s/80s so they run after the first
   // main AP poll (20s) has had a chance to create the AP rows the bandwidth
   // pass resolves ap_id against.
-  setTimeout(() => pollAllArubaCentralEvents(pool), 70 * 1000);
-  setInterval(() => pollAllArubaCentralEvents(pool), ARUBA_EVENTS_POLL_INTERVAL);
-  setTimeout(() => pollAllArubaCentralBandwidth(pool), 80 * 1000);
-  setInterval(() => pollAllArubaCentralBandwidth(pool), ARUBA_BW_POLL_INTERVAL);
+  _wOnce(() => pollAllArubaCentralEvents(pool), 70 * 1000);
+  _wEvery(() => pollAllArubaCentralEvents(pool), ARUBA_EVENTS_POLL_INTERVAL);
+  _wOnce(() => pollAllArubaCentralBandwidth(pool), 80 * 1000);
+  _wEvery(() => pollAllArubaCentralBandwidth(pool), ARUBA_BW_POLL_INTERVAL);
   log(`wireless collector started (APs every 5 min, clients every 10 min, aruba_central RF every ${Math.round(ARUBA_RF_POLL_INTERVAL / 60000)} min, events every ${Math.round(ARUBA_EVENTS_POLL_INTERVAL / 60000)} min, bandwidth every ${Math.round(ARUBA_BW_POLL_INTERVAL / 60000)} min)`);
 }
 
+// Every timer this module arms, so shutdown can stop them all. Previously all
+// eight handles were discarded, so nothing could stop the wireless poll loop -
+// which is the loop that reaches the Aruba Central token refresh.
+const _wirelessTimers = [];
+function _wEvery(fn, ms) { const t = setInterval(fn, ms); _wirelessTimers.push(t); return t; }
+function _wOnce(fn, ms)  { const t = setTimeout(fn, ms);  _wirelessTimers.push(t); return t; }
+
+// Stop scheduling new wireless work. Does NOT wait for an in-flight cycle -
+// the caller decides what to wait for (see collector.js, which waits on the
+// Aruba token window specifically rather than the whole cycle).
+function stopWirelessCollector() {
+  for (const t of _wirelessTimers) { clearTimeout(t); clearInterval(t); }
+  _wirelessTimers.length = 0;
+}
+
 module.exports = {
-  startWirelessCollector, pollAll, pollController, upsertAp, upsertSsid, upsertRogueAp,
+  startWirelessCollector, stopWirelessCollector, pollAll, pollController, upsertAp, upsertSsid, upsertRogueAp,
   autoDetectControllers, cleanupBadAutoControllers, cleanupDecimalMacAps, testController, debugWalk,
   walkOid, pollClients, pollAllClients, probeControllerCapabilities, probeControllerCapabilitiesDetailed,
   pollAllArubaCentralRf, pollAllArubaCentralEvents, pollAllArubaCentralBandwidth,

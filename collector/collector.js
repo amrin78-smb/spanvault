@@ -29,7 +29,8 @@ const { detectVendor } = require('./parsers');
 const { createSession, get, OID } = require('./snmp-session');
 const { collectCandidates, candidatesToSamples } = require('./discovery');
 const { discoverAndStore } = require('./topology');
-const { startWirelessCollector } = require('./wirelessCollector');
+const { startWirelessCollector, stopWirelessCollector } = require('./wirelessCollector');
+const { isTokenRefreshInFlight } = require('./wireless/api/aruba-central');
 
 // ── Crash resilience ──────────────────────────────────────────
 process.on('uncaughtException', (err) => {
@@ -38,6 +39,12 @@ process.on('uncaughtException', (err) => {
 process.on('unhandledRejection', (reason) => {
   console.error('[FATAL] Unhandled rejection:', reason);
 });
+
+// Every timer this process arms, so shutdown can stop them ALL before the pools
+// close. Previously every handle was discarded, so nothing could be stopped.
+const timers = [];
+function _every(fn, ms) { const t = setInterval(fn, ms); timers.push(t); return t; }
+function _once(fn, ms)  { const t = setTimeout(fn, ms);  timers.push(t); return t; }
 
 const log = (...a) => console.log(`[${new Date().toISOString()}]`, ...a);
 
@@ -261,17 +268,20 @@ async function reassignAgents() {
 // ══════════════════════════════════════════════════════════════
 // ICMP ping
 // ══════════════════════════════════════════════════════════════
-const IS_WIN = process.platform === 'win32';
 
 async function pingDevice(device) {
-  const countFlag = IS_WIN ? '-n' : '-c';
   let alive = false;
   let timeMs = null;
   let lossPct = 100;
   try {
+    // min_reply is the ping library own count knob. Passing the count through
+    // `extra` instead appended a SECOND count flag after the one the library
+    // already emits from min_reply (default 1), producing `ping -c 1 -c 3` and
+    // working only because iputils honours the last occurrence. min_reply also
+    // removes the platform branch, since the library picks -n or -c per OS.
     const res = await ping.promise.probe(device.ip_address, {
       timeout: 2,
-      extra: [countFlag, '3'],
+      min_reply: 3,
     });
     alive = !!res.alive;
     if (res.time !== undefined && res.time !== 'unknown' && res.time !== null) {
@@ -2284,42 +2294,42 @@ async function main() {
   // Stamp liveness immediately, then keep it fresh every 30s regardless of
   // whether there are any devices to poll.
   await writeHeartbeat();
-  setInterval(writeHeartbeat, 30 * 1000);
+  _every(writeHeartbeat, 30 * 1000);
 
   await syncNetVaultDevices();
 
   // Reload settings periodically so UI changes take effect.
-  setInterval(loadSettings, 60 * 1000);
+  _every(loadSettings, 60 * 1000);
 
   // NetVault metadata sync.
   const syncMs = settingInt('netvault_sync_minutes', 30) * 60 * 1000;
-  setInterval(syncNetVaultDevices, syncMs);
+  _every(syncNetVaultDevices, syncMs);
 
   // Poll scheduler ticks. The due-check inside honors per-device intervals.
-  setInterval(pingTick, 15 * 1000);
-  setInterval(snmpTick, 15 * 1000);
+  _every(pingTick, 15 * 1000);
+  _every(snmpTick, 15 * 1000);
 
   // Alert escalation sweep — every minute.
-  setInterval(escalationTick, 60 * 1000);
+  _every(escalationTick, 60 * 1000);
 
   // Baseline/anomaly → alert sweep — every minute (opt-in).
-  setInterval(evaluateAnomalyAlerts, 60 * 1000);
+  _every(evaluateAnomalyAlerts, 60 * 1000);
 
   // Wireless alert sweep (AP/controller down, high util, reboots) — every minute.
-  setInterval(evaluateWirelessAlerts, 60 * 1000);
+  _every(evaluateWirelessAlerts, 60 * 1000);
 
   // Data retention / rollup — shortly after startup, then every 12 hours.
-  setTimeout(retentionTick, 90 * 1000);
-  setInterval(retentionTick, 12 * 60 * 60 * 1000);
+  _once(retentionTick, 90 * 1000);
+  _every(retentionTick, 12 * 60 * 60 * 1000);
 
   // Agentless service checks (HTTP/TCP/SSL/DNS). The due-check inside honors
   // each check's interval_seconds; alert evaluation runs for central + agent
   // checks every tick.
-  setInterval(serviceCheckTick, 15 * 1000);
+  _every(serviceCheckTick, 15 * 1000);
 
   // Topology discovery — once shortly after startup, then every 6 hours.
-  setTimeout(topologyTick, 60 * 1000);
-  setInterval(topologyTick, 6 * 60 * 60 * 1000);
+  _once(topologyTick, 60 * 1000);
+  _every(topologyTick, 6 * 60 * 60 * 1000);
 
   // Wireless controller polling (SNMP + API) on its own 5-minute cadence.
   // The alertHooks object is how pollClients() (in wirelessCollector.js) raises/
@@ -2329,10 +2339,66 @@ async function main() {
 
   // Kick off an immediate first pass.
   pingTick();
-  setTimeout(snmpTick, 5 * 1000);
+  _once(snmpTick, 5 * 1000);
 
   log('SpanVault collector running.');
 }
+
+// ── Graceful shutdown ─────────────────────────────────────────
+// NSSM stops a service with a console Ctrl-C event, which Node surfaces as
+// SIGINT - NOT SIGTERM. A SIGTERM-only handler never fires on Windows, so all
+// three are registered (SIGTERM matters for a future systemd/Linux host and for
+// process.kill from tooling).
+//
+// What this waits for is deliberately narrow. The ONLY interruption in this
+// process with permanent consequences is the Aruba Central token rotation: the
+// old refresh_token is dead the moment Central issues a new pair, so being killed
+// before the new pair is committed leaves nothing usable and needs a human to
+// re-authorise in the Central UI. Every other in-flight poll writes idempotent
+// samples - losing one costs a single data point, so they are not waited on.
+let shuttingDown = false;
+async function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  log(`[Shutdown] ${signal} received - stopping timers.`);
+
+  // Hard backstop: never hold the service manager past its stop window
+  // (AppStopMethodConsole, raised to 15s) - exiting late looks identical to
+  // hanging, and NSSM would TerminateProcess us anyway, mid-write.
+  const watchdog = setTimeout(() => {
+    console.error('[Shutdown] timed out - forcing exit.');
+    process.exit(1);
+  }, 13000);
+  if (watchdog.unref) watchdog.unref();
+
+  for (const t of timers) { clearTimeout(t); clearInterval(t); }
+  try { stopWirelessCollector(); } catch (e) { console.error('[Shutdown] stopWirelessCollector:', e.message); }
+
+  // Wait out an in-flight Central token rotate-then-persist, and nothing else.
+  if (isTokenRefreshInFlight()) {
+    log('[Shutdown] an Aruba Central token refresh is in flight - waiting for it to persist.');
+    const deadline = Date.now() + 10000;
+    while (isTokenRefreshInFlight() && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    if (isTokenRefreshInFlight()) {
+      console.error(
+        '[Shutdown] WARNING: Aruba Central token refresh STILL in flight after 10s. ' +
+        'If the rotated token was not persisted, that integration will need to be ' +
+        're-authorised in the Central UI.'
+      );
+    } else {
+      log('[Shutdown] token refresh persisted.');
+    }
+  }
+
+  await Promise.allSettled([sv.end(), nv.end()]);
+  log('[Shutdown] complete.');
+  process.exit(0);
+}
+process.on('SIGTERM',  () => { shutdown('SIGTERM').catch(() => process.exit(1)); });
+process.on('SIGINT',   () => { shutdown('SIGINT').catch(() => process.exit(1)); });
+process.on('SIGBREAK', () => { shutdown('SIGBREAK').catch(() => process.exit(1)); });
 
 main().catch((err) => {
   console.error('[FATAL] collector main failed:', err.message, err.stack);
