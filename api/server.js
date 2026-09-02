@@ -36,6 +36,12 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.102.1': [
+    'Fixed: opening the Settings page could briefly stall the whole application, and while it was stalled unrelated requests could fail with what looked like a database timeout even though the database was healthy.',
+    'The page shows which version is installed and whether an update is available. Working that out involved asking the version-control tool for the current revision, and that request was made in a way that halts everything else the application is doing until it answers - not just the request that asked for it. Every other request in flight, every scheduled job, and the database connections all waited with it.',
+    'It now runs alongside everything else, and has a ten-second limit. Previously it had none, so if the tool had ever paused to ask for credentials the application would have waited indefinitely.',
+    'This is the same fault already fixed in DDIVault and LogVault; SpanVault carried its own copy of it.',
+  ],
   '1.102.0': [
     'The collector now shuts down cleanly when the service is stopped, instead of being killed wherever it happened to be. It stops scheduling new work, then waits for the one operation that cannot safely be interrupted before exiting.',
     'That operation is the Aruba Central token renewal. Central cancels the old token the moment it issues a replacement, so a stop landing between receiving the new token and saving it leaves nothing usable and the wireless integration has to be re-authorised by hand in Central. The wait is scoped to just that step - a second or two - rather than to a whole five-minute polling round, so stopping the service is not slowed down.',
@@ -1684,10 +1690,25 @@ const APP_ROOT = path.join(__dirname, '..');
 
 // Local short git commit hash for the deployed checkout, or null if git is
 // unavailable (e.g. a non-git deploy). Update detection degrades gracefully.
-function localCommitHash() {
+//
+// ASYNC deliberately. This runs on every Settings-page load via
+// GET /api/system/update-status, and execSync blocks the ENTIRE event loop until
+// git exits - every other in-flight request, every timer and pg's connection
+// callbacks stall with it. The failure does not present as slowness: pg reports
+// "Connection terminated due to connection timeout" from a perfectly healthy
+// local database, because its connectionTimeoutMillis expired while the loop was
+// frozen. DDIVault lost a long time treating that as a pool problem before
+// finding a blocking execSync underneath (ddivault 1.28.0), and LogVault had the
+// same bug in /api/stats/disk (2.26.6).
+//
+// It also had NO timeout and NO GIT_ENV, unlike every execFileP call below, so a
+// credential prompt could hang the API indefinitely rather than for a bounded 10s.
+async function localCommitHash() {
   try {
-    return execSync('git rev-parse HEAD', { cwd: APP_ROOT })
-      .toString().trim().slice(0, 7);
+    const { stdout } = await execFileP('git', ['rev-parse', 'HEAD'], {
+      cwd: APP_ROOT, encoding: 'utf8', timeout: 10000, env: GIT_ENV,
+    });
+    return stdout.trim().slice(0, 7);
   } catch {
     return null;
   }
@@ -1733,7 +1754,7 @@ async function remotePackageVersion(fallback) {
 // page — a check failure degrades to "up to date" with an error string.
 app.get('/api/system/update-status', wrap(async (_req, res) => {
   const localVersion = version;
-  const localHash = localCommitHash();
+  const localHash = await localCommitHash();
   try {
     const remoteHash = await remoteCommitHash();
     // Remote hash unreadable (git/remote unavailable, e.g. 429/timeout on a
@@ -1796,7 +1817,7 @@ let updateAvailable = null; // { current, latest } when an update exists, else n
 
 async function checkForUpdates() {
   try {
-    const localHash = localCommitHash();
+    const localHash = await localCommitHash();
     const remoteHash = await remoteCommitHash();
     const changed = !!(localHash && remoteHash && remoteHash !== localHash);
     updateAvailable = changed
