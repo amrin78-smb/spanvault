@@ -36,6 +36,11 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.103.1': [
+    'Fixed: the Dashboard Overview section could be completely empty. Every card on it hides itself when it has nothing to report - maintenance windows, active problems, open incidents, offline agents - so on a healthy network the default view of the dashboard was a blank page, which reads as broken rather than as good news.',
+    'Overview now says so explicitly with a Nothing needs attention message, and carries content that is always present: site health, plus service and wireless status when they have something to report.',
+    'Site health moved here from Availability, and service and wireless status moved here from Activity. Each section now has at least one panel that always shows something, so none of them can render blank.',
+  ],
   '1.103.0': [
     'The Dashboard is now organised into five sections - Overview, Performance, Availability, Predictive and Activity - instead of one long page. The headline tiles and the anomaly banner stay above the sections, so nothing you check at a glance, and nothing that warns you, has moved behind a tab.',
     'This makes a larger difference here than it appears. The Dashboard was refreshing eighteen separate sets of data on a repeating timer, continuously, whether or not you were looking at any of them. It now refreshes only the section you have open, roughly halving the ongoing load on the server and the browser.',

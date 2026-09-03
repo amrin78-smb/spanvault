@@ -313,7 +313,7 @@ export default function DashboardPage() {
   const worst = useApi<Worst[]>(on('performance', '/api/dashboard/top-worst'), REFRESH_MS);
   const topTalkers = useApi<TopTalker[]>(on('performance', '/api/dashboard/top-talkers'), REFRESH_MS);
   const leastReliable = useApi<LeastReliable[]>(on('performance', '/api/dashboard/least-reliable'), REFRESH_MS);
-  const sites = useApi<SiteHealth[]>(on('availability', '/api/dashboard/site-health'), REFRESH_MS);
+  const sites = useApi<SiteHealth[]>(on('overview', '/api/dashboard/site-health'), REFRESH_MS);
   // Daily counts change slowly — no point re-fetching 14 days on the 30s tick.
   const alertTrend = useApi<AlertTrendResp>(on('availability', '/api/dashboard/alert-trend?days=14'), 300000);
   const capacity = useApi<CapacityRow[]>(on('predictive', '/api/dashboard/capacity'), REFRESH_MS);
@@ -445,6 +445,23 @@ export default function DashboardPage() {
 
         {/* ── Agent-offline group (devices unreachable via an offline agent) ── */}
         <AgentOfflineGroup api={agentOffline} />
+
+        {/* Every card above self-hides when it has nothing to show, so say so
+            explicitly rather than leaving the default section blank. */}
+        {problems.data != null && problems.data.length === 0 &&
+         incidents.data != null && incidents.data.length === 0 && <AllClearCard />}
+
+        {/* ── Always-present content. Overview must never depend solely on cards
+             that hide themselves — site health always has rows, and services and
+             wireless fill in when they have something to report. ── */}
+        <div style={GROUP_LABEL}>Network</div>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'stretch', marginBottom: 10 }}>
+          <div style={{ flex: 2, minWidth: 0, display: 'flex' }}>
+            <SiteHealthCard api={sites} />
+          </div>
+          <ServiceProblems checks={services.data || []} />
+          <WirelessHealthCard />
+        </div>
       </>)}
 
       {section === 'performance' && (
@@ -462,8 +479,7 @@ export default function DashboardPage() {
              SLA Breaches keeps a narrow column: it is a tick most days, so it
              was the card paying the widest price for the least information. ── */}
       {section === 'availability' && (<>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 10, alignItems: 'stretch', marginBottom: 10 }}>
-          <SiteHealthCard api={sites} />
+        <div style={{ marginBottom: 10 }}>
           <NetworkAvailabilityCard api={trend} />
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 10, alignItems: 'stretch', marginBottom: 10 }}>
@@ -489,8 +505,6 @@ export default function DashboardPage() {
               <RecentEvents api={events} />
             </div>
           </div>
-          <ServiceProblems checks={services.data || []} />
-          <WirelessHealthCard />
         </div>
       )}
     </div>
@@ -500,6 +514,30 @@ export default function DashboardPage() {
 // ── Redirect notice (top-level component) ──────────────────────
 // Shows a dismissible banner when another page bounced the user here with a
 // ?notice=... message (e.g. a view-only role hitting Settings or Agents).
+// Shown on Overview when nothing needs attention. Overview is the DEFAULT
+// section and every other card on it self-hides when it has nothing to show
+// (maintenance windows, problems, incidents, offline agents) — so on a healthy
+// network the whole section rendered blank. A dashboard whose default view is an
+// empty page reads as broken, not as "all good". Say it explicitly instead.
+function AllClearCard() {
+  return (
+    <div style={{ ...CARD_STYLE, padding: '18px 20px', display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10 }}>
+      <div style={{ width: 34, height: 34, borderRadius: '50%', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+        background: 'var(--tint-success)', color: 'var(--tint-success-fg)' }}>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="20 6 9 17 4 12" />
+        </svg>
+      </div>
+      <div>
+        <div style={{ fontSize: 'var(--text-md)', fontWeight: 600, color: 'var(--text-primary)' }}>Nothing needs attention</div>
+        <div className="sv-muted" style={{ fontSize: 'var(--text-base)', marginTop: 2 }}>
+          No active problems, open incidents or offline agents.
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function RedirectNotice() {
   const [msg, setMsg] = useState<string | null>(null);
   useEffect(() => {
