@@ -298,7 +298,7 @@ export default function DashboardPage() {
   const intel = useApi<Overview>('/api/intelligence/overview', REFRESH_MS);
   const ops = useApi<OpsSummary>('/api/dashboard/ops-summary', REFRESH_MS);
   // sla, services and trend each feed BOTH the KPI strip and a section:
-  // SlaTile/SlaBreaches, ServicesTile/ServiceProblems, and — easy to miss —
+  // SlaTile/SlaBreaches, ServicesTile/ServicesOverview, and — easy to miss —
   // trend drives the Down tile's trend arrow via availTrend() below, not just
   // the Availability chart. Gating any of them would blank part of the strip.
   const sla = useApi<Sla>('/api/dashboard/sla', REFRESH_MS);
@@ -456,10 +456,14 @@ export default function DashboardPage() {
              wireless fill in when they have something to report. ── */}
         <div style={GROUP_LABEL}>Network</div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'stretch', marginBottom: 10 }}>
-          <div style={{ flex: 2, minWidth: 0, display: 'flex' }}>
+          {/* SiteHealthCard's own root carries no flex:1 (unlike the other cards),
+              so it must be wrapped in a COLUMN flex container to stretch to the
+              full width of its share — in a row container it sizes to content and
+              leaves a gap. */}
+          <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
             <SiteHealthCard api={sites} />
           </div>
-          <ServiceProblems checks={services.data || []} />
+          <ServicesOverview checks={services.data || []} />
           <WirelessHealthCard />
         </div>
       </>)}
@@ -521,7 +525,9 @@ export default function DashboardPage() {
 // empty page reads as broken, not as "all good". Say it explicitly instead.
 function AllClearCard() {
   return (
-    <div style={{ ...CARD_STYLE, padding: '18px 20px', display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10 }}>
+    // flexDirection MUST be stated: CARD_STYLE sets 'column', which stacked the
+    // icon above the text and let this card stretch to fill the section.
+    <div style={{ ...CARD_STYLE, padding: '14px 18px', flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 10 }}>
       <div style={{ width: 34, height: 34, borderRadius: '50%', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
         background: 'var(--tint-success)', color: 'var(--tint-success-fg)' }}>
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -762,47 +768,50 @@ function ServicesTile({ checks }: { checks: ServiceCheck[] }) {
 // ── Service problems list card (self-hides when no problems) ───
 // Down/warning service checks only; down sorts before warning. Hides the whole
 // card when everything is healthy, so it never strands an empty card in a flex row.
-function ServiceProblems({ checks }: { checks: ServiceCheck[] }) {
-  const rows = checks
-    .filter((c) => {
-      const st = (c.current_status || '').toLowerCase();
-      return st === 'down' || st === 'warning';
-    })
-    .sort((a, b) => statusRank(a.current_status.toLowerCase()) - statusRank(b.current_status.toLowerCase()));
-  if (!rows.length) return null;
+// Services overview. Replaces the old ServiceProblems card, which returned null
+// whenever nothing was down — and ServicesTile in the KPI strip hides on the same
+// condition, so a fully healthy estate showed NOTHING about services anywhere.
+// "Everything is fine" is information the operator wants; hiding it is not the
+// same as reporting it. Problems still sort to the top and colour the border, so
+// the failure case is no less prominent than it was.
+function ServicesOverview({ checks }: { checks: ServiceCheck[] }) {
+  const total = checks.length;
+  let up = 0, down = 0, warning = 0;
+  for (const c of checks) {
+    const st = (c.current_status || '').toLowerCase();
+    if (st === 'up') up += 1;
+    else if (st === 'down') down += 1;
+    else if (st === 'warning') warning += 1;
+  }
+  const rows = [...checks].sort(
+    (a, b) => statusRank((a.current_status || '').toLowerCase()) - statusRank((b.current_status || '').toLowerCase()),
+  );
+  const accent = down > 0 ? 'var(--red)' : warning > 0 ? 'var(--yellow)' : 'var(--green)';
   return (
-    <div style={{ ...CARD_STYLE, flex: 1, minWidth: 0, height: CARD_H }}>
+    <div style={{ ...CARD_STYLE, flex: 1, minWidth: 0, height: CARD_H, borderLeft: `3px solid ${accent}` }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-        <StatusDot status="down" size={11} />
-        <span style={SECTION_HEADING}>Service Problems</span>
-        <span style={{ marginLeft: 'auto', fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>{rows.length}</span>
+        <StatusDot status={down > 0 ? 'down' : warning > 0 ? 'warning' : 'up'} size={11} />
+        <span style={SECTION_HEADING}>Services</span>
+        <Link href="/services" style={{ marginLeft: 'auto', fontSize: 'var(--text-sm)', color: 'var(--primary)', textDecoration: 'none', fontWeight: 600 }}>
+          View →
+        </Link>
+      </div>
+      <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', marginBottom: 6 }}>
+        {total === 0 ? 'No checks configured' : `${up} of ${total} up${down ? ` · ${down} down` : ''}${warning ? ` · ${warning} warning` : ''}`}
       </div>
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', margin: '0 -4px', padding: '0 4px' }}>
-        {rows.map((c) => (
-          <Link
-            key={c.id}
-            href="/services"
-            style={{
-              display: 'flex', alignItems: 'center', gap: 8, height: 36, fontSize: 'var(--text-sm)',
-              borderBottom: '1px solid var(--border-light)', textDecoration: 'none',
-            }}
-          >
-            <StatusDot status={c.current_status} size={10} />
-            <span style={{ fontWeight: 600, color: 'var(--text-primary)', whiteSpace: 'nowrap' }}>{c.name}</span>
-            <span style={{
-              flexShrink: 0, fontSize: 'var(--text-xs)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.03em',
-              color: 'var(--text-muted)', background: 'var(--border)', padding: '1px 6px', borderRadius: 'var(--radius-sm)',
-            }}>
-              {(c.type || '').toUpperCase()}
-            </span>
-            <span style={{ color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {c.target}
-            </span>
+        {total === 0 ? (
+          <Empty message="Add a service check to monitor HTTP, TCP, SSL or DNS endpoints." />
+        ) : rows.map((c) => (
+          <div key={c.id} style={{ display: 'flex', alignItems: 'center', gap: 8, height: 32, fontSize: 'var(--text-sm)', borderBottom: '1px solid var(--border-light)', padding: '0 4px' }}>
+            <StatusDot status={(c.current_status || '').toLowerCase()} size={9} />
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text-primary)' }}>{c.name}</span>
+            <span style={{ color: 'var(--text-muted)', textTransform: 'uppercase', fontSize: 'var(--text-xs)', flexShrink: 0 }}>{c.type}</span>
             <span style={{ flex: 1 }} />
-            <span style={{ color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 180 }}>
-              {c.last_detail || '—'}
-            </span>
-          </Link>
+            {c.last_response_ms != null && (
+              <span style={{ color: msColor(c.last_response_ms), whiteSpace: 'nowrap', flexShrink: 0 }}>{c.last_response_ms} ms</span>
+            )}
+          </div>
         ))}
       </div>
     </div>

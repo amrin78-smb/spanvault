@@ -36,6 +36,11 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.103.2': [
+    'Added a Services panel to the Dashboard Overview. Previously nothing about services appeared anywhere on the dashboard while they were all healthy - both the services figure in the top row and the services panel hid themselves unless something was down. All nine checks are now listed with their status and response time, with any problems sorted to the top.',
+    'Fixed the Nothing needs attention message, which was stretching to fill most of the section instead of sitting in a compact row.',
+    'Fixed a gap in the Overview layout: the site health panel was not expanding to fill its share of the row, leaving empty space between it and wireless health.',
+  ],
   '1.103.1': [
     'Fixed: the Dashboard Overview section could be completely empty. Every card on it hides itself when it has nothing to report - maintenance windows, active problems, open incidents, offline agents - so on a healthy network the default view of the dashboard was a blank page, which reads as broken rather than as good news.',
     'Overview now says so explicitly with a Nothing needs attention message, and carries content that is always present: site health, plus service and wireless status when they have something to report.',
