@@ -36,6 +36,12 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.103.0': [
+    'The Dashboard is now organised into five sections - Overview, Performance, Availability, Predictive and Activity - instead of one long page. The headline tiles and the anomaly banner stay above the sections, so nothing you check at a glance, and nothing that warns you, has moved behind a tab.',
+    'This makes a larger difference here than it appears. The Dashboard was refreshing eighteen separate sets of data on a repeating timer, continuously, whether or not you were looking at any of them. It now refreshes only the section you have open, roughly halving the ongoing load on the server and the browser.',
+    'The section you were last on is remembered, so returning to the Dashboard puts you back where you were.',
+    'No panel was removed or changed - the groupings shown as headings before (Needs Attention, Performance, Availability, Predictive, Recent Activity) simply became the sections themselves.',
+  ],
   '1.102.1': [
     'Fixed: opening the Settings page could briefly stall the whole application, and while it was stalled unrelated requests could fail with what looked like a database timeout even though the database was healthy.',
     'The page shows which version is installed and whether an update is available. Working that out involved asking the version-control tool for the current revision, and that request was made in a way that halts everything else the application is doing until it answers - not just the request that asked for it. Every other request in flight, every scheduled job, and the database connections all waited with it.',

@@ -251,28 +251,74 @@ function NocViewButton() {
   );
 }
 
+// Dashboard sections. The page already grouped itself conceptually — the
+// "Needs Attention" / Performance / Availability / Predictive / Recent Activity
+// labels below were all here already; these tabs just make that grouping
+// navigable instead of a long scroll.
+//
+// The real cost this removes is not scrolling. DashboardPage calls 18 useApi
+// hooks in its body, every one of them POLLING on REFRESH_MS, so the page held
+// 18 endpoints on a repeating timer whether or not you were looking at them.
+// useApi(null) is a no-op (its reload() early-returns on a null path), so a
+// section that is not open costs nothing and keeps costing nothing.
+type DashSection = 'overview' | 'performance' | 'availability' | 'predictive' | 'activity';
+
+const DASH_SECTIONS: { id: DashSection; label: string }[] = [
+  { id: 'overview',     label: 'Overview' },
+  { id: 'performance',  label: 'Performance' },
+  { id: 'availability', label: 'Availability' },
+  { id: 'predictive',   label: 'Predictive' },
+  { id: 'activity',     label: 'Activity' },
+];
+
 export default function DashboardPage() {
   const { canManageAgents } = useRbac();
   const { state: licenseState, loading: licenseLoading } = useLicense();
+  // Section persists across reloads, same idiom as the sidebar-collapse state.
+  // Hydrated in an effect rather than the useState initialiser so the server
+  // render and the first client render agree.
+  const [section, setSection] = useState<DashSection>('overview');
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('spanvault-dash-section') as DashSection | null;
+      if (saved && DASH_SECTIONS.some(d => d.id === saved)) setSection(saved);
+    } catch { /* ignore */ }
+  }, []);
+  const selectSection = (id: DashSection) => {
+    setSection(id);
+    try { localStorage.setItem('spanvault-dash-section', id); } catch { /* ignore */ }
+  };
+  // Passing null to useApi skips the fetch AND its poll timer. Only feeds a
+  // section? Gate it. Feeds the always-visible KPI strip too? It must stay
+  // ungated, or the strip loses data the moment you switch away.
+  const on = (id: DashSection, path: string) => (section === id ? path : null);
+
+  // ── Always fetched: these feed the KPI strip / banner, which never hide ──
   const summary = useApi<Summary>('/api/dashboard/summary', REFRESH_MS);
-  const problems = useApi<Problem[]>('/api/dashboard/problems', REFRESH_MS);
-  const worst = useApi<Worst[]>('/api/dashboard/top-worst', REFRESH_MS);
-  const trend = useApi<TrendPoint[]>('/api/dashboard/network-trend', REFRESH_MS);
-  const sites = useApi<SiteHealth[]>('/api/dashboard/site-health', REFRESH_MS);
-  const events = useApi<EventRow[]>('/api/dashboard/events', REFRESH_MS);
-  const agentOffline = useApi<AgentOfflineRow[]>('/api/dashboard/agent-offline', REFRESH_MS);
   const intel = useApi<Overview>('/api/intelligence/overview', REFRESH_MS);
   const ops = useApi<OpsSummary>('/api/dashboard/ops-summary', REFRESH_MS);
-  const incidents = useApi<OpenIncident[]>('/api/dashboard/incidents', REFRESH_MS);
+  // sla, services and trend each feed BOTH the KPI strip and a section:
+  // SlaTile/SlaBreaches, ServicesTile/ServiceProblems, and — easy to miss —
+  // trend drives the Down tile's trend arrow via availTrend() below, not just
+  // the Availability chart. Gating any of them would blank part of the strip.
   const sla = useApi<Sla>('/api/dashboard/sla', REFRESH_MS);
-  // Daily counts change slowly — no point re-fetching 14 days on the 30s tick.
-  const alertTrend = useApi<AlertTrendResp>('/api/dashboard/alert-trend?days=14', 300000);
-  const capacity = useApi<CapacityRow[]>('/api/dashboard/capacity', REFRESH_MS);
-  const patterns = useApi<PatternRow[]>('/api/dashboard/patterns', REFRESH_MS);
-  const leastReliable = useApi<LeastReliable[]>('/api/dashboard/least-reliable', REFRESH_MS);
-  const topTalkers = useApi<TopTalker[]>('/api/dashboard/top-talkers', REFRESH_MS);
-  const maintenance = useApi<MaintenanceData>('/api/dashboard/maintenance', REFRESH_MS);
   const services = useApi<ServiceCheck[]>('/api/service-checks', REFRESH_MS);
+  const trend = useApi<TrendPoint[]>('/api/dashboard/network-trend', REFRESH_MS);
+
+  // ── Section-scoped: fetched only while their section is open ──
+  const problems = useApi<Problem[]>(on('overview', '/api/dashboard/problems'), REFRESH_MS);
+  const incidents = useApi<OpenIncident[]>(on('overview', '/api/dashboard/incidents'), REFRESH_MS);
+  const agentOffline = useApi<AgentOfflineRow[]>(on('overview', '/api/dashboard/agent-offline'), REFRESH_MS);
+  const maintenance = useApi<MaintenanceData>(on('overview', '/api/dashboard/maintenance'), REFRESH_MS);
+  const worst = useApi<Worst[]>(on('performance', '/api/dashboard/top-worst'), REFRESH_MS);
+  const topTalkers = useApi<TopTalker[]>(on('performance', '/api/dashboard/top-talkers'), REFRESH_MS);
+  const leastReliable = useApi<LeastReliable[]>(on('performance', '/api/dashboard/least-reliable'), REFRESH_MS);
+  const sites = useApi<SiteHealth[]>(on('availability', '/api/dashboard/site-health'), REFRESH_MS);
+  // Daily counts change slowly — no point re-fetching 14 days on the 30s tick.
+  const alertTrend = useApi<AlertTrendResp>(on('availability', '/api/dashboard/alert-trend?days=14'), 300000);
+  const capacity = useApi<CapacityRow[]>(on('predictive', '/api/dashboard/capacity'), REFRESH_MS);
+  const patterns = useApi<PatternRow[]>(on('predictive', '/api/dashboard/patterns'), REFRESH_MS);
+  const events = useApi<EventRow[]>(on('activity', '/api/dashboard/events'), REFRESH_MS);
 
   const updatedAt = useUpdatedAt(summary.data);
   const ago = useSecondsAgo(updatedAt);
@@ -354,42 +400,60 @@ export default function DashboardPage() {
         </>
       ) : null}
 
-      {/* ── Anomaly banner (slim, only if anomalies) ── */}
+      {/* ── Anomaly banner. Deliberately ABOVE the section bar: an anomaly is
+           something you must not miss, so it must not be reachable only by
+           picking the right tab. Same rule as the KPI strip. ── */}
       <AnomalyBanner data={intel.data} />
 
-      {/* ── Maintenance windows (planned — active now or within 7 days) ── */}
-      <MaintenanceGroup api={maintenance} />
-
-      {/* ── Hero row: active problems + open incidents. Each card is hidden once
-           it has loaded with nothing to show (still shown while loading or on
-           error), so an all-healthy network reclaims the space and the cards
-           below move up. The row collapses to one column if only one remains. ── */}
-      {(() => {
-        const showProblems = problems.error != null || problems.data == null || problems.data.length > 0;
-        const showIncidents = incidents.error != null || incidents.data == null || incidents.data.length > 0;
-        const shown = (showProblems ? 1 : 0) + (showIncidents ? 1 : 0);
-        if (shown === 0) return null;
-        return (
-          <div style={{ marginBottom: 10 }}>
-            <div style={{ ...GROUP_LABEL, color: 'var(--red)' }}>Needs Attention</div>
-            <div style={{ display: 'grid', gridTemplateColumns: shown === 2 ? '1fr 1fr' : '1fr', gap: 10, alignItems: 'stretch' }}>
-              {showProblems && <ActiveProblems api={problems} />}
-              {showIncidents && <OpenIncidents api={incidents} />}
-            </div>
-          </div>
-        );
-      })()}
-
-      {/* ── Agent-offline group (devices unreachable via an offline agent) ── */}
-      <AgentOfflineGroup api={agentOffline} />
-
-      {/* ── Performance / reliability (3-up): slowest · top talkers · least reliable ── */}
-      <div style={GROUP_LABEL}>Performance</div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, alignItems: 'stretch', marginBottom: 10 }}>
-        <SlowestDevices api={worst} />
-        <TopTalkers api={topTalkers} />
-        <LeastReliableDevices api={leastReliable} />
+      {/* ── Section tabs ── */}
+      <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid var(--border)', marginBottom: 12, flexWrap: 'wrap' }}>
+        {DASH_SECTIONS.map(sec => (
+          <button key={sec.id} onClick={() => selectSection(sec.id)}
+            style={{ background: 'none', border: 'none', padding: '8px 14px', fontSize: 'var(--text-base)',
+              borderBottom: '2px solid transparent', marginBottom: -1, cursor: 'pointer',
+              color: section === sec.id ? 'var(--primary)' : 'var(--text-muted)',
+              fontWeight: section === sec.id ? 600 : 500,
+              borderBottomColor: section === sec.id ? 'var(--primary)' : 'transparent' }}>
+            {sec.label}
+          </button>
+        ))}
       </div>
+
+      {section === 'overview' && (<>
+        {/* ── Maintenance windows (planned — active now or within 7 days) ── */}
+        <MaintenanceGroup api={maintenance} />
+
+        {/* ── Hero row: active problems + open incidents. Each card is hidden once
+             it has loaded with nothing to show (still shown while loading or on
+             error), so an all-healthy network reclaims the space and the cards
+             below move up. The row collapses to one column if only one remains. ── */}
+        {(() => {
+          const showProblems = problems.error != null || problems.data == null || problems.data.length > 0;
+          const showIncidents = incidents.error != null || incidents.data == null || incidents.data.length > 0;
+          const shown = (showProblems ? 1 : 0) + (showIncidents ? 1 : 0);
+          if (shown === 0) return null;
+          return (
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ ...GROUP_LABEL, color: 'var(--red)' }}>Needs Attention</div>
+              <div style={{ display: 'grid', gridTemplateColumns: shown === 2 ? '1fr 1fr' : '1fr', gap: 10, alignItems: 'stretch' }}>
+                {showProblems && <ActiveProblems api={problems} />}
+                {showIncidents && <OpenIncidents api={incidents} />}
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* ── Agent-offline group (devices unreachable via an offline agent) ── */}
+        <AgentOfflineGroup api={agentOffline} />
+      </>)}
+
+      {section === 'performance' && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, alignItems: 'stretch', marginBottom: 10 }}>
+          <SlowestDevices api={worst} />
+          <TopTalkers api={topTalkers} />
+          <LeastReliableDevices api={leastReliable} />
+        </div>
+      )}
 
       {/* ── Availability. Split across two rows so both charts get double width:
              a 24h availability trace and 14 days of alert volume are the two
@@ -397,36 +461,38 @@ export default function DashboardPage() {
              for a sparkline, not enough to read a dip against a target line.
              SLA Breaches keeps a narrow column: it is a tick most days, so it
              was the card paying the widest price for the least information. ── */}
-      <div style={GROUP_LABEL}>Availability</div>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 10, alignItems: 'stretch', marginBottom: 10 }}>
-        <SiteHealthCard api={sites} />
-        <NetworkAvailabilityCard api={trend} />
-      </div>
-      <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 10, alignItems: 'stretch', marginBottom: 10 }}>
-        <AlertVolumeCard api={alertTrend} />
-        <SlaBreaches api={sla} />
-      </div>
+      {section === 'availability' && (<>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 10, alignItems: 'stretch', marginBottom: 10 }}>
+          <SiteHealthCard api={sites} />
+          <NetworkAvailabilityCard api={trend} />
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 10, alignItems: 'stretch', marginBottom: 10 }}>
+          <AlertVolumeCard api={alertTrend} />
+          <SlaBreaches api={sla} />
+        </div>
+      </>)}
 
-      {/* ── Predictive (3-up): approaching capacity · recurring patterns · at-risk ── */}
-      <div style={GROUP_LABEL}>Predictive</div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, alignItems: 'stretch', marginBottom: 10 }}>
-        <ApproachingCapacity api={capacity} />
-        <RecurringPatterns api={patterns} />
-        <AtRiskDevices data={intel.data} />
-      </div>
+      {section === 'predictive' && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, alignItems: 'stretch', marginBottom: 10 }}>
+          <ApproachingCapacity api={capacity} />
+          <RecurringPatterns api={patterns} />
+          <AtRiskDevices data={intel.data} />
+        </div>
+      )}
 
       {/* ── Recent events + wireless health (wireless self-hides → events fills) ── */}
-      <div style={GROUP_LABEL}>Recent Activity</div>
-      <div style={{ display: 'flex', gap: 10, alignItems: 'stretch', marginBottom: 16 }}>
-        <div style={{ ...CARD_STYLE, flex: 1, minWidth: 0, height: CARD_H }}>
-          <div style={SECTION_HEADING}>Recent Events</div>
-          <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', margin: '0 -4px' }}>
-            <RecentEvents api={events} />
+      {section === 'activity' && (
+        <div style={{ display: 'flex', gap: 10, alignItems: 'stretch', marginBottom: 16 }}>
+          <div style={{ ...CARD_STYLE, flex: 1, minWidth: 0, height: CARD_H }}>
+            <div style={SECTION_HEADING}>Recent Events</div>
+            <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', margin: '0 -4px' }}>
+              <RecentEvents api={events} />
+            </div>
           </div>
+          <ServiceProblems checks={services.data || []} />
+          <WirelessHealthCard />
         </div>
-        <ServiceProblems checks={services.data || []} />
-        <WirelessHealthCard />
-      </div>
+      )}
     </div>
   );
 }
