@@ -36,6 +36,13 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.108.0': [
+    'Settings no longer changes width as you move between tabs. Four of the eight tabs laid their content out in a narrower column than the other four, so the page visibly resized - by 356 pixels - every time you switched. All eight now share one layout.',
+    'The four tabs that lacked one - Maintenance, Audit Log, Updates and About - now carry the same explanatory panel down the right-hand side that the other tabs already had, rather than leaving that space blank.',
+    'Fixed the email settings fields not lining up. Each field was sized to its own content, so the second row of boxes sat 56 pixels out of step with the first. They now share equal columns and line up.',
+    'Data Retention has moved up alongside Polling & Thresholds, closing a 165-pixel band of empty space that sat between the two panels.',
+    'This is the first of three planned passes over Settings. Still to come: consistent list-then-add ordering with proper empty states and a clearer save action, then readable audit log entries with filtering.',
+  ],
   '1.107.3': [
     'Fixed: on a sensor that had an alert set, the alert badge crowded the sensor name out of its own row - "Engine Test — Multiping AIRTEL" rendered as "Engine T...", losing two thirds of its width. The alert now sits on the second line of the row, where there is room for it, and the name keeps its full width.',
   ],

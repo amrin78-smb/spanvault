@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useApi, apiSend } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
@@ -118,13 +118,79 @@ export default function SettingsPage() {
       {tab === 'notifications' && <NotificationSettings {...formProps} />}
       {tab === 'escalation' && <EscalationSettings {...formProps} />}
       {tab === 'rules' && <AlertRules />}
-      {tab === 'maintenance' && <Maintenance />}
-      {tab === 'audit' && canManageSettings && <AuditLog />}
-      {tab === 'updates' && <SystemUpdates />}
-      {tab === 'about' && <AboutSettings />}
+      {/* The remaining tabs render through the same two-column shell as the
+          four above. Without it their panels take the full 1216px while the
+          others are capped at 860px by .sv-settings-row, so the content
+          visibly resized — a 356px jump — every time you changed tab. */}
+      {tab === 'maintenance' && <TabShell aside={MAINTENANCE_HELP}><Maintenance /></TabShell>}
+      {tab === 'audit' && canManageSettings && <TabShell aside={AUDIT_HELP}><AuditLog /></TabShell>}
+      {tab === 'updates' && <TabShell aside={UPDATES_HELP}><SystemUpdates /></TabShell>}
+      {tab === 'about' && <TabShell aside={ABOUT_HELP}><AboutSettings /></TabShell>}
     </div>
   );
 }
+
+// ── Shared tab shell ───────────────────────────────────────────
+// The two-column settings layout (capped content column + 300px help rail)
+// that GeneralSettings/NotificationSettings/EscalationSettings build inline.
+// Tabs whose body is a plain panel render through this instead, so every tab
+// is the same width and every tab carries the same kind of contextual help.
+type HelpEntry = { term: string; detail: string };
+
+function TabShell({ aside, children }: { aside: { title: string; entries: HelpEntry[] }; children: React.ReactNode }) {
+  return (
+    <div className="sv-settings-row">
+      <div>{children}</div>
+      <aside className="sv-info-card">
+        <h3>{aside.title}</h3>
+        <dl>
+          {aside.entries.map((e) => (
+            <Fragment key={e.term}>
+              <dt>{e.term}</dt>
+              <dd>{e.detail}</dd>
+            </Fragment>
+          ))}
+        </dl>
+      </aside>
+    </div>
+  );
+}
+
+const MAINTENANCE_HELP = {
+  title: 'How maintenance windows work',
+  entries: [
+    { term: 'What is suppressed', detail: 'Alerts for the selected scope are not raised while the window is open. The devices are still polled, so graphs and uptime stay continuous — you simply are not paged for planned work.' },
+    { term: 'Scope', detail: 'Leave it global to silence everything, or narrow it to one device or service so the rest of the estate keeps alerting normally.' },
+    { term: 'After it ends', detail: 'Alerting resumes automatically at the end time. Anything still broken then raises a fresh alert.' },
+  ],
+};
+
+const AUDIT_HELP = {
+  title: 'About the audit log',
+  entries: [
+    { term: 'What is recorded', detail: 'Every configuration and operational change made through the app — who made it, from which role, and when.' },
+    { term: 'Retention', detail: 'Controlled by the audit log retention setting on the General tab. Entries older than that are purged with the rest of the historical data.' },
+    { term: 'Ordering', detail: 'Newest first. Use Load older to pull further back than the most recent page.' },
+  ],
+};
+
+const UPDATES_HELP = {
+  title: 'How updating works',
+  entries: [
+    { term: 'What an update does', detail: 'Pulls the new version, installs dependencies, applies any database changes, rebuilds the interface, and restarts the three SpanVault services.' },
+    { term: 'If it fails', detail: 'The updater snapshots the current version first and rolls back automatically, restarting the services on the previous version rather than leaving the app down.' },
+    { term: 'Brief interruption', detail: 'The interface is unavailable for a minute or two while services restart. Polling resumes on its own; no monitoring history is lost.' },
+  ],
+};
+
+const ABOUT_HELP = {
+  title: 'About this install',
+  entries: [
+    { term: 'Version', detail: 'The running build. The Updates tab shows whether a newer one is available.' },
+    { term: 'Suite', detail: 'SpanVault is the network monitoring app in the NocVault suite, alongside NetVault, LogVault and DDIVault. Sign-in is shared across all four.' },
+    { term: 'Support', detail: 'Quote the version above when reporting a problem — it identifies the exact build the behaviour was seen on.' },
+  ],
+};
 
 // ── Shared settings form (lifted to parent) ────────────────────
 type SettingsFormProps = {
@@ -255,6 +321,10 @@ function GeneralSettings({ settings, form, set, save, saving, saveErr, dirty, nu
     <div>
       {saveErr && <ErrorBox message={saveErr} />}
       <div className="sv-settings-row">
+        {/* Retention shares this row rather than starting a new one: the help
+            rail beside it is taller than the polling panel alone, which left
+            165px of dead space in this column before the next panel began. */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
         <div className="sv-panel" style={{ margin: 0 }}>
           <h2>Polling &amp; Thresholds</h2>
           <div className="sv-form-grid-numeric">
@@ -271,6 +341,29 @@ function GeneralSettings({ settings, form, set, save, saving, saveErr, dirty, nu
             })}
           </div>
         </div>
+
+        <div className="sv-panel" style={{ margin: 0 }}>
+          <h2>Data Retention</h2>
+          <p className="sv-panel-hint">
+            Raw samples are rolled up to daily summaries, then purged. 0 = keep forever.
+          </p>
+          <div className="sv-form-grid-numeric">
+            <label className="sv-field">Raw samples (days)
+              <input className="sv-input sv-input-sm" type="number" min={0} placeholder="14"
+                value={form.retention_raw_days ?? ''} onChange={(e) => set('retention_raw_days', e.target.value)} />
+            </label>
+            <label className="sv-field">Daily rollups (days)
+              <input className="sv-input sv-input-sm" type="number" min={0} placeholder="730"
+                value={form.retention_rollup_days ?? ''} onChange={(e) => set('retention_rollup_days', e.target.value)} />
+            </label>
+            <label className="sv-field">Audit log (days)
+              <input className="sv-input sv-input-sm" type="number" min={0} placeholder="365"
+                value={form.retention_audit_days ?? ''} onChange={(e) => set('retention_audit_days', e.target.value)} />
+            </label>
+          </div>
+        </div>
+        </div>
+
         <aside className="sv-info-card">
           <h3>About these settings</h3>
           <dl>
@@ -329,27 +422,6 @@ function GeneralSettings({ settings, form, set, save, saving, saveErr, dirty, nu
         </aside>
       </div>
 
-      <div className="sv-panel sv-panel-narrow">
-        <h2>Data Retention</h2>
-        <p className="sv-panel-hint">
-          Raw samples are rolled up to daily summaries, then purged. 0 = keep forever.
-        </p>
-        <div className="sv-form-grid-numeric">
-          <label className="sv-field">Raw samples (days)
-            <input className="sv-input sv-input-sm" type="number" min={0} placeholder="14"
-              value={form.retention_raw_days ?? ''} onChange={(e) => set('retention_raw_days', e.target.value)} />
-          </label>
-          <label className="sv-field">Daily rollups (days)
-            <input className="sv-input sv-input-sm" type="number" min={0} placeholder="730"
-              value={form.retention_rollup_days ?? ''} onChange={(e) => set('retention_rollup_days', e.target.value)} />
-          </label>
-          <label className="sv-field">Audit log (days)
-            <input className="sv-input sv-input-sm" type="number" min={0} placeholder="365"
-              value={form.retention_audit_days ?? ''} onChange={(e) => set('retention_audit_days', e.target.value)} />
-          </label>
-        </div>
-      </div>
-
       <SaveBar save={save} saving={saving} dirty={dirty} disabled={hasNumErrors} />
     </div>
   );
@@ -373,10 +445,10 @@ function NotificationSettings({ settings, form, set, save, saving, saveErr, dirt
                 onChange={(e) => set('email_alerts_enabled', e.target.checked ? 'true' : 'false')} />
               Enable email alerts
             </label>
-            <div className="sv-form-grid-compact">
+            <div className="sv-form-grid-text">
               {SMTP_FIELDS.map((f) => (
                 <label className="sv-field" key={f.key}>{f.label}
-                  <input className={`sv-input${(f as { short?: boolean }).short ? ' sv-input-sm' : ''}`} type={f.type || 'text'} value={form[f.key] ?? ''}
+                  <input className="sv-input" type={f.type || 'text'} value={form[f.key] ?? ''}
                     onChange={(e) => set(f.key, e.target.value)} />
                 </label>
               ))}

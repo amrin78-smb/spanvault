@@ -994,6 +994,22 @@ label.sv-field .sv-input, label.sv-field .sv-select { font-weight: 400; }
 .sv-form-grid-numeric { display: grid; grid-template-columns: repeat(auto-fill, 200px); gap: 16px 24px; }
 .sv-form-grid-numeric > .sv-field { width: 100%; }
 
+/* Uniform-column TEXT field grid — the free-text sibling of
+   .sv-form-grid-numeric, for panels whose fields are ordinary text inputs of
+   roughly equal weight (SMTP host / user / from / recipients).
+   .sv-form-grid-compact sizes every field to its own content, which is right
+   for a form mixing short and long fields but leaves consecutive ROWS
+   misaligned: measured on Settings > Notifications, row 1's columns began at
+   289/628/800 and row 2's at 289/572/856 — a 56px stagger on two of three
+   columns, with widths jumping 307/140/307 -> 251/251/251. Equal columns make
+   the rows line up.
+   Fields stretch to fill their column, so an .sv-input-sm cap inside one is
+   overridden on purpose; a form that genuinely needs a short field next to a
+   long one belongs in .sv-form-grid-compact instead. */
+.sv-form-grid-text { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px 24px; }
+.sv-form-grid-text > .sv-field { width: 100%; min-width: 0; }
+.sv-form-grid-text > .sv-field .sv-input { width: 100%; max-width: none; }
+
 /* Caps a settings-form panel's width so short/numeric fields don't sit in a
    half-empty full-bleed card — pair with .sv-form-grid-numeric or a
    short-field-dominated .sv-form-grid-compact panel. Not applied to panels
