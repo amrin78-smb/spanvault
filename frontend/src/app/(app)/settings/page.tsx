@@ -25,7 +25,7 @@ export default function SettingsPage() {
   const { canManageSettings, sessionLoading } = useRbac();
   const router = useRouter();
   const [tab, setTab] = useState('general');
-  // Highlight the Updates tab with a red dot when a new version is available.
+  // Highlight the About & Updates tab with a red dot when a new version is available.
   const updates = useApi<{ available?: boolean }>('/api/system/update-available');
   const updateAvail = !!updates.data?.available;
 
@@ -628,7 +628,8 @@ function EscalationOnCall({ form, set }: { form: Record<string, any>; set: (k: s
           </tbody>
         </table>
       )}
-      {!steps.loading && (steps.data || []).length === 0 && (
+      {steps.error && <ErrorBox message={steps.error} />}
+      {!steps.loading && !steps.error && (steps.data || []).length === 0 && (
         <EmptyState
           title="No escalation steps"
           message="Nothing escalates today — an unacknowledged alert stays where it is. Add a first step below."
@@ -668,7 +669,8 @@ function EscalationOnCall({ form, set }: { form: Record<string, any>; set: (k: s
           </tbody>
         </table>
       )}
-      {!shifts.loading && (shifts.data || []).length === 0 && (
+      {shifts.error && <ErrorBox message={shifts.error} />}
+      {!shifts.loading && !shifts.error && (shifts.data || []).length === 0 && (
         <EmptyState
           title="No on-call shifts"
           message="A step set to use on-call has nobody to reach. Add a shift below, or point steps at fixed addresses instead."
@@ -774,7 +776,8 @@ function NotificationRoutes() {
           </tbody>
         </table>
       )}
-      {!routes.loading && list.length === 0 && (
+      {routes.error && <ErrorBox message={routes.error} />}
+      {!routes.loading && !routes.error && list.length === 0 && (
         <EmptyState
           title="No routes configured"
           message="Every alert goes to the global Alert Recipients above. Add a route to send particular alerts somewhere else instead."
@@ -888,7 +891,9 @@ const AUDIT_ROUTES: { re: RegExp; label: (m: RegExpMatchArray, verb: string) => 
   { re: /^\/api\/maintenance\/?(\d+)?$/, kind: 'Maintenance', label: (m, v) => `${v} maintenance window${m[1] ? ` #${m[1]}` : ''}` },
   { re: /^\/api\/notification-routes\/?(\d+)?$/, kind: 'Notifications', label: (m, v) => `${v} notification route${m[1] ? ` #${m[1]}` : ''}` },
   { re: /^\/api\/service-checks\/?(\d+)?$/, kind: 'Services', label: (m, v) => `${v} service check${m[1] ? ` #${m[1]}` : ''}` },
-  { re: /^\/api\/agents\/(\d+)\/(restart|logs)/, kind: 'Agents', label: (m) => `${m[2] === 'restart' ? 'Restarted' : 'Fetched logs from'} agent #${m[1]}` },
+  // Anchored like every other entry: unanchored, a future /restart-all or
+  // /logs-export would be mislabelled as this one.
+  { re: /^\/api\/agents\/(\d+)\/(restart|logs)(\/refresh)?$/, kind: 'Agents', label: (m) => `${m[2] === 'restart' ? 'Restarted' : 'Fetched logs from'} agent #${m[1]}` },
   { re: /^\/api\/sites\/?(\d+)?$/, kind: 'Sites', label: (m, v) => `${v} site${m[1] ? ` #${m[1]}` : ''}` },
 ];
 function auditAction(r: AuditRow): { label: string; kind: string; raw: string } {
@@ -951,7 +956,11 @@ function AuditLog() {
   if (audit.error) return <ErrorBox message={audit.error} />;
   // The endpoint returns a bare array with no total; a full page implies more
   // history exists (heuristic), so offer "Load older" up to the fetch cap.
-  const canLoadOlder = rows.length >= limit && limit < AUDIT_LIMIT_MAX;
+  // Measured against everything FETCHED, not the filtered view. `rows` used to
+  // mean "all fetched entries" and now means "entries matching the filters", so
+  // reading it here made the Load older button disappear the moment you
+  // searched — exactly when you most need to widen the window.
+  const canLoadOlder = all.length >= limit && limit < AUDIT_LIMIT_MAX;
   const loadingOlder = audit.loading && !!audit.data;
   return (
     <div className="sv-panel">
@@ -962,13 +971,19 @@ function AuditLog() {
       <div className="sv-toolbar">
         <input className="sv-input sv-input-md" placeholder="Search action, user or detail…"
           value={q} onChange={(e) => setQ(e.target.value)} />
+        {/* The selected value is kept in the list even if it vanishes from the
+            newly-polled data (30s refresh): otherwise the control renders blank
+            while its filter is still applied, so the table looks wrong for no
+            visible reason. */}
         <select className="sv-select" value={who} onChange={(e) => setWho(e.target.value)}>
           <option value="">Any user</option>
-          {users.map((u) => <option key={u} value={u as string}>{u}</option>)}
+          {(who && !users.includes(who) ? [who, ...users] : users)
+            .map((u) => <option key={u} value={u as string}>{u}</option>)}
         </select>
         <select className="sv-select" value={kind} onChange={(e) => setKind(e.target.value)}>
           <option value="">Any area</option>
-          {kinds.map((k) => <option key={k} value={k}>{k}</option>)}
+          {(kind && !kinds.includes(kind) ? [kind, ...kinds] : kinds)
+            .map((k) => <option key={k} value={k}>{k}</option>)}
         </select>
         {(q || who || kind) && (
           <>
@@ -978,14 +993,27 @@ function AuditLog() {
         )}
       </div>
       {!rows.length ? (
-        <EmptyState
-          title={all.length ? 'No entries match' : 'No audit entries yet'}
-          message={all.length
-            ? 'Nothing in the loaded history matches these filters. Clear them, or use Load older to search further back.'
-            : 'Configuration and operational changes will appear here as they are made.'}
-          actionLabel={all.length ? 'Clear filters' : undefined}
-          onAction={all.length ? () => { setQ(''); setWho(''); setKind(''); } : undefined}
-        />
+        <>
+          <EmptyState
+            title={all.length ? 'No entries match' : 'No audit entries yet'}
+            message={all.length
+              ? `Nothing in the newest ${all.length.toLocaleString()} entries matches these filters.${canLoadOlder ? ' Clear them, or load more history and search again.' : ' Clear them to see the full log.'}`
+              : 'Configuration and operational changes will appear here as they are made.'}
+            actionLabel={all.length ? 'Clear filters' : undefined}
+            onAction={all.length ? () => { setQ(''); setWho(''); setKind(''); } : undefined}
+          />
+          {/* The Pager — and with it "Load older" — lives in the other branch,
+              so without this the message above pointed at a button that was not
+              on screen. */}
+          {canLoadOlder && (
+            <div style={{ textAlign: 'center', paddingBottom: 16 }}>
+              <button className="sv-btn ghost" disabled={loadingOlder}
+                onClick={() => setLimit((l) => Math.min(AUDIT_LIMIT_MAX, l + AUDIT_LOAD_STEP))}>
+                {loadingOlder ? 'Loading…' : 'Load older'}
+              </button>
+            </div>
+          )}
+        </>
       ) : (
         <>
           <table className="sv-table">
@@ -1025,7 +1053,7 @@ function AuditLog() {
             loadingOlder={loadingOlder}
             onLoadOlder={() => setLimit((l) => Math.min(AUDIT_LIMIT_MAX, l + AUDIT_LOAD_STEP))}
             cappedNote={
-              limit >= AUDIT_LIMIT_MAX && rows.length >= limit
+              limit >= AUDIT_LIMIT_MAX && all.length >= limit
                 ? `Showing the newest ${limit.toLocaleString()} entries.`
                 : undefined
             }
@@ -1703,7 +1731,13 @@ function Maintenance() {
       <div className="sv-panel">
         <h2>Scheduled Windows</h2>
         <p className="sv-panel-hint">Alerting is suppressed for the chosen scope while a window is open.</p>
-        {windows.loading && !windows.data ? (
+        {/* An error must NOT fall through to the empty state: useApi leaves
+            data null on failure, and "Nothing is suppressed right now — every
+            alert will fire as normal" is a confident false statement about
+            alert suppression if the request simply failed. */}
+        {windows.error ? (
+          <ErrorBox message={windows.error} />
+        ) : windows.loading && !windows.data ? (
           <TableSkeleton rows={4} cols={5} />
         ) : windows.data && windows.data.length ? (
           <table className="sv-table">

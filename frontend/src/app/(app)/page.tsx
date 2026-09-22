@@ -615,7 +615,7 @@ function UpdatedNotice() {
         }}
       >
         <IconWarning width={15} height={15} aria-hidden style={{ flexShrink: 0 }} />
-        <span>An update failed and was automatically rolled back — SpanVault is running normally on the previous version. See Settings → Updates for details.</span>
+        <span>An update failed and was automatically rolled back — SpanVault is running normally on the previous version. See Settings → About &amp; Updates for details.</span>
       </div>
     );
   }

@@ -36,6 +36,14 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.111.1': [
+    'Fixed: searching the audit log hid the "Load older" button - the check for whether more history exists was counting the filtered results instead of everything loaded, so the button vanished exactly when you needed it. The no-results message also referred to a button that was not on screen; it now offers one.',
+    'Fixed: several panels showed a reassuring empty message when the request behind them had actually failed. Maintenance could state "Nothing is suppressed right now, every alert will fire as normal" purely because the server did not answer. Those panels now show the error.',
+    'Fixed: if a sensor somehow had two alerts on it, the device page showed only one. Clearing it made the sensor look unwatched while the second alert kept firing. All alerts on a sensor are now listed, and Clear removes all of them.',
+    'Fixed: the sensor manager squeezed long sensor names on screens narrower than about 1200 pixels - the same problem fixed last week, reappearing at a smaller window size. The two panels now stack instead.',
+    'Fixed: clearing the threshold box to retype it produced a confusing "threshold required" error on a form where the threshold was visibly present. Save is now simply disabled until the value is a number.',
+    'Smaller corrections: the rollback banner pointed at a Settings tab that no longer exists, and an audit filter could keep an invisible selection after the page refreshed.',
+  ],
   '1.111.0': [
     'Fixed: setting an alert on a device\'s CPU or Memory sensor silently cancelled that device\'s existing CPU or Memory rule. The two were treated as the same subject even though the app presents them as unrelated, and which one survived was decided by database row order - so the effective threshold could change on its own. Both now apply.',
     'Fixed: alerts set on individual sensors never fired at all on devices monitored through a remote agent. The rule appeared enabled and listed as effective, and did nothing. Those devices now evaluate every sensor rule.',
@@ -93,7 +101,7 @@ const releaseNotes = {
     'One limit worth knowing: a sensor can carry one rule at a time. Setting both a warning and a critical threshold on the same sensor is not supported - the more specific one wins. That is the same rule that has always applied to the device-wide metrics.',
   ],
   '1.105.0': [
-    'Forcepoint VPN tunnels can now be monitored individually. Each site-to-site tunnel is its own sensor, named by the peer address and reading Up or Down, in the same way interfaces are - so you can watch the tunnels that matter rather than a single total. There is also a VPN Peers Down figure, which is the one to put an alert rule on.',
+    'Forcepoint VPN tunnels can now be monitored individually. Each site-to-site tunnel is its own sensor, named by the peer address and reading Up or Down, in the same way interfaces are - so you can watch the tunnels that matter rather than a single total. There is also a VPN Peers Down figure. (Correction: this note originally said that figure was "the one to put an alert rule on". It was not possible to do so in this version - alert rules could only name eight fixed metrics until 1.106.0 added per-sensor rules.)',
     'To be clear about what these are: they are IPsec tunnels. The count includes no SSL-VPN users, and cannot - Forcepoint does not report SSL-VPN over SNMP at all. Remote VPN clients appear only as a total number of connections, never individually.',
     'The previous count was misleading on EU-SEY-CLU01 and has been corrected. That firewall has two internet uplinks, and the firewall lists every tunnel once per uplink - so a tunnel sitting idle on the backup uplink was being counted as a tunnel that was down. It reported 31 of 55 when the true position was 23 of 24 peers reachable. Tunnels are now counted per peer, and a tunnel is up if it is established over either uplink.',
     'The uplinks themselves are now monitored too. Each one reports how many tunnels it is currently carrying, so an uplink that has stopped carrying anything is visible even though the tunnels themselves failed over and stayed up. The engine\'s own built-in tests are also exposed as sensors - on EU-SEY-CLU01 those include a separate reachability ping per ISP, and a link check per network port.',

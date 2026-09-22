@@ -77,7 +77,23 @@ discovery.js
     and /api/snmp-test-adhoc  [SENSITIVE: SNMP creds]
   discoverDevice(...) — walks a device, returns grouped available sensors (backs POST /api/devices/:id/snmp-discover)
   buildFetchPlan(...) — builds the per-vendor OID fetch plan pushed to remote agents
-  candidatesToSamples, collectCandidates, fmtValue, unitFor, PrefetchedSession — discovery/formatting helpers
+  candidatesToSamples, collectCandidates, fmtValue, PrefetchedSession — discovery/formatting helpers
+  unitFor(metric) — derives a sensor's unit from its metric name. Returns 'state' for Up/Down
+    sensors (vpn_peer_up / node_online / node_test_ok, WITH or without a per-sensor `_<idx>`
+    suffix, plus if_<n>_oper and if_oper_status), else '%'/'bps'/'bytes'/'count'/''. Also
+    imported by api/server.js — GET /api/devices/:id/sensors returns it as a derived field,
+    and the alert-limit editors key off 'state' to offer "when Down"/"when Up" instead of a
+    number. The suffix tolerance is load-bearing: without it every per-sensor state sensor
+    fell through to the numeric editor (the 1.107.1 bug).
+  fetchVendorRaw(session, parser) — exported for tests only (tests/test-vendor-fetch.js);
+    batches scalar GETs, walks tables concurrently, matches replies back by OID
+
+parsers/_util.js  (shared helpers for collector/parsers/*)
+  num / str / rowsNum / first / avg / sum / countWhere / lastIndex / sample
+  num64(v) — decodes a 64-bit SNMP value. net-snmp has no 64-bit integer type, so
+    Counter64/CounterBasedGauge64 arrive as big-endian Buffers and num() returns null for
+    them. Use num64 for any OID whose MIB SYNTAX is 64-bit. Leaves a numeric DisplayString
+    alone (byte-decoding '42' would read as 13362) and strips BER's leading zero pad.
 
 topology.js
   discoverDevice/matchNeighborDevice/storeNeighbors/discoverAndStore — LLDP/CDP walk + link persistence,

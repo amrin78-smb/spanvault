@@ -153,24 +153,30 @@ function ruleSummary(rule: SensorRule, unit?: string): string {
 // steals the sensor's own width. A badge here cut "Engine Test — Multiping
 // AIRTEL" from 192px to 69px ("Engine T…"), so the limit itself is rendered on
 // the row's second line by SensorAlertLine instead.
-function SensorAlertCell({ rule, busy, onEdit, onClear }: {
-  rule: SensorRule | null;
+function SensorAlertCell({ rules, busy, onEdit, onClear }: {
+  rules: SensorRule[] | null;
   busy: boolean;
   onEdit: () => void;
   onClear: () => void;
 }) {
-  if (rule) {
-    return <button className="sv-btn ghost sm" onClick={onClear} disabled={busy}>Clear alert</button>;
+  if (rules && rules.length) {
+    return (
+      <button className="sv-btn ghost sm" onClick={onClear} disabled={busy}>
+        {rules.length > 1 ? `Clear ${rules.length} alerts` : 'Clear alert'}
+      </button>
+    );
   }
   return <button className="sv-btn ghost sm" onClick={onEdit}>+ Alert</button>;
 }
 
-// The limit itself, on the row's second line where there is room for it.
-function SensorAlertLine({ rule, unit }: { rule: SensorRule | null; unit?: string }) {
-  if (!rule) return null;
+// The limit itself, on the row's second line where there is room for it. Every
+// rule on the sensor is listed — showing only one hid the fact that a second
+// rule (added from Settings) was still live after "Clear".
+function SensorAlertLine({ rules, unit }: { rules: SensorRule[] | null; unit?: string }) {
+  if (!rules || !rules.length) return null;
   return (
     <span className="meta" style={{ color: 'var(--tint-warn-fg)' }}>
-      ⚠ {ruleSummary(rule, unit)} · {rule.severity}
+      ⚠ {rules.map((r) => `${ruleSummary(r, unit)} · ${r.severity}`).join('  |  ')}
     </span>
   );
 }
@@ -238,7 +244,13 @@ function SensorAlertEditor({ deviceId, sensor, onSaved, onCancel }: {
         <option value="warning">warning</option>
         <option value="critical">critical</option>
       </select>
-      <button className="sv-btn sm" onClick={save} disabled={busy}>{busy ? 'Saving…' : 'Save alert'}</button>
+      {/* Blank or non-numeric threshold is rejected here rather than by the
+          server: clearing the box to retype produced NaN, which serialises to
+          null, which came back as "metric and threshold required" on a form
+          where both are visibly present. */}
+      <button className="sv-btn sm" onClick={save} disabled={busy || !Number.isFinite(parseFloat(threshold))}>
+        {busy ? 'Saving…' : 'Save alert'}
+      </button>
       <button className="sv-btn ghost sm" onClick={onCancel} disabled={busy}>Cancel</button>
       {err && <span className="sv-muted" style={{ fontSize: 'var(--text-xs)' }}>{err}</span>}
     </div>
@@ -269,18 +281,20 @@ export default function SensorManager({
   const [err, setErr] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   // Per-sensor alert rules for this device, keyed by sensor_key.
-  const [rules, setRules] = useState<Map<string, SensorRule>>(new Map());
+  const [rules, setRules] = useState<Map<string, SensorRule[]>>(new Map());
   // sensor_key whose alert editor is open (one at a time), and the key being
   // cleared, so only that row's buttons disable.
   const [editingAlert, setEditingAlert] = useState<string | null>(null);
   const [clearingAlert, setClearingAlert] = useState<string | null>(null);
 
+  // Clears EVERY rule on the sensor. Removing just one left the row reading
+  // "+ Alert" — i.e. unwatched — while a surviving duplicate carried on paging.
   async function clearRule(sensorKey: string) {
-    const rule = rules.get(sensorKey);
-    if (!rule) return;
+    const list = rules.get(sensorKey);
+    if (!list || !list.length) return;
     setClearingAlert(sensorKey);
     try {
-      await apiSend(`/api/alert-rules/${rule.id}`, 'DELETE');
+      for (const rule of list) await apiSend(`/api/alert-rules/${rule.id}`, 'DELETE');
       await loadRules();
     } catch (e: any) {
       setErr(e?.message || 'Failed to remove alert');
@@ -292,7 +306,19 @@ export default function SensorManager({
   async function loadRules() {
     try {
       const rows = await apiGet<SensorRule[]>(`/api/alert-rules?scope=device&device_id=${deviceId}`);
-      setRules(new Map(rows.filter((r) => r.sensor_key).map((r) => [r.sensor_key as string, r])));
+      // Grouped, not keyed: nothing stops two rules existing on one sensor (one
+      // added here, one from Settings > Device Rules — there is no unique
+      // index). Keeping only the last meant the row showed a single alert,
+      // "Clear" removed one, the row flipped to "+ Alert" as though the sensor
+      // were unwatched, and the survivor carried on paging.
+      const m = new Map<string, SensorRule[]>();
+      for (const r of rows) {
+        if (!r.sensor_key) continue;
+        const list = m.get(r.sensor_key) || [];
+        list.push(r);
+        m.set(r.sensor_key, list);
+      }
+      setRules(m);
     } catch (_e) {
       // Non-fatal: the sensor list still works without the alert column.
     }
@@ -410,6 +436,7 @@ export default function SensorManager({
       // broken alert rather than an unticked sensor — so say so plainly
       // instead of letting it go quiet.
       const orphaned = Array.from(rules.values())
+        .flat()
         .filter((r) => r.sensor_key && !selected.has(r.sensor_key))
         .map((r) => r.sensor_label || r.sensor_key);
       setNotice(orphaned.length
@@ -565,11 +592,11 @@ export default function SensorManager({
                                 <span className="sv-sensor-info">
                                   <span className="nm">{g.name} ({dirsLabel(g.members)})</span>
                                   {g.meta && <span className="meta">{g.meta}</span>}
-                                  {statusSensor && <SensorAlertLine rule={rules.get(statusSensor.key) || null} unit="state" />}
+                                  {statusSensor && <SensorAlertLine rules={rules.get(statusSensor.key) || null} unit="state" />}
                                 </span>
                                 {statusSensor && (
                                   <SensorAlertCell
-                                    rule={rules.get(statusSensor.key) || null}
+                                    rules={rules.get(statusSensor.key) || null}
                                     busy={clearingAlert === statusSensor.key}
                                     onEdit={() => setEditingAlert(statusSensor.key)}
                                     onClear={() => clearRule(statusSensor.key)}
@@ -594,7 +621,7 @@ export default function SensorManager({
                               <span className="sv-sensor-info">
                                 <span className="nm">{it.base_name || it.name}</span>
                                 {it.meta && <span className="meta">{it.meta}</span>}
-                                <SensorAlertLine rule={rules.get(it.key) || null} unit={it.unit} />
+                                <SensorAlertLine rules={rules.get(it.key) || null} unit={it.unit} />
                               </span>
                               {it.current_value !== undefined && (
                                 it.metric_name === 'ha_sync_status'
@@ -604,7 +631,7 @@ export default function SensorManager({
                                   : <span className="val">{it.current_value}</span>
                               )}
                               <SensorAlertCell
-                                rule={rules.get(it.key) || null}
+                                rules={rules.get(it.key) || null}
                                 busy={clearingAlert === it.key}
                                 onEdit={() => setEditingAlert(it.key)}
                                 onClear={() => clearRule(it.key)}

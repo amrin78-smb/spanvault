@@ -81,7 +81,7 @@ deliberately skip it).
 - `POST /api/devices/:id/set-gateway` [auth+write:site_admin+] [db] — marks device as its site's gateway (clears any existing one first)
 - `POST /api/devices/:id/clear-gateway` [auth+write:site_admin+] [db]
 - `POST /api/devices/:id/snmp-discover` [auth+write:site_admin+] [external] — walks device, returns grouped available sensors
-- `GET /api/devices/:id/sensors` [auth] [db]
+- `GET /api/devices/:id/sensors` [auth] [db] — saved sensor selection for the device. Each row carries a DERIVED `unit` (custom_unit || unitFor(metric_name)); it is not stored. Both alert-limit editors key off `unit === 'state'` to offer "when Down"/"when Up" rather than a threshold box.
 - `PUT /api/devices/:id/sensors` [auth+write:site_admin+] [db] — upserts sensor selection
 - `POST /api/devices/:id/sensors/custom` [auth+write:site_admin+] [db] — create custom OID sensor
 - `DELETE /api/devices/:id/sensors/custom/:sensor_id` [auth+write:site_admin+] [db] — custom sensors only
@@ -116,9 +116,9 @@ deliberately skip it).
 - `GET /api/alert-rules` [auth] [db]
 - `GET /api/alert-rules/effective/:device_id` [auth] [db] — effective ruleset after global->site->device inheritance
 - `GET /api/alert-rules/effective-service/:service_check_id` [auth] [db] — same, namespaced to SERVICE_METRICS
-- `POST /api/alert-rules` [auth+write:admin+] [db]
-- `PUT /api/alert-rules/:id` [auth+write:admin+] [db]
-- `DELETE /api/alert-rules/:id` [auth+write:admin+] [db]
+- `POST /api/alert-rules` [auth+write:admin+] [db] — 400s if `sensor_key` is sent without a device-scoped rule + `device_id`.
+- `PUT /api/alert-rules/:id` [auth+write:admin+] [db] — 400s if the update would leave a `sensor_key` rule non-device-scoped (it could otherwise be promoted to global and raise one alert_type estate-wide). `enabled:false` also resolves the alerts that rule had raised.
+- `DELETE /api/alert-rules/:id` [auth+write:admin+] [db] — resolves any ACTIVE `rule_<id>` alerts first; only evaluateEffectiveRules resolves them, so deleting the rule used to strand them permanently.
 
 ## Network map (devices grouped by site) + interactive map designer
 - `GET /api/map` [auth] [db] — legacy simple map, devices grouped by site
@@ -220,7 +220,7 @@ deliberately skip it).
 - `GET /api/reports/service-detail` [auth] [db] — RBAC: site_admin restricted to a service check in an assigned site (this + `/api/service-checks/:id[/results]` were the isolated site-scoping-gap batch — see gotchas.md)
 
 ## Settings / audit / notification routing
-- `GET /api/settings` [auth] [db]
+- `GET /api/settings` [auth:admin+] [db] — ADMIN ONLY (403 below rank 2). app_settings holds smtp_pass in plaintext; the RBAC middleware gates only writes, so this was returning it to every authenticated caller including viewers.
 - `GET /api/audit` [auth] [db] — admin-only in practice (UI-gated); recent successful mutations
 - `PUT /api/settings` [auth+write:admin+] [db]
 - `GET /api/notification-routes` [auth] [db]

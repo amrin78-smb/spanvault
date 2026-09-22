@@ -1065,6 +1065,15 @@ label.sv-field .sv-input, label.sv-field .sv-select { font-weight: 400; }
 /* The two sensor columns own all the flexible height; the available-sensors
    panel (left) scrolls internally and fills the modal. */
 .sv-sensor-cols { display: grid; grid-template-columns: 1.4fr 1fr; gap: 16px; flex: 1 1 auto; min-height: 0; }
+/* Below ~1200px the Enabled column drops under ~350px, and an enabled row now
+   carries a value plus TWO buttons ("+ Alert"/"Clear alert" and Remove), none
+   of which shrink — so `.sv-sensor-info` (the only min-width:0 child) pays for
+   them and the sensor's name collapses to a few characters. That is the same
+   squeeze fixed in 1.107.3, one viewport width down; stacking the two panels
+   gives the row its full width back. */
+@media (max-width: 1200px) {
+  .sv-sensor-cols { grid-template-columns: 1fr; }
+}
 
 /* Custom OID sensors — a collapsible section pinned at the bottom of the modal.
    flex: 0 0 auto so it never steals height from the sensor columns above. */
