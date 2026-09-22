@@ -102,6 +102,10 @@ const VENDOR_LABELS = {
   threats_blocked: 'Threats Blocked (24h)', disk_usage_pct: 'Disk Usage %',
   gp_gateway_util_pct: 'GlobalProtect Gateway Utilization %',
   qos_drop_rate: 'QoS Drop Rate',
+  // Forcepoint NGFW.
+  inspection_mem_pct: 'Inspection Memory Used', swap_usage_pct: 'Swap Usage',
+  vpn_tunnels_total: 'VPN Tunnels Configured', node_online: 'Node Online',
+  node_test_failure_count: 'Failed Engine Tests',
 };
 function humanize(key) {
   if (VENDOR_LABELS[key]) return VENDOR_LABELS[key];

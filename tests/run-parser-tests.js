@@ -24,6 +24,7 @@ const SUITES = [
   'test-cisco-client-parser.js', // MIB-verified (AIRESPACE-WIRELESS-MIB bsnMobileStationStatsTable) — was never registered here
   'test-fortinet-client-parser.js', // MIB-verified (FORTINET-FORTIGATE-MIB fgWcStaTable) — no Fortinet hardware in lab
   'test-grandstream-client-parser.js', // MIB-verified (GRANDSTREAM-GWN-MIB gwnClientTable) — no Grandstream GWN hardware in lab
+  'test-forcepoint-parser.js', // live-verified SNMP vendor parser (FORCEPOINT-NGFW-ENGINE-MIB, engines on fw 7.1.11)
 ];
 
 let failed = 0;

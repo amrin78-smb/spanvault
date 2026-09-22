@@ -19,6 +19,20 @@ function num(v) {
   return isNaN(n) || !isFinite(n) ? null : n;
 }
 
+// Coerce a 64-bit SNMP value to a number. net-snmp has no 64-bit integer type,
+// so Counter64 / CounterBasedGauge64 varbinds arrive as big-endian Buffers —
+// num() would run Buffer.toString() over those raw bytes and yield NaN. Use
+// this for any OID whose MIB SYNTAX is Counter64 or CounterBasedGauge64.
+function num64(v) {
+  if (Buffer.isBuffer(v)) {
+    if (!v.length || v.length > 8) return null;
+    let n = 0n;
+    for (const b of v) n = (n << 8n) | BigInt(b);
+    return Number(n);
+  }
+  return num(v);
+}
+
 // Coerce a raw SNMP value to a string (Buffers → utf8).
 function str(v) {
   if (v === null || v === undefined) return '';
@@ -78,4 +92,4 @@ function sample(metricName, value, oid, ifIndex, ifName) {
   };
 }
 
-module.exports = { num, str, rowsNum, first, avg, sum, countWhere, lastIndex, sample };
+module.exports = { num, num64, str, rowsNum, first, avg, sum, countWhere, lastIndex, sample };

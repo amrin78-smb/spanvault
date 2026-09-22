@@ -36,6 +36,14 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.104.0': [
+    'Forcepoint NGFW firewalls now report their own metrics instead of only the generic ones every SNMP device provides. The two engines in the estate (EU-DUB-FW01 and EU-SEY-CLU01) previously reported nothing beyond CPU, memory and interface traffic - the Forcepoint parser existed only to put the right vendor name on the device. It now reads the Forcepoint NGFW MIB directly.',
+    'The memory figure for these firewalls was wrong, and read about 20 points too high - EU-SEY-CLU01 showed 97% memory used when the true figure was 79%. The generic reading counts the cache and buffers the operating system can reclaim at any time as memory in use. The firewall reports how much memory is genuinely available, and that is now the number shown. Expect the memory graph for both firewalls to step down at the point of this upgrade; nothing changed on the firewalls themselves.',
+    'Eight new metrics are available for these firewalls: active connections, inspection memory used, swap usage, disk usage, VPN tunnels configured and active, whether the cluster node is online, and the number of failed engine self-tests. They are not collected automatically - open the device, choose Sensors, run a discovery and tick the ones you want, the same as any other sensor.',
+    'Two of those are worth looking at once they are on. EU-SEY-CLU01 is running at 98% swap and 83% inspection memory, neither of which was visible before.',
+    'Disk usage deliberately ignores the firewall\'s root filesystem, which is read-only and 100% full by design on every NGFW appliance. Reporting it would peg the metric at 100% permanently and hide the partitions that do fill up, which are the log spool and data areas.',
+    'Forcepoint firewalls are also now recognised by their equipment identifier as well as their description text, so an engine that reports a generic description is no longer misfiled as an unknown vendor.',
+  ],
   '1.103.2': [
     'Added a Services panel to the Dashboard Overview. Previously nothing about services appeared anywhere on the dashboard while they were all healthy - both the services figure in the top row and the services panel hid themselves unless something was down. All nine checks are now listed with their status and response time, with any problems sorted to the top.',
     'Fixed the Nothing needs attention message, which was stretching to fill most of the section instead of sitting in a compact row.',

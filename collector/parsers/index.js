@@ -81,7 +81,8 @@ const PATTERNS = [
 const ENTERPRISE_VENDOR = {
   2620: 'checkpoint',
   8741: 'sonicwall',
-  1369: 'forcepoint',
+  1369: 'forcepoint',  // legacy Stonesoft/StoneGate tree
+  47565: 'forcepoint', // modern Forcepoint NGFW (FORCEPOINT-NGFW-ENGINE-MIB)
 };
 
 /**
