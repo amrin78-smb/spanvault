@@ -874,9 +874,12 @@ function isNoThreshold(metric: string): boolean {
 }
 function conditionText(r: Rule): string {
   if (isNoThreshold(r.metric)) return 'triggered';
-  // A per-sensor state rule reads as "is Down", not "= 0".
-  if (r.sensor_key && r.operator === '=' && (r.threshold === 0 || r.threshold === 1)) {
-    return `is ${Number(r.threshold) === 1 ? 'Up' : 'Down'}`;
+  // A per-sensor state rule reads as "is Down", not "= 0". threshold is a
+  // Postgres NUMERIC, which node-postgres returns as a STRING — comparing it
+  // strictly against a number silently falls through to the raw form.
+  const t = Number(r.threshold);
+  if (r.sensor_key && r.operator === '=' && (t === 0 || t === 1)) {
+    return `is ${t === 1 ? 'Up' : 'Down'}`;
   }
   const u = r.sensor_key ? '' : metricUnit(r.metric);
   return `${r.operator} ${r.threshold}${u}`;

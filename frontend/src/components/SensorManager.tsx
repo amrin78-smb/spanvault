@@ -137,9 +137,13 @@ function IndeterminateCheckbox({ checked, indeterminate, onChange }: {
 }
 
 // How an existing sensor rule reads on the row.
+// threshold arrives as a STRING: it is a Postgres NUMERIC, and node-postgres
+// hands those back as strings to avoid precision loss — so it must be coerced
+// before comparing, or a state rule renders as the raw "= 0".
 function ruleSummary(rule: SensorRule, unit?: string): string {
-  if (unit === 'state' && rule.operator === '=' && (rule.threshold === 0 || rule.threshold === 1)) {
-    return `alert when ${Number(rule.threshold) === 1 ? 'Up' : 'Down'}`;
+  const t = Number(rule.threshold);
+  if (unit === 'state' && rule.operator === '=' && (t === 0 || t === 1)) {
+    return `alert when ${t === 1 ? 'Up' : 'Down'}`;
   }
   return `alert when ${rule.operator} ${rule.threshold}${unit && unit !== 'state' ? unit : ''}`;
 }
