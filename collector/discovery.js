@@ -104,14 +104,22 @@ const VENDOR_LABELS = {
   qos_drop_rate: 'QoS Drop Rate',
   // Forcepoint NGFW.
   inspection_mem_pct: 'Inspection Memory Used', swap_usage_pct: 'Swap Usage',
-  vpn_tunnels_total: 'VPN Tunnels Configured', node_online: 'Node Online',
-  node_test_failure_count: 'Failed Engine Tests',
+  node_online: 'Node Online', node_test_failure_count: 'Failed Engine Tests',
+  node_test_ok: 'Engine Test',
+  vpn_peer_up: 'VPN Tunnel', vpn_peers_total: 'VPN Peers Configured',
+  vpn_peers_up: 'VPN Peers Up', vpn_peers_down: 'VPN Peers Down',
+  vpn_paths_down: 'VPN Paths Down', vpn_uplink_tunnels: 'VPN Tunnels via Uplink',
+  vpn_dynamic_total: 'Dynamic-IP VPN Peers', vpn_dynamic_up: 'Dynamic-IP VPN Peers Up',
+  vpn_mobile_sas: 'Mobile VPN Client SAs',
 };
 function humanize(key) {
   if (VENDOR_LABELS[key]) return VENDOR_LABELS[key];
   return String(key).replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 function unitFor(metric) {
+  // Up/Down states, rendered by fmtValue as words rather than 1/0.
+  if (/^(vpn_peer_up|node_online|node_test_ok)$/.test(metric)) return 'state';
+  if (/^(vpn_paths_down|vpn_dynamic_total|vpn_dynamic_up|vpn_mobile_sas)$/.test(metric)) return 'count';
   if (/pct$/.test(metric)) return '%';
   if (/_bps$/.test(metric)) return 'bps';
   if (/bytes/.test(metric)) return 'bytes';

@@ -36,6 +36,13 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.105.0': [
+    'Forcepoint VPN tunnels can now be monitored individually. Each site-to-site tunnel is its own sensor, named by the peer address and reading Up or Down, in the same way interfaces are - so you can watch the tunnels that matter rather than a single total. There is also a VPN Peers Down figure, which is the one to put an alert rule on.',
+    'To be clear about what these are: they are IPsec tunnels. The count includes no SSL-VPN users, and cannot - Forcepoint does not report SSL-VPN over SNMP at all. Remote VPN clients appear only as a total number of connections, never individually.',
+    'The previous count was misleading on EU-SEY-CLU01 and has been corrected. That firewall has two internet uplinks, and the firewall lists every tunnel once per uplink - so a tunnel sitting idle on the backup uplink was being counted as a tunnel that was down. It reported 31 of 55 when the true position was 23 of 24 peers reachable. Tunnels are now counted per peer, and a tunnel is up if it is established over either uplink.',
+    'The uplinks themselves are now monitored too. Each one reports how many tunnels it is currently carrying, so an uplink that has stopped carrying anything is visible even though the tunnels themselves failed over and stayed up. The engine\'s own built-in tests are also exposed as sensors - on EU-SEY-CLU01 those include a separate reachability ping per ISP, and a link check per network port.',
+    'Current position: EU-DUB-FW01 has 4 of 24 peers down (217.171.34.98, 102.213.215.66, 213.146.77.58, 27.254.21.132) and EU-SEY-CLU01 has 1 of 24 down (213.146.77.58). That peer is unreachable from both firewalls, which points at the far end rather than at either of ours.',
+  ],
   '1.104.1': [
     'Fixed: Run Discovery timed out on the Forcepoint firewalls, which 1.104.0 introduced. The sensor list could not be opened for EU-SEY-CLU01 at all, so the new Forcepoint metrics could not be switched on - the very thing 1.104.0 added them for.',
     'Vendor metrics were each fetched in a separate request to the device, one after the next. That is unnoticeable on the local network but not over a link to Seychelles, and the new Forcepoint parser reads fifteen of them - about seven seconds of waiting, which discovery then does twice to work out interface throughput, against a fifteen-second limit.',

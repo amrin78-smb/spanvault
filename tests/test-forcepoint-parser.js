@@ -61,15 +61,62 @@ const seyRaw = {
     { oid: `${HW}.3.1.5.2`, value: c64(328680) },   // /data  16.6%
     { oid: `${HW}.3.1.5.3`, value: c64(2265680) },  // /spool 68.9% <- the worst real one
   ],
+  // Dual-uplink shape, as on the real EU-SEY-CLU01: every peer is listed once
+  // per local endpoint. Rows 1/2 are the mobile-client aggregates (one per
+  // uplink), 3/4 are peer A on each uplink (up via .50 only — a failover, not
+  // an outage), 5/6 are peer B (up on both), 7 is a dynamic peer that has
+  // never connected, 8/9 are peer C (down on both — a genuinely dead tunnel).
+  vpn_local: [
+    { oid: `${ENG}.12.1.2.1`, value: Buffer.from([41, 79, 60, 50]) },
+    { oid: `${ENG}.12.1.2.2`, value: Buffer.from([154, 70, 164, 16]) },
+    { oid: `${ENG}.12.1.2.3`, value: Buffer.from([41, 79, 60, 50]) },
+    { oid: `${ENG}.12.1.2.4`, value: Buffer.from([154, 70, 164, 16]) },
+    { oid: `${ENG}.12.1.2.5`, value: Buffer.from([41, 79, 60, 50]) },
+    { oid: `${ENG}.12.1.2.6`, value: Buffer.from([154, 70, 164, 16]) },
+    { oid: `${ENG}.12.1.2.7`, value: Buffer.from([41, 79, 60, 50]) },
+    { oid: `${ENG}.12.1.2.8`, value: Buffer.from([41, 79, 60, 50]) },
+    { oid: `${ENG}.12.1.2.9`, value: Buffer.from([154, 70, 164, 16]) },
+  ],
+  vpn_remote: [
+    { oid: `${ENG}.12.1.3.1`, value: Buffer.from([0, 0, 0, 0]) },        // mobile aggregate
+    { oid: `${ENG}.12.1.3.2`, value: Buffer.from([0, 0, 0, 0]) },        // mobile aggregate
+    { oid: `${ENG}.12.1.3.3`, value: Buffer.from([62, 6, 45, 58]) },     // peer A
+    { oid: `${ENG}.12.1.3.4`, value: Buffer.from([62, 6, 45, 58]) },     // peer A
+    { oid: `${ENG}.12.1.3.5`, value: Buffer.from([88, 157, 159, 18]) },  // peer B
+    { oid: `${ENG}.12.1.3.6`, value: Buffer.from([88, 157, 159, 18]) },  // peer B
+    { oid: `${ENG}.12.1.3.7`, value: Buffer.from([0, 0, 0, 0]) },        // dynamic, never connected
+    { oid: `${ENG}.12.1.3.8`, value: Buffer.from([213, 146, 77, 58]) },  // peer C
+    { oid: `${ENG}.12.1.3.9`, value: Buffer.from([213, 146, 77, 58]) },  // peer C
+  ],
+  vpn_type: [
+    { oid: `${ENG}.12.1.4.1`, value: 3 },  // mobile
+    { oid: `${ENG}.12.1.4.2`, value: 3 },  // mobile
+    { oid: `${ENG}.12.1.4.3`, value: 1 },
+    { oid: `${ENG}.12.1.4.4`, value: 1 },
+    { oid: `${ENG}.12.1.4.5`, value: 1 },
+    { oid: `${ENG}.12.1.4.6`, value: 1 },
+    { oid: `${ENG}.12.1.4.7`, value: 2 },  // dynamic
+    { oid: `${ENG}.12.1.4.8`, value: 1 },
+    { oid: `${ENG}.12.1.4.9`, value: 1 },
+  ],
   vpn_sa: [
-    { oid: `${ENG}.12.1.7.1`, value: 0 },
-    { oid: `${ENG}.12.1.7.2`, value: 2 },
-    { oid: `${ENG}.12.1.7.3`, value: 2 },
-    { oid: `${ENG}.12.1.7.4`, value: 0 },
-    { oid: `${ENG}.12.1.7.5`, value: 3 },
+    { oid: `${ENG}.12.1.7.1`, value: 2 },  // mobile SAs on uplink .50
+    { oid: `${ENG}.12.1.7.2`, value: 0 },
+    { oid: `${ENG}.12.1.7.3`, value: 3 },  // peer A up via .50
+    { oid: `${ENG}.12.1.7.4`, value: 0 },  // peer A idle on .16
+    { oid: `${ENG}.12.1.7.5`, value: 4 },  // peer B up via .50
+    { oid: `${ENG}.12.1.7.6`, value: 3 },  // peer B up via .16 too
+    { oid: `${ENG}.12.1.7.7`, value: 0 },  // dynamic, not connected
+    { oid: `${ENG}.12.1.7.8`, value: 0 },  // peer C down
+    { oid: `${ENG}.12.1.7.9`, value: 0 },  // peer C down
   ],
   node_state:    scalar(`${NODE}.3.0`, 1),
   node_cpu:      scalar(`${NODE}.4.0`, 36),
+  node_test_name: [
+    { oid: `${NODE}.7.1.2.1`, value: Buffer.from('Link Status:EU-SEY-CLU01/NIC 4') },
+    { oid: `${NODE}.7.1.2.2`, value: Buffer.from('Multiping INTELVISION:EU-SEY-CLU01, src: interface 5, ping : 8.8.8.8 8.8.4.4') },
+    { oid: `${NODE}.7.1.2.3`, value: Buffer.from('Multiping AIRTEL:EU-SEY-CLU01, src: interface 3, ping : 8.8.4.4 8.8.8.8') },
+  ],
   node_tests: [
     { oid: `${NODE}.7.1.3.1`, value: 1 },
     { oid: `${NODE}.7.1.3.2`, value: 1 },
@@ -92,10 +139,97 @@ check('inspection_mem_pct passes through the Unsigned32 gauge',
   sey.get('inspection_mem_pct').value === 85);
 check('disk_usage_pct ignores the always-full read-only "/" and reports /spool',
   near(sey.get('disk_usage_pct').value, 68.93, 0.05));
-check('vpn_tunnels_total counts every endpoint row',
-  sey.get('vpn_tunnels_total').value === 5);
-check('vpn_tunnels_active counts only endpoints with >= 1 IPsec SA',
-  sey.get('vpn_tunnels_active').value === 3);
+// ── VPN: peers, not rows ─────────────────────────────────────────────────────
+const byMetric = (samples, name) => samples.filter((s) => s.metric_name === name);
+const seyAll = forcepoint.parse(seyRaw);
+
+check('vpn_peers_total counts distinct peers, not table rows (3, not 9)',
+  sey.get('vpn_peers_total').value === 3);
+check('vpn_peers_up treats a peer as up when ANY uplink has an SA',
+  sey.get('vpn_peers_up').value === 2);
+check('vpn_peers_down counts only peers down on every uplink',
+  sey.get('vpn_peers_down').value === 1);
+check('vpn_paths_down counts individual down paths (peer A idle + peer C x2)',
+  sey.get('vpn_paths_down').value === 3);
+check('mobile-client rows are excluded from the peer counts',
+  sey.get('vpn_peers_total').value === 3);
+check('vpn_mobile_sas sums SAs across the mobile aggregate rows',
+  sey.get('vpn_mobile_sas').value === 2);
+check('a dynamic peer that never connected is counted separately, not as a peer',
+  sey.get('vpn_dynamic_total').value === 1 && sey.get('vpn_dynamic_up').value === 0);
+
+const peerRows = byMetric(seyAll, 'vpn_peer_up');
+const peerBy = new Map(peerRows.map((s) => [s.if_name, s]));
+check('one vpn_peer_up sensor per peer, labelled with the peer address',
+  peerRows.length === 3 && peerBy.has('62.6.45.58') && peerBy.has('88.157.159.18') && peerBy.has('213.146.77.58'));
+check('peer up on only one uplink still reads up (failover is not an outage)',
+  peerBy.get('62.6.45.58').value === 1);
+check('peer down on every uplink reads down',
+  peerBy.get('213.146.77.58').value === 0);
+check('per-peer sensor indexes are unique and positive',
+  new Set(peerRows.map((s) => s.if_index)).size === 3 && peerRows.every((s) => s.if_index > 0));
+check('per-peer sensor index is stable across polls (derived from the address)',
+  byMetric(forcepoint.parse(seyRaw), 'vpn_peer_up')
+    .every((s, i) => s.if_index === peerRows[i].if_index));
+check('per-peer index fits an INTEGER column',
+  peerRows.every((s) => s.if_index <= 2147483647));
+
+// ── VPN: per-uplink ──────────────────────────────────────────────────────────
+const uplinks = new Map(byMetric(seyAll, 'vpn_uplink_tunnels').map((s) => [s.if_name, s.value]));
+check('one vpn_uplink_tunnels sensor per local endpoint', uplinks.size === 2);
+check('uplink 41.79.60.50 is carrying 2 tunnels', uplinks.get('41.79.60.50') === 2);
+check('uplink 154.70.164.16 is carrying 1 tunnel', uplinks.get('154.70.164.16') === 1);
+check('uplink tallies ignore the mobile aggregate rows',
+  uplinks.get('41.79.60.50') + uplinks.get('154.70.164.16') === 3);
+
+// An uplink that has gone dead reports 0 while peer availability stays quiet.
+const deadUplink = Object.assign({}, seyRaw, {
+  vpn_sa: seyRaw.vpn_sa.map((r) => (['3', '5'].includes(r.oid.split('.').pop())
+    ? { oid: r.oid, value: 0 } : r)),
+});
+const du = forcepoint.parse(deadUplink);
+const duUp = new Map(byMetric(du, 'vpn_uplink_tunnels').map((s) => [s.if_name, s.value]));
+const duBy = new Map(du.map((s) => [s.metric_name, s]));
+check('a dead uplink reports 0 tunnels while its peers stay up via the other uplink',
+  duUp.get('41.79.60.50') === 0 && duUp.get('154.70.164.16') === 1);
+check('peer A drops to down when both of its uplinks lose SAs',
+  duBy.get('vpn_peers_down').value === 2);
+
+// ── Engine self-tests ────────────────────────────────────────────────────────
+const tests = new Map(byMetric(seyAll, 'node_test_ok').map((s) => [s.if_name, s.value]));
+check('one node_test_ok sensor per engine self-test', tests.size === 3);
+check('nodeTestIdentity is shortened to the test kind plus NIC',
+  tests.has('Link Status NIC 4'));
+check('per-ISP Multiping tests surface under their own names',
+  tests.has('Multiping INTELVISION') && tests.has('Multiping AIRTEL'));
+check('a passing test reads 1', tests.get('Multiping AIRTEL') === 1);
+
+const failedTest = Object.assign({}, seyRaw, {
+  node_tests: [
+    { oid: `${NODE}.7.1.3.1`, value: 1 },
+    { oid: `${NODE}.7.1.3.2`, value: 1 },
+    { oid: `${NODE}.7.1.3.3`, value: 2 },  // AIRTEL multiping failing
+  ],
+});
+const ft = new Map(byMetric(forcepoint.parse(failedTest), 'node_test_ok').map((s) => [s.if_name, s.value]));
+check('a failing per-ISP multiping reads 0 while the other stays 1',
+  ft.get('Multiping AIRTEL') === 0 && ft.get('Multiping INTELVISION') === 1);
+
+// Two tests can share a label (one row per cluster node) — they must collapse
+// into a single sensor that is down if either fails, not two colliding sensors.
+const dupLabels = Object.assign({}, seyRaw, {
+  node_test_name: [
+    { oid: `${NODE}.7.1.2.1`, value: Buffer.from('Free Swap Space:EU-DUB-FW01 executed on : EU-DUB-FW01 node 1') },
+    { oid: `${NODE}.7.1.2.2`, value: Buffer.from('Free Swap Space:EU-DUB-FW01 executed on : EU-DUB-FW01 node 2') },
+  ],
+  node_tests: [
+    { oid: `${NODE}.7.1.3.1`, value: 1 },
+    { oid: `${NODE}.7.1.3.2`, value: 2 },
+  ],
+});
+const dl = byMetric(forcepoint.parse(dupLabels), 'node_test_ok');
+check('same-labelled tests collapse to one sensor, down if either fails',
+  dl.length === 1 && dl[0].if_name === 'Free Swap Space' && dl[0].value === 0);
 check('node_online = 1 for nodeOperState online(1)', sey.get('node_online').value === 1);
 check('node_test_failure_count = 0 when every test succeeds',
   sey.get('node_test_failure_count').value === 0);
