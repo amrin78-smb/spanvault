@@ -31,7 +31,8 @@ importing them are already client components.
 - (c) `ShapeEl`  shape — one decorative map shape/glyph (SVGMapView.tsx)
 - (c) `MapLabelText`  label — one map text label (SVGMapView.tsx)
 - `IndeterminateCheckbox`  checked, indeterminate, onChange — internal to SensorManager.tsx, not exported
-- (c) `SensorManager`  deviceId, deviceName, onClose, onSaved — default export, sensor discovery + selection modal
+- `SensorAlertControl`  deviceId, sensor{key,name,metric_name,unit}, rule, onChanged — internal to SensorManager.tsx, not exported. Per-sensor alert limit on each ENABLED sensor row (the PRTG model): creates/deletes a device-scoped `alert_rules` row carrying that sensor's `sensor_key`. A `unit==='state'` sensor offers "when Down"/"when Up"; anything else takes operator+threshold. For an interface GROUP the limit targets the group's Status member, since "this link went down" is the alert that makes sense on a bundle of In/Out/Status.
+- (c) `SensorManager`  deviceId, deviceName, onClose, onSaved — default export, sensor discovery + selection modal; also loads the device's sensor rules (`GET /api/alert-rules?scope=device&device_id=`) to render each row's alert state, and warns on save when a still-configured rule now points at a sensor that has been unticked (such a rule can never fire)
 - (c) `Sidebar`  (no props) — default export, nav chips, admin-gated items (Agents/Settings)
 - (c) `SiteScopeBanner`  (no props) — shown to a site_admin to indicate their scoped view
 - `Sparkline`  (props not captured — small SVG trend line component). **Currently imported by nothing**: its only consumer was the devices list's 24h trend column, removed in the 1.88.0 redesign. Kept as a general-purpose primitive rather than deleted; if you need a mini trend chart, this already exists.

@@ -36,6 +36,12 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.107.0': [
+    'Alert limits can now be set on the device itself, next to the sensor they belong to, instead of only from Settings. Open a device, click Manage Sensors, and every enabled sensor carries a "+ Alert" button on its row.',
+    'Sensors that read Up or Down - VPN tunnels, engine tests, node online - simply ask "when Down" or "when Up". Numeric sensors take an operator and a threshold. A sensor that already has an alert shows its limit inline, with a Clear button.',
+    'For an interface, the limit applies to that interface\'s status, so you can alert on one specific link going down rather than on the existing "any interface down" rule.',
+    'If you untick a sensor that still has an alert on it, saving now tells you so by name. That alert can never fire again - nothing is collecting the sensor it watches - and previously it would simply have gone quiet without saying anything.',
+  ],
   '1.106.0': [
     'Alert rules can now target one specific sensor, instead of only the eight device-wide metrics the app has always offered. Pick a device under Settings > Alert Rules > Device Rules, tick "Alert on a specific sensor", and choose any sensor you have enabled on it - one VPN tunnel, one engine test, one interface, one vendor reading.',
     'This is what makes a rule like "alert when Multiping AIRTEL is down" possible. It was not previously - the rule list offered a fixed set of eight metrics, and the alert engine only ever received five values from the SNMP poll, so a rule naming anything else would have sat there and never fired.',

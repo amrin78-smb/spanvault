@@ -14,6 +14,13 @@ type SavedSensor = {
   id: number; sensor_key: string; sensor_name: string; category: string;
   metric_name: string; oid: string | null; enabled: boolean;
   is_custom?: boolean; custom_label?: string | null; custom_unit?: string | null;
+  unit?: string;
+};
+// A device-scoped alert rule bound to one sensor (alert_rules.sensor_key).
+type SensorRule = {
+  id: number; sensor_key: string | null; sensor_label: string | null;
+  metric: string; operator: string; threshold: number | null;
+  severity: string; enabled: boolean;
 };
 type CustomSensor = {
   id: number; oid: string | null; sensor_name: string;
@@ -25,6 +32,9 @@ type Avail = {
   metric_name: string; oid: string | null; current_value?: string;
   // Interface enrichment from discovery: base_name (line 1) + meta (muted line 2).
   base_name?: string; meta?: string;
+  // 'state' means the sensor reads Up/Down, so its alert limit is a choice
+  // between the two rather than a number to compare against.
+  unit?: string;
 };
 
 const CAT_ORDER = ['system', 'interface', 'vendor'];
@@ -126,10 +136,111 @@ function IndeterminateCheckbox({ checked, indeterminate, onChange }: {
   return <input ref={ref} type="checkbox" checked={checked} onChange={onChange} />;
 }
 
+// How an existing sensor rule reads on the row.
+function ruleSummary(rule: SensorRule, unit?: string): string {
+  if (unit === 'state' && rule.operator === '=' && (rule.threshold === 0 || rule.threshold === 1)) {
+    return `alert when ${Number(rule.threshold) === 1 ? 'Up' : 'Down'}`;
+  }
+  return `alert when ${rule.operator} ${rule.threshold}${unit && unit !== 'state' ? unit : ''}`;
+}
+
+// Per-sensor alert limit, set where the sensor lives rather than over in
+// Settings — the PRTG model. Creates a device-scoped alert_rules row carrying
+// this sensor's key, which is what makes the collector evaluate it per sensor.
+// Top-level component on purpose: defining it inside SensorManager would
+// remount it on every keystroke and drop input focus.
+function SensorAlertControl({ deviceId, sensor, rule, onChanged }: {
+  deviceId: number;
+  sensor: { key: string; name: string; metric_name: string; unit?: string };
+  rule: SensorRule | null;
+  onChanged: () => void;
+}) {
+  const isState = sensor.unit === 'state';
+  const [open, setOpen] = useState(false);
+  const [operator, setOperator] = useState('>');
+  const [threshold, setThreshold] = useState(isState ? '0' : '90');
+  const [severity, setSeverity] = useState('warning');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function save() {
+    setBusy(true);
+    setErr(null);
+    try {
+      await apiSend('/api/alert-rules', 'POST', {
+        scope: 'device', device_id: deviceId, metric: sensor.metric_name,
+        sensor_key: sensor.key, sensor_label: sensor.name,
+        operator: isState ? '=' : operator,
+        threshold: parseFloat(threshold),
+        severity, enabled: true,
+      });
+      setOpen(false);
+      onChanged();
+    } catch (e: any) {
+      setErr(e?.message || 'Failed to save alert');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function clear() {
+    if (!rule) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await apiSend(`/api/alert-rules/${rule.id}`, 'DELETE');
+      onChanged();
+    } catch (e: any) {
+      setErr(e?.message || 'Failed to remove alert');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (rule) {
+    return (
+      <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }} title={`${ruleSummary(rule, sensor.unit)} · ${rule.severity}`}>
+        <span className="sv-badge warning">{ruleSummary(rule, sensor.unit)}</span>
+        <button className="sv-btn ghost sm" onClick={clear} disabled={busy}>Clear</button>
+      </span>
+    );
+  }
+  if (!open) {
+    return <button className="sv-btn ghost sm" onClick={() => setOpen(true)}>+ Alert</button>;
+  }
+  return (
+    <span style={{ display: 'inline-flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+      {isState ? (
+        <select className="sv-select" value={threshold} onChange={(e) => setThreshold(e.target.value)}>
+          <option value="0">when Down</option>
+          <option value="1">when Up</option>
+        </select>
+      ) : (
+        <>
+          <select className="sv-select" value={operator} onChange={(e) => setOperator(e.target.value)}>
+            {['>', '>=', '<', '<=', '=', '!='].map((o) => <option key={o} value={o}>{o}</option>)}
+          </select>
+          <input className="sv-input sv-input-sm" type="number" value={threshold}
+            onChange={(e) => setThreshold(e.target.value)} style={{ width: 80 }} />
+        </>
+      )}
+      <select className="sv-select" value={severity} onChange={(e) => setSeverity(e.target.value)}>
+        <option value="warning">warning</option>
+        <option value="critical">critical</option>
+      </select>
+      <button className="sv-btn sm" onClick={save} disabled={busy}>{busy ? 'Saving…' : 'Save'}</button>
+      <button className="sv-btn ghost sm" onClick={() => { setOpen(false); setErr(null); }}>Cancel</button>
+      {err && <span className="sv-muted" style={{ fontSize: 'var(--text-xs)' }}>{err}</span>}
+    </span>
+  );
+}
+
 /**
  * Full-screen SNMP sensor manager. Left = available sensors (checklist),
  * right = currently enabled selection. "Run Discovery" walks the device and
- * populates the left panel with live current values.
+ * populates the left panel with live current values. Each enabled sensor also
+ * carries its own alert limit (SensorAlertControl), so a limit is set where
+ * the sensor is rather than over in Settings.
  */
 export default function SensorManager({
   deviceId, deviceName, onClose, onSaved,
@@ -146,6 +257,19 @@ export default function SensorManager({
   const [saving, setSaving] = useState(false);
   const [vendor, setVendor] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  // Per-sensor alert rules for this device, keyed by sensor_key.
+  const [rules, setRules] = useState<Map<string, SensorRule>>(new Map());
+
+  async function loadRules() {
+    try {
+      const rows = await apiGet<SensorRule[]>(`/api/alert-rules?scope=device&device_id=${deviceId}`);
+      setRules(new Map(rows.filter((r) => r.sensor_key).map((r) => [r.sensor_key as string, r])));
+    } catch (_e) {
+      // Non-fatal: the sensor list still works without the alert column.
+    }
+  }
+  useEffect(() => { loadRules(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [deviceId]);
   // Custom OID sensors are managed independently of the discovery checklist.
   const [customSensors, setCustomSensors] = useState<CustomSensor[]>([]);
   const [customOid, setCustomOid] = useState('');
@@ -177,7 +301,7 @@ export default function SensorManager({
           }
           m.set(r.sensor_key, {
             key: r.sensor_key, name: r.sensor_name, category: r.category,
-            metric_name: r.metric_name, oid: r.oid,
+            metric_name: r.metric_name, oid: r.oid, unit: r.unit,
           });
           if (r.enabled) sel.add(r.sensor_key);
         }
@@ -207,7 +331,7 @@ export default function SensorManager({
           m.set(s.key, {
             key: s.key, name: s.name, category: s.category,
             metric_name: s.metric_name, oid: s.oid, current_value: s.current_value,
-            base_name: s.base_name, meta: s.meta,
+            base_name: s.base_name, meta: s.meta, unit: s.unit,
           });
         }
         return m;
@@ -254,6 +378,15 @@ export default function SensorManager({
         metric_name: a.metric_name, oid: a.oid, enabled: selected.has(a.key),
       }));
       await apiSend(`/api/devices/${deviceId}/sensors`, 'PUT', { sensors });
+      // A rule on a sensor nobody collects can never fire, and reads as a
+      // broken alert rather than an unticked sensor — so say so plainly
+      // instead of letting it go quiet.
+      const orphaned = Array.from(rules.values())
+        .filter((r) => r.sensor_key && !selected.has(r.sensor_key))
+        .map((r) => r.sensor_label || r.sensor_key);
+      setNotice(orphaned.length
+        ? `Saved. ${orphaned.length} alert${orphaned.length > 1 ? 's' : ''} now watch a disabled sensor and will not fire: ${orphaned.join(', ')}.`
+        : null);
       onSaved();
     } catch (e: any) {
       setErr(e?.message || 'Save failed');
@@ -318,6 +451,13 @@ export default function SensorManager({
         </div>
 
         {err && <ErrorBox message={err} />}
+        {notice && (
+          <div style={{
+            margin: '0 0 10px', padding: '8px 12px', borderRadius: 6,
+            background: 'var(--tint-warn)', color: 'var(--tint-warn-fg)',
+            fontSize: 'var(--text-sm)',
+          }}>{notice}</div>
+        )}
 
         {loading ? (
           <Loading />
@@ -383,15 +523,29 @@ export default function SensorManager({
                   <div key={cat} className="sv-sensor-group">
                     <div className="sv-sensor-group-title">{CAT_LABEL[cat]}</div>
                     {cat === 'interface'
-                      ? groupInterfaces(rightGroups[cat]).map((g) => (
-                          <div key={g.id} className="sv-sensor-item enabled">
-                            <span className="sv-sensor-info">
-                              <span className="nm">{g.name} ({dirsLabel(g.members)})</span>
-                              {g.meta && <span className="meta">{g.meta}</span>}
-                            </span>
-                            <button className="sv-btn ghost sm" onClick={() => toggleGroup(g.members)}>Remove</button>
-                          </div>
-                        ))
+                      ? groupInterfaces(rightGroups[cat]).map((g) => {
+                          // An interface bundles In/Out/Status; the alert that
+                          // makes sense on the bundle is "this link went down",
+                          // so the limit targets its Status member.
+                          const status = g.members.find((m) => /_oper$/.test(m.metric_name) || /_status$/.test(m.key));
+                          return (
+                            <div key={g.id} className="sv-sensor-item enabled">
+                              <span className="sv-sensor-info">
+                                <span className="nm">{g.name} ({dirsLabel(g.members)})</span>
+                                {g.meta && <span className="meta">{g.meta}</span>}
+                              </span>
+                              {status && (
+                                <SensorAlertControl
+                                  deviceId={deviceId}
+                                  sensor={{ key: status.key, name: `${g.name} — Status`, metric_name: status.metric_name, unit: 'state' }}
+                                  rule={rules.get(status.key) || null}
+                                  onChanged={loadRules}
+                                />
+                              )}
+                              <button className="sv-btn ghost sm" onClick={() => toggleGroup(g.members)}>Remove</button>
+                            </div>
+                          );
+                        })
                       : rightGroups[cat].map((it) => (
                           <div key={it.key} className="sv-sensor-item enabled">
                             <span className="sv-sensor-info">
@@ -405,6 +559,12 @@ export default function SensorManager({
                                   </span>
                                 : <span className="val">{it.current_value}</span>
                             )}
+                            <SensorAlertControl
+                              deviceId={deviceId}
+                              sensor={{ key: it.key, name: it.base_name || it.name, metric_name: it.metric_name, unit: it.unit }}
+                              rule={rules.get(it.key) || null}
+                              onChanged={loadRules}
+                            />
                             <button className="sv-btn ghost sm" onClick={() => toggle(it.key)}>Remove</button>
                           </div>
                         ))}
