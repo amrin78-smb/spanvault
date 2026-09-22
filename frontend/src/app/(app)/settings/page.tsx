@@ -14,8 +14,11 @@ const TABS = [
   { key: 'rules', label: 'Alert Rules' },
   { key: 'maintenance', label: 'Maintenance' },
   { key: 'audit', label: 'Audit Log' },
-  { key: 'updates', label: 'Updates' },
-  { key: 'about', label: 'About' },
+  // Updates used to be its own tab holding a single 96px card on an otherwise
+  // empty page. It lives on About now — version, suite and update state are one
+  // subject. ?tab=updates still resolves here (see the deep-link effect); the
+  // update-available dot moved with it.
+  { key: 'about', label: 'About & Updates' },
 ];
 
 export default function SettingsPage() {
@@ -71,7 +74,11 @@ export default function SettingsPage() {
   // Deep-link support: /settings?tab=updates opens the Updates tab (used by the
   // update-notifier banner).
   useEffect(() => {
-    const t = new URLSearchParams(window.location.search).get('tab');
+    const raw = new URLSearchParams(window.location.search).get('tab');
+    // ?tab=updates is still live in the update-available and update-failure
+    // banners (and in anyone's bookmarks), so it keeps working after the
+    // Updates tab was folded into About.
+    const t = raw === 'updates' ? 'about' : raw;
     if (t && TABS.some((x) => x.key === t)) setTab(t);
   }, []);
 
@@ -102,7 +109,7 @@ export default function SettingsPage() {
         {TABS.filter((t) => t.key !== 'audit' || canManageSettings).map((t) => (
           <button key={t.key} className={`sv-tab ${tab === t.key ? 'active' : ''}`} onClick={() => setTab(t.key)}>
             {t.label}
-            {t.key === 'updates' && updateAvail && (
+            {t.key === 'about' && updateAvail && (
               <span
                 title="Update available"
                 style={{
@@ -124,8 +131,12 @@ export default function SettingsPage() {
           visibly resized — a 356px jump — every time you changed tab. */}
       {tab === 'maintenance' && <TabShell aside={MAINTENANCE_HELP}><Maintenance /></TabShell>}
       {tab === 'audit' && canManageSettings && <TabShell aside={AUDIT_HELP}><AuditLog /></TabShell>}
-      {tab === 'updates' && <TabShell aside={UPDATES_HELP}><SystemUpdates /></TabShell>}
-      {tab === 'about' && <TabShell aside={ABOUT_HELP}><AboutSettings /></TabShell>}
+      {tab === 'about' && (
+        <TabShell aside={ABOUT_HELP}>
+          <SystemUpdates />
+          <AboutSettings />
+        </TabShell>
+      )}
     </div>
   );
 }
@@ -174,21 +185,13 @@ const AUDIT_HELP = {
   ],
 };
 
-const UPDATES_HELP = {
-  title: 'How updating works',
-  entries: [
-    { term: 'What an update does', detail: 'Pulls the new version, installs dependencies, applies any database changes, rebuilds the interface, and restarts the three SpanVault services.' },
-    { term: 'If it fails', detail: 'The updater snapshots the current version first and rolls back automatically, restarting the services on the previous version rather than leaving the app down.' },
-    { term: 'Brief interruption', detail: 'The interface is unavailable for a minute or two while services restart. Polling resumes on its own; no monitoring history is lost.' },
-  ],
-};
-
 const ABOUT_HELP = {
   title: 'About this install',
   entries: [
-    { term: 'Version', detail: 'The running build. The Updates tab shows whether a newer one is available.' },
-    { term: 'Suite', detail: 'SpanVault is the network monitoring app in the NocVault suite, alongside NetVault, LogVault and DDIVault. Sign-in is shared across all four.' },
-    { term: 'Support', detail: 'Quote the version above when reporting a problem — it identifies the exact build the behaviour was seen on.' },
+    { term: 'What an update does', detail: 'Pulls the new version, installs dependencies, applies any database changes, rebuilds the interface, and restarts the three SpanVault services.' },
+    { term: 'If an update fails', detail: 'The updater snapshots the current version first and rolls back automatically, restarting the services on the previous version rather than leaving the app down.' },
+    { term: 'Brief interruption', detail: 'The interface is unavailable for a minute or two while services restart. Polling resumes on its own; no monitoring history is lost.' },
+    { term: 'Support', detail: 'Quote the version when reporting a problem — it identifies the exact build the behaviour was seen on.' },
   ],
 };
 
@@ -581,8 +584,12 @@ function EscalationOnCall({ form, set }: { form: Record<string, any>; set: (k: s
   }
 
   return (
+    // Three separate concerns — the policy, the steps it runs, and who is on
+    // call — were one panel divided only by bold text. They are three cards now.
+    <div>
     <div className="sv-panel" style={{ marginTop: 12 }}>
-      <h2>Escalation & On-Call</h2>
+      <h2>Escalation Policy</h2>
+      <p className="sv-panel-hint">Whether unacknowledged alerts escalate, and which severities do.</p>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 24, alignItems: 'flex-end', marginBottom: 12 }}>
         <label className="sv-field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8, margin: 0 }}>
           <input type="checkbox" checked={enabled}
@@ -599,7 +606,11 @@ function EscalationOnCall({ form, set }: { form: Record<string, any>; set: (k: s
         <span className="sv-muted" style={{ fontSize: 'var(--text-sm)' }}>Unacknowledged alerts email each step in turn. Save to apply enable/severity.</span>
       </div>
 
-      <h3 style={{ fontSize: 'var(--text-base)', margin: '8px 0' }}>Steps</h3>
+      </div>
+
+      <div className="sv-panel">
+      <h2>Escalation Steps</h2>
+      <p className="sv-panel-hint">Each step emails its recipients once, after the alert has gone unacknowledged for the given number of minutes.</p>
       {stepErr && <div className="sv-err-inline">{stepErr}</div>}
       {(steps.data || []).length > 0 && (
         <table className="sv-table" style={{ marginBottom: 12 }}>
@@ -617,6 +628,12 @@ function EscalationOnCall({ form, set }: { form: Record<string, any>; set: (k: s
           </tbody>
         </table>
       )}
+      {!steps.loading && (steps.data || []).length === 0 && (
+        <EmptyState
+          title="No escalation steps"
+          message="Nothing escalates today — an unacknowledged alert stays where it is. Add a first step below."
+        />
+      )}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'flex-end', marginBottom: 16 }}>
         <label className="sv-field" style={{ margin: 0 }}>After (min)
           <input className="sv-input sv-input-sm" type="number" min={1} value={after} onChange={(e) => setAfter(e.target.value)} />
@@ -630,7 +647,11 @@ function EscalationOnCall({ form, set }: { form: Record<string, any>; set: (k: s
         <button className="sv-btn" onClick={addStep} disabled={stepBusy}>{stepBusy ? 'Adding…' : 'Add step'}</button>
       </div>
 
-      <h3 style={{ fontSize: 'var(--text-base)', margin: '8px 0' }}>On-Call Shifts</h3>
+      </div>
+
+      <div className="sv-panel">
+      <h2>On-Call Shifts</h2>
+      <p className="sv-panel-hint">A step set to &ldquo;use on-call&rdquo; goes to whoever&apos;s shift covers the moment it fires.</p>
       {shiftErr && <div className="sv-err-inline">{shiftErr}</div>}
       {(shifts.data || []).length > 0 && (
         <table className="sv-table" style={{ marginBottom: 12 }}>
@@ -647,6 +668,12 @@ function EscalationOnCall({ form, set }: { form: Record<string, any>; set: (k: s
           </tbody>
         </table>
       )}
+      {!shifts.loading && (shifts.data || []).length === 0 && (
+        <EmptyState
+          title="No on-call shifts"
+          message="A step set to use on-call has nobody to reach. Add a shift below, or point steps at fixed addresses instead."
+        />
+      )}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'flex-end' }}>
         <label className="sv-field" style={{ margin: 0, flex: 1, minWidth: 180 }}>Contact email
           <input className="sv-input" value={shiftEmail} onChange={(e) => setShiftEmail(e.target.value)} placeholder="oncall@x.com" />
@@ -659,6 +686,7 @@ function EscalationOnCall({ form, set }: { form: Record<string, any>; set: (k: s
         </label>
         <button className="sv-btn" onClick={addShift} disabled={shiftBusy}>{shiftBusy ? 'Adding…' : 'Add shift'}</button>
       </div>
+    </div>
     </div>
   );
 }
@@ -840,21 +868,85 @@ const AUDIT_PER_PAGE = 50;
 const AUDIT_LIMIT_DEFAULT = 200;
 const AUDIT_LOAD_STEP = 200;
 const AUDIT_LIMIT_MAX = 1000;
+
+// The table stores the raw method + path of the mutation. Showing that as the
+// "Action" leaks the API at the reader — an auditor should see what someone
+// DID, not which endpoint they hit. Each entry maps a path shape to a verb and
+// a subject; anything unmatched falls back to the raw pair, so a newly added
+// endpoint degrades to the old behaviour rather than vanishing.
+const AUDIT_VERBS: Record<string, string> = { POST: 'Created', PUT: 'Updated', PATCH: 'Updated', DELETE: 'Deleted' };
+const AUDIT_ROUTES: { re: RegExp; label: (m: RegExpMatchArray, verb: string) => string; kind: string }[] = [
+  { re: /^\/api\/alert-rules\/?(\d+)?$/, kind: 'Alert rules', label: (m, v) => `${v} alert rule${m[1] ? ` #${m[1]}` : ''}` },
+  { re: /^\/api\/devices\/(\d+)\/sensors$/, kind: 'Sensors', label: (m) => `Changed monitored sensors on device #${m[1]}` },
+  { re: /^\/api\/devices\/(\d+)\/sensors\/custom\/?(\d+)?$/, kind: 'Sensors', label: (m, v) => `${v} custom sensor on device #${m[1]}` },
+  { re: /^\/api\/devices\/(\d+)\/snmp-discover$/, kind: 'Sensors', label: (m) => `Ran sensor discovery on device #${m[1]}` },
+  { re: /^\/api\/devices\/(\d+)\/ping-now$/, kind: 'Devices', label: (m) => `Pinged device #${m[1]}` },
+  { re: /^\/api\/devices\/?(\d+)?$/, kind: 'Devices', label: (m, v) => `${v} device${m[1] ? ` #${m[1]}` : ''}` },
+  { re: /^\/api\/alerts\/(\d+)\/resolve$/, kind: 'Alerts', label: (m) => `Resolved alert #${m[1]}` },
+  { re: /^\/api\/alerts\/(\d+)\/acknowledge$/, kind: 'Alerts', label: (m) => `Acknowledged alert #${m[1]}` },
+  { re: /^\/api\/settings$/, kind: 'Settings', label: () => 'Updated settings' },
+  { re: /^\/api\/maintenance\/?(\d+)?$/, kind: 'Maintenance', label: (m, v) => `${v} maintenance window${m[1] ? ` #${m[1]}` : ''}` },
+  { re: /^\/api\/notification-routes\/?(\d+)?$/, kind: 'Notifications', label: (m, v) => `${v} notification route${m[1] ? ` #${m[1]}` : ''}` },
+  { re: /^\/api\/service-checks\/?(\d+)?$/, kind: 'Services', label: (m, v) => `${v} service check${m[1] ? ` #${m[1]}` : ''}` },
+  { re: /^\/api\/agents\/(\d+)\/(restart|logs)/, kind: 'Agents', label: (m) => `${m[2] === 'restart' ? 'Restarted' : 'Fetched logs from'} agent #${m[1]}` },
+  { re: /^\/api\/sites\/?(\d+)?$/, kind: 'Sites', label: (m, v) => `${v} site${m[1] ? ` #${m[1]}` : ''}` },
+];
+function auditAction(r: AuditRow): { label: string; kind: string; raw: string } {
+  const verb = AUDIT_VERBS[r.method] || r.method;
+  const raw = `${r.method} ${r.path}`;
+  for (const route of AUDIT_ROUTES) {
+    const m = r.path.match(route.re);
+    if (m) return { label: route.label(m, verb), kind: route.kind, raw };
+  }
+  return { label: raw, kind: 'Other', raw };
+}
+// Detail as "key: value" pairs rather than a wall of JSON punctuation.
+function auditDetail(detail: any): string {
+  if (!detail || typeof detail !== 'object') return '—';
+  const parts = Object.entries(detail).map(([k, v]) => {
+    const val = v && typeof v === 'object' ? JSON.stringify(v) : String(v);
+    return `${k}: ${val}`;
+  });
+  return parts.length ? parts.join(' · ') : '—';
+}
 function AuditLog() {
   const [limit, setLimit] = useState(AUDIT_LIMIT_DEFAULT);
   const audit = useApi<AuditRow[]>(`/api/audit?limit=${limit}`, 30000);
   const { sort, onSort } = useTableSort();
+  const [q, setQ] = useState('');
+  const [who, setWho] = useState('');
+  const [kind, setKind] = useState('');
+
+  // Filtering is over the entries already fetched, not server-side — the
+  // endpoint takes only a limit. "Load older" widens that window, and the note
+  // under the table says so, so a search that finds nothing can't be mistaken
+  // for "it never happened".
+  const all = audit.data || [];
+  const users = useMemo(() => Array.from(new Set(all.map((r) => r.user_email).filter(Boolean))).sort(), [all]);
+  const kinds = useMemo(() => Array.from(new Set(all.map((r) => auditAction(r).kind))).sort(), [all]);
+  const filtered = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    return all.filter((r) => {
+      if (who && r.user_email !== who) return false;
+      const a = auditAction(r);
+      if (kind && a.kind !== kind) return false;
+      if (!needle) return true;
+      return `${a.label} ${a.raw} ${r.user_email || ''} ${auditDetail(r.detail)}`.toLowerCase().includes(needle);
+    });
+  }, [all, q, who, kind]);
+
   // Default (no sort) keeps the endpoint's most-recent-first ordering.
-  const rows = useMemo(() => sortRows(audit.data || [], sort, {
+  const rows = useMemo(() => sortRows(filtered, sort, {
     when: (r) => r.ts,
     user: (r) => r.user_email,
     role: (r) => r.user_role,
-    action: (r) => `${r.method} ${r.path}`,
+    action: (r) => auditAction(r).label,
     detail: (r) => (r.detail ? JSON.stringify(r.detail) : null),
-  }), [audit.data, sort]);
+  }), [filtered, sort]);
   // Changing the sort re-orders the whole (client-paged) result set, so go back
   // to page 1 — otherwise the user stays on page 4 of a different ordering.
-  const pg = useClientPagination(rows, AUDIT_PER_PAGE, sort ? `${sort.key}:${sort.dir}` : '');
+  const pg = useClientPagination(rows, AUDIT_PER_PAGE,
+    `${sort ? `${sort.key}:${sort.dir}` : ''}|${q}|${who}|${kind}`);
   if (audit.loading && !audit.data) return <Loading />;
   if (audit.error) return <ErrorBox message={audit.error} />;
   // The endpoint returns a bare array with no total; a full page implies more
@@ -867,7 +959,34 @@ function AuditLog() {
       <p className="sv-panel-hint">
         Recent configuration and operational changes (most recent first).
       </p>
-      {!rows.length ? <Empty message="No audit entries yet." /> : (
+      <div className="sv-toolbar">
+        <input className="sv-input sv-input-md" placeholder="Search action, user or detail…"
+          value={q} onChange={(e) => setQ(e.target.value)} />
+        <select className="sv-select" value={who} onChange={(e) => setWho(e.target.value)}>
+          <option value="">Any user</option>
+          {users.map((u) => <option key={u} value={u as string}>{u}</option>)}
+        </select>
+        <select className="sv-select" value={kind} onChange={(e) => setKind(e.target.value)}>
+          <option value="">Any area</option>
+          {kinds.map((k) => <option key={k} value={k}>{k}</option>)}
+        </select>
+        {(q || who || kind) && (
+          <>
+            <button className="sv-btn ghost sm" onClick={() => { setQ(''); setWho(''); setKind(''); }}>Clear</button>
+            <span className="sv-muted">{rows.length} of {all.length} shown</span>
+          </>
+        )}
+      </div>
+      {!rows.length ? (
+        <EmptyState
+          title={all.length ? 'No entries match' : 'No audit entries yet'}
+          message={all.length
+            ? 'Nothing in the loaded history matches these filters. Clear them, or use Load older to search further back.'
+            : 'Configuration and operational changes will appear here as they are made.'}
+          actionLabel={all.length ? 'Clear filters' : undefined}
+          onAction={all.length ? () => { setQ(''); setWho(''); setKind(''); } : undefined}
+        />
+      ) : (
         <>
           <table className="sv-table">
             <thead>
@@ -885,10 +1004,10 @@ function AuditLog() {
                   <td style={{ whiteSpace: 'nowrap' }}>{fmtTime(r.ts)}</td>
                   <td>{r.user_email || '—'}</td>
                   <td>{r.user_role || '—'}</td>
-                  <td><code style={{ fontSize: 'var(--text-xs)' }}>{r.method} {r.path}</code></td>
-                  <td style={{ maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-                      title={r.detail ? JSON.stringify(r.detail) : ''}>
-                    {r.detail ? JSON.stringify(r.detail) : '—'}
+                  <td title={auditAction(r).raw}>{auditAction(r).label}</td>
+                  <td className="sv-muted" style={{ maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                      title={auditDetail(r.detail)}>
+                    {auditDetail(r.detail)}
                   </td>
                 </tr>
               ))}

@@ -36,6 +36,13 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.110.0': [
+    'The audit log now says what people did, rather than which part of the software they touched. An entry that read "POST /api/alert-rules" now reads "Created alert rule"; "PUT /api/devices/38/sensors" now reads "Changed monitored sensors on device #38". Hovering an entry still shows the underlying request.',
+    'Fixed a real gap in the record: any change containing a list or a nested value was stored as the literal text "[object]", so the audit entry for every sensor change - the most common bulk edit in the app - contained no information about what had changed. Lists are now recorded as a count and nested values are kept one level deep. Passwords and community strings are still redacted, as before. This applies to new entries; existing ones cannot be recovered.',
+    'Added search and filtering to the audit log - by free text, by user, and by area of the app - with a count of how many entries match. Filters apply to the entries currently loaded, and the note under the table says so, so an empty result is never mistaken for "it never happened".',
+    'Escalation & On-Call was one panel holding three unrelated things separated only by bold text. It is now three: the escalation policy, the steps, and the on-call shifts - each with its own explanation and its own empty state.',
+    'Updates has been folded into About, now "About & Updates". It was a single small card alone on an empty page. Existing links to the Updates tab still work, and the update-available dot has moved to the new tab.',
+  ],
   '1.109.0': [
     'Settings now shows you what exists before asking you to add to it. The Alert Rules tabs and Maintenance put the creation form first and the list of what you had already configured underneath it, so opening a tab showed you a blank form rather than your own configuration. That order is now reversed everywhere.',
     'Empty sections say something useful. "No rules defined at this level." in an unlabelled white box has become a proper empty state that explains what the absence means - that nothing is suppressed, or that every alert is going to the default recipients - matching how the Devices, Alerts and Services pages have always looked.',
@@ -1542,16 +1549,28 @@ app.use((req, res, next) => {
 
 // ── Audit logging ─────────────────────────────────────────────
 // One row per successful mutation (who/what/when/where). Secrets are redacted.
-function sanitizeAuditBody(body) {
-  if (!body || typeof body !== 'object' || Array.isArray(body)) {
-    return Array.isArray(body) ? { _count: body.length } : null;
+// Nested values are SUMMARISED, not stamped '[object]'. They used to be: every
+// sensor change recorded `{"sensors":"[object]"}`, so the audit row for the
+// single most common bulk edit in the app carried no information about what
+// changed. An array becomes its length and an object is walked one level
+// deeper (redaction still applies at that level), which keeps the row bounded
+// while leaving it worth reading.
+function sanitizeAuditValue(v, depth) {
+  if (Array.isArray(v)) return `${v.length} item${v.length === 1 ? '' : 's'}`;
+  if (v && typeof v === 'object') {
+    if (depth <= 0) return `${Object.keys(v).length} field${Object.keys(v).length === 1 ? '' : 's'}`;
+    return sanitizeAuditBody(v, depth - 1);
   }
+  if (typeof v === 'string' && v.length > 300) return v.slice(0, 300) + '…';
+  return v;
+}
+function sanitizeAuditBody(body, depth = 1) {
+  if (!body || typeof body !== 'object') return null;
+  if (Array.isArray(body)) return { _count: body.length };
   const out = {};
   for (const k of Object.keys(body)) {
     if (/pass|secret|api_?key|token|community|priv/i.test(k)) out[k] = '***';
-    else if (typeof body[k] === 'string' && body[k].length > 300) out[k] = body[k].slice(0, 300) + '…';
-    else if (typeof body[k] === 'object' && body[k] !== null) out[k] = '[object]';
-    else out[k] = body[k];
+    else out[k] = sanitizeAuditValue(body[k], depth);
   }
   return out;
 }
