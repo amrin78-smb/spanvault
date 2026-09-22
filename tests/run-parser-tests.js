@@ -25,6 +25,7 @@ const SUITES = [
   'test-fortinet-client-parser.js', // MIB-verified (FORTINET-FORTIGATE-MIB fgWcStaTable) — no Fortinet hardware in lab
   'test-grandstream-client-parser.js', // MIB-verified (GRANDSTREAM-GWN-MIB gwnClientTable) — no Grandstream GWN hardware in lab
   'test-forcepoint-parser.js', // live-verified SNMP vendor parser (FORCEPOINT-NGFW-ENGINE-MIB, engines on fw 7.1.11)
+  'test-vendor-fetch.js', // discovery.js fetchVendorRaw batching/by-OID match/SNMPv1 fallback + unitFor
 ];
 
 let failed = 0;

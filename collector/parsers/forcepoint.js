@@ -125,6 +125,10 @@ function testLabel(identity) {
   if (!s) return '';
   const kind = s.split(':')[0].trim();
   const nic = s.match(/\/(NIC\s*\d+)/i);
+  // An identity starting with ':' yields an empty kind; joining regardless
+  // produced a leading-space label (" NIC 2") that is truthy, so it became a
+  // real sensor whose stableIndex differed from the same test named properly.
+  if (!kind) return nic ? nic[1] : '';
   return nic ? `${kind} ${nic[1]}` : kind;
 }
 
@@ -134,13 +138,20 @@ function first64(rows) {
   return r ? U.num64(r.value) : null;
 }
 
-// fwCpuStatsTable carries an aggregate row at index 0 ("Cpu(s)") plus one row
+// fwCpuTotal's table carries an aggregate row at index 0 ("Cpu(s)") plus one row
 // per core. Prefer the aggregate; average the per-core rows only if it is
 // missing, since averaging all rows would double-count the aggregate.
 function cpuFromTable(rows) {
   if (!rows || !rows.length) return null;
   const agg = rows.find((r) => U.lastIndex(r.oid) === 0);
-  if (agg) return U.num(agg.value);
+  // Fall through to the per-core average if the aggregate row is present but
+  // undecodable — returning its null outright dropped cpu_pct entirely (and
+  // with it the device's CPU graph, since the core folds vendor cpu_pct into
+  // the system CPU sensor) while usable per-core rows sat right beside it.
+  if (agg) {
+    const v = U.num(agg.value);
+    if (v !== null) return v;
+  }
   return U.avg(rows.filter((r) => U.lastIndex(r.oid) !== 0));
 }
 
@@ -211,11 +222,24 @@ function parse(raw) {
   const localByIdx = new Map((raw.vpn_local || []).map((r) => [U.lastIndex(r.oid), ipv4(r.value)]));
   const remoteByIdx = new Map((raw.vpn_remote || []).map((r) => [U.lastIndex(r.oid), ipv4(r.value)]));
   const typeByIdx = new Map((raw.vpn_type || []).map((r) => [U.lastIndex(r.oid), U.num(r.value)]));
+
+  // The rollup is driven off vpn_sa, and a peer is only NAMED if its row also
+  // came back in vpn_remote. walk() resolves with whatever it collected and
+  // never surfaces a subtree error, so a column truncated mid-walk is
+  // indistinguishable from a complete one — and a truncated vpn_remote would
+  // quietly reclassify every lost peer as an unnamed dynamic one ("half the
+  // tunnels became dynamic overnight") instead of failing. If the columns don't
+  // line up, emit no VPN metrics this pass rather than wrong ones; the next
+  // poll re-walks.
+  const vpnRowsConsistent = (raw.vpn_sa || []).every((r) => {
+    const i = U.lastIndex(r.oid);
+    return typeByIdx.get(i) === REMOTE_MOBILE || remoteByIdx.has(i);
+  });
   const peers = new Map();
   const uplinks = new Map();   // local address -> tunnels currently up on it
   let mobileRows = 0, mobileSas = 0, dynTotal = 0, dynUp = 0, pathsDown = 0;
 
-  for (const r of raw.vpn_sa || []) {
+  for (const r of vpnRowsConsistent ? (raw.vpn_sa || []) : []) {
     const i = U.lastIndex(r.oid);
     const sas = U.num64(r.value) || 0;
     if (typeByIdx.get(i) === REMOTE_MOBILE) { mobileRows += 1; mobileSas += sas; continue; }

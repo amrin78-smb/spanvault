@@ -618,9 +618,15 @@ async function evaluateSnmpAlerts(device, samples) {
   // ('node_test_ok_1596274411'), exactly what a sensor rule puts in
   // rule.metric. `latest` above deliberately skips indexed samples because the
   // hardcoded checks are device-wide; rules are per-sensor, so they need the
-  // indexed ones too. The fixed device metrics are applied last so a sensor can
-  // never shadow cpu_pct/mem_pct (a vendor parser emitting either of those
-  // feeds them through `latest` already).
+  // indexed ones too. The fixed device metrics are applied last so a sensor
+  // cannot shadow them.
+  //
+  // Note what that last point does NOT mean: an INDEXED vendor sample named
+  // cpu_pct/mem_pct is skipped by `latest` (which ignores if_index) and is then
+  // overwritten here by the fixed key, so such a sample would never reach a
+  // rule. No shipped parser emits one — collectCandidates only folds vendor
+  // cpu/mem in when `!s.if_index` — but an earlier version of this comment
+  // asserted it was impossible, which would stop the next author checking.
   const ruleMetrics = {};
   for (const s of samples) {
     if (s.value === null || s.value === undefined) continue;
@@ -766,28 +772,30 @@ async function evaluateStoredDevice(device) {
   }
 
   // SNMP-metric rules from the latest stored samples (best-effort).
-  let cpu_pct = null;
-  let mem_pct = null;
+  // EVERY recent metric, not just cpu_pct/mem_pct: a per-sensor rule's metric is
+  // the sensor's stored (suffixed) metric_name, so reading only those two meant
+  // every per-sensor rule on an AGENT-POLLED device silently never fired — the
+  // agent ingest path in api/ws-server.js writes samples but evaluates no rules,
+  // so this function is the only place they can be evaluated. The window keeps
+  // a decommissioned metric from evaluating forever on a stale sample.
+  const stored = {};
   try {
     const r = await sv.query(
       `SELECT DISTINCT ON (metric_name) metric_name, value
          FROM snmp_results
-        WHERE device_id = $1 AND metric_name IN ('cpu_pct','mem_pct')
+        WHERE device_id = $1 AND ts > NOW() - INTERVAL '30 minutes'
         ORDER BY metric_name, ts DESC`,
       [device.id]
     );
-    for (const row of r.rows) {
-      if (row.metric_name === 'cpu_pct') cpu_pct = row.value != null ? Number(row.value) : null;
-      else if (row.metric_name === 'mem_pct') mem_pct = row.value != null ? Number(row.value) : null;
-    }
+    for (const row of r.rows) stored[row.metric_name] = row.value != null ? Number(row.value) : null;
   } catch (_e) { /* ignore — no SNMP data yet */ }
 
-  await evaluateEffectiveRules(device, {
+  await evaluateEffectiveRules(device, Object.assign(stored, {
     device_down: newStatus === 'down' ? 1 : 0,
     response_time: timeMs,
-    cpu_pct,
-    mem_pct,
-  });
+    cpu_pct: stored.cpu_pct !== undefined ? stored.cpu_pct : null,
+    mem_pct: stored.mem_pct !== undefined ? stored.mem_pct : null,
+  }));
 }
 
 // Alert pass for agent-polled devices. When an agent is OFFLINE we raise ONE
@@ -1069,20 +1077,34 @@ const SERVICE_METRIC_UNITS = {
 
 // Effective rules for a device: global + matching-site + device, merged by
 // metric with device > site > global precedence.
+// Rules are merged by SUBJECT, not by metric alone. A per-sensor rule and a
+// device-wide rule can name the same metric — the "CPU Utilization"/"Memory
+// Usage" system sensors have metric_name exactly cpu_pct/mem_pct — so keying on
+// rule.metric made them collide: two rules the UI presents as unrelated
+// subjects, of which only one survived, chosen by whatever order an unordered
+// SELECT happened to return (and therefore liable to flip after a vacuum).
+// Including sensor_key separates them; two rules on the SAME sensor still
+// collapse, which is the documented one-rule-per-sensor limit.
+function ruleSubjectKey(rule) {
+  return `${rule.metric} ${rule.sensor_key || ''}`;
+}
+
 async function getEffectiveRules(device) {
   const r = await sv.query(
     `SELECT * FROM alert_rules WHERE enabled = TRUE AND (
         scope = 'global'
         OR (scope = 'site'   AND site_id IS NOT DISTINCT FROM $2)
         OR (scope = 'device' AND device_id = $1)
-     )`,
+     )
+     ORDER BY id`,
     [device.id, device.site_id == null ? null : device.site_id]
   );
   const prec = { global: 0, site: 1, device: 2 };
   const byMetric = new Map();
   for (const rule of r.rows) {
-    const cur = byMetric.get(rule.metric);
-    if (!cur || (prec[rule.scope] || 0) >= (prec[cur.scope] || 0)) byMetric.set(rule.metric, rule);
+    const key = ruleSubjectKey(rule);
+    const cur = byMetric.get(key);
+    if (!cur || (prec[rule.scope] || 0) >= (prec[cur.scope] || 0)) byMetric.set(key, rule);
   }
   return Array.from(byMetric.values());
 }
@@ -1120,6 +1142,13 @@ function ruleMessage(device, rule, val) {
   const label = ruleLabel(rule);
   if (rule.metric === 'device_down') return `${device.name} is down`;
   if (rule.metric === 'interface_down') return `${device.name} has an interface down`;
+  // An Up/Down sensor reads as a state, not a measurement. 1.107.2 fixed how
+  // the RULE renders in Settings but left this — the text that actually reaches
+  // the Alerts page, the dashboard and the alert email — saying
+  // "Multiping AIRTEL 0.0 = 0".
+  if (rule.sensor_key && rule.operator === '=' && (Number(rule.threshold) === 0 || Number(rule.threshold) === 1)) {
+    return `${device.name} — ${label} is ${Number(val) === 1 ? 'Up' : 'Down'}`;
+  }
   if (rule.metric === 'snmp_no_data') {
     return `${device.name} has no SNMP data for ${Math.round(Number(val))}m (threshold ${rule.threshold}m)`;
   }
@@ -1154,7 +1183,18 @@ async function evaluateEffectiveRules(device, metrics) {
 
   for (const rule of rules) {
     const m = rule.metric;
-    if (!(m in metrics)) continue;
+    if (!(m in metrics)) {
+      // The metric this rule watches produced nothing this pass. For the five
+      // fixed metrics that never happens (they are always assigned, even as
+      // null), but a per-sensor metric genuinely disappears — peer deconfigured,
+      // sensor unticked, walk row gone, poll errored. Leaving an already-raised
+      // alert untouched made it unresolvable by any code path: it stayed ACTIVE
+      // on the dashboard forever. A condition that can no longer be evaluated is
+      // not a condition that is still true, so resolve it; if the metric returns
+      // and is still breaching, the next pass re-raises.
+      await resolveAlert(device.id, `rule_${rule.id}`);
+      continue;
+    }
     const val = metrics[m];
     if (val === undefined || val === null) continue;
     const alertType = `rule_${rule.id}`;

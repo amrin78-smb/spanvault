@@ -171,9 +171,12 @@ function ifOperLabel(n) {
 // ── vendor OID fetch (mirrors collector's metric def kinds) ────
 // Scalars share as few GET PDUs as possible and the table walks run together.
 // One round trip per metric does not scale over a high-latency WAN link: the
-// Forcepoint parser defines 15 OID sets, which cost ~6.8s serially against an
-// engine in Seychelles — on its own enough to blow discoverDevice()'s 15s
-// budget, which runs this whole function twice.
+// Forcepoint parser defined 15 OID sets when this was written, costing ~6.8s
+// serially against an engine in Seychelles — on its own enough to blow
+// discoverDevice()'s 15s budget, which runs this whole function twice. It now
+// defines 19 (9 scalar + 10 table); re-measured against that engine after the
+// increase, a full two-pass discovery takes ~6.6s, so the budget still holds.
+// Re-measure if the parser grows again rather than assuming headroom.
 const GET_CHUNK = 24;
 
 async function fetchVendorRaw(session, parser) {
@@ -536,4 +539,8 @@ async function snmpTest(device, overallMs) {
 module.exports = {
   collectCandidates, discoverDevice, snmpTest, fmtValue, unitFor,
   candidatesToSamples, buildFetchPlan, PrefetchedSession,
+  // Exported for tests/test-vendor-fetch.js — the batching, the by-OID match
+  // and the SNMPv1 single-GET fallback are the most failure-prone code in the
+  // vendor path and had no coverage at all.
+  fetchVendorRaw,
 };

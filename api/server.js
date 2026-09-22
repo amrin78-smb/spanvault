@@ -36,6 +36,16 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.111.0': [
+    'Fixed: setting an alert on a device\'s CPU or Memory sensor silently cancelled that device\'s existing CPU or Memory rule. The two were treated as the same subject even though the app presents them as unrelated, and which one survived was decided by database row order - so the effective threshold could change on its own. Both now apply.',
+    'Fixed: alerts set on individual sensors never fired at all on devices monitored through a remote agent. The rule appeared enabled and listed as effective, and did nothing. Those devices now evaluate every sensor rule.',
+    'Fixed: an alert could get stuck showing as active forever. If the thing it watched stopped being reported - a VPN peer removed from the firewall, a sensor switched off, a failed poll - nothing could ever clear it. It now clears, and re-raises if the problem is still there when the data returns.',
+    'Fixed: deleting or disabling an alert rule left its active alerts on the dashboard permanently, with nothing left to resolve them. Both now clear the alerts they raised.',
+    'Fixed: an alert on an Up/Down sensor read "Multiping AIRTEL 0.0 = 0" in the alert itself and in alert emails. It now reads "is Down". The rule display was corrected earlier; this is the text that actually reaches you.',
+    'Security: the audit log\'s redaction list was widened and no longer relies on a blanket rule that a change last week removed. Audit entries are also now capped in size - a large request could previously write a multi-megabyte row - and a request can no longer hide one of its own fields from the audit trail.',
+    'Security: the settings endpoint now requires an administrator. It previously returned every setting, including the SMTP password in plain text, to any signed-in user. The Settings page itself was already restricted; the endpoint behind it was not.',
+    'Also hardened: a partial reply from a firewall no longer reclassifies working VPN tunnels as unidentified ones, a rule on one sensor can no longer be widened to apply to every device, and CPU reporting falls back correctly on firmware that reports it unusually.',
+  ],
   '1.110.0': [
     'The audit log now says what people did, rather than which part of the software they touched. An entry that read "POST /api/alert-rules" now reads "Created alert rule"; "PUT /api/devices/38/sensors" now reads "Changed monitored sensors on device #38". Hovering an entry still shows the underlying request.',
     'Fixed a real gap in the record: any change containing a list or a nested value was stored as the literal text "[object]", so the audit entry for every sensor change - the most common bulk edit in the app - contained no information about what had changed. Lists are now recorded as a count and nested values are kept one level deep. Passwords and community strings are still redacted, as before. This applies to new entries; existing ones cannot be recovered.',
@@ -1555,10 +1565,26 @@ app.use((req, res, next) => {
 // changed. An array becomes its length and an object is walked one level
 // deeper (redaction still applies at that level), which keeps the row bounded
 // while leaving it worth reading.
+// Key names whose VALUE must never be written to audit_log. Deliberately broad:
+// audit_log is the one secret-bearing table NOT protected by the column-level
+// grants that hide smtp_pass / snmp_v3_priv_pass / the Aruba tokens from the
+// readonly diagnostic roles, so anything landing in `detail` is readable by
+// claude_readonly. Recursing into nested objects (1.110.0) removed the blanket
+// '[object]' shield that used to make that moot, which is why this list has to
+// carry the weight on its own. `communit` — not `community` — because the
+// agent discovery endpoint posts `communities` (plural), which /community/i
+// does not match.
+const AUDIT_SECRET_KEY = /pass|pwd|secret|api_?key|token|communit|priv|auth|cred|bearer|psk|cookie|session|salt|hash|cert|pem|_key$|^key$/i;
+// Caps on what one audit row may become. Without them a 12MB body of 20k keys
+// wrote a ~6MB JSONB row where the old code wrote 22 bytes.
+const AUDIT_MAX_KEYS = 60;
+const AUDIT_MAX_JSON = 8000;
+
 function sanitizeAuditValue(v, depth) {
   if (Array.isArray(v)) return `${v.length} item${v.length === 1 ? '' : 's'}`;
   if (v && typeof v === 'object') {
-    if (depth <= 0) return `${Object.keys(v).length} field${Object.keys(v).length === 1 ? '' : 's'}`;
+    const n = Object.keys(v).length;
+    if (depth <= 0) return `${n} field${n === 1 ? '' : 's'}`;
     return sanitizeAuditBody(v, depth - 1);
   }
   if (typeof v === 'string' && v.length > 300) return v.slice(0, 300) + '…';
@@ -1567,23 +1593,50 @@ function sanitizeAuditValue(v, depth) {
 function sanitizeAuditBody(body, depth = 1) {
   if (!body || typeof body !== 'object') return null;
   if (Array.isArray(body)) return { _count: body.length };
-  const out = {};
-  for (const k of Object.keys(body)) {
-    if (/pass|secret|api_?key|token|community|priv/i.test(k)) out[k] = '***';
+  // Null-prototype: a literal "__proto__" key in parsed JSON is an own,
+  // enumerable key, and assigning it on a normal object hits the SETTER — which
+  // silently dropped the field from the record instead of logging it, letting a
+  // caller hide a change from the audit trail.
+  const out = Object.create(null);
+  const keys = Object.keys(body);
+  for (const k of keys.slice(0, AUDIT_MAX_KEYS)) {
+    if (AUDIT_SECRET_KEY.test(k)) out[k] = '***';
     else out[k] = sanitizeAuditValue(body[k], depth);
   }
+  if (keys.length > AUDIT_MAX_KEYS) out._truncated_keys = keys.length - AUDIT_MAX_KEYS;
+  // Returned with its null prototype intact — copying it onto a plain object
+  // would re-trigger the very __proto__ setter this avoids. JSON.stringify
+  // handles a null-prototype object fine.
   return out;
+}
+// Serialise for storage, bounded. Returns null rather than throwing: this runs
+// in a res.on('finish') listener, where a synchronous throw escapes Express
+// entirely and takes the process down.
+function auditDetailJson(body) {
+  try {
+    const detail = sanitizeAuditBody(body);
+    if (!detail) return null;
+    let s = JSON.stringify(detail);
+    if (s && s.length > AUDIT_MAX_JSON) s = JSON.stringify({ _truncated: `${s.length} bytes` });
+    // Postgres jsonb rejects a   escape outright ("unsupported Unicode
+    // escape sequence"), which would throw away the whole audit row. Strip the
+    // ESCAPED form — JSON.stringify has already turned any raw NUL into the
+    // six characters  , so matching a literal NUL here would find nothing.
+    return s ? s.replace(/\\u0000/g, '') : null;
+  } catch (_e) {
+    return null;
+  }
 }
 app.use((req, res, next) => {
   if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) return next();
   res.on('finish', () => {
     if (res.statusCode >= 400) return; // only audit successful mutations
-    const detail = sanitizeAuditBody(req.body);
+    const detail = auditDetailJson(req.body);
     sv.query(
       `INSERT INTO audit_log (user_email, user_role, method, path, status, detail, ip)
        VALUES ($1,$2,$3,$4,$5,$6,$7)`,
       [req.headers['x-user-email'] || null, req.headers['x-user-role'] || null,
-       req.method, req.path, res.statusCode, detail ? JSON.stringify(detail) : null,
+       req.method, req.path, res.statusCode, detail,
        (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').toString().split(',')[0] || null]
     ).catch(() => { /* audit_log may be un-migrated — ignore */ });
   });
@@ -4203,12 +4256,17 @@ const SERVICE_METRICS = ['service_down', 'service_response_time', 'ssl_expiring'
 // Merge global → site → device (or global → site → service) rules by metric
 // (later scope wins). Metric-agnostic — reused for both device and service
 // effective-rule endpoints.
+// Keyed on metric + sensor_key, matching getEffectiveRules() in
+// collector/collector.js — a per-sensor rule and a device-wide rule may name
+// the same metric (the CPU/Memory system sensors ARE cpu_pct/mem_pct), and
+// keying on metric alone silently dropped one of them from this view.
 function mergeEffectiveRules(rows) {
   const prec = { global: 0, site: 1, device: 2, service: 2 };
   const byMetric = new Map();
   for (const rule of rows) {
-    const cur = byMetric.get(rule.metric);
-    if (!cur || (prec[rule.scope] ?? 0) >= (prec[cur.scope] ?? 0)) byMetric.set(rule.metric, rule);
+    const key = `${rule.metric} ${rule.sensor_key || ''}`;
+    const cur = byMetric.get(key);
+    if (!cur || (prec[rule.scope] ?? 0) >= (prec[cur.scope] ?? 0)) byMetric.set(key, rule);
   }
   return Array.from(byMetric.values());
 }
@@ -4290,9 +4348,11 @@ app.post('/api/alert-rules', wrap(async (req, res) => {
   }
   const scope = b.scope || (b.device_id ? 'device' : b.service_check_id ? 'service' : b.site_id ? 'site' : 'global');
   // A per-sensor rule must name the device it belongs to — a sensor key is only
-  // meaningful against a device's own sensor list.
-  if (b.sensor_key && !b.device_id) {
-    return res.status(400).json({ error: 'sensor_key requires device_id' });
+  // meaningful against a device's own sensor list. Checking `scope` and not just
+  // device_id matters: {sensor_key, device_id, scope:'global'} would otherwise
+  // be stored as a global rule carrying a sensor key.
+  if (b.sensor_key && (scope !== 'device' || !b.device_id)) {
+    return res.status(400).json({ error: 'sensor_key requires a device-scoped rule with device_id' });
   }
   const r = await sv.query(`
     INSERT INTO alert_rules
@@ -4317,14 +4377,44 @@ app.put('/api/alert-rules/:id', wrap(async (req, res) => {
   const params = [];
   for (const k of allowed) if (b[k] !== undefined) { params.push(b[k]); sets.push(`${k} = $${params.length}`); }
   if (!sets.length) return res.status(400).json({ error: 'No valid fields' });
+
+  // A per-sensor rule must stay device-scoped. PUT previously accepted
+  // sensor_key AND scope with no validation, so a rule on one interface could
+  // be promoted to global — and metrics like if_12_oper or cpu_pct are produced
+  // by dozens of devices, so it would start raising the SAME alert_type across
+  // the estate while still naming the original sensor.
+  const cur = (await sv.query(`SELECT scope, device_id, sensor_key FROM alert_rules WHERE id = $1`, [id])).rows[0];
+  if (!cur) return res.status(404).json({ error: 'Rule not found' });
+  const nextScope = b.scope !== undefined ? b.scope : cur.scope;
+  const nextDevice = b.device_id !== undefined ? b.device_id : cur.device_id;
+  const nextSensor = b.sensor_key !== undefined ? b.sensor_key : cur.sensor_key;
+  if (nextSensor && (nextScope !== 'device' || !nextDevice)) {
+    return res.status(400).json({ error: 'A per-sensor rule must stay device-scoped and keep its device_id' });
+  }
+
   params.push(id);
   const r = await sv.query(`UPDATE alert_rules SET ${sets.join(', ')} WHERE id = $${params.length} RETURNING *`, params);
   if (!r.rows[0]) return res.status(404).json({ error: 'Rule not found' });
+  // Disabling a rule stops it being evaluated, which also stops it ever
+  // resolving what it raised — same stranding as a delete.
+  if (b.enabled === false) {
+    await sv.query(
+      `UPDATE alerts SET status = 'resolved', resolved_at = NOW()
+        WHERE alert_type = $1 AND status <> 'resolved'`, [`rule_${id}`]);
+  }
   res.json(r.rows[0]);
 }));
 
 app.delete('/api/alert-rules/:id', wrap(async (req, res) => {
-  await sv.query(`DELETE FROM alert_rules WHERE id = $1`, [parseInt(req.params.id, 10)]);
+  const id = parseInt(req.params.id, 10);
+  // Resolve anything the rule had already raised. Alerts are keyed
+  // `rule_<id>`, and only evaluateEffectiveRules resolves them — so deleting
+  // the rule used to strand its ACTIVE alerts permanently, with no rule left to
+  // clear them and a name in the UI referring to a rule that no longer exists.
+  await sv.query(
+    `UPDATE alerts SET status = 'resolved', resolved_at = NOW()
+      WHERE alert_type = $1 AND status <> 'resolved'`, [`rule_${id}`]);
+  await sv.query(`DELETE FROM alert_rules WHERE id = $1`, [id]);
   res.json({ ok: true });
 }));
 
@@ -9166,7 +9256,14 @@ app.get('/api/reports/service-detail', wrap(async (req, res) => {
 // ══════════════════════════════════════════════════════════════
 // Settings
 // ══════════════════════════════════════════════════════════════
-app.get('/api/settings', wrap(async (_req, res) => {
+// Admin only. app_settings holds smtp_pass in plaintext, so an unguarded GET
+// handed the SMTP password to every authenticated caller including viewers —
+// the RBAC middleware gates only POST/PUT/PATCH/DELETE, and the Settings page
+// being admin-gated protects the page, not the endpoint. Same shape as the
+// page-gated-but-API-open bug fixed across the suite in 1.71.x; GET /api/audit
+// immediately below already had the check.
+app.get('/api/settings', wrap(async (req, res) => {
+  if (userRank(req) < 2) return res.status(403).json({ error: 'Admin only' });
   const r = await sv.query(`SELECT key, value FROM app_settings`);
   const out = {};
   for (const row of r.rows) out[row.key] = row.value;

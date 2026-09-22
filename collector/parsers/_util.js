@@ -25,9 +25,19 @@ function num(v) {
 // this for any OID whose MIB SYNTAX is Counter64 or CounterBasedGauge64.
 function num64(v) {
   if (Buffer.isBuffer(v)) {
-    if (!v.length || v.length > 8) return null;
+    if (!v.length) return null;
+    // A Buffer that is printable ASCII digits is a DisplayString, NOT a 64-bit
+    // integer — byte-decoding it silently returns a plausible wrong number
+    // (Buffer.from('42') would read as 13362). Firmware that reports a numeric
+    // field as a string is then parsed, not mangled.
+    const asText = v.toString('latin1');
+    if (/^\s*\d+\s*$/.test(asText)) return num(asText);
+    // BER pads a value >= 2^63 with a leading zero byte, making it 9 long.
+    let start = 0;
+    while (start < v.length - 1 && v[start] === 0) start += 1;
+    if (v.length - start > 8) return null;
     let n = 0n;
-    for (const b of v) n = (n << 8n) | BigInt(b);
+    for (let i = start; i < v.length; i += 1) n = (n << 8n) | BigInt(v[i]);
     return Number(n);
   }
   return num(v);

@@ -151,8 +151,16 @@ check('vpn_peers_down counts only peers down on every uplink',
   sey.get('vpn_peers_down').value === 1);
 check('vpn_paths_down counts individual down paths (peer A idle + peer C x2)',
   sey.get('vpn_paths_down').value === 3);
-check('mobile-client rows are excluded from the peer counts',
-  sey.get('vpn_peers_total').value === 3);
+// Give the mobile rows a REAL remote address: with 0.0.0.0 they are excluded by
+// the dynamic-peer branch anyway, so the original form of this check passed even
+// with the mobile branch deleted entirely.
+const mobileNamed = Object.assign({}, seyRaw, {
+  vpn_remote: seyRaw.vpn_remote.map((r, i) =>
+    (i < 2 ? { oid: r.oid, value: Buffer.from([203, 0, 113, 9]) } : r)),
+});
+check('a mobile-client row is excluded from the peer counts even when it carries a real address',
+  byName(forcepoint.parse(mobileNamed)).get('vpn_peers_total').value === 3
+  && !byMetric(forcepoint.parse(mobileNamed), 'vpn_peer_up').some((s) => s.if_name === '203.0.113.9'));
 check('vpn_mobile_sas sums SAs across the mobile aggregate rows',
   sey.get('vpn_mobile_sas').value === 2);
 check('a dynamic peer that never connected is counted separately, not as a peer',
@@ -168,11 +176,22 @@ check('peer down on every uplink reads down',
   peerBy.get('213.146.77.58').value === 0);
 check('per-peer sensor indexes are unique and positive',
   new Set(peerRows.map((s) => s.if_index)).size === 3 && peerRows.every((s) => s.if_index > 0));
-check('per-peer sensor index is stable across polls (derived from the address)',
-  byMetric(forcepoint.parse(seyRaw), 'vpn_peer_up')
-    .every((s, i) => s.if_index === peerRows[i].if_index));
-check('per-peer index fits an INTEGER column',
-  peerRows.every((s) => s.if_index <= 2147483647));
+// Stability has to be tested against RENUMBERED rows. Re-parsing the same input
+// only proves the function is deterministic — an implementation using the raw
+// SNMP row index (exactly what stableIndex exists to avoid) would pass that.
+// Here every row index is shifted by 10 and the row order reversed; the
+// address -> if_index mapping must be identical.
+const renumbered = {};
+for (const [k, v] of Object.entries(seyRaw)) {
+  renumbered[k] = Array.isArray(v)
+    ? v.map((r) => ({ oid: r.oid.replace(/\.(\d+)$/, (_m, n) => `.${Number(n) + 10}`), value: r.value })).reverse()
+    : v;
+}
+const renumberedPeers = new Map(
+  byMetric(forcepoint.parse(renumbered), 'vpn_peer_up').map((s) => [s.if_name, s.if_index]));
+check('per-peer index survives the SNMP rows being renumbered and reordered',
+  peerRows.length === renumberedPeers.size
+  && peerRows.every((s) => renumberedPeers.get(s.if_name) === s.if_index));
 
 // ── VPN: per-uplink ──────────────────────────────────────────────────────────
 const uplinks = new Map(byMetric(seyAll, 'vpn_uplink_tunnels').map((s) => [s.if_name, s.value]));
@@ -306,9 +325,12 @@ check('parse({}) returns [] and never throws',
   threw === false && Array.isArray(empty) && empty.length === 0);
 
 // Every emitted value must be a finite number — the collector inserts these
-// straight into snmp_results.value.
-const allFinite = forcepoint.parse(seyRaw).every((s) => Number.isFinite(Number(s.value)));
-check('every sample value is a finite number', allFinite);
+// straight into snmp_results.value. Checked with typeof, not Number(): the
+// coercing form passes for the STRING '42', which is exactly what this is
+// meant to rule out.
+const allFinite = forcepoint.parse(seyRaw)
+  .every((s) => typeof s.value === 'number' && Number.isFinite(s.value));
+check('every sample value is a number, not a numeric string', allFinite);
 
 // ── Vendor detection ─────────────────────────────────────────────────────────
 check('sysObjectID under enterprise 47565 detects as forcepoint',
