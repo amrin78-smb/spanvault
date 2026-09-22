@@ -36,6 +36,12 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.104.1': [
+    'Fixed: Run Discovery timed out on the Forcepoint firewalls, which 1.104.0 introduced. The sensor list could not be opened for EU-SEY-CLU01 at all, so the new Forcepoint metrics could not be switched on - the very thing 1.104.0 added them for.',
+    'Vendor metrics were each fetched in a separate request to the device, one after the next. That is unnoticeable on the local network but not over a link to Seychelles, and the new Forcepoint parser reads fifteen of them - about seven seconds of waiting, which discovery then does twice to work out interface throughput, against a fifteen-second limit.',
+    'Single-value readings now share one request and the table readings are fetched together rather than in sequence. Discovery of EU-SEY-CLU01 went from timing out to finishing in under seven seconds, and every vendor benefits, not just Forcepoint - the more metrics a device type has, the larger the saving.',
+    'Regular monitoring was never affected; it polls on a five-minute cycle with no such limit, and has been collecting these metrics correctly throughout.',
+  ],
   '1.104.0': [
     'Forcepoint NGFW firewalls now report their own metrics instead of only the generic ones every SNMP device provides. The two engines in the estate (EU-DUB-FW01 and EU-SEY-CLU01) previously reported nothing beyond CPU, memory and interface traffic - the Forcepoint parser existed only to put the right vendor name on the device. It now reads the Forcepoint NGFW MIB directly.',
     'The memory figure for these firewalls was wrong, and read about 20 points too high - EU-SEY-CLU01 showed 97% memory used when the true figure was 79%. The generic reading counts the cache and buffers the operating system can reclaim at any time as memory in use. The firewall reports how much memory is genuinely available, and that is now the number shown. Expect the memory graph for both firewalls to step down at the point of this upgrade; nothing changed on the firewalls themselves.',

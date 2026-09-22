@@ -156,11 +156,43 @@ function ifOperLabel(n) {
 }
 
 // ── vendor OID fetch (mirrors collector's metric def kinds) ────
+// Scalars share as few GET PDUs as possible and the table walks run together.
+// One round trip per metric does not scale over a high-latency WAN link: the
+// Forcepoint parser defines 15 OID sets, which cost ~6.8s serially against an
+// engine in Seychelles — on its own enough to blow discoverDevice()'s 15s
+// budget, which runs this whole function twice.
+const GET_CHUNK = 24;
+
 async function fetchVendorRaw(session, parser) {
   const raw = {};
-  for (const m of parser.metrics) {
-    raw[m.name] = m.kind === 'table' ? await walk(session, m.oid) : await get(session, [m.oid]);
+  for (const m of parser.metrics) raw[m.name] = [];
+
+  const scalars = parser.metrics.filter((m) => m.kind !== 'table');
+  const tables = parser.metrics.filter((m) => m.kind === 'table');
+
+  // Scalars: batched GETs. Results are matched back by OID rather than by
+  // position, because get() drops varbind errors and so may return fewer rows
+  // than were asked for.
+  for (let i = 0; i < scalars.length; i += GET_CHUNK) {
+    const chunk = scalars.slice(i, i + GET_CHUNK);
+    const rows = await get(session, chunk.map((m) => m.oid));
+    if (!rows.length && chunk.length > 1) {
+      // SNMPv1 fails the entire PDU if any single OID is missing, so fall back
+      // to one GET per OID and let the present ones through.
+      for (const m of chunk) raw[m.name] = await get(session, [m.oid]);
+      continue;
+    }
+    const byOid = new Map(rows.map((r) => [String(r.oid).replace(/^\./, ''), r]));
+    for (const m of chunk) {
+      const hit = byOid.get(String(m.oid).replace(/^\./, ''));
+      raw[m.name] = hit ? [hit] : [];
+    }
   }
+
+  // Tables: concurrent walks on the one session, as the interface block does.
+  const walked = await Promise.all(tables.map((m) => walk(session, m.oid)));
+  tables.forEach((m, i) => { raw[m.name] = walked[i]; });
+
   return raw;
 }
 
