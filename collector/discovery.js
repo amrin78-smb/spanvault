@@ -117,8 +117,13 @@ function humanize(key) {
   return String(key).replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 function unitFor(metric) {
-  // Up/Down states, rendered by fmtValue as words rather than 1/0.
-  if (/^(vpn_peer_up|node_online|node_test_ok)$/.test(metric)) return 'state';
+  // Up/Down states, rendered by fmtValue as words rather than 1/0, and offered
+  // as "when Down"/"when Up" by the alert-limit editors.
+  // The trailing `(_\d+)?` is load-bearing: a per-row sensor's STORED metric
+  // name carries its index ('node_test_ok_348228451'), and matching only the
+  // bare name silently dropped every one of them into the numeric editor.
+  if (/^(vpn_peer_up|node_online|node_test_ok)(_\d+)?$/.test(metric)) return 'state';
+  if (/^if_\d+_oper$/.test(metric) || metric === 'if_oper_status') return 'state';
   if (/^(vpn_paths_down|vpn_dynamic_total|vpn_dynamic_up|vpn_mobile_sas)$/.test(metric)) return 'count';
   if (/pct$/.test(metric)) return '%';
   if (/_bps$/.test(metric)) return 'bps';

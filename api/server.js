@@ -36,6 +36,11 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.107.1': [
+    'Fixed: setting an alert on an Up/Down sensor asked for a number to compare against instead of offering "when Down" or "when Up". Engine tests, VPN tunnels and interface status only ever read 1 or 0, so the numeric editor was useless for exactly the sensors most worth alerting on. Affected both the device page and the Alert Rules page.',
+    'The cause: these sensors are stored with a per-sensor id appended to their name, and the check for "is this an Up/Down sensor" only recognised the name without it. Interface status was never recognised either.',
+    'Fixed: opening the alert editor on a sensor row squeezed the sensor\'s own name out of the row. The editor now opens on its own line underneath the sensor, and shows which sensor it is about.',
+  ],
   '1.107.0': [
     'Alert limits can now be set on the device itself, next to the sensor they belong to, instead of only from Settings. Open a device, click Manage Sensors, and every enabled sensor carries a "+ Alert" button on its row.',
     'Sensors that read Up or Down - VPN tunnels, engine tests, node online - simply ask "when Down" or "when Up". Numeric sensors take an operator and a threshold. A sensor that already has an alert shows its limit inline, with a Clear button.',

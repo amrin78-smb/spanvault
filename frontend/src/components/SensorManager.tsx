@@ -144,19 +144,43 @@ function ruleSummary(rule: SensorRule, unit?: string): string {
   return `alert when ${rule.operator} ${rule.threshold}${unit && unit !== 'state' ? unit : ''}`;
 }
 
+// The alerting cell on a sensor row: either the limit already set on it, or
+// the button that opens the editor. Deliberately narrow — the row is a flex
+// whose name span is `flex: 1; min-width: 0`, so anything wide put in here
+// squeezes the sensor's own name down to nothing.
+function SensorAlertCell({ rule, unit, busy, onEdit, onClear }: {
+  rule: SensorRule | null;
+  unit?: string;
+  busy: boolean;
+  onEdit: () => void;
+  onClear: () => void;
+}) {
+  if (rule) {
+    return (
+      <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center', whiteSpace: 'nowrap' }}
+        title={`${ruleSummary(rule, unit)} · ${rule.severity}`}>
+        <span className="sv-badge warning">{ruleSummary(rule, unit)}</span>
+        <button className="sv-btn ghost sm" onClick={onClear} disabled={busy}>Clear</button>
+      </span>
+    );
+  }
+  return <button className="sv-btn ghost sm" onClick={onEdit}>+ Alert</button>;
+}
+
 // Per-sensor alert limit, set where the sensor lives rather than over in
 // Settings — the PRTG model. Creates a device-scoped alert_rules row carrying
 // this sensor's key, which is what makes the collector evaluate it per sensor.
+// Rendered as its own line BELOW the sensor row, not inside it, so the
+// controls never crowd out the sensor name.
 // Top-level component on purpose: defining it inside SensorManager would
 // remount it on every keystroke and drop input focus.
-function SensorAlertControl({ deviceId, sensor, rule, onChanged }: {
+function SensorAlertEditor({ deviceId, sensor, onSaved, onCancel }: {
   deviceId: number;
   sensor: { key: string; name: string; metric_name: string; unit?: string };
-  rule: SensorRule | null;
-  onChanged: () => void;
+  onSaved: () => void;
+  onCancel: () => void;
 }) {
   const isState = sensor.unit === 'state';
-  const [open, setOpen] = useState(false);
   const [operator, setOperator] = useState('>');
   const [threshold, setThreshold] = useState(isState ? '0' : '90');
   const [severity, setSeverity] = useState('warning');
@@ -174,42 +198,20 @@ function SensorAlertControl({ deviceId, sensor, rule, onChanged }: {
         threshold: parseFloat(threshold),
         severity, enabled: true,
       });
-      setOpen(false);
-      onChanged();
+      onSaved();
     } catch (e: any) {
       setErr(e?.message || 'Failed to save alert');
-    } finally {
       setBusy(false);
     }
   }
 
-  async function clear() {
-    if (!rule) return;
-    setBusy(true);
-    setErr(null);
-    try {
-      await apiSend(`/api/alert-rules/${rule.id}`, 'DELETE');
-      onChanged();
-    } catch (e: any) {
-      setErr(e?.message || 'Failed to remove alert');
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  if (rule) {
-    return (
-      <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }} title={`${ruleSummary(rule, sensor.unit)} · ${rule.severity}`}>
-        <span className="sv-badge warning">{ruleSummary(rule, sensor.unit)}</span>
-        <button className="sv-btn ghost sm" onClick={clear} disabled={busy}>Clear</button>
-      </span>
-    );
-  }
-  if (!open) {
-    return <button className="sv-btn ghost sm" onClick={() => setOpen(true)}>+ Alert</button>;
-  }
   return (
-    <span style={{ display: 'inline-flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+    <div style={{
+      display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center',
+      padding: '8px 10px 10px 16px', background: 'var(--surface-subtle)',
+      borderRadius: 6, margin: '2px 0 6px',
+    }}>
+      <span className="sv-muted" style={{ fontSize: 'var(--text-sm)' }}>Alert on {sensor.name}:</span>
       {isState ? (
         <select className="sv-select" value={threshold} onChange={(e) => setThreshold(e.target.value)}>
           <option value="0">when Down</option>
@@ -221,17 +223,17 @@ function SensorAlertControl({ deviceId, sensor, rule, onChanged }: {
             {['>', '>=', '<', '<=', '=', '!='].map((o) => <option key={o} value={o}>{o}</option>)}
           </select>
           <input className="sv-input sv-input-sm" type="number" value={threshold}
-            onChange={(e) => setThreshold(e.target.value)} style={{ width: 80 }} />
+            onChange={(e) => setThreshold(e.target.value)} style={{ width: 90 }} />
         </>
       )}
       <select className="sv-select" value={severity} onChange={(e) => setSeverity(e.target.value)}>
         <option value="warning">warning</option>
         <option value="critical">critical</option>
       </select>
-      <button className="sv-btn sm" onClick={save} disabled={busy}>{busy ? 'Saving…' : 'Save'}</button>
-      <button className="sv-btn ghost sm" onClick={() => { setOpen(false); setErr(null); }}>Cancel</button>
+      <button className="sv-btn sm" onClick={save} disabled={busy}>{busy ? 'Saving…' : 'Save alert'}</button>
+      <button className="sv-btn ghost sm" onClick={onCancel} disabled={busy}>Cancel</button>
       {err && <span className="sv-muted" style={{ fontSize: 'var(--text-xs)' }}>{err}</span>}
-    </span>
+    </div>
   );
 }
 
@@ -239,8 +241,8 @@ function SensorAlertControl({ deviceId, sensor, rule, onChanged }: {
  * Full-screen SNMP sensor manager. Left = available sensors (checklist),
  * right = currently enabled selection. "Run Discovery" walks the device and
  * populates the left panel with live current values. Each enabled sensor also
- * carries its own alert limit (SensorAlertControl), so a limit is set where
- * the sensor is rather than over in Settings.
+ * carries its own alert limit (SensorAlertCell + SensorAlertEditor), so a
+ * limit is set where the sensor is rather than over in Settings.
  */
 export default function SensorManager({
   deviceId, deviceName, onClose, onSaved,
@@ -260,6 +262,24 @@ export default function SensorManager({
   const [notice, setNotice] = useState<string | null>(null);
   // Per-sensor alert rules for this device, keyed by sensor_key.
   const [rules, setRules] = useState<Map<string, SensorRule>>(new Map());
+  // sensor_key whose alert editor is open (one at a time), and the key being
+  // cleared, so only that row's buttons disable.
+  const [editingAlert, setEditingAlert] = useState<string | null>(null);
+  const [clearingAlert, setClearingAlert] = useState<string | null>(null);
+
+  async function clearRule(sensorKey: string) {
+    const rule = rules.get(sensorKey);
+    if (!rule) return;
+    setClearingAlert(sensorKey);
+    try {
+      await apiSend(`/api/alert-rules/${rule.id}`, 'DELETE');
+      await loadRules();
+    } catch (e: any) {
+      setErr(e?.message || 'Failed to remove alert');
+    } finally {
+      setClearingAlert(null);
+    }
+  }
 
   async function loadRules() {
     try {
@@ -528,44 +548,69 @@ export default function SensorManager({
                           // makes sense on the bundle is "this link went down",
                           // so the limit targets its Status member.
                           const status = g.members.find((m) => /_oper$/.test(m.metric_name) || /_status$/.test(m.key));
+                          const statusSensor = status
+                            ? { key: status.key, name: `${g.name} — Status`, metric_name: status.metric_name, unit: 'state' }
+                            : null;
                           return (
-                            <div key={g.id} className="sv-sensor-item enabled">
-                              <span className="sv-sensor-info">
-                                <span className="nm">{g.name} ({dirsLabel(g.members)})</span>
-                                {g.meta && <span className="meta">{g.meta}</span>}
-                              </span>
-                              {status && (
-                                <SensorAlertControl
+                            <div key={g.id}>
+                              <div className="sv-sensor-item enabled">
+                                <span className="sv-sensor-info">
+                                  <span className="nm">{g.name} ({dirsLabel(g.members)})</span>
+                                  {g.meta && <span className="meta">{g.meta}</span>}
+                                </span>
+                                {statusSensor && (
+                                  <SensorAlertCell
+                                    rule={rules.get(statusSensor.key) || null}
+                                    unit="state"
+                                    busy={clearingAlert === statusSensor.key}
+                                    onEdit={() => setEditingAlert(statusSensor.key)}
+                                    onClear={() => clearRule(statusSensor.key)}
+                                  />
+                                )}
+                                <button className="sv-btn ghost sm" onClick={() => toggleGroup(g.members)}>Remove</button>
+                              </div>
+                              {statusSensor && editingAlert === statusSensor.key && (
+                                <SensorAlertEditor
                                   deviceId={deviceId}
-                                  sensor={{ key: status.key, name: `${g.name} — Status`, metric_name: status.metric_name, unit: 'state' }}
-                                  rule={rules.get(status.key) || null}
-                                  onChanged={loadRules}
+                                  sensor={statusSensor}
+                                  onSaved={() => { setEditingAlert(null); loadRules(); }}
+                                  onCancel={() => setEditingAlert(null)}
                                 />
                               )}
-                              <button className="sv-btn ghost sm" onClick={() => toggleGroup(g.members)}>Remove</button>
                             </div>
                           );
                         })
                       : rightGroups[cat].map((it) => (
-                          <div key={it.key} className="sv-sensor-item enabled">
-                            <span className="sv-sensor-info">
-                              <span className="nm">{it.base_name || it.name}</span>
-                              {it.meta && <span className="meta">{it.meta}</span>}
-                            </span>
-                            {it.current_value !== undefined && (
-                              it.metric_name === 'ha_sync_status'
-                                ? <span className={`val ${String(it.current_value) === '1' ? 'ok' : 'bad'}`}>
-                                    {String(it.current_value) === '1' ? 'Synced' : 'Not synced'}
-                                  </span>
-                                : <span className="val">{it.current_value}</span>
+                          <div key={it.key}>
+                            <div className="sv-sensor-item enabled">
+                              <span className="sv-sensor-info">
+                                <span className="nm">{it.base_name || it.name}</span>
+                                {it.meta && <span className="meta">{it.meta}</span>}
+                              </span>
+                              {it.current_value !== undefined && (
+                                it.metric_name === 'ha_sync_status'
+                                  ? <span className={`val ${String(it.current_value) === '1' ? 'ok' : 'bad'}`}>
+                                      {String(it.current_value) === '1' ? 'Synced' : 'Not synced'}
+                                    </span>
+                                  : <span className="val">{it.current_value}</span>
+                              )}
+                              <SensorAlertCell
+                                rule={rules.get(it.key) || null}
+                                unit={it.unit}
+                                busy={clearingAlert === it.key}
+                                onEdit={() => setEditingAlert(it.key)}
+                                onClear={() => clearRule(it.key)}
+                              />
+                              <button className="sv-btn ghost sm" onClick={() => toggle(it.key)}>Remove</button>
+                            </div>
+                            {editingAlert === it.key && (
+                              <SensorAlertEditor
+                                deviceId={deviceId}
+                                sensor={{ key: it.key, name: it.base_name || it.name, metric_name: it.metric_name, unit: it.unit }}
+                                onSaved={() => { setEditingAlert(null); loadRules(); }}
+                                onCancel={() => setEditingAlert(null)}
+                              />
                             )}
-                            <SensorAlertControl
-                              deviceId={deviceId}
-                              sensor={{ key: it.key, name: it.base_name || it.name, metric_name: it.metric_name, unit: it.unit }}
-                              rule={rules.get(it.key) || null}
-                              onChanged={loadRules}
-                            />
-                            <button className="sv-btn ghost sm" onClick={() => toggle(it.key)}>Remove</button>
                           </div>
                         ))}
                   </div>
