@@ -4,7 +4,7 @@ import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useApi, apiSend } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
-import { Loading, ErrorBox, Empty, fmtTime, PageHeader, TableSkeleton, Pager, useClientPagination, useConfirm, useToast, useTableSort, sortRows, SortTh } from '@/components/ui';
+import { Loading, ErrorBox, Empty, EmptyState, fmtTime, PageHeader, TableSkeleton, Pager, useClientPagination, useConfirm, useToast, useTableSort, sortRows, SortTh } from '@/components/ui';
 import { useLicense } from '@/components/LicenseGuard';
 
 const TABS = [
@@ -213,7 +213,19 @@ function SaveBar({ save, saving, dirty, disabled }: {
   save: () => Promise<void>; saving: boolean; dirty: boolean; disabled?: boolean;
 }) {
   return (
-    <div className="sv-toolbar">
+    // Sticks to the bottom of the viewport rather than sitting at the end of
+    // the page: on General the fields run well past one screen, so the only
+    // Save button was scrolled out of sight while you were editing — and the
+    // same page also has sections that save instantly via their own buttons,
+    // which made it unclear what "Save Settings" still covered.
+    <div
+      className="sv-toolbar"
+      style={{
+        position: 'sticky', bottom: 0, zIndex: 5, marginBottom: 0,
+        padding: '12px 0', background: 'var(--bg-primary)',
+        borderTop: '1px solid var(--border)', maxWidth: 1180,
+      }}
+    >
       <button className="sv-btn" onClick={save} disabled={saving || !dirty || disabled}>
         {saving ? 'Saving…' : 'Save Settings'}
       </button>
@@ -222,6 +234,11 @@ function SaveBar({ save, saving, dirty, disabled }: {
       )}
       {!disabled && dirty && !saving && (
         <span className="sv-muted" style={{ fontWeight: 600 }}>Unsaved changes</span>
+      )}
+      {!disabled && !dirty && !saving && (
+        <span className="sv-muted">
+          Polling, thresholds and notification settings save together. Rules, routes and windows save as you add them.
+        </span>
       )}
     </div>
   );
@@ -729,6 +746,12 @@ function NotificationRoutes() {
           </tbody>
         </table>
       )}
+      {!routes.loading && list.length === 0 && (
+        <EmptyState
+          title="No routes configured"
+          message="Every alert goes to the global Alert Recipients above. Add a route to send particular alerts somewhere else instead."
+        />
+      )}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'flex-end' }}>
         <label className="sv-field" style={{ margin: 0 }}>Name
           <input className="sv-input sv-input-md" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. DB team" />
@@ -1148,7 +1171,14 @@ function RulesTable({ rules, onChange }: { rules: Rule[] | null; onChange: () =>
     onChange();
   }
   if (!rules) return <Loading />;
-  if (!rules.length) return <Empty message="No rules defined at this level." />;
+  if (!rules.length) {
+    return (
+      <EmptyState
+        title="No rules at this level"
+        message="Nothing is configured here yet. Add one below — rules at a more specific level override the ones above them."
+      />
+    );
+  }
   return (
     <>
       {ConfirmUI}
@@ -1214,13 +1244,18 @@ function GlobalRules() {
   return (
     <div>
       {err && <ErrorBox message={err} />}
+      {/* List first, then the form to add to it: what exists is the reason you
+          opened the tab, and a headless table under a headed "Add…" panel read
+          as though the form were the page. */}
+      <div className="sv-panel">
+        <h2>Global Rules</h2>
+        <p className="sv-panel-hint">Apply to every device unless a site or device rule overrides them.</p>
+        <RulesTable rules={rules.data} onChange={() => rules.reload()} />
+      </div>
       <div className="sv-panel">
         <h2>Add Global Rule</h2>
-        <p className="sv-muted" style={{ marginTop: -6 }}>Applies to all devices unless a site or device rule overrides it.</p>
+        <p className="sv-panel-hint">Applies to all devices unless a site or device rule overrides it.</p>
         <RuleForm onAdd={add} />
-      </div>
-      <div className="sv-panel" style={{ padding: 0 }}>
-        <RulesTable rules={rules.data} onChange={() => rules.reload()} />
       </div>
     </div>
   );
@@ -1257,16 +1292,21 @@ function SiteRules() {
         </div>
         {site ? (
           <>
-            <p className="sv-muted" style={{ marginTop: 4 }}>Rules for <strong>{site.name}</strong> override global rules for devices at this site.</p>
-            <RuleForm onAdd={add} />
+            <p className="sv-panel-hint" style={{ marginTop: 4 }}>Rules for <strong>{site.name}</strong> override global rules for devices at this site.</p>
+            <RulesTable rules={rules.data} onChange={() => rules.reload()} />
           </>
         ) : (
-          <Empty message="Select a site to manage its rules." />
+          <EmptyState
+            title="Select a site"
+            message="Choose a site above to see the rules that apply to its devices, and to add rules of your own."
+          />
         )}
       </div>
       {site && (
-        <div className="sv-panel" style={{ padding: 0 }}>
-          <RulesTable rules={rules.data} onChange={() => rules.reload()} />
+        <div className="sv-panel">
+          <h2>Add Site Rule</h2>
+          <p className="sv-panel-hint">Applies to every device at {site.name}.</p>
+          <RuleForm onAdd={add} />
         </div>
       )}
       {site && <InheritedRules title="Inherited global rules" rules={globals.data} />}
@@ -1314,21 +1354,27 @@ function DeviceRules() {
         </div>
         {device ? (
           <>
-            <p className="sv-muted" style={{ marginTop: 4 }}>
+            <p className="sv-panel-hint" style={{ marginTop: 4 }}>
               Device rules for <strong>{device.name}</strong> override site and global rules.
-              Tick &ldquo;Alert on a specific sensor&rdquo; to watch one interface, VPN tunnel or
-              vendor sensor instead of a device-wide metric.
             </p>
-            <RuleForm onAdd={add} sensors={sensors.data} />
+            <RulesTable rules={rules.data} onChange={() => { rules.reload(); effective.reload(); }} />
           </>
         ) : (
-          <Empty message="Select a device to manage its rules." />
+          <EmptyState
+            title="Select a device"
+            message="Choose a device above to see the rules set on it, and to add rules of your own."
+          />
         )}
       </div>
 
       {device && (
-        <div className="sv-panel" style={{ padding: 0 }}>
-          <RulesTable rules={rules.data} onChange={() => { rules.reload(); effective.reload(); }} />
+        <div className="sv-panel">
+          <h2>Add Device Rule</h2>
+          <p className="sv-panel-hint">
+            Applies to {device.name} only. Tick &ldquo;Alert on a specific sensor&rdquo; to watch one
+            interface, VPN tunnel or vendor sensor instead of a device-wide metric.
+          </p>
+          <RuleForm onAdd={add} sensors={sensors.data} />
         </div>
       )}
 
@@ -1415,19 +1461,24 @@ function ServiceRules() {
         </div>
         {service ? (
           <>
-            <p className="sv-muted" style={{ marginTop: 4 }}>
+            <p className="sv-panel-hint" style={{ marginTop: 4 }}>
               Service rules for <strong>{service.name}</strong> override site and global rules.
             </p>
-            <RuleForm onAdd={add} metricOptions={SERVICE_METRIC_OPTIONS} />
+            <RulesTable rules={rules.data} onChange={() => { rules.reload(); effective.reload(); }} />
           </>
         ) : (
-          <Empty message="Select a service to manage its rules." />
+          <EmptyState
+            title="Select a service"
+            message="Choose a service above to see the rules set on it, and to add rules of your own."
+          />
         )}
       </div>
 
       {service && (
-        <div className="sv-panel" style={{ padding: 0 }}>
-          <RulesTable rules={rules.data} onChange={() => { rules.reload(); effective.reload(); }} />
+        <div className="sv-panel">
+          <h2>Add Service Rule</h2>
+          <p className="sv-panel-hint">Applies to {service.name} only.</p>
+          <RuleForm onAdd={add} metricOptions={SERVICE_METRIC_OPTIONS} />
         </div>
       )}
 
@@ -1529,6 +1580,37 @@ function Maintenance() {
     <div>
       {ConfirmUI}
       {err && <ErrorBox message={err} />}
+      {/* Scheduled windows first, the scheduling form under it. */}
+      <div className="sv-panel">
+        <h2>Scheduled Windows</h2>
+        <p className="sv-panel-hint">Alerting is suppressed for the chosen scope while a window is open.</p>
+        {windows.loading && !windows.data ? (
+          <TableSkeleton rows={4} cols={5} />
+        ) : windows.data && windows.data.length ? (
+          <table className="sv-table">
+            <thead>
+              <tr><th>Scope</th><th>Starts</th><th>Ends</th><th>Reason</th><th></th></tr>
+            </thead>
+            <tbody>
+              {windows.data.map((w) => (
+                <tr key={w.id}>
+                  <td>{w.device_name || w.service_name || 'All devices/services'}</td>
+                  <td className="sv-muted">{fmtTime(w.starts_at)}</td>
+                  <td className="sv-muted">{fmtTime(w.ends_at)}</td>
+                  <td>{w.reason || '—'}</td>
+                  <td><button className="sv-btn danger sm" onClick={() => remove(w)}>Delete</button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <EmptyState
+            title="No maintenance windows scheduled"
+            message="Nothing is suppressed right now — every alert will fire as normal. Schedule a window below before planned work."
+          />
+        )}
+      </div>
+
       <div className="sv-panel">
         <h2>Schedule Maintenance Window</h2>
         <p className="sv-panel-hint">
@@ -1579,30 +1661,6 @@ function Maintenance() {
         </div>
       </div>
 
-      <div className="sv-panel" style={{ padding: 0 }}>
-        {windows.loading && !windows.data ? (
-          <TableSkeleton rows={4} cols={5} />
-        ) : windows.data && windows.data.length ? (
-          <table className="sv-table">
-            <thead>
-              <tr><th>Scope</th><th>Starts</th><th>Ends</th><th>Reason</th><th></th></tr>
-            </thead>
-            <tbody>
-              {windows.data.map((w) => (
-                <tr key={w.id}>
-                  <td>{w.device_name || w.service_name || 'All devices/services'}</td>
-                  <td className="sv-muted">{fmtTime(w.starts_at)}</td>
-                  <td className="sv-muted">{fmtTime(w.ends_at)}</td>
-                  <td>{w.reason || '—'}</td>
-                  <td><button className="sv-btn danger sm" onClick={() => remove(w)}>Delete</button></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        ) : (
-          <Empty message="No maintenance windows scheduled." />
-        )}
-      </div>
     </div>
   );
 }

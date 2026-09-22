@@ -36,6 +36,13 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.109.0': [
+    'Settings now shows you what exists before asking you to add to it. The Alert Rules tabs and Maintenance put the creation form first and the list of what you had already configured underneath it, so opening a tab showed you a blank form rather than your own configuration. That order is now reversed everywhere.',
+    'Empty sections say something useful. "No rules defined at this level." in an unlabelled white box has become a proper empty state that explains what the absence means - that nothing is suppressed, or that every alert is going to the default recipients - matching how the Devices, Alerts and Services pages have always looked.',
+    'The Save Settings button now follows you down the page instead of sitting at the very bottom. On the General tab the fields run past one screen, so the only way to save was to scroll back down after editing.',
+    'When there is nothing to save, that bar now explains which parts of the page save together and which save immediately as you add them - previously two different save behaviours sat on one screen with nothing to distinguish them.',
+    'Every list panel now has a heading. Several were headless tables floating under a headed form, which read as though the form were the page.',
+  ],
   '1.108.0': [
     'Settings no longer changes width as you move between tabs. Four of the eight tabs laid their content out in a narrower column than the other four, so the page visibly resized - by 356 pixels - every time you switched. All eight now share one layout.',
     'The four tabs that lacked one - Maintenance, Audit Log, Updates and About - now carry the same explanatory panel down the right-hand side that the other tabs already had, rather than leaving that space blank.',
