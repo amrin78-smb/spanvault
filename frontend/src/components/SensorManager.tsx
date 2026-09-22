@@ -148,27 +148,31 @@ function ruleSummary(rule: SensorRule, unit?: string): string {
   return `alert when ${rule.operator} ${rule.threshold}${unit && unit !== 'state' ? unit : ''}`;
 }
 
-// The alerting cell on a sensor row: either the limit already set on it, or
-// the button that opens the editor. Deliberately narrow — the row is a flex
-// whose name span is `flex: 1; min-width: 0`, so anything wide put in here
-// squeezes the sensor's own name down to nothing.
-function SensorAlertCell({ rule, unit, busy, onEdit, onClear }: {
+// The alerting cell on a sensor row. Deliberately just a button — the row is a
+// flex whose name span is `flex: 1; min-width: 0`, so anything else put here
+// steals the sensor's own width. A badge here cut "Engine Test — Multiping
+// AIRTEL" from 192px to 69px ("Engine T…"), so the limit itself is rendered on
+// the row's second line by SensorAlertLine instead.
+function SensorAlertCell({ rule, busy, onEdit, onClear }: {
   rule: SensorRule | null;
-  unit?: string;
   busy: boolean;
   onEdit: () => void;
   onClear: () => void;
 }) {
   if (rule) {
-    return (
-      <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center', whiteSpace: 'nowrap' }}
-        title={`${ruleSummary(rule, unit)} · ${rule.severity}`}>
-        <span className="sv-badge warning">{ruleSummary(rule, unit)}</span>
-        <button className="sv-btn ghost sm" onClick={onClear} disabled={busy}>Clear</button>
-      </span>
-    );
+    return <button className="sv-btn ghost sm" onClick={onClear} disabled={busy}>Clear alert</button>;
   }
   return <button className="sv-btn ghost sm" onClick={onEdit}>+ Alert</button>;
+}
+
+// The limit itself, on the row's second line where there is room for it.
+function SensorAlertLine({ rule, unit }: { rule: SensorRule | null; unit?: string }) {
+  if (!rule) return null;
+  return (
+    <span className="meta" style={{ color: 'var(--tint-warn-fg)' }}>
+      ⚠ {ruleSummary(rule, unit)} · {rule.severity}
+    </span>
+  );
 }
 
 // Per-sensor alert limit, set where the sensor lives rather than over in
@@ -561,11 +565,11 @@ export default function SensorManager({
                                 <span className="sv-sensor-info">
                                   <span className="nm">{g.name} ({dirsLabel(g.members)})</span>
                                   {g.meta && <span className="meta">{g.meta}</span>}
+                                  {statusSensor && <SensorAlertLine rule={rules.get(statusSensor.key) || null} unit="state" />}
                                 </span>
                                 {statusSensor && (
                                   <SensorAlertCell
                                     rule={rules.get(statusSensor.key) || null}
-                                    unit="state"
                                     busy={clearingAlert === statusSensor.key}
                                     onEdit={() => setEditingAlert(statusSensor.key)}
                                     onClear={() => clearRule(statusSensor.key)}
@@ -590,6 +594,7 @@ export default function SensorManager({
                               <span className="sv-sensor-info">
                                 <span className="nm">{it.base_name || it.name}</span>
                                 {it.meta && <span className="meta">{it.meta}</span>}
+                                <SensorAlertLine rule={rules.get(it.key) || null} unit={it.unit} />
                               </span>
                               {it.current_value !== undefined && (
                                 it.metric_name === 'ha_sync_status'
@@ -600,7 +605,6 @@ export default function SensorManager({
                               )}
                               <SensorAlertCell
                                 rule={rules.get(it.key) || null}
-                                unit={it.unit}
                                 busy={clearingAlert === it.key}
                                 onEdit={() => setEditingAlert(it.key)}
                                 onClear={() => clearRule(it.key)}

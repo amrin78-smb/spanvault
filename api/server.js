@@ -36,6 +36,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.107.3': [
+    'Fixed: on a sensor that had an alert set, the alert badge crowded the sensor name out of its own row - "Engine Test — Multiping AIRTEL" rendered as "Engine T...", losing two thirds of its width. The alert now sits on the second line of the row, where there is room for it, and the name keeps its full width.',
+  ],
   '1.107.2': [
     'Fixed: an alert set on an Up/Down sensor displayed as "alert when = 0" instead of "alert when Down", on both the device page and the Alert Rules list. The alert itself was always correct and fired correctly - only the way it was written on screen was wrong.',
     'Found by clicking through the actual page rather than by testing the code, which is how it should have been checked in the first place.',
