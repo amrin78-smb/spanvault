@@ -829,10 +829,18 @@ type Rule = {
   site_id: number | null; site_name: string | null; scope: string;
   metric: string; operator: string; threshold: number | null; severity: string;
   enabled: boolean; notify_recovery: boolean; description: string | null;
+  sensor_key: string | null; sensor_label: string | null;
 };
 type NewRule = {
   metric: string; operator: string; threshold: number | null;
   severity: string; notify_recovery: boolean; description: string | null;
+  sensor_key?: string | null; sensor_label?: string | null;
+};
+// One row of GET /api/devices/:id/sensors. `unit` is derived server-side;
+// 'state' means the sensor reads Up/Down rather than a number.
+type SensorLite = {
+  id: number; sensor_key: string; sensor_name: string; category: string;
+  metric_name: string; enabled: boolean; unit: string;
 };
 type Site = { id: number; name: string; code?: string; city?: string };
 type DeviceLite = { id: number; name: string; ip_address: string; site_id: number | null; site_name: string | null };
@@ -866,8 +874,17 @@ function isNoThreshold(metric: string): boolean {
 }
 function conditionText(r: Rule): string {
   if (isNoThreshold(r.metric)) return 'triggered';
-  const u = metricUnit(r.metric);
+  // A per-sensor state rule reads as "is Down", not "= 0".
+  if (r.sensor_key && r.operator === '=' && (r.threshold === 0 || r.threshold === 1)) {
+    return `is ${Number(r.threshold) === 1 ? 'Up' : 'Down'}`;
+  }
+  const u = r.sensor_key ? '' : metricUnit(r.metric);
   return `${r.operator} ${r.threshold}${u}`;
+}
+
+// What a rule is measuring: a named sensor if it has one, else the fixed metric.
+function ruleSubject(r: Rule): string {
+  return r.sensor_label || metricLabel(r.metric);
 }
 
 const RULE_SUBTABS = [
@@ -911,9 +928,10 @@ function AlertRules() {
 // metrics are offered — device tabs pass the device-only subset (the default),
 // the Service Rules tab passes SERVICE_METRIC_OPTIONS, so a rule's metric
 // always matches its intended namespace.
-function RuleForm({ onAdd, metricOptions = DEVICE_METRIC_OPTIONS }: {
+function RuleForm({ onAdd, metricOptions = DEVICE_METRIC_OPTIONS, sensors }: {
   onAdd: (r: NewRule) => Promise<void>;
   metricOptions?: { value: string; label: string; unit?: string; noThreshold?: boolean }[];
+  sensors?: SensorLite[] | null;
 }) {
   const [metric, setMetric] = useState(metricOptions[0]?.value || 'response_time');
   const [operator, setOperator] = useState('>');
@@ -922,29 +940,102 @@ function RuleForm({ onAdd, metricOptions = DEVICE_METRIC_OPTIONS }: {
   const [recovery, setRecovery] = useState(false);
   const [description, setDescription] = useState('');
   const [busy, setBusy] = useState(false);
-  const noThresh = isNoThreshold(metric);
+  // Per-sensor mode: target one sensor on this device rather than a fixed metric.
+  const [useSensor, setUseSensor] = useState(false);
+  const [sensorKey, setSensorKey] = useState('');
+
+  // Only enabled sensors are offered — a rule on a sensor nobody collects
+  // would never evaluate, which reads as a broken alert rather than an
+  // unticked sensor.
+  const liveSensors = (sensors || []).filter((s) => s.enabled);
+  const sensor = liveSensors.find((s) => s.sensor_key === sensorKey);
+  const sensorIsState = sensor?.unit === 'state';
+  const noThresh = !useSensor && isNoThreshold(metric);
 
   async function submit() {
     setBusy(true);
     try {
-      await onAdd({
-        metric, operator,
-        threshold: noThresh ? null : parseFloat(threshold),
-        severity, notify_recovery: recovery, description: description || null,
-      });
+      if (useSensor) {
+        if (!sensor) return;
+        await onAdd({
+          metric: sensor.metric_name, operator,
+          threshold: parseFloat(threshold),
+          severity, notify_recovery: recovery, description: description || null,
+          sensor_key: sensor.sensor_key, sensor_label: sensor.sensor_name,
+        });
+      } else {
+        await onAdd({
+          metric, operator,
+          threshold: noThresh ? null : parseFloat(threshold),
+          severity, notify_recovery: recovery, description: description || null,
+        });
+      }
       setDescription('');
     } finally {
       setBusy(false);
     }
   }
 
+  // Picking a state sensor defaults the condition to "is Down", which is what
+  // a rule on a tunnel or an engine test almost always means.
+  function pickSensor(key: string) {
+    setSensorKey(key);
+    const s = liveSensors.find((x) => x.sensor_key === key);
+    if (s?.unit === 'state') { setOperator('='); setThreshold('0'); }
+  }
+
   return (
     <div>
+      {sensors && (
+        <div className="sv-toolbar" style={{ flexWrap: 'wrap', marginBottom: 4 }}>
+          <label className="sv-field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <input type="checkbox" checked={useSensor}
+              onChange={(e) => { setUseSensor(e.target.checked); if (e.target.checked && !sensorKey && liveSensors[0]) pickSensor(liveSensors[0].sensor_key); }} />
+            Alert on a specific sensor
+          </label>
+          {useSensor && !liveSensors.length && (
+            <span className="sv-muted" style={{ fontSize: 'var(--text-sm)' }}>
+              No sensors are enabled on this device — enable some under Sensors first.
+            </span>
+          )}
+        </div>
+      )}
       <div className="sv-toolbar" style={{ flexWrap: 'wrap' }}>
-        <select className="sv-select" value={metric} onChange={(e) => setMetric(e.target.value)}>
-          {metricOptions.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
-        </select>
-        {!noThresh && (
+        {useSensor ? (
+          <select className="sv-select" value={sensorKey} onChange={(e) => pickSensor(e.target.value)}>
+            <option value="">Select a sensor…</option>
+            {['system', 'vendor', 'interface'].map((cat) => {
+              const inCat = liveSensors.filter((s) => s.category === cat);
+              if (!inCat.length) return null;
+              return (
+                <optgroup key={cat} label={cat}>
+                  {inCat.map((s) => <option key={s.sensor_key} value={s.sensor_key}>{s.sensor_name}</option>)}
+                </optgroup>
+              );
+            })}
+          </select>
+        ) : (
+          <select className="sv-select" value={metric} onChange={(e) => setMetric(e.target.value)}>
+            {metricOptions.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
+          </select>
+        )}
+        {useSensor && sensorIsState && (
+          <select className="sv-select" value={threshold}
+            onChange={(e) => { setOperator('='); setThreshold(e.target.value); }}>
+            <option value="0">is Down</option>
+            <option value="1">is Up</option>
+          </select>
+        )}
+        {useSensor && !sensorIsState && (
+          <>
+            <select className="sv-select" value={operator} onChange={(e) => setOperator(e.target.value)}>
+              {OPERATORS.map((o) => <option key={o} value={o}>{o}</option>)}
+            </select>
+            <input className="sv-input sv-input-sm" type="number" value={threshold}
+              onChange={(e) => setThreshold(e.target.value)} placeholder="threshold" />
+          </>
+        )}
+        {!useSensor && !noThresh && (
           <>
             <select className="sv-select" value={operator} onChange={(e) => setOperator(e.target.value)}>
               {OPERATORS.map((o) => <option key={o} value={o}>{o}</option>)}
@@ -961,7 +1052,7 @@ function RuleForm({ onAdd, metricOptions = DEVICE_METRIC_OPTIONS }: {
           <input type="checkbox" checked={recovery} onChange={(e) => setRecovery(e.target.checked)} />
           Notify on recovery
         </label>
-        <button className="sv-btn" onClick={submit} disabled={busy}>{busy ? 'Adding…' : '+ Add Rule'}</button>
+        <button className="sv-btn" onClick={submit} disabled={busy || (useSensor && !sensor)}>{busy ? 'Adding…' : '+ Add Rule'}</button>
       </div>
       <input className="sv-input" style={{ marginTop: 10, width: '100%', maxWidth: 520 }}
         placeholder="Description (optional)" value={description} onChange={(e) => setDescription(e.target.value)} />
@@ -993,7 +1084,7 @@ function RulesTable({ rules, onChange }: { rules: Rule[] | null; onChange: () =>
       <tbody>
         {rules.map((r) => (
           <tr key={r.id}>
-            <td>{metricLabel(r.metric)}</td>
+            <td>{ruleSubject(r)}</td>
             <td>{conditionText(r)}</td>
             <td>{r.severity}</td>
             <td className="sv-muted">{r.notify_recovery ? 'Yes' : '—'}</td>
@@ -1023,7 +1114,7 @@ function InheritedRules({ title, rules }: { title: string; rules: Rule[] | null 
           {rules.map((r) => (
             <tr key={r.id}>
               <td><span className="sv-badge unknown">{r.scope}</span></td>
-              <td>{metricLabel(r.metric)}</td>
+              <td>{ruleSubject(r)}</td>
               <td>{conditionText(r)}</td>
               <td>{r.severity}</td>
               <td className="sv-muted">{r.description || '—'}</td>
@@ -1117,6 +1208,7 @@ function DeviceRules() {
   const effective = useApi<{ device: any; rules: Rule[] }>(deviceId ? `/api/alert-rules/effective/${deviceId}` : null);
   const globals = useApi<Rule[]>('/api/alert-rules?scope=global');
   const siteRules = useApi<Rule[]>(device?.site_id ? `/api/alert-rules?scope=site&site_id=${device.site_id}` : null);
+  const sensors = useApi<SensorLite[]>(deviceId ? `/api/devices/${deviceId}/sensors` : null);
   const [err, setErr] = useState<string | null>(null);
 
   const filtered = (devices.data || []).filter((d) =>
@@ -1149,8 +1241,10 @@ function DeviceRules() {
           <>
             <p className="sv-muted" style={{ marginTop: 4 }}>
               Device rules for <strong>{device.name}</strong> override site and global rules.
+              Tick &ldquo;Alert on a specific sensor&rdquo; to watch one interface, VPN tunnel or
+              vendor sensor instead of a device-wide metric.
             </p>
-            <RuleForm onAdd={add} />
+            <RuleForm onAdd={add} sensors={sensors.data} />
           </>
         ) : (
           <Empty message="Select a device to manage its rules." />
@@ -1180,7 +1274,7 @@ function DeviceRules() {
               <tbody>
                 {effective.data.rules.map((r) => (
                   <tr key={r.id}>
-                    <td>{metricLabel(r.metric)}</td>
+                    <td>{ruleSubject(r)}</td>
                     <td>{conditionText(r)}</td>
                     <td>{r.severity}</td>
                     <td><span className={`sv-badge ${r.scope === 'device' ? 'down' : r.scope === 'site' ? 'warning' : 'unknown'}`}>{r.scope}</span></td>
@@ -1279,7 +1373,7 @@ function ServiceRules() {
               <tbody>
                 {effective.data.rules.map((r) => (
                   <tr key={r.id}>
-                    <td>{metricLabel(r.metric)}</td>
+                    <td>{ruleSubject(r)}</td>
                     <td>{conditionText(r)}</td>
                     <td>{r.severity}</td>
                     <td><span className={`sv-badge ${r.scope === 'service' ? 'down' : r.scope === 'site' ? 'warning' : 'unknown'}`}>{r.scope}</span></td>

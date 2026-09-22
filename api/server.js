@@ -18,7 +18,7 @@ const GIT_ENV = { ...process.env, GIT_TERMINAL_PROMPT: '0' };
 const cors     = require('cors');
 const ping     = require('ping');
 const { Pool } = require('pg');
-const { discoverDevice, snmpTest } = require('../collector/discovery');
+const { discoverDevice, snmpTest, unitFor } = require('../collector/discovery');
 const topology = require('../collector/topology');
 const wireless = require('../collector/wirelessCollector');
 const { wirelessVendorFor } = require('../collector/wireless');
@@ -36,6 +36,13 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.106.0': [
+    'Alert rules can now target one specific sensor, instead of only the eight device-wide metrics the app has always offered. Pick a device under Settings > Alert Rules > Device Rules, tick "Alert on a specific sensor", and choose any sensor you have enabled on it - one VPN tunnel, one engine test, one interface, one vendor reading.',
+    'This is what makes a rule like "alert when Multiping AIRTEL is down" possible. It was not previously - the rule list offered a fixed set of eight metrics, and the alert engine only ever received five values from the SNMP poll, so a rule naming anything else would have sat there and never fired.',
+    'Sensors that read Up or Down - VPN tunnels, engine tests, interface status, node online - are offered as "is Down" or "is Up" rather than asking for a number to compare against. Numeric sensors still take an operator and a threshold as before.',
+    'Only sensors you have actually enabled on the device are offered, because a rule watching a sensor nothing collects would never fire, and that looks like a broken alert rather than an unticked sensor.',
+    'One limit worth knowing: a sensor can carry one rule at a time. Setting both a warning and a critical threshold on the same sensor is not supported - the more specific one wins. That is the same rule that has always applied to the device-wide metrics.',
+  ],
   '1.105.0': [
     'Forcepoint VPN tunnels can now be monitored individually. Each site-to-site tunnel is its own sensor, named by the peer address and reading Up or Down, in the same way interfaces are - so you can watch the tunnels that matter rather than a single total. There is also a VPN Peers Down figure, which is the one to put an alert rule on.',
     'To be clear about what these are: they are IPsec tunnels. The count includes no SSL-VPN users, and cannot - Forcepoint does not report SSL-VPN over SNMP at all. Remote VPN clients appear only as a total number of connections, never individually.',
@@ -3376,7 +3383,11 @@ app.get('/api/devices/:id/sensors', wrap(async (req, res) => {
        ORDER BY category, sensor_name`,
     [id]
   );
-  res.json(r.rows);
+  // `unit` is derived, not stored — the alert-rule editor needs it to know a
+  // sensor is a state (Up/Down) rather than a number to threshold against.
+  res.json(r.rows.map((row) => Object.assign({}, row, {
+    unit: row.custom_unit || unitFor(row.metric_name),
+  })));
 }));
 
 // Upsert the device's sensor selection.
@@ -4227,15 +4238,20 @@ app.post('/api/alert-rules', wrap(async (req, res) => {
     return res.status(400).json({ error: 'metric and threshold required' });
   }
   const scope = b.scope || (b.device_id ? 'device' : b.service_check_id ? 'service' : b.site_id ? 'site' : 'global');
+  // A per-sensor rule must name the device it belongs to — a sensor key is only
+  // meaningful against a device's own sensor list.
+  if (b.sensor_key && !b.device_id) {
+    return res.status(400).json({ error: 'sensor_key requires device_id' });
+  }
   const r = await sv.query(`
     INSERT INTO alert_rules
-      (device_id, site_id, site_name, scope, metric, operator, threshold, severity, enabled, notify_recovery, description, service_check_id)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *
+      (device_id, site_id, site_name, scope, metric, operator, threshold, severity, enabled, notify_recovery, description, service_check_id, sensor_key, sensor_label)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *
   `, [
     b.device_id || null, b.site_id || null, b.site_name || null, scope, b.metric,
     b.operator || '>', noThreshold ? null : b.threshold, b.severity || 'warning',
     b.enabled === undefined ? true : !!b.enabled, !!b.notify_recovery, b.description || null,
-    b.service_check_id || null,
+    b.service_check_id || null, b.sensor_key || null, b.sensor_label || null,
   ]);
   res.status(201).json(r.rows[0]);
 }));
@@ -4244,7 +4260,8 @@ app.put('/api/alert-rules/:id', wrap(async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const b = req.body || {};
   const allowed = ['metric', 'operator', 'threshold', 'severity', 'enabled', 'device_id',
-                   'scope', 'site_id', 'site_name', 'notify_recovery', 'description', 'service_check_id'];
+                   'scope', 'site_id', 'site_name', 'notify_recovery', 'description', 'service_check_id',
+                   'sensor_key', 'sensor_label'];
   const sets = [];
   const params = [];
   for (const k of allowed) if (b[k] !== undefined) { params.push(b[k]); sets.push(`${k} = $${params.length}`); }

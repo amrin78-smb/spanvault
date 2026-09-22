@@ -613,13 +613,27 @@ async function evaluateSnmpAlerts(device, samples) {
     }
   }
 
-  await evaluateEffectiveRules(device, {
+  // Per-sensor rules: every sample this poll produced, keyed by its STORED
+  // metric_name — which for a per-index sensor is the suffixed form
+  // ('node_test_ok_1596274411'), exactly what a sensor rule puts in
+  // rule.metric. `latest` above deliberately skips indexed samples because the
+  // hardcoded checks are device-wide; rules are per-sensor, so they need the
+  // indexed ones too. The fixed device metrics are applied last so a sensor can
+  // never shadow cpu_pct/mem_pct (a vendor parser emitting either of those
+  // feeds them through `latest` already).
+  const ruleMetrics = {};
+  for (const s of samples) {
+    if (s.value === null || s.value === undefined) continue;
+    ruleMetrics[s.metric_name] = s.value;
+  }
+  Object.assign(ruleMetrics, {
     cpu_pct: latest.cpu_pct !== undefined ? latest.cpu_pct : null,
     mem_pct: latest.mem_pct !== undefined ? latest.mem_pct : null,
     interface_down: interfaceDown,
     snmp_no_data: snmpNoDataMin,
     bandwidth_pct: maxUtil,
   });
+  await evaluateEffectiveRules(device, ruleMetrics);
 }
 
 // ── Maintenance suppression ───────────────────────────────────
@@ -1096,8 +1110,14 @@ async function getEffectiveServiceRules(check) {
   return Array.from(byMetric.values());
 }
 
+// A sensor rule's metric is an opaque suffixed name ('node_test_ok_1596274411'),
+// so the stored display label is what a human should ever see.
+function ruleLabel(rule) {
+  return rule.sensor_label || METRIC_LABELS[rule.metric] || rule.metric;
+}
+
 function ruleMessage(device, rule, val) {
-  const label = METRIC_LABELS[rule.metric] || rule.metric;
+  const label = ruleLabel(rule);
   if (rule.metric === 'device_down') return `${device.name} is down`;
   if (rule.metric === 'interface_down') return `${device.name} has an interface down`;
   if (rule.metric === 'snmp_no_data') {
@@ -1115,7 +1135,7 @@ async function recoveryEvent(device, rule) {
       `INSERT INTO alerts (device_id, alert_type, severity, message, status, resolved_at)
        VALUES ($1,$2,'info',$3,'resolved',NOW())`,
       [device.id, `recovery_${rule.id}`,
-       `${device.name} recovered: ${METRIC_LABELS[rule.metric] || rule.metric} back to normal`]
+       `${device.name} recovered: ${ruleLabel(rule)} back to normal`]
     );
     log(`[alert] RECOVERY ${rule.metric} on ${device.name}`);
   } catch (err) {
@@ -1153,7 +1173,7 @@ async function evaluateEffectiveRules(device, metrics) {
       const wasActive = await resolveAlert(device.id, alertType);
       if (wasActive && rule.notify_recovery) {
         await recoveryEvent(device, rule);
-        await notifyRecovery(device, alertType, METRIC_LABELS[rule.metric] || rule.metric);
+        await notifyRecovery(device, alertType, ruleLabel(rule));
       }
     }
   }

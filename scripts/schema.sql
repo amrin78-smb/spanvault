@@ -153,6 +153,19 @@ ALTER TABLE alert_rules ADD COLUMN IF NOT EXISTS scope           TEXT NOT NULL D
 ALTER TABLE alert_rules ADD COLUMN IF NOT EXISTS site_id         INTEGER;
 ALTER TABLE alert_rules ADD COLUMN IF NOT EXISTS site_name       TEXT;
 ALTER TABLE alert_rules ADD COLUMN IF NOT EXISTS notify_recovery BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- ── Per-sensor rules (PRTG-style limits on one specific sensor) ──────────────
+-- A rule normally names one of the fixed device metrics (cpu_pct, mem_pct, …).
+-- When sensor_key is set, the rule instead targets ONE sensor on the device —
+-- a single VPN tunnel, one engine self-test, one interface. rule.metric then
+-- holds that sensor's STORED metric_name (the per-index suffixed form, e.g.
+-- 'node_test_ok_1596274411'), which is already unique per sensor, so rule
+-- precedence and the collector's metric lookup both keep working unchanged.
+-- sensor_label is a display snapshot ("Engine Test — Multiping AIRTEL") so a
+-- rule still reads correctly in the UI and in alert text without a join, and
+-- survives the sensor being removed.
+ALTER TABLE alert_rules ADD COLUMN IF NOT EXISTS sensor_key   TEXT;
+ALTER TABLE alert_rules ADD COLUMN IF NOT EXISTS sensor_label TEXT;
 ALTER TABLE alert_rules ADD COLUMN IF NOT EXISTS description     TEXT;
 -- Some condition types (device_down, interface_down) carry no threshold.
 ALTER TABLE alert_rules ALTER COLUMN threshold DROP NOT NULL;
