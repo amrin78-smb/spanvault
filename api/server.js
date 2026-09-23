@@ -36,6 +36,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.113.3': [
+    'Devices: the Latency column heading is now just "Latency" and the original column widths are restored. Widening the column in 1.113.1 pushed the clipping onto its neighbour and narrowing it pushed it back - the heading text was the constraint, not the width.',
+  ],
   '1.113.2': [
     'Devices: rebalanced the last two column widths so the "Last Seen" heading is no longer clipped. Widening Latency in 1.113.1 had taken the space from its neighbour.',
   ],
