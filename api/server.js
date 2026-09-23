@@ -36,6 +36,15 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.112.0': [
+    'The Services page has been redesigned around the service rather than the individual check. Each service is now one row showing its status, target, which checks it runs, the collector, latency, certificate expiry and when it was last checked - expandable into per-check detail, history, certificate and events.',
+    'Certificate details are now recorded properly instead of being written into a sentence and read back out. The collector already held the full certificate and kept only the expiry date as English text ("Cert expires in 45 days"), so the issuing authority was discarded entirely and everything else had to be parsed back out of that sentence - which was already wrong for any check run by a remote agent, because the agent writes a different sentence and omits the date. The issuer, expiry date and DNS record count are now stored as real values.',
+    'Because of that, the page can show which authority issued each certificate, and the "expires in N days" figure is now recalculated as you look at it rather than being however many days it was when the check last ran.',
+    'A summary row across the top shows total services, how many are up, down and in warning, and how many certificates expire within 60 days.',
+    'New filtering by status, check type and collector, plus pagination with a rows-per-page choice, a visible refresh button and an "updated Ns ago" indicator.',
+    'You can now pause and resume a service without deleting it. The ability was always in the API and had never been connected to anything.',
+    'Fixed: deleting a service reported nothing at all if the server refused it - the row simply stayed put. Also fixed two colour values that referred to variables which do not exist, one of which made a table row darker in dark mode when it should have been lighter.',
+  ],
   '1.111.1': [
     'Fixed: searching the audit log hid the "Load older" button - the check for whether more history exists was counting the filtered results instead of everything loaded, so the button vanished exactly when you needed it. The no-results message also referred to a button that was not on screen; it now offers one.',
     'Fixed: several panels showed a reassuring empty message when the request behind them had actually failed. Maintenance could state "Nothing is suppressed right now, every alert will fire as normal" purely because the server did not answer. Those panels now show the error.',
@@ -4155,12 +4164,19 @@ async function getAlertCaps() {
 }
 
 app.get('/api/alerts', wrap(async (req, res) => {
-  const { status, severity, device_id } = req.query;
+  const { status, severity, device_id, service_check_id } = req.query;
   const where = [];
   const params = [];
   if (status)    { params.push(status);    where.push(`a.status = $${params.length}`); }
   if (severity)  { params.push(severity);  where.push(`a.severity = $${params.length}`); }
   if (device_id) { params.push(parseInt(device_id, 10)); where.push(`a.device_id = $${params.length}`); }
+  // Lets the Services page show a check's own alert history without pulling the
+  // whole alert list and filtering in the browser. Site-scoping below still
+  // applies, so this cannot widen what a scoped caller can see.
+  if (service_check_id) {
+    params.push(parseInt(service_check_id, 10));
+    where.push(`a.service_check_id = $${params.length}`);
+  }
   const limit = safeInt(req.query.limit, 200, 1000);
 
   const caps = await getAlertCaps();
@@ -9421,6 +9437,7 @@ app.get('/api/service-checks', wrap(async (req, res) => {
              sc.agent_id, ag.name AS agent_name,
              sc.interval_seconds, sc.params,
              sc.current_status, sc.last_response_ms, sc.last_detail, sc.last_checked_at, sc.active,
+             sc.cert_issuer, sc.cert_valid_to, sc.cert_days_left, sc.dns_record_count,
              (SELECT COUNT(*)::int FROM service_check_results r WHERE r.check_id = sc.id) AS result_count
         FROM service_checks sc
         LEFT JOIN agents ag ON ag.id = sc.agent_id
@@ -9668,7 +9685,8 @@ app.get('/api/service-checks/:id', wrap(async (req, res) => {
            sc.group_id,
            sc.agent_id, ag.name AS agent_name,
            sc.interval_seconds, sc.params,
-           sc.current_status, sc.last_response_ms, sc.last_detail, sc.last_checked_at, sc.active
+           sc.current_status, sc.last_response_ms, sc.last_detail, sc.last_checked_at, sc.active,
+           sc.cert_issuer, sc.cert_valid_to, sc.cert_days_left, sc.dns_record_count
       FROM service_checks sc
       LEFT JOIN agents ag ON ag.id = sc.agent_id
       WHERE sc.id = $1

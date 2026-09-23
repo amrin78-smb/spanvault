@@ -1501,8 +1501,20 @@ function checkSsl(target, params) {
         const daysLeft = Math.floor((validTo.getTime() - Date.now()) / 86400000);
         const ymd = validTo.toISOString().slice(0, 10);
         const detail = `Cert expires in ${daysLeft} days (${ymd})`;
-        if (daysLeft <= warnDays) finish({ status: 'warning', response_ms: ms, detail });
-        else finish({ status: 'up', response_ms: ms, detail });
+        // The issuer was already sitting in the cert object and was being
+        // dropped here; the expiry only survived as text inside `detail`, which
+        // meant the UI had to regex it back out — and the remote agent writes a
+        // DIFFERENT string (no date at all), so that parse was wrong the moment
+        // a check moved to an agent. Carry them as real fields instead.
+        // CN first: it names the issuing CA ("Sectigo RSA Domain Validation
+        // Secure Server CA"), which is what you want when judging a cert. O is
+        // only the parent org ("Sectigo Limited") and is the weaker answer.
+        const issuer = cert.issuer
+          ? (cert.issuer.CN || cert.issuer.O || cert.issuer.OU || null)
+          : null;
+        const facts = { cert_issuer: issuer, cert_valid_to: validTo.toISOString(), cert_days_left: daysLeft };
+        if (daysLeft <= warnDays) finish({ status: 'warning', response_ms: ms, detail, facts });
+        else finish({ status: 'up', response_ms: ms, detail, facts });
       });
     } catch (err) {
       return finish({ status: 'down', response_ms: Date.now() - start, detail: err.message });
@@ -1533,7 +1545,8 @@ function checkDns(target, params) {
       if (err) return finish({ status: 'down', response_ms: ms, detail: err.message });
       const n = Array.isArray(records) ? records.length : 0;
       if (n < 1) return finish({ status: 'down', response_ms: ms, detail: 'No records' });
-      finish({ status: 'up', response_ms: ms, detail: `Resolved ${n} record(s)` });
+      // Carried as a real field as well as in the text — see checkSsl.
+      finish({ status: 'up', response_ms: ms, detail: `Resolved ${n} record(s)`, facts: { dns_record_count: n } });
     });
   });
 }
@@ -1628,13 +1641,25 @@ async function notifyServiceRecovery(check, alertType, label) {
 async function runAndStoreServiceCheck(check) {
   const res = await runServiceCheck(check);
   const ms = (res.response_ms != null && isFinite(res.response_ms)) ? res.response_ms : null;
+  // Structured facts a runner extracted (cert issuer/expiry, DNS record count).
+  // COALESCE, not a plain assignment: a failed poll returns no facts, and the
+  // last known certificate details are still the truth about the certificate —
+  // wiping them on one timeout would blank the Certificate tab until the next
+  // success. They are only overwritten when a run actually produced them.
+  const f = res.facts || {};
   try {
     await sv.query(`
       UPDATE service_checks
          SET current_status = $2, last_response_ms = $3, last_detail = $4,
+             cert_issuer      = COALESCE($5, cert_issuer),
+             cert_valid_to    = COALESCE($6::timestamptz, cert_valid_to),
+             cert_days_left   = COALESCE($7::int, cert_days_left),
+             dns_record_count = COALESCE($8::int, dns_record_count),
              last_checked_at = NOW(), updated_at = NOW()
        WHERE id = $1
-    `, [check.id, res.status, ms, res.detail || null]);
+    `, [check.id, res.status, ms, res.detail || null,
+        f.cert_issuer ?? null, f.cert_valid_to ?? null,
+        f.cert_days_left ?? null, f.dns_record_count ?? null]);
     await sv.query(
       `INSERT INTO service_check_results (check_id, status, response_ms, detail) VALUES ($1,$2,$3,$4)`,
       [check.id, res.status, ms, res.detail || null]

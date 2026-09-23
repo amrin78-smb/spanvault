@@ -473,6 +473,22 @@ CREATE INDEX IF NOT EXISTS idx_svc_results ON service_check_results(check_id, ts
 -- group_id ties the per-type checks created together for one target; NULL = standalone.
 ALTER TABLE service_checks ADD COLUMN IF NOT EXISTS group_id UUID;
 CREATE INDEX IF NOT EXISTS idx_svc_group ON service_checks(group_id);
+
+-- ── Structured results from the probes ──────────────────────────────────────
+-- These facts were always obtained and then thrown away: checkSsl already held
+-- the whole peer certificate and kept only valid_to, and checkDns had the
+-- resolved record array and kept only its length — both surviving solely as
+-- English inside last_detail ("Cert expires in 45 days (2026-11-08)"). Reading
+-- them back meant regexing that sentence, which breaks by construction for
+-- agent-run checks: the remote agent writes a different string and omits the
+-- date entirely. Stored properly, the UI reads fields and the two code paths
+-- can diverge in wording without breaking anything.
+-- Written by the CENTRAL collector; an agent-run check leaves them NULL until
+-- the agent module and its WS message carry them too.
+ALTER TABLE service_checks ADD COLUMN IF NOT EXISTS cert_issuer      TEXT;
+ALTER TABLE service_checks ADD COLUMN IF NOT EXISTS cert_valid_to    TIMESTAMPTZ;
+ALTER TABLE service_checks ADD COLUMN IF NOT EXISTS cert_days_left   INTEGER;
+ALTER TABLE service_checks ADD COLUMN IF NOT EXISTS dns_record_count INTEGER;
 -- Service-level alerts reference the check, not a device.
 ALTER TABLE alerts ADD COLUMN IF NOT EXISTS service_check_id INTEGER REFERENCES service_checks(id) ON DELETE CASCADE;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_alerts_active_service_unique
