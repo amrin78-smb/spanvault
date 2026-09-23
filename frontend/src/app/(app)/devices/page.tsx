@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useMemo, useRef } from 'react';
+import { createContext, useContext, useState, useEffect, useMemo, useRef } from 'react';
 import Link from 'next/link';
 import { useApi } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
@@ -255,14 +255,14 @@ type DeviceCol = {
 const DEVICE_COLUMNS: DeviceCol[] = [
   { key: 'name',      label: 'Device',         w: 15, wOs: 14 },
   { key: 'type',      label: 'Type',           w: 7,  wOs: 6 },
-  { key: 'vendor',    label: 'Vendor / Model', w: 13, wOs: 11 },
+  { key: 'vendor',    label: 'Vendor / Model', w: 12, wOs: 10 },
   { key: 'ip',        label: 'IP Address',     w: 11, wOs: 10 },
   { key: 'os',        label: 'Version / OS',   w: 0,  wOs: 9, osOnly: true },
   { key: 'status',    label: 'Status',         w: 8,  wOs: 7 },
   { key: 'health',    label: 'Health Score',   w: 11, wOs: 10 },
-  { key: 'latency',   label: 'Latency (24h)',  w: 10, wOs: 9 },
+  { key: 'latency',   label: 'Latency (24h)',  w: 12, wOs: 11 },
   { key: 'lastalert', label: 'Last Alert',     w: 10, wOs: 9 },
-  { key: 'lastseen',  label: 'Last Seen',      w: 9,  wOs: 8 },
+  { key: 'lastseen',  label: 'Last Seen',      w: 8,  wOs: 7 },
   { key: 'actions',   label: 'Actions',        w: 6,  wOs: 7, right: true, sortable: false },
 ];
 // Dev-only guard for the invariant above. Stripped from the production bundle
@@ -405,6 +405,19 @@ function DensityToggle({ density, onChange }: {
     </div>
   );
 }
+
+// Row-level context. `sparks` and the density sizes are needed only by the
+// innermost DeviceRow, three levels below the page; threading them as props
+// would have meant widening AgentGroup and SiteAccordion for data neither one
+// reads. Context keeps those two signatures about grouping.
+type DeviceRowCtxT = {
+  sparks: SparkMap | null;
+  sparksLoading: boolean;
+  sizes: { ring: number; sparkW: number; sparkH: number; accHead: number };
+};
+const DeviceRowCtx = createContext<DeviceRowCtxT>({
+  sparks: null, sparksLoading: false, sizes: DENSITY_SIZES.comfortable,
+});
 
 // ── Latency sparkline ──────────────────────────────────────────
 // 24 clock-aligned hourly buckets of ICMP response time, from ONE aggregate
@@ -629,6 +642,13 @@ export default function DevicesPage() {
   );
 
   useRefreshKey(() => { devices.reload(); sites.reload(); sparks.reload(); });
+  // Memoised: a fresh object literal here would give every DeviceRow a new
+  // context value on each render of this page (it re-renders every 20s on the
+  // device poll), defeating the point of keeping the series out of props.
+  const rowCtxValue = useMemo<DeviceRowCtxT>(
+    () => ({ sparks: sparks.data ?? null, sparksLoading: sparks.loading, sizes }),
+    [sparks.data, sparks.loading, sizes]
+  );
 
   // Type / vendor option lists come from the loaded devices, so they only ever
   // offer values that actually match something.
@@ -811,19 +831,57 @@ export default function DevicesPage() {
         </div>
       )}
 
-      {/* Result count + expand/collapse controls */}
+      {/* KPI strip. Counted over the filtered set so it always agrees with the
+          "Showing N devices" line directly beneath it. */}
+      <div className="sv-cards" style={{ marginBottom: 12 }}>
+        <DeviceStatTile
+          variant="total" icon={<IconDevices width={20} height={20} />}
+          tint={{ bg: 'var(--surface-subtle)', fg: 'var(--text-secondary)' }}
+          value={kpi.total} label="DEVICES"
+          sub={kpi.avgAvail == null ? undefined : `${kpi.avgAvail.toFixed(2)}% avail (24h)`}
+        />
+        <DeviceStatTile
+          variant="up" icon={<IconArrowUp width={20} height={20} />}
+          tint={{ bg: 'var(--tint-success)', fg: 'var(--tint-success-fg)' }}
+          value={kpi.up} label="UP" sub={`${kpiPct(kpi.up)}% of devices`}
+        />
+        <DeviceStatTile
+          variant="down" icon={<IconArrowDown width={20} height={20} />}
+          tint={{ bg: 'var(--tint-danger)', fg: 'var(--tint-danger-fg)' }}
+          value={kpi.down} label="DOWN" sub={`${kpiPct(kpi.down)}% of devices`}
+        />
+        <DeviceStatTile
+          variant="warning" icon={<IconWarning width={20} height={20} />}
+          tint={{ bg: 'var(--tint-warn)', fg: 'var(--tint-warn-fg)' }}
+          value={kpi.warning} label="WARNING" sub={`${kpiPct(kpi.warning)}% of devices`}
+        />
+        <DeviceStatTile
+          variant={healthVariant} icon={<IconGauge width={20} height={20} />}
+          tint={{ bg: 'var(--tint-info)', fg: 'var(--tint-info-fg)' }}
+          value={kpi.avgHealth == null ? '—' : Math.round(kpi.avgHealth)}
+          label="AVG HEALTH"
+          sub={kpi.scored === 0 ? 'no scores yet' : `${kpi.degraded} graded D or F`}
+          title={kpi.scored === kpi.total
+            ? undefined
+            : `Averaged over the ${kpi.scored} of ${kpi.total} devices that have a health score.`}
+        />
+      </div>
+
+      {/* Result count + density + expand/collapse controls */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
         <span className="sv-muted" style={{ fontSize: 'var(--text-sm)' }}>
           Showing {visible.length.toLocaleString()} {visible.length === 1 ? 'device' : 'devices'} across{' '}
           {siteCount.toLocaleString()} {siteCount === 1 ? 'site' : 'sites'}
         </span>
         <span style={{ flex: 1 }} />
+        <DensityToggle density={density} onChange={changeDensity} />
         <button className="sv-btn ghost sm" onClick={expandAll}>Expand All</button>
         <button className="sv-btn ghost sm" onClick={collapseAll}>Collapse All</button>
       </div>
 
       {devices.error && <ErrorBox message={devices.error} />}
 
+      <DeviceRowCtx.Provider value={rowCtxValue}>
       {devices.loading && !devices.data ? (
         <div className="sv-panel" style={{ padding: 0 }}><TableSkeleton rows={6} cols={6} /></div>
       ) : hasAgents ? (
@@ -871,6 +929,7 @@ export default function DevicesPage() {
           />
         </div>
       )}
+      </DeviceRowCtx.Provider>
 
       {showForm && (
         <DeviceForm
@@ -1125,6 +1184,7 @@ function HealthRing({
 
 // ── Single device row ──────────────────────────────────────────
 function DeviceRow({ device, showOs }: { device: Device; showOs: boolean }) {
+  const rowCtx = useContext(DeviceRowCtx);
   const vendor = device.nv_vendor || vendorLabel(device.device_vendor);
   const os = [device.os_type, device.os_version].filter(Boolean).join(' ');
   return (
@@ -1162,7 +1222,16 @@ function DeviceRow({ device, showOs }: { device: Device; showOs: boolean }) {
           {statusLabel(device.current_status)}
         </span>
       </td>
-      <td><HealthRing score={device.health_score} grade={device.health_grade} /></td>
+      <td><HealthRing score={device.health_score} grade={device.health_grade} size={rowCtx.sizes.ring} /></td>
+      <td>
+        <LatencySpark
+          series={rowCtx.sparks ? (rowCtx.sparks[String(device.id)]?.response_ms ?? null) : null}
+          currentMs={intelNum(device.last_response_ms)}
+          width={rowCtx.sizes.sparkW}
+          height={rowCtx.sizes.sparkH}
+          loading={rowCtx.sparksLoading && !rowCtx.sparks}
+        />
+      </td>
       <td>
         {device.last_alert_at ? (
           <>

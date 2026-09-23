@@ -36,6 +36,12 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.113.1': [
+    'Completes the Devices page work that 1.113.0 shipped half-finished. The new "Latency (24h)" column had no cell behind it at all: the header declared ten columns and each row drew nine, so from Health Score rightwards every value sat one column left of its own heading - Last Alert appeared under Latency, and Last Seen under Last Alert. The column alignment check missed it because the cells were still geometrically flush with the header; they were simply the wrong cells.',
+    'The latency trend line now actually draws. The data was being fetched for every device on the page and then never read.',
+    'The summary row across the top of Devices (total, up, down, warning, average health) and the comfortable/compact density switch are now on screen. Both were fully written but never placed in the page.',
+    'Widened the Latency column, which was clipping its own heading.',
+  ],
   '1.113.0': [
     'The network map on the Topology page has never once drawn anything. It reported "69 links, 8 devices" directly above an empty canvas telling you to run discovery. Discovery had run, and had worked - but the map only drew a device if BOTH ends of a link were devices you monitor, and not one of the 69 discovered neighbours was. They are edge switches and access points nobody had added to SpanVault. The map now draws them as outlined "not monitored" nodes: 52 devices and 47 connections across 6 sites, where previously there was nothing.',
     'The dashboard could report "Nothing needs attention" while 53 alerts were active, 28 of them critical. It was only checking for down devices and correlated outages; wireless alerts counted as neither. It now shows the active alert count broken down by severity, and the all-clear only appears when there is genuinely nothing outstanding - including offline agents, which the card claimed to check but never did.',
