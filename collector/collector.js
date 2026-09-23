@@ -1506,11 +1506,13 @@ function checkSsl(target, params) {
         // meant the UI had to regex it back out — and the remote agent writes a
         // DIFFERENT string (no date at all), so that parse was wrong the moment
         // a check moved to an agent. Carry them as real fields instead.
-        // CN first: it names the issuing CA ("Sectigo RSA Domain Validation
-        // Secure Server CA"), which is what you want when judging a cert. O is
-        // only the parent org ("Sectigo Limited") and is the weaker answer.
+        // O first, CN as fallback. CN-first was tried and is wrong against real
+        // certificates: modern CAs use terse intermediate CNs, and the live
+        // estate produced "WE1" and "YR2" (Google Trust Services) — accurate and
+        // meaningless to a reader. O gives "Google Trust Services" /
+        // "DigiCert Inc". Where O is absent, CN is still better than nothing.
         const issuer = cert.issuer
-          ? (cert.issuer.CN || cert.issuer.O || cert.issuer.OU || null)
+          ? (cert.issuer.O || cert.issuer.CN || cert.issuer.OU || null)
           : null;
         const facts = { cert_issuer: issuer, cert_valid_to: validTo.toISOString(), cert_days_left: daysLeft };
         if (daysLeft <= warnDays) finish({ status: 'warning', response_ms: ms, detail, facts });

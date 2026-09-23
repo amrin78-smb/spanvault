@@ -36,6 +36,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.112.1': [
+    'Certificate issuers now show the certifying organisation rather than the technical name of the intermediate certificate. Two of the three certificates in use were reporting as "WE1" and "YR2" - correct, but meaningless. They now read "Google Trust Services" and similar.',
+  ],
   '1.112.0': [
     'The Services page has been redesigned around the service rather than the individual check. Each service is now one row showing its status, target, which checks it runs, the collector, latency, certificate expiry and when it was last checked - expandable into per-check detail, history, certificate and events.',
     'Certificate details are now recorded properly instead of being written into a sentence and read back out. The collector already held the full certificate and kept only the expiry date as English text ("Cert expires in 45 days"), so the issuing authority was discarded entirely and everything else had to be parsed back out of that sentence - which was already wrong for any check run by a remote agent, because the agent writes a different sentence and omits the date. The issuer, expiry date and DNS record count are now stored as real values.',
