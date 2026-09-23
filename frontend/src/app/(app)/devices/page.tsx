@@ -255,7 +255,7 @@ type DeviceCol = {
 const DEVICE_COLUMNS: DeviceCol[] = [
   { key: 'name',      label: 'Device',         w: 15, wOs: 14 },
   { key: 'type',      label: 'Type',           w: 7,  wOs: 6 },
-  { key: 'vendor',    label: 'Vendor / Model', w: 13, wOs: 11 },
+  { key: 'vendor',    label: 'Vendor / Model', w: 12, wOs: 11 },
   { key: 'ip',        label: 'IP Address',     w: 11, wOs: 10 },
   { key: 'os',        label: 'Version / OS',   w: 0,  wOs: 9, osOnly: true },
   { key: 'status',    label: 'Status',         w: 8,  wOs: 7 },
@@ -263,7 +263,7 @@ const DEVICE_COLUMNS: DeviceCol[] = [
   { key: 'latency',   label: 'Latency',        w: 10, wOs: 9 },
   { key: 'lastalert', label: 'Last Alert',     w: 10, wOs: 9 },
   { key: 'lastseen',  label: 'Last Seen',      w: 9,  wOs: 8 },
-  { key: 'actions',   label: 'Actions',        w: 6,  wOs: 7, right: true, sortable: false },
+  { key: 'actions',   label: 'Actions',        w: 7,  wOs: 7, right: true, sortable: false },
 ];
 // Dev-only guard for the invariant above. Stripped from the production bundle
 // by the `process.env.NODE_ENV` check, so it costs nothing at runtime.
