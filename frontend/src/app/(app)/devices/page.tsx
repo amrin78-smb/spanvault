@@ -8,11 +8,13 @@ import { vendorLabel } from '@/lib/vendor';
 import { copyText } from '@/lib/clipboard';
 import {
   ErrorBox, fmtRel, PageHeader, TableSkeleton, EmptyState, useRefreshKey,
-  useTableSort, sortRows, SortTh,
+  useTableSort, sortRows, SortTh, SortState,
 } from '@/components/ui';
 import { StatusDot } from '@/components/StatusDot';
 import SiteScopeBanner from '@/components/SiteScopeBanner';
-import { IconDevices } from '@/components/icons';
+import {
+  IconDevices, IconArrowUp, IconArrowDown, IconWarning, IconInfo, IconGauge,
+} from '@/components/icons';
 import { DeviceForm, ImportModal } from '@/components/DeviceModals';
 import { gradeColor, n as intelNum } from '@/components/intel';
 
@@ -22,6 +24,10 @@ type Device = {
   last_response_ms: number | null; last_seen_at: string | null;
   snmp_enabled: boolean; poll_interval_seconds: number; netvault_device_id: string | null;
   latest_cpu_pct: number | null; latest_mem_pct: number | null;
+  // Rolling 24h ICMP availability, already computed by the list route's `avail`
+  // LATERAL. Arrives as a pg NUMERIC string. Nothing on the page read it before
+  // the KPI strip.
+  uptime_24h_pct: number | string | null;
   is_gateway: boolean; alert_suppressed: boolean; suppressed_by_device_id: number | null;
   agent_id: number | null; agent_name: string | null; agent_status: string | null;
   last_alert_at: string | null; last_alert_type: string | null; last_alert_severity: string | null;
@@ -55,6 +61,19 @@ function chipMatch(d: Device, chip: string): boolean {
 
 type Site = { id: number; name: string };
 type SiteGroup = { key: string; name: string; siteId: number | null; devices: Device[] };
+
+// One aggregate response for EVERY device on the page, keyed by device id as a
+// string (JSON object keys). 24 clock-aligned hourly buckets, oldest first.
+// `metrics=ping` is requested, so cpu_pct/mem_pct come back null here.
+type DeviceSeries = {
+  response_ms: (number | null)[];
+  cpu_pct: (number | null)[] | null;
+  mem_pct: (number | null)[] | null;
+};
+type SparkMap = Record<string, DeviceSeries>;
+
+// Row density. Persisted per browser in localStorage — see DENSITY_KEY.
+type Density = 'comfortable' | 'compact';
 type AgentGroupT = {
   key: string; agentId: number | null; agentName: string; agentStatus: string | null; devices: Device[];
 };
@@ -62,6 +81,31 @@ type AgentGroupT = {
 const UNASSIGNED = 'Unassigned';
 const LOCAL = 'Local Polling';
 const SITES_PER_PAGE = 25;
+
+// ── Row density ────────────────────────────────────────────────
+// There is NO per-user preference table in this app (no user_preferences /
+// user_settings anywhere in scripts/schema.sql, and app_settings is a global
+// key/value store shared by every user — writing a per-user display choice
+// there would make one operator's density the whole estate's). Every existing
+// display preference — theme (lib/theme.ts), corner style (lib/corners.ts),
+// sidebar collapse, the dashboard's section + alert window, the wireless page's
+// per-controller collapse — is stored in localStorage, so this follows the same
+// house pattern: per browser, not per account. Reads are wrapped in try/catch
+// and happen AFTER mount (Safari private mode throws, and reading during render
+// would desync the server-rendered HTML).
+const DENSITY_KEY = 'sv-devices-density';
+// Widths/sizes that can't live in CSS because the elements that use them are
+// SVG attributes, not styled boxes.
+const DENSITY_SIZES: Record<Density, { ring: number; sparkW: number; sparkH: number; accHead: number }> = {
+  comfortable: { ring: 32, sparkW: 58, sparkH: 22, accHead: 40 },
+  compact: { ring: 22, sparkW: 52, sparkH: 16, accHead: 32 },
+};
+
+// Cap on how many device ids go into one sparkline request. 13 devices live
+// today, but this page paginates SITES, not devices, so a large estate would
+// otherwise put every id in the querystring. Beyond the cap the column degrades
+// to an em-dash rather than the request degrading.
+const SPARK_MAX_DEVICES = 400;
 
 // Top-level grouping by polling agent (agent_id null = local collector).
 function groupByAgent(devices: Device[]): AgentGroupT[] {
@@ -177,9 +221,122 @@ function statusTooltip(d: Device): string {
   return `Unknown — last seen ${seen}`;
 }
 
-// Column accessors for the per-site device table. Sorting is per-site (state
-// lives in SiteAccordion) so each site's table sorts independently and the
-// collapse/expand + site pagination above it are untouched.
+// ── Shared device-table column geometry ────────────────────────
+// ONE column header is rendered for the page (DeviceTableHeader), not one per
+// site accordion: with 7 sites and 13 devices the page used to repeat the full
+// 9-column header 7 times, several times above a single data row. Every group
+// table must therefore line its columns up with that one header, which per-table
+// auto-sizing cannot do — so each table carries `table-layout: fixed` plus the
+// shared <colgroup> below, making the widths deterministic and identical.
+// Percentages (not px) so the grid still scales with the viewport; each list
+// sums to 100.
+type DeviceCol = {
+  key: string; label: string;
+  w: number;    // width % when the optional Version/OS column is hidden
+  wOs: number;  // width % when it is shown
+  osOnly?: boolean; right?: boolean; sortable?: boolean;
+};
+// The percentages below are the widths the old per-table auto-layout settled on
+// in production (measured at a 1512px viewport: 1214px of table), rounded — so
+// pinning them changes almost nothing visually while making every group's
+// columns identical. They also used to differ BETWEEN groups (Device came out
+// 156/169/194px on three sites of the same page), which the shared header would
+// have made obvious.
+//
+// ⛔ Both lists MUST sum to exactly 100. The Latency (24h) column was added by
+// taking 1 point off almost every other column and 2 off Health Score (which
+// was the loosest — a 32px ring plus a one-word grade), rather than by giving
+// the new column its own slice and letting the total drift: `table-layout:
+// fixed` normalises an over- or under-100 colgroup differently from the header
+// than from a group table whose rows have different content, so a total that is
+// not 100 shows up as the header creeping out of line with the rows below it.
+// There is an assertion right under this list that fails loudly in dev if a
+// future edit breaks the invariant.
+const DEVICE_COLUMNS: DeviceCol[] = [
+  { key: 'name',      label: 'Device',         w: 15, wOs: 14 },
+  { key: 'type',      label: 'Type',           w: 7,  wOs: 6 },
+  { key: 'vendor',    label: 'Vendor / Model', w: 13, wOs: 11 },
+  { key: 'ip',        label: 'IP Address',     w: 11, wOs: 10 },
+  { key: 'os',        label: 'Version / OS',   w: 0,  wOs: 9, osOnly: true },
+  { key: 'status',    label: 'Status',         w: 8,  wOs: 7 },
+  { key: 'health',    label: 'Health Score',   w: 11, wOs: 10 },
+  { key: 'latency',   label: 'Latency (24h)',  w: 10, wOs: 9 },
+  { key: 'lastalert', label: 'Last Alert',     w: 10, wOs: 9 },
+  { key: 'lastseen',  label: 'Last Seen',      w: 9,  wOs: 8 },
+  { key: 'actions',   label: 'Actions',        w: 6,  wOs: 7, right: true, sortable: false },
+];
+// Dev-only guard for the invariant above. Stripped from the production bundle
+// by the `process.env.NODE_ENV` check, so it costs nothing at runtime.
+if (process.env.NODE_ENV !== 'production') {
+  const sum = (k: 'w' | 'wOs') =>
+    DEVICE_COLUMNS.filter((c) => (k === 'wOs' ? true : !c.osOnly)).reduce((a, c) => a + c[k], 0);
+  if (sum('w') !== 100 || sum('wOs') !== 100) {
+    // eslint-disable-next-line no-console
+    console.error(
+      `[devices] DEVICE_COLUMNS widths must each total 100 — got w=${sum('w')}, wOs=${sum('wOs')}. ` +
+      'Every group table will drift out of line with the shared sticky header.'
+    );
+  }
+}
+function deviceCols(showOs: boolean) {
+  return DEVICE_COLUMNS
+    .filter((c) => showOs || !c.osOnly)
+    .map((c) => ({ ...c, width: `${showOs ? c.wOs : c.w}%` }));
+}
+// Must be rendered by BOTH the shared header table and every group table, or
+// their columns drift apart.
+function DeviceCols({ showOs }: { showOs: boolean }) {
+  return (
+    <colgroup>
+      {deviceCols(showOs).map((c) => <col key={c.key} style={{ width: c.width }} />)}
+    </colgroup>
+  );
+}
+const DEVICE_TABLE_STYLE: React.CSSProperties = { tableLayout: 'fixed' };
+
+// The page's single column header. Sticky so it stays visible while scrolling
+// through the site groups: opaque background token + z-index 5 + a bottom
+// separator, per the suite's sticky-header rule (a translucent header lets the
+// scrolled rows bleed through and garbles the text in dark mode).
+function DeviceTableHeader({ showOs, sort, onSort }: {
+  showOs: boolean; sort: SortState; onSort: (col: string) => void;
+}) {
+  return (
+    <div
+      style={{
+        position: 'sticky', top: 0, zIndex: 5,
+        background: 'var(--bg-card)',
+        border: '1px solid var(--border)',
+        borderRadius: 'var(--radius)',
+        boxShadow: '0 1px 0 var(--border)',
+        marginBottom: 8, overflow: 'hidden',
+      }}
+    >
+      <table className="sv-table sv-dev-table" style={DEVICE_TABLE_STYLE}>
+        <DeviceCols showOs={showOs} />
+        <thead>
+          <tr>
+            {deviceCols(showOs).map((c) => (
+              c.sortable === false ? (
+                <th key={c.key} style={{ textAlign: 'right', padding: '12px 10px' }}>{c.label}</th>
+              ) : (
+                <SortTh
+                  key={c.key} label={c.label} col={c.key} sort={sort} onSort={onSort}
+                  align={c.right ? 'right' : 'left'}
+                  style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}
+                />
+              )
+            ))}
+          </tr>
+        </thead>
+      </table>
+    </div>
+  );
+}
+
+// Column accessors for the device tables. One sort state lives on the page (it
+// belongs to the single shared header); every group sorts its own rows with it,
+// so the groups, the collapse/expand state and the site pagination are untouched.
 const DEVICE_SORT: Record<string, (d: Device) => unknown> = {
   name: (d) => d.name,
   type: (d) => d.device_type,
@@ -190,9 +347,214 @@ const DEVICE_SORT: Record<string, (d: Device) => unknown> = {
   // health_score arrives as a numeric string (pg NUMERIC) or null — normalize so
   // unscored devices sort last instead of comparing as text.
   health: (d) => intelNum(d.health_score),
+  // The sparkline shows the trend; the sortable value is the CURRENT reading —
+  // the same number printed beside the line — so sorting matches what's on
+  // screen. pg returns it as a numeric string; intelNum normalises it so a
+  // never-polled device sorts last instead of comparing as text.
+  latency: (d) => intelNum(d.last_response_ms),
   lastalert: (d) => d.last_alert_at,
   lastseen: (d) => d.last_seen_at,
 };
+
+// ── Density: the CSS half ──────────────────────────────────────
+// Scoped to this page rather than added to globals.css: another agent owns that
+// file right now. Everything here is a candidate to promote to a suite-wide
+// `.sv-table[data-density]` rule later — it is written against `.sv-table`, not
+// against anything devices-specific, precisely so it can move unchanged.
+//
+// Only paddings and the secondary sub-lines change. The colgroup percentages are
+// untouched, so compact mode cannot pull a group table out of line with the
+// shared sticky header — the widths are the same in both densities, only the row
+// HEIGHT differs.
+const DENSITY_CSS = `
+.sv-dev-list[data-density="compact"] .sv-table td { padding: 5px 10px; }
+.sv-dev-list[data-density="compact"] .sv-table th { padding: 7px 10px; }
+.sv-dev-list[data-density="compact"] .sv-dev-sub { display: none; }
+.sv-dev-list[data-density="compact"] .sv-acc { margin-bottom: 8px !important; }
+`;
+
+function DeviceDensityStyles() {
+  return <style>{DENSITY_CSS}</style>;
+}
+
+// ── Density toggle ─────────────────────────────────────────────
+// Uses the suite's existing `.segmented` control so it reads as the same family
+// as the other in-page mode switches.
+function DensityToggle({ density, onChange }: {
+  density: Density; onChange: (d: Density) => void;
+}) {
+  return (
+    <div
+      className="segmented"
+      role="group"
+      aria-label="Row density"
+      title="Row density"
+    >
+      {(['comfortable', 'compact'] as Density[]).map((d) => (
+        <button
+          key={d}
+          type="button"
+          className={density === d ? 'active' : ''}
+          aria-pressed={density === d}
+          onClick={() => onChange(d)}
+          style={{ padding: '4px 10px', fontSize: 'var(--text-sm)' }}
+        >
+          {d === 'comfortable' ? 'Comfortable' : 'Compact'}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// ── Latency sparkline ──────────────────────────────────────────
+// 24 clock-aligned hourly buckets of ICMP response time, from ONE aggregate
+// request covering every device on the page (`GET /api/devices/sparklines`) —
+// never one request per row.
+//
+// Hand-rolled inline SVG rather than recharts (which /wireless and the device
+// detail page use for their full-size charts): a recharts chart mounts a
+// ResponsiveContainer with a ResizeObserver per instance, which is far more
+// machinery than a 24-point polyline needs when there is one per table row.
+//
+// Single series, so no legend — the column header names it. Encoding:
+//   null   → a gap in the line (no ping samples landed in that hour)
+//   0      → the device was down for that WHOLE hour; drawn as a short red tick
+//            on the baseline. That is a reserved status colour used for a state,
+//            not recycled as a series colour.
+//   number → mean response time of that hour's successful pings
+// The number beside the line is the device's CURRENT reading and wears a text
+// token, never the line colour — colour never carries the value's meaning.
+function LatencySpark({ series, currentMs, width, height, loading }: {
+  series: (number | null)[] | null;
+  currentMs: number | null;
+  width: number;
+  height: number;
+  loading: boolean;
+}) {
+  const label = currentMs == null ? null : `${Math.round(currentMs)} ms`;
+
+  // Positive readings only drive the scale: a 0 means "down", not "0 ms", and
+  // flattening the scale onto it would squash every real reading against the top.
+  const vals = (series || []).filter((v): v is number => v != null && v > 0);
+  const hasLine = vals.length >= 2;
+
+  let path: string[] = [];
+  let downX: number[] = [];
+  let lastPt: { x: number; y: number } | null = null;
+  let min = 0; let max = 0; let avg = 0;
+
+  if (series && series.length) {
+    const n = series.length;
+    const stepX = n > 1 ? (width - 2) / (n - 1) : 0;
+    min = vals.length ? Math.min(...vals) : 0;
+    max = vals.length ? Math.max(...vals) : 0;
+    avg = vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0;
+    const span = max - min;
+    const yOf = (v: number) =>
+      span > 0
+        ? (height - 1) - ((v - min) / span) * (height - 2)
+        : height / 2; // a perfectly flat series draws down the middle, not on an edge
+    let open = false;
+    for (let i = 0; i < n; i++) {
+      const v = series[i];
+      const x = 1 + i * stepX;
+      if (v === 0) { downX.push(x); open = false; continue; }
+      if (v == null) { open = false; continue; }
+      const y = yOf(v);
+      path.push(`${open ? 'L' : 'M'}${x.toFixed(1)} ${y.toFixed(1)}`);
+      open = true;
+      lastPt = { x, y };
+    }
+  }
+
+  const downHours = (series || []).filter((v) => v === 0).length;
+  const gapHours = (series || []).filter((v) => v == null).length;
+  const tip = !series
+    ? 'No response-time history for this device'
+    : [
+        `Response time, last 24h — min ${min.toFixed(1)} ms, avg ${avg.toFixed(1)} ms, max ${max.toFixed(1)} ms`,
+        downHours ? `${downHours} hour${downHours === 1 ? '' : 's'} down` : null,
+        gapHours ? `${gapHours} hour${gapHours === 1 ? '' : 's'} with no samples` : null,
+      ].filter(Boolean).join(' · ');
+
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+      <svg
+        width={width} height={height} viewBox={`0 0 ${width} ${height}`}
+        style={{ flex: 'none', overflow: 'visible' }}
+        role="img" aria-label={tip}
+      >
+        <title>{tip}</title>
+        {hasLine && (
+          <path
+            d={path.join(' ')} fill="none" stroke="var(--tint-info-fg)"
+            strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"
+          />
+        )}
+        {downX.map((x, i) => (
+          <rect key={i} x={x - 0.75} y={height - 3} width="1.5" height="3" fill="var(--sv-down)" />
+        ))}
+        {lastPt && <circle cx={lastPt.x} cy={lastPt.y} r="1.8" fill="var(--tint-info-fg)" />}
+        {!hasLine && !downX.length && !loading && (
+          <line
+            x1="1" y1={height / 2} x2={width - 1} y2={height / 2}
+            stroke="var(--border)" strokeWidth="1" strokeDasharray="2 2"
+          />
+        )}
+      </svg>
+      {label ? (
+        <span
+          className="sv-muted"
+          style={{ fontSize: 'var(--text-xs)', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}
+        >
+          {label}
+        </span>
+      ) : (
+        <span className="sv-muted" style={{ fontSize: 'var(--text-xs)' }}>—</span>
+      )}
+    </span>
+  );
+}
+
+// ── KPI stat tile ──────────────────────────────────────────────
+// Same shape as the tile on /services (bordered card, coloured left border keyed
+// to status, tinted icon circle) so the two pages read as one family. Defined
+// locally because that one lives inside services/page.tsx; if a third page wants
+// it, promote this to components/ui.tsx rather than copying it again.
+function DeviceStatTile({ icon, value, label, sub, variant, tint, title }: {
+  icon: React.ReactNode;
+  value: number | string;
+  label: string;
+  sub?: string;
+  variant: 'total' | 'up' | 'down' | 'warning' | 'unknown';
+  tint: { bg: string; fg: string };
+  title?: string;
+}) {
+  return (
+    <div className={`sv-card ${variant}`} style={{ display: 'flex', alignItems: 'center', gap: 14 }} title={title}>
+      <span
+        aria-hidden
+        style={{
+          width: 42, height: 42, flex: '0 0 auto',
+          borderRadius: '50%', /* intentional: true circle (stat tile icon) */
+          display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+          background: tint.bg, color: tint.fg,
+        }}
+      >
+        {icon}
+      </span>
+      <span style={{ minWidth: 0 }}>
+        <span className="num" style={{ display: 'block', lineHeight: 1.1 }}>{value}</span>
+        <span className="label" style={{ display: 'block' }}>{label}</span>
+        {sub && (
+          <span className="sv-muted" style={{ display: 'block', fontSize: 'var(--text-sm)', marginTop: 2 }}>
+            {sub}
+          </span>
+        )}
+      </span>
+    </div>
+  );
+}
 
 export default function DevicesPage() {
   const { canEdit } = useRbac();
@@ -214,6 +576,23 @@ export default function DevicesPage() {
   // site summaries this page is meant to land on, leaving only agent names.
   const [collapsedAgents, setCollapsedAgents] = useState<Set<string>>(new Set());
   const [page, setPage] = useState(1);
+  // One sort for the page's single shared column header; every group applies it
+  // to its own rows.
+  const { sort, onSort } = useTableSort();
+  // Comfortable is the SSR default; the stored choice is applied after mount so
+  // the server-rendered markup and the first client render always agree.
+  const [density, setDensity] = useState<Density>('comfortable');
+  useEffect(() => {
+    try {
+      const v = window.localStorage.getItem(DENSITY_KEY);
+      if (v === 'compact' || v === 'comfortable') setDensity(v);
+    } catch { /* ignore — private mode / blocked storage */ }
+  }, []);
+  const changeDensity = (d: Density) => {
+    setDensity(d);
+    try { window.localStorage.setItem(DENSITY_KEY, d); } catch { /* ignore */ }
+  };
+  const sizes = DENSITY_SIZES[density];
 
   // Pre-select the status filter from the URL (?status=up|down|warning|unknown)
   // so dashboard stat-card links land on a filtered device list.
@@ -229,9 +608,27 @@ export default function DevicesPage() {
   const devices = useApi<Device[]>(`/api/devices?${params.toString()}`, 20000);
   const sites = useApi<Site[]>('/api/netvault/sites');
 
-  useRefreshKey(() => { devices.reload(); sites.reload(); });
-
   const all = useMemo(() => devices.data || [], [devices.data]);
+
+  // ONE aggregate request for the whole page's latency column. The id list is
+  // sorted and joined into a stable string so the path — and therefore useApi's
+  // fetch effect — only changes when the device SET changes, not on every 20s
+  // device poll (the array identity is new each time). Built from `all`, not
+  // from the client-side filtered `visible`, so changing a type/vendor chip
+  // filters the rows without refetching any history.
+  //
+  // Polled at 5 minutes, not the list's 20s: the buckets are hourly, so a faster
+  // poll would redraw an identical line and pay for the aggregate 15× over.
+  const sparkIds = useMemo(
+    () => all.map((d) => d.id).sort((a, b) => a - b).slice(0, SPARK_MAX_DEVICES).join(','),
+    [all]
+  );
+  const sparks = useApi<SparkMap>(
+    sparkIds ? `/api/devices/sparklines?metrics=ping&device_ids=${sparkIds}` : null,
+    300000
+  );
+
+  useRefreshKey(() => { devices.reload(); sites.reload(); sparks.reload(); });
 
   // Type / vendor option lists come from the loaded devices, so they only ever
   // offer values that actually match something.
@@ -276,6 +673,47 @@ export default function DevicesPage() {
   // data refresh — the array identity is new each poll, which would otherwise
   // yank the user back to page 1 every 20 seconds.
   useEffect(() => { setPage(1); }, [siteCount]);
+
+  // ── KPI strip ────────────────────────────────────────────────
+  // Counted over `visible` (the filtered set) so the tiles always agree with the
+  // "Showing N devices across M sites" line and the rows underneath — a strip
+  // that kept showing estate-wide totals while the list was filtered would be
+  // two different answers on one screen.
+  //
+  // Every figure is derived from data the list route already returns; nothing
+  // here is a placeholder or an estimate:
+  //   up/down/warning/unknown — monitored_devices.current_status
+  //   24h availability        — the route's `avail` LATERAL over ping_results
+  //   health / degraded       — device_health_scores.score / .grade
+  const kpi = useMemo(() => {
+    const c = countByStatus(visible);
+    const scores: number[] = [];
+    const avail: number[] = [];
+    let degraded = 0;
+    for (const d of visible) {
+      const s = intelNum(d.health_score);
+      if (s != null) scores.push(s);
+      const g = (d.health_grade || '').toUpperCase();
+      if (g === 'D' || g === 'F') degraded++;
+      const u = intelNum(d.uptime_24h_pct);
+      if (u != null) avail.push(u);
+    }
+    const mean = (a: number[]) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : null);
+    return {
+      ...c,
+      total: visible.length,
+      scored: scores.length,
+      avgHealth: mean(scores),
+      avgAvail: mean(avail),
+      degraded,
+    };
+  }, [visible]);
+  const kpiPct = (n: number) => (kpi.total ? Math.round((n / kpi.total) * 100) : 0);
+  // The health tile's left border reports the estate's own grade rather than
+  // sitting neutral — the average IS a status, and a colourless tile next to
+  // four coloured ones reads as "not applicable".
+  const healthVariant: 'up' | 'warning' | 'down' | 'unknown' =
+    kpi.avgHealth == null ? 'unknown' : kpi.avgHealth >= 80 ? 'up' : kpi.avgHealth >= 60 ? 'warning' : 'down';
 
   const siteKeys = hasAgents
     ? agentGroups.flatMap((g) => groupBySite(g.devices).map((s) => `${g.key}::${s.key}`))
@@ -394,16 +832,22 @@ export default function DevicesPage() {
             key={g.key} group={g}
             open={!collapsedAgents.has(g.key)} onToggle={() => toggleAgent(g.key)}
             expandedSites={expandedSites} onToggleSite={toggleSite}
-            forceOpen={forceOpen} showOs={showOs}
+            forceOpen={forceOpen} showOs={showOs} sort={sort} onSort={onSort}
           />
         ))
       ) : pagedGroups.length ? (
         <>
+          {/* One column header for the whole page — only while a group is
+              actually open, so a fully collapsed list isn't headed by columns
+              with nothing under them. */}
+          {pagedGroups.some((g) => forceOpen || expandedSites.has(g.key)) && (
+            <DeviceTableHeader showOs={showOs} sort={sort} onSort={onSort} />
+          )}
           {pagedGroups.map((g) => (
             <SiteAccordion
               key={g.key} group={g}
               open={forceOpen || expandedSites.has(g.key)}
-              onToggle={() => toggleSite(g.key)} showOs={showOs}
+              onToggle={() => toggleSite(g.key)} showOs={showOs} sort={sort}
             />
           ))}
           {pageCount > 1 && (
@@ -479,7 +923,7 @@ function SitePager({
 
 // ── Agent group: collapsible wrapper holding per-site accordions ──
 function AgentGroup({
-  group, open, onToggle, expandedSites, onToggleSite, forceOpen, showOs,
+  group, open, onToggle, expandedSites, onToggleSite, forceOpen, showOs, sort, onSort,
 }: {
   group: AgentGroupT;
   open: boolean;
@@ -488,6 +932,8 @@ function AgentGroup({
   onToggleSite: (k: string) => void;
   forceOpen: boolean;
   showOs: boolean;
+  sort: SortState;
+  onSort: (col: string) => void;
 }) {
   const isLocal = group.agentId == null;
   const offline = group.agentStatus === 'offline';
@@ -532,13 +978,19 @@ function AgentGroup({
       </div>
       {open && (
         <div className="sv-agent-group-body" style={{ padding: 8 }}>
+          {/* The shared column header lives inside the agent body so it lines up
+              with this group's tables (the body is inset from the page). Still
+              one header for the whole group, never one per site. */}
+          {siteGroups.some((g) => forceOpen || expandedSites.has(`${group.key}::${g.key}`)) && (
+            <DeviceTableHeader showOs={showOs} sort={sort} onSort={onSort} />
+          )}
           {siteGroups.map((g) => {
             const k = `${group.key}::${g.key}`;
             return (
               <SiteAccordion
                 key={k} group={g}
                 open={forceOpen || expandedSites.has(k)}
-                onToggle={() => onToggleSite(k)} showOs={showOs}
+                onToggle={() => onToggleSite(k)} showOs={showOs} sort={sort}
               />
             );
           })}
@@ -550,12 +1002,15 @@ function AgentGroup({
 
 // ── Site accordion: header summary + the device table ──────────
 function SiteAccordion({
-  group, open, onToggle, showOs,
+  group, open, onToggle, showOs, sort,
 }: {
   group: SiteGroup;
   open: boolean;
   onToggle: () => void;
   showOs: boolean;
+  // The column header (and therefore the sort control) is shared by the whole
+  // page — this group only applies the resulting sort to its own rows.
+  sort: SortState;
 }) {
   const counts = countByStatus(group.devices);
   const headStatus = worstStatus(group.devices);
@@ -564,7 +1019,6 @@ function SiteAccordion({
   const suppressedCount = group.devices.filter((d) => d.alert_suppressed).length;
   const health = avgHealth(group.devices);
   // Unsorted by default, so the API's own ordering is what the table opens with.
-  const { sort, onSort } = useTableSort();
   const rows = useMemo(() => sortRows(group.devices, sort, DEVICE_SORT), [group.devices, sort]);
 
   return (
@@ -613,27 +1067,15 @@ function SiteAccordion({
         </svg>
       </div>
       {open && (
-        <div style={{ overflowX: 'auto' }}>
-          <table className="sv-table sv-dev-table">
-            <thead>
-              <tr>
-                <SortTh label="Device" col="name" sort={sort} onSort={onSort} />
-                <SortTh label="Type" col="type" sort={sort} onSort={onSort} />
-                <SortTh label="Vendor / Model" col="vendor" sort={sort} onSort={onSort} />
-                <SortTh label="IP Address" col="ip" sort={sort} onSort={onSort} />
-                {showOs && <SortTh label="Version / OS" col="os" sort={sort} onSort={onSort} />}
-                <SortTh label="Status" col="status" sort={sort} onSort={onSort} />
-                <SortTh label="Health Score" col="health" sort={sort} onSort={onSort} />
-                <SortTh label="Last Alert" col="lastalert" sort={sort} onSort={onSort} />
-                <SortTh label="Last Seen" col="lastseen" sort={sort} onSort={onSort} />
-                <th style={{ width: 44, textAlign: 'right' }}>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((d) => <DeviceRow key={d.id} device={d} showOs={showOs} />)}
-            </tbody>
-          </table>
-        </div>
+        // No <thead> here: the column header is rendered ONCE for the page (see
+        // DeviceTableHeader). The shared <colgroup> + table-layout:fixed are what
+        // keep these rows aligned with it.
+        <table className="sv-table sv-dev-table" style={DEVICE_TABLE_STYLE}>
+          <DeviceCols showOs={showOs} />
+          <tbody>
+            {rows.map((d) => <DeviceRow key={d.id} device={d} showOs={showOs} />)}
+          </tbody>
+        </table>
       )}
     </div>
   );

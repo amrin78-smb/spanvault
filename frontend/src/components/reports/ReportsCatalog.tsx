@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 
 // Left-rail report catalog: a search box + a grouped, single-column list of report
 // templates. Replaces the old pill-tab template selector. Purely presentational —
@@ -13,8 +13,16 @@ export interface CatalogReport {
   short: string;   // rail label (concise)
   title: string;   // full report title (for search)
   desc: string;    // description (for search)
-  icon: string;    // emoji glyph shown on the row
+  // Leading glyph for the row. An SVG element from components/icons.tsx — this
+  // used to be a literal emoji string, which renders differently per platform
+  // and ignores the theme. The catalog colours it via the wrapper span, so the
+  // icon itself must inherit currentColor (every icon in that set does).
+  icon: ReactNode;
   category: string;
+  // Optional right-aligned status pill, e.g. a scheduled-email indicator.
+  // Kept narrow (icon, optional short label) so it never squeezes the row label
+  // into an ellipsis — the rail is only 260px wide.
+  badge?: { icon?: ReactNode; label?: string; title?: string };
 }
 
 const MUTED: React.CSSProperties = { fontSize: 'var(--text-sm)', color: 'var(--text-muted)' };
@@ -89,8 +97,27 @@ export default function ReportsCatalog({
                       outlineOffset: -2,
                     }}
                   >
-                    <span aria-hidden style={{ fontSize: 'var(--text-md)', lineHeight: 1, flexShrink: 0 }}>{r.icon}</span>
+                    <span aria-hidden style={{
+                      display: 'inline-flex', alignItems: 'center', lineHeight: 1, flexShrink: 0,
+                      color: isActive ? 'var(--primary)' : 'var(--text-muted)',
+                    }}>{r.icon}</span>
                     <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.short}</span>
+                    {r.badge && (
+                      <span
+                        title={r.badge.title || r.badge.label}
+                        style={{
+                          marginLeft: 'auto', flexShrink: 0,
+                          display: 'inline-flex', alignItems: 'center', gap: 3,
+                          padding: '2px 6px', borderRadius: 'var(--radius-pill)',
+                          background: 'var(--tint-info)', color: 'var(--tint-info-fg)',
+                          fontSize: 'var(--text-xs)', fontWeight: 700, whiteSpace: 'nowrap',
+                          lineHeight: 1,
+                        }}
+                      >
+                        {r.badge.icon}
+                        {r.badge.label}
+                      </span>
+                    )}
                   </button>
                 );
               })}

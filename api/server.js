@@ -36,6 +36,17 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.113.0': [
+    'The network map on the Topology page has never once drawn anything. It reported "69 links, 8 devices" directly above an empty canvas telling you to run discovery. Discovery had run, and had worked - but the map only drew a device if BOTH ends of a link were devices you monitor, and not one of the 69 discovered neighbours was. They are edge switches and access points nobody had added to SpanVault. The map now draws them as outlined "not monitored" nodes: 52 devices and 47 connections across 6 sites, where previously there was nothing.',
+    'The dashboard could report "Nothing needs attention" while 53 alerts were active, 28 of them critical. It was only checking for down devices and correlated outages; wireless alerts counted as neither. It now shows the active alert count broken down by severity, and the all-clear only appears when there is genuinely nothing outstanding - including offline agents, which the card claimed to check but never did.',
+    'SNMP credentials were being sent to the browser. Fetching any device returned the whole database row, which includes the SNMP community string and the v3 authentication and privacy passwords in plain text - to any signed-in user, including read-only viewers, for any device at any site. Those columns are now stripped from every response. Relatedly, none of the per-device endpoints checked which sites you are assigned to, so a site-restricted user could read any device by guessing its number. They all check now.',
+    'The Services and Alerts tables were cut off at the right edge of the screen. On Services the table was actually spilling outside its own card, leaving the row menu half off-screen and unclickable; on Alerts the Resolve button was clipped to "Re". Both now keep the action buttons pinned in place while the rest of the table scrolls underneath.',
+    'Alerts are now grouped by device, so one access point with three problems is one row rather than three. You can select multiple alerts and acknowledge or resolve them together instead of clicking through them one at a time, save a filter combination as a named view, and see a bar of alert volume by hour to spot a storm at a glance.',
+    'The Devices page was repeating the full column header once for every site - seven copies for thirteen devices. There is now a single header that stays visible as you scroll. Devices also gains a summary row, a latency trend line per device, and a compact/comfortable density switch.',
+    'The dashboard gains trend lines and change-since-last-period on each figure at the top, an alert volume chart, and a list of the devices generating the most alerts.',
+    'Reports no longer uses emoji as icons, shows what is scheduled and when it last ran, and no longer presents a mostly empty pane until you press Run. Maps shows a real miniature of each map with a live up/down count instead of a grey placeholder. Topology gains a site filter, a layout choice, zoom and a "monitored only" toggle now that there is something to look at.',
+    'Fixed: the Intelligence page cut the fifth site in half, mid-row, with no indication there was anything below it. Fixed: the device page advertised "90-day availability" while roughly 55 of the 90 squares were blank because the device had not been monitored that long.',
+  ],
   '1.112.1': [
     'Certificate issuers now show the certifying organisation rather than the technical name of the intermediate certificate. Two of the three certificates in use were reporting as "WE1" and "YR2" - correct, but meaningless. They now read "Google Trust Services" and similar.',
   ],
@@ -1638,10 +1649,10 @@ function auditDetailJson(body) {
     if (!detail) return null;
     let s = JSON.stringify(detail);
     if (s && s.length > AUDIT_MAX_JSON) s = JSON.stringify({ _truncated: `${s.length} bytes` });
-    // Postgres jsonb rejects a   escape outright ("unsupported Unicode
+    // Postgres jsonb rejects a \u0000 escape outright ("unsupported Unicode
     // escape sequence"), which would throw away the whole audit row. Strip the
     // ESCAPED form — JSON.stringify has already turned any raw NUL into the
-    // six characters  , so matching a literal NUL here would find nothing.
+    // six characters \u0000, so matching a literal NUL here would find nothing.
     return s ? s.replace(/\\u0000/g, '') : null;
   } catch (_e) {
     return null;
@@ -2231,15 +2242,28 @@ app.get('/api/dashboard/summary', wrap(async (req, res) => {
   const total = counts.up + counts.down + counts.warning + counts.unknown;
   // Admin/viewer: count every active alert (original behavior). Site-scoped:
   // only alerts on devices in the user's sites.
+  // The severity split ships alongside the total because the dashboard Overview
+  // needs it: wireless/AP alerts have no row in /api/dashboard/problems (they
+  // aren't devices) and no correlated /api/dashboard/incidents entry, so the
+  // total here is the only place the Overview can learn that anything is
+  // outstanding at all. Same predicates as the total — one query, no extra
+  // round trip, and the site-scoped branch stays scoped exactly as before.
   let active;
   if (siteFilter) {
     const p3 = [siteFilter];
     active = await sv.query(
-      `SELECT COUNT(*)::int AS c FROM alerts a
+      `SELECT COUNT(*)::int AS c,
+              COUNT(*) FILTER (WHERE a.severity = 'critical')::int AS crit,
+              COUNT(*) FILTER (WHERE a.severity = 'warning')::int  AS warn
+         FROM alerts a
          JOIN monitored_devices d ON d.id = a.device_id
         WHERE a.status = 'active' AND d.site_id = ANY($1::int[])`, p3);
   } else {
-    active = await sv.query(`SELECT COUNT(*)::int AS c FROM alerts WHERE status = 'active'`);
+    active = await sv.query(
+      `SELECT COUNT(*)::int AS c,
+              COUNT(*) FILTER (WHERE severity = 'critical')::int AS crit,
+              COUNT(*) FILTER (WHERE severity = 'warning')::int  AS warn
+         FROM alerts WHERE status = 'active'`);
   }
   const agents = await sv.query(`
     SELECT COUNT(*)::int AS total,
@@ -2249,6 +2273,8 @@ app.get('/api/dashboard/summary', wrap(async (req, res) => {
     total, ...counts,
     agent_offline: offline.rows[0].c,
     active_alerts: active.rows[0].c,
+    active_alerts_critical: active.rows[0].crit,
+    active_alerts_warning: active.rows[0].warn,
     agents_total: agents.rows[0].total,
     agents_online: agents.rows[0].online,
   });
@@ -2365,6 +2391,262 @@ app.get('/api/dashboard/alert-trend', wrap(async (req, res) => {
   res.json({ days, points: r.rows });
 }));
 
+// ── Site-scoping for the polymorphic `alerts` table ────────────────────────
+// `alerts` hangs off ONE of six nullable owner columns (device_id, agent_id,
+// service_check_id, wireless_ap_id, wireless_controller_id,
+// wireless_client_mac — see .ai-codex/schema.md), so a filter that joins only
+// `monitored_devices` scopes device alerts and lets every wireless/service
+// alert through UNSCOPED. That is not a corner case on a real estate: of the
+// last 7 days' alerts on the production box, 4,240 of 4,292 hang off an AP and
+// only 46 off a device. Resolve the row's site through whichever owner it
+// actually has and filter the COALESCE. An alert with no site at all (an
+// agent-scoped one) resolves to NULL and is therefore excluded — the
+// fail-closed direction for a site_admin.
+const ALERT_OWNER_JOINS = `
+      LEFT JOIN monitored_devices    d  ON d.id  = a.device_id
+      LEFT JOIN wireless_aps         wa ON wa.id = a.wireless_ap_id
+      LEFT JOIN service_checks       sc ON sc.id = a.service_check_id
+      LEFT JOIN wireless_controllers wc ON wc.id = a.wireless_controller_id
+      LEFT JOIN agents               ag ON ag.id = a.agent_id`;
+
+function alertSiteScope(siteFilter, params) {
+  if (!siteFilter || !siteFilter.length) return { joins: '', where: '' };
+  params.push(siteFilter);
+  return {
+    joins: ALERT_OWNER_JOINS,
+    where: ` AND COALESCE(d.site_id, wa.site_id, sc.site_id, wc.site_id) = ANY($${params.length}::int[])`,
+  };
+}
+
+// ── Alert-volume histogram: 24h in 1h buckets, or 7d in 4h buckets ─────────
+// Distinct from /api/dashboard/alert-trend (14 DAILY buckets, Availability
+// tab): this is the intra-day shape an operator reads to answer "when does the
+// noise happen", which a daily bucket erases entirely.
+//
+// Buckets are generated FIRST and LEFT JOINed, so a quiet hour renders as a
+// zero-height bar instead of vanishing and silently compressing the time axis.
+// `alerts` has no index on triggered_at (only id/status/device_id + the partial
+// active-unique ones), so this is a seq scan — measured at 13-70ms against
+// 40,430 rows / 12 MB on the production box. That is fine for this panel's own
+// 60s poll but would NOT be fine multiplied across the dashboard's 30s tick, so
+// the caller polls it deliberately slowly; revisit with an index on
+// `triggered_at` if the table grows past a few hundred thousand rows.
+app.get('/api/dashboard/alert-histogram', wrap(async (req, res) => {
+  const win = req.query.window === '7d' ? '7d' : '24h';
+  const hours = win === '7d' ? 168 : 24;
+  const bucketHours = win === '7d' ? 4 : 1;
+  // Every $n gets an explicit ::int. A bare parameter used in more than one
+  // context is exactly the "could not determine data type of parameter" trap
+  // documented in .ai-codex/gotchas.md for the heartbeat UPDATE.
+  const params = [bucketHours, hours];
+  const scope = alertSiteScope(getSiteFilter(req), params);
+  const r = await sv.query(`
+    WITH b AS (
+      SELECT generate_series(
+               date_bin(make_interval(hours => $1::int), NOW(), TIMESTAMPTZ '2000-01-01')
+                 - make_interval(hours => ($2::int - $1::int)),
+               date_bin(make_interval(hours => $1::int), NOW(), TIMESTAMPTZ '2000-01-01'),
+               make_interval(hours => $1::int)) AS bucket
+    )
+    SELECT b.bucket,
+           COUNT(x.id)::int AS total,
+           COUNT(x.id) FILTER (WHERE x.severity = 'critical')::int AS critical,
+           COUNT(x.id) FILTER (WHERE x.severity = 'warning')::int  AS warning,
+           COUNT(x.id) FILTER (WHERE x.severity NOT IN ('critical','warning'))::int AS other
+      FROM b
+      LEFT JOIN (
+        SELECT a.id, a.severity,
+               date_bin(make_interval(hours => $1::int), a.triggered_at, TIMESTAMPTZ '2000-01-01') AS bucket
+          FROM alerts a${scope.joins}
+         WHERE a.triggered_at >= NOW() - make_interval(hours => $2::int)${scope.where}
+      ) x ON x.bucket = b.bucket
+     GROUP BY 1
+     ORDER BY 1
+  `, params);
+  res.json({ window: win, bucket_hours: bucketHours, points: r.rows });
+}));
+
+// ── Noisiest entities ("top talkers" of alert volume) over the window ──────
+// Deliberately NOT devices-only. An alert's subject is whichever of the six
+// owner columns is set, and on a real estate almost all of them are APs — a
+// panel that joined `monitored_devices` alone would render near-empty and read
+// as broken. `kind` tells the UI which page to link the row at; `entity_id` is
+// only unique WITH `kind` (the id spaces are separate tables).
+app.get('/api/dashboard/noisiest', wrap(async (req, res) => {
+  const hours = req.query.window === '7d' ? 168 : 24;
+  const limit = Math.min(20, Math.max(1, safeInt(req.query.limit, 5)));
+  const params = [hours, limit];
+  const scope = alertSiteScope(getSiteFilter(req), params);
+  const r = await sv.query(`
+    WITH scoped AS (
+      SELECT a.severity, a.triggered_at, a.alert_type,
+             CASE WHEN a.device_id IS NOT NULL              THEN 'device'
+                  WHEN a.wireless_ap_id IS NOT NULL         THEN 'ap'
+                  WHEN a.service_check_id IS NOT NULL       THEN 'service'
+                  WHEN a.wireless_controller_id IS NOT NULL THEN 'controller'
+                  WHEN a.agent_id IS NOT NULL               THEN 'agent'
+                  ELSE 'other' END AS kind,
+             COALESCE(a.device_id, a.wireless_ap_id, a.service_check_id,
+                      a.wireless_controller_id, a.agent_id) AS entity_id,
+             COALESCE(d.name, wa.name, sc.name, wc.name, ag.name) AS name,
+             COALESCE(d.site_name, wa.site_name, sc.site_name, wc.site_name) AS site_name
+        FROM alerts a${ALERT_OWNER_JOINS}
+       WHERE a.triggered_at >= NOW() - make_interval(hours => $1::int)${scope.where}
+    )
+    SELECT kind, entity_id, name, site_name,
+           COUNT(*)::int AS alert_count,
+           COUNT(*) FILTER (WHERE severity = 'critical')::int AS critical_count,
+           CASE WHEN bool_or(severity = 'critical') THEN 'critical'
+                WHEN bool_or(severity = 'warning')  THEN 'warning'
+                ELSE MIN(severity) END AS worst_severity,
+           MAX(triggered_at) AS last_at,
+           (array_agg(alert_type ORDER BY triggered_at DESC))[1] AS last_alert_type
+      FROM scoped
+     WHERE entity_id IS NOT NULL
+     GROUP BY 1, 2, 3, 4
+     ORDER BY alert_count DESC, MAX(triggered_at) DESC
+     LIMIT $2::int
+  `, params);
+  res.json({ window: hours === 168 ? '7d' : '24h', rows: r.rows });
+}));
+
+// ── KPI-strip sparklines + period-over-period deltas ───────────────────────
+// ONLY the KPIs that have genuinely stored history are returned. A sparkline
+// under a big number is read as "this number, over time" — drawing one from a
+// DIFFERENT metric (or from a value that was never recorded) is worse than
+// leaving the tile flat, so the tiles with no history get NOTHING here and the
+// `unavailable` map says why, rather than the UI silently rendering a blank.
+//
+// What exists, verified against the production DB on 2026-09-23:
+//   sla      — `availability_summary`, 1,297 rows / 13 devices / ~114 days of
+//              real DAILY rollups. Same weighted total_checks/failed_checks
+//              ratio /api/dashboard/sla reports, just not collapsed to one
+//              number. 272 kB table.
+//   unacked  — reconstructed EXACTLY from `alerts`. A row was unacknowledged at
+//              instant T iff it had fired, was not yet acknowledged, and was not
+//              yet resolved at T — all three timestamps are stored, so this is
+//              a replay, not an estimate.
+// What does NOT exist:
+//   health   — `device_health_scores` is UPSERTed (UNIQUE per device) and held
+//              22 rows all stamped within the same second. It is a CURRENT
+//              snapshot; no history table, nothing to plot.
+//   total /
+//   warning  — `monitored_devices` stores current state only. There is no
+//              device-count or per-status history anywhere in the schema.
+//   down     — deliberately omitted even though `availability_summary` could
+//              yield a daily "devices with any failed check" series: that is a
+//              DIFFERENT metric from the tile's "devices down right now", and
+//              the exact reconstruction (via `device_down` alerts) has only 6
+//              rows in the whole table, so it would be a flat zero line either
+//              way. The tile keeps its existing availability-derived arrow.
+app.get('/api/dashboard/kpi-trends', wrap(async (req, res) => {
+  const siteFilter = getSiteFilter(req);
+
+  // 60 days in one pass: the 30-day window AND the prior 30 for the delta.
+  const pA = [];
+  const scA = siteFilterClause(siteFilter, pA, 'd.site_id');
+  const slaQ = await sv.query(`
+    SELECT a.date,
+           ROUND((100.0 * SUM(a.total_checks - a.failed_checks)
+                        / NULLIF(SUM(a.total_checks), 0))::numeric, 3) AS pct,
+           SUM(a.total_checks)::bigint  AS checks,
+           SUM(a.failed_checks)::bigint AS failed
+      FROM availability_summary a
+      JOIN monitored_devices d ON d.id = a.device_id
+     WHERE d.active = TRUE
+       AND a.date >= (CURRENT_DATE - INTERVAL '60 days')${scA ? ` AND ${scA}` : ''}
+     GROUP BY 1
+     ORDER BY 1
+  `, pA);
+
+  // Split at the 30-day boundary in JS rather than issuing a second query.
+  // The window figure must be the CHECK-WEIGHTED ratio (what /api/dashboard/sla
+  // reports), not the mean of the daily percentages — a day with 60 checks and a
+  // day with 8,000 do not carry equal weight.
+  const cutoff = new Date();
+  cutoff.setHours(0, 0, 0, 0);
+  cutoff.setDate(cutoff.getDate() - 30);
+  let curChecks = 0, curFailed = 0, prevChecks = 0, prevFailed = 0;
+  const slaPoints = [];
+  for (const row of slaQ.rows) {
+    const checks = Number(row.checks) || 0;
+    const failed = Number(row.failed) || 0;
+    if (new Date(row.date) >= cutoff) {
+      curChecks += checks; curFailed += failed;
+      slaPoints.push({ t: row.date, v: row.pct == null ? null : Number(row.pct) });
+    } else {
+      prevChecks += checks; prevFailed += failed;
+    }
+  }
+  const pct = (ok, all) => (all > 0 ? Math.round(((100 * (all - ok)) / all) * 1000) / 1000 : null);
+  const slaCur = pct(curFailed, curChecks);
+  const slaPrev = pct(prevFailed, prevChecks);
+
+  // Unacknowledged backlog, one point per day for 14 days.
+  //
+  // `cand` is MATERIALIZED on purpose: without it the planner is free to push
+  // the whole 40k-row scan inside the 14-way nested loop. Narrowing it to rows
+  // that could possibly still be open inside the window (never resolved, or
+  // resolved after the window opened) is not an approximation — a row resolved
+  // BEFORE the first point cannot be open at any point in the series.
+  const pU = [];
+  const scU = alertSiteScope(siteFilter, pU);
+  const unackQ = await sv.query(`
+    WITH pts AS (
+      SELECT generate_series(date_trunc('hour', NOW()) - INTERVAL '13 days',
+                             date_trunc('hour', NOW()), INTERVAL '1 day') AS t
+    ),
+    cand AS MATERIALIZED (
+      SELECT a.triggered_at, a.acknowledged_at, a.resolved_at
+        FROM alerts a${scU.joins}
+       WHERE a.triggered_at <= NOW()
+         AND (a.resolved_at IS NULL OR a.resolved_at >= NOW() - INTERVAL '14 days')${scU.where}
+    )
+    SELECT pts.t, COUNT(c.*)::int AS v
+      FROM pts
+      LEFT JOIN cand c
+        ON c.triggered_at <= pts.t
+       AND (c.acknowledged_at IS NULL OR c.acknowledged_at > pts.t)
+       AND (c.resolved_at    IS NULL OR c.resolved_at    > pts.t)
+     GROUP BY 1
+     ORDER BY 1
+  `, pU);
+  const unackPoints = unackQ.rows.map((r2) => ({ t: r2.t, v: r2.v }));
+  const unackCur = unackPoints.length ? unackPoints[unackPoints.length - 1].v : null;
+  // 7 days back = 7 points back on a 1-day step. Null (not 0) when the series
+  // is too short — "no comparison available" must never render as "no change".
+  const unackPrev = unackPoints.length >= 8 ? unackPoints[unackPoints.length - 8].v : null;
+
+  res.json({
+    sla: {
+      points: slaPoints,
+      current: slaCur,
+      previous: slaPrev,
+      delta: slaCur != null && slaPrev != null ? Math.round((slaCur - slaPrev) * 1000) / 1000 : null,
+      better: 'higher',
+      unit: 'pp',
+      compare_label: 'vs prior 30d',
+    },
+    unacked: {
+      points: unackPoints,
+      current: unackCur,
+      previous: unackPrev,
+      delta: unackCur != null && unackPrev != null ? unackCur - unackPrev : null,
+      better: 'lower',
+      unit: '',
+      compare_label: 'vs 7d ago',
+    },
+    // Machine-readable reasons, so the UI can explain a missing sparkline
+    // instead of just omitting it. See the block comment above this route.
+    unavailable: {
+      health: 'device_health_scores is a current snapshot (upserted per device) — no score history is stored',
+      total: 'monitored_devices stores current state only — no device-count history is stored',
+      warning: 'monitored_devices stores current state only — no per-status history is stored',
+      down: 'no stored series matches "devices down right now" (device_down alerts are too sparse to plot)',
+    },
+  });
+}));
+
 // Per-site health: device counts + 24h uptime (reachable = not down).
 app.get('/api/dashboard/site-health', wrap(async (req, res) => {
   const params = [];
@@ -2396,7 +2678,13 @@ app.get('/api/dashboard/site-health', wrap(async (req, res) => {
            upt.avg_uptime_pct
     FROM dev LEFT JOIN upt ON upt.site_id = dev.site_id
     ORDER BY dev.down_count DESC, dev.warning_count DESC, dev.site_name
-  `);
+  `,
+  // `params` MUST be passed: both scDev and scUpt embed $1, so for a site_admin
+  // this query previously threw "bind message supplies 0 parameters, but
+  // prepared statement requires 1" and the Site Health card errored out for
+  // exactly the role the scoping exists to serve. Unscoped callers
+  // (admin/viewer) build an empty array and never saw it.
+  params);
   res.json(r.rows);
 }));
 
@@ -2837,6 +3125,96 @@ async function netvaultInventory() {
   return nvInvCache;
 }
 
+// ══════════════════════════════════════════════════════════════
+// Device routes — two cross-cutting guards, both registered here
+// ══════════════════════════════════════════════════════════════
+
+// ⛔ GUARD 1 — site scoping for the ENTIRE `/api/devices/:id…` family.
+//
+// None of the ~20 routes in that family checked `getSiteFilter(req)`, so a
+// `site_admin` could read (and in some cases write) any device in any site just
+// by guessing an id — ping/SNMP history, sensors, alerts, topology neighbours,
+// dependencies, the lot. This is the THIRD logged instance of the same bug
+// class in this codebase (`/api/service-checks/:id` + `/:id/results`, and
+// `/api/wireless/aps/:id`), and all three had the same shape: a batch of
+// sibling routes for one resource where the scoping check reached some routes
+// and not others.
+//
+// It is therefore deliberately a MOUNT-LEVEL middleware rather than ~20
+// copy-pasted per-route checks: a guard that every route in the family inherits
+// cannot be "the one that got missed", and a route added to the family next
+// year is covered without anyone remembering to add it. Notes:
+//   • Inside a mounted middleware Express rewrites `req.url`, so `req.path`
+//     here is the remainder ('/2/interfaces'), not the full path. The regex
+//     matches only a NUMERIC first segment, so `/api/devices` itself and
+//     `/api/devices/sparklines` fall straight through to their own handlers.
+//   • `getSiteFilter` returns null for admin/super_admin/viewer, and the guard
+//     returns before touching the DB in that case — no added query for the
+//     common path.
+//   • A device the caller cannot see, and a device that does not exist, are
+//     handled differently on purpose: a missing row calls next() so the route
+//     answers its own 404, matching the two earlier fixes.
+//   • A device with a NULL site_id belongs to no site, so it is out of scope for
+//     a site_admin — the same semantics as `siteFilterClause` on the list route,
+//     where `site_id = ANY(...)` already excludes NULL.
+// This must stay registered ABOVE every `/api/devices…` route below it.
+app.use('/api/devices', wrap(async (req, res, next) => {
+  const m = /^\/(\d+)(\/|$)/.exec(req.path);
+  if (!m) return next();
+  const siteFilter = getSiteFilter(req);
+  if (!siteFilter || !siteFilter.length) return next();
+  const id = parseInt(m[1], 10);
+  if (!Number.isFinite(id)) return next();
+  const r = await sv.query('SELECT site_id FROM monitored_devices WHERE id = $1', [id]);
+  if (!r.rows[0]) return next();
+  if (!siteFilter.includes(r.rows[0].site_id)) {
+    return res.status(403).json({ error: 'forbidden: device outside your assigned sites' });
+  }
+  return next();
+}));
+
+// ⛔ GUARD 2 — SNMP credentials must never leave the API in a device row.
+//
+// `monitored_devices` stores `snmp_community`, `snmp_v3_auth_pass` and
+// `snmp_v3_priv_pass` in PLAINTEXT, and `GET /api/devices/:id` was a bare
+// `SELECT * FROM monitored_devices`, so every authenticated caller — a plain
+// read-only `viewer` included — could read the live SNMP credentials of any
+// device. `POST /api/devices` and `PUT /api/devices/:id` leaked the same three
+// columns back through `RETURNING *`. Every route that answers with a device
+// row now passes it through `publicDevice()`.
+//
+// The edit dialog has to round-trip a credential it is not allowed to read, so
+// a credential that IS set comes back as `CRED_MASK` for a caller who is
+// allowed to write, and as '' for a read-only viewer (who can never PUT it back
+// anyway — the write gate stops them). `PUT /api/devices/:id` treats a field
+// whose submitted value is exactly `CRED_MASK` as "leave this one unchanged",
+// so saving the dialog without retyping a password keeps the stored one instead
+// of overwriting it with the mask. The `has_*` booleans state whether a
+// credential is configured at all, for callers that only need to know that.
+// Don't "simplify" the mask away to a plain omission: the dialog would then
+// hydrate its community field from a missing value, fall back to its 'public'
+// default, and silently overwrite a real community string on the next save.
+const DEVICE_SECRET_COLUMNS = ['snmp_community', 'snmp_v3_auth_pass', 'snmp_v3_priv_pass'];
+const CRED_MASK = '********';
+function publicDevice(row, req) {
+  if (!row) return row;
+  const out = {};
+  for (const key of Object.keys(row)) {
+    if (!DEVICE_SECRET_COLUMNS.includes(key)) out[key] = row[key];
+  }
+  const canWrite = userRank(req) > 0;
+  for (const col of DEVICE_SECRET_COLUMNS) {
+    const isSet = row[col] != null && String(row[col]) !== '';
+    out[`has_${col}`] = isSet;
+    // An UNSET credential leaves the key absent rather than sending '' — the
+    // edit dialog hydrates with `full.snmp_community ?? 'public'`, so an empty
+    // string would stick a literal '' onto a device that previously fell back
+    // to the schema's 'public' default. Absent keeps the old behaviour exactly.
+    if (isSet) out[col] = canWrite ? CRED_MASK : '';
+  }
+  return out;
+}
+
 app.get('/api/devices', wrap(async (req, res) => {
   const { status, site_id, q } = req.query;
   const where = ['d.active = TRUE'];
@@ -3011,82 +3389,141 @@ app.get('/api/global-search', wrap(async (req, res) => {
   });
 }));
 
-// Mini sensor sparklines for the device list — last 24h aggregated into 24
-// hourly buckets per device. Registered BEFORE /api/devices/:id so Express does
-// not treat "sparklines" as an :id. response_ms: 0 = down, null = no data.
-// GET /api/devices/sparklines?device_ids=1,2,3
+// Mini sparkline series for the device list — the last 24h aggregated into 24
+// clock-aligned hourly buckets per device. Registered BEFORE /api/devices/:id so
+// Express does not treat "sparklines" as an :id. response_ms: 0 = the device was
+// down for that whole hour, null = no samples in it.
+// GET /api/devices/sparklines?device_ids=1,2,3[&metrics=ping]
+//
+// `metrics=ping` skips the SNMP query entirely and returns cpu_pct/mem_pct as
+// null. The devices LIST only draws the latency column, so it pays for one
+// index range scan instead of two; every other caller gets the full payload.
+//
+// ⛔ The buckets are built in JS from a plain GROUPed RANGE scan, NOT from a
+// `generate_series` CROSS JOIN whose join predicate was
+// `date_trunc('hour', p.ts) = h.h`. That wrapped the indexed column in a
+// function, so neither idx_ping_device_ts nor idx_snmp_device_metric_ts could be
+// used and BOTH queries degraded to a full scan of the whole sample table —
+// cost grew with retention (14 days of raw samples), not with the 24h window.
+// Measured end-to-end against production with 13 devices: ~780ms per request,
+// against ~45ms for /api/devices which reads the same two tables through
+// LATERALs. Keep the `ts >= …` range predicate and the bare
+// `device_id = ANY(...)` equality so the indexes stay usable.
+//
+// `hours_ago` is the difference between two date_truncs evaluated in the SAME
+// session, so it is a whole number whatever the server timezone is (including
+// half-hour zones), and the bucket edges are stable between polls. A rolling
+// `NOW() - ts` bucket would re-phase on every refresh and make the sparkline
+// shimmer in a list that reloads every 20s.
 app.get('/api/devices/sparklines', wrap(async (req, res) => {
   const ids = String(req.query.device_ids || '')
     .split(',')
     .map((s) => parseInt(s, 10))
     .filter((n) => Number.isInteger(n) && n > 0);
   if (!ids.length) return res.json({});
+  const pingOnly = String(req.query.metrics || '') === 'ping';
 
-  // 24 aligned hourly buckets × the requested devices.
-  const buckets = `
-    hours AS (
-      SELECT generate_series(
-        date_trunc('hour', NOW()) - INTERVAL '23 hours',
-        date_trunc('hour', NOW()),
-        INTERVAL '1 hour'
-      ) AS h
-    ),
-    dev AS (SELECT unnest($1::int[]) AS device_id)
-  `;
+  // RBAC: this route serves the same per-device history the site-scoped list
+  // route serves, keyed by raw id, so it has to scope identically. Without this
+  // a site_admin could read any device's 24h latency / CPU / memory profile
+  // just by guessing ids — the ids are small sequential integers.
+  const siteFilter = getSiteFilter(req);
+  let allowed = ids;
+  if (siteFilter && siteFilter.length) {
+    const scParams = [ids];
+    const sc = siteFilterClause(siteFilter, scParams, 'site_id');
+    const ok = await sv.query(
+      `SELECT id FROM monitored_devices WHERE id = ANY($1::int[])${sc ? ` AND ${sc}` : ''}`,
+      scParams
+    );
+    allowed = ok.rows.map((r) => r.id);
+  }
+  if (!allowed.length) return res.json({});
+
+  const HOURS = 24;
+  // Newest bucket last: index 23 is the current clock hour, index 0 is 23h ago.
+  const idxOf = (hoursAgo) => HOURS - 1 - hoursAgo;
 
   const pingRows = await sv.query(`
-    WITH ${buckets}
-    SELECT d.device_id, h.h AS bucket,
-      CASE
-        WHEN COUNT(p.id) = 0 THEN NULL
-        WHEN SUM(CASE WHEN p.status = 'up' THEN 1 ELSE 0 END) = 0 THEN 0
-        ELSE ROUND(AVG(p.response_ms) FILTER (WHERE p.status = 'up')::numeric, 1)
-      END AS response_ms
-    FROM dev d
-    CROSS JOIN hours h
-    LEFT JOIN ping_results p
-      ON p.device_id = d.device_id AND date_trunc('hour', p.ts) = h.h
-    GROUP BY d.device_id, h.h
-    ORDER BY d.device_id, h.h
-  `, [ids]);
-
-  const snmpRows = await sv.query(`
-    WITH ${buckets}
-    SELECT d.device_id, h.h AS bucket,
-      ROUND(AVG(s.value) FILTER (WHERE s.metric_name = 'cpu_pct')::numeric, 1) AS cpu_pct,
-      ROUND(AVG(s.value) FILTER (WHERE s.metric_name = 'mem_pct')::numeric, 1) AS mem_pct
-    FROM dev d
-    CROSS JOIN hours h
-    LEFT JOIN snmp_results s
-      ON s.device_id = d.device_id AND date_trunc('hour', s.ts) = h.h
-     AND s.metric_name IN ('cpu_pct', 'mem_pct')
-    GROUP BY d.device_id, h.h
-    ORDER BY d.device_id, h.h
-  `, [ids]);
+    SELECT p.device_id,
+           (EXTRACT(EPOCH FROM (date_trunc('hour', NOW()) - date_trunc('hour', p.ts))) / 3600)::int AS hours_ago,
+           SUM(CASE WHEN p.status = 'up' THEN 1 ELSE 0 END)::int AS up_samples,
+           ROUND(AVG(p.response_ms) FILTER (WHERE p.status = 'up')::numeric, 1) AS response_ms
+    FROM ping_results p
+    WHERE p.device_id = ANY($1::int[])
+      AND p.ts >= date_trunc('hour', NOW()) - INTERVAL '23 hours'
+    GROUP BY 1, 2
+  `, [allowed]);
 
   const out = {};
-  for (const id of ids) out[id] = { response_ms: [], cpu_pct: [], mem_pct: [] };
+  for (const id of allowed) {
+    out[id] = {
+      response_ms: new Array(HOURS).fill(null),
+      cpu_pct: pingOnly ? null : new Array(HOURS).fill(null),
+      mem_pct: pingOnly ? null : new Array(HOURS).fill(null),
+    };
+  }
   for (const r of pingRows.rows) {
-    out[r.device_id].response_ms.push(r.response_ms === null ? null : Number(r.response_ms));
+    const e = out[r.device_id];
+    const i = idxOf(r.hours_ago);
+    if (!e || i < 0 || i >= HOURS) continue;
+    e.response_ms[i] = r.up_samples === 0
+      ? 0
+      : (r.response_ms === null ? null : Number(r.response_ms));
   }
-  for (const r of snmpRows.rows) {
-    out[r.device_id].cpu_pct.push(r.cpu_pct === null ? null : Number(r.cpu_pct));
-    out[r.device_id].mem_pct.push(r.mem_pct === null ? null : Number(r.mem_pct));
-  }
-  // Collapse CPU/Mem to null when the device produced no SNMP data at all.
-  for (const id of ids) {
-    const e = out[id];
-    if (e.cpu_pct.every((v) => v === null)) e.cpu_pct = null;
-    if (e.mem_pct.every((v) => v === null)) e.mem_pct = null;
+
+  if (!pingOnly) {
+    const snmpRows = await sv.query(`
+      SELECT s.device_id,
+             (EXTRACT(EPOCH FROM (date_trunc('hour', NOW()) - date_trunc('hour', s.ts))) / 3600)::int AS hours_ago,
+             ROUND(AVG(s.value) FILTER (WHERE s.metric_name = 'cpu_pct')::numeric, 1) AS cpu_pct,
+             ROUND(AVG(s.value) FILTER (WHERE s.metric_name = 'mem_pct')::numeric, 1) AS mem_pct
+      FROM snmp_results s
+      WHERE s.device_id = ANY($1::int[])
+        AND s.metric_name IN ('cpu_pct', 'mem_pct')
+        AND s.ts >= date_trunc('hour', NOW()) - INTERVAL '23 hours'
+      GROUP BY 1, 2
+    `, [allowed]);
+    for (const r of snmpRows.rows) {
+      const e = out[r.device_id];
+      const i = idxOf(r.hours_ago);
+      if (!e || i < 0 || i >= HOURS) continue;
+      if (r.cpu_pct !== null) e.cpu_pct[i] = Number(r.cpu_pct);
+      if (r.mem_pct !== null) e.mem_pct[i] = Number(r.mem_pct);
+    }
+    // Collapse CPU/Mem to null when the device produced no SNMP data at all.
+    for (const id of allowed) {
+      const e = out[id];
+      if (e.cpu_pct.every((v) => v === null)) e.cpu_pct = null;
+      if (e.mem_pct.every((v) => v === null)) e.mem_pct = null;
+    }
   }
   res.json(out);
 }));
 
+// Explicit column whitelist, NOT `SELECT *` — see GUARD 2 above. A new column
+// added to monitored_devices has to be named here to reach the UI, which is the
+// point: a future credential-shaped column is excluded by default instead of
+// being published the moment it exists.
+const DEVICE_PUBLIC_COLUMNS = `
+  id, name, ip_address, device_type, site_id, site_name, netvault_device_id,
+  snmp_enabled, snmp_version, snmp_port, snmp_v3_user,
+  poll_interval_seconds, ping_threshold_ms, ping_failures_before_down,
+  current_status, consecutive_failures, last_response_ms, last_checked_at,
+  last_seen_at, active, created_at, updated_at, device_vendor,
+  alert_suppressed, suppressed_by_device_id, is_gateway, agent_id,
+  topology_discovered_at`;
+
 app.get('/api/devices/:id', wrap(async (req, res) => {
   const id = parseInt(req.params.id, 10);
-  const r = await sv.query(`SELECT * FROM monitored_devices WHERE id = $1`, [id]);
+  const r = await sv.query(
+    `SELECT ${DEVICE_PUBLIC_COLUMNS},
+            snmp_community, snmp_v3_auth_pass, snmp_v3_priv_pass
+       FROM monitored_devices WHERE id = $1`, [id]);
   if (!r.rows[0]) return res.status(404).json({ error: 'Device not found' });
-  res.json(r.rows[0]);
+  // The three secret columns are selected only so publicDevice() can turn them
+  // into has_* booleans + the round-trip mask; it strips the values themselves.
+  res.json(publicDevice(r.rows[0], req));
 }));
 
 app.post('/api/devices', wrap(async (req, res) => {
@@ -3115,7 +3552,7 @@ app.post('/api/devices', wrap(async (req, res) => {
     try { await pushConfigToAgentId(agentId); } catch (e) { console.error('[devices] push config failed:', e.message); }
   }
   const fresh = await sv.query(`SELECT * FROM monitored_devices WHERE id = $1`, [r.rows[0].id]);
-  res.status(201).json(fresh.rows[0]);
+  res.status(201).json(publicDevice(fresh.rows[0], req));
 }));
 
 app.put('/api/devices/:id', wrap(async (req, res) => {
@@ -3129,7 +3566,12 @@ app.put('/api/devices/:id', wrap(async (req, res) => {
   const sets = [];
   const params = [];
   for (const key of allowed) {
-    if (b[key] !== undefined) { params.push(b[key]); sets.push(`${key} = $${params.length}`); }
+    if (b[key] === undefined) continue;
+    // A credential submitted back as the mask GET handed out means "unchanged" —
+    // the caller never saw the real value, so writing the mask would replace the
+    // stored credential with literal asterisks. See GUARD 2 above.
+    if (DEVICE_SECRET_COLUMNS.includes(key) && b[key] === CRED_MASK) continue;
+    params.push(b[key]); sets.push(`${key} = $${params.length}`);
   }
   if (sets.length === 0) return res.status(400).json({ error: 'No valid fields to update' });
   params.push(id);
@@ -3145,7 +3587,7 @@ app.put('/api/devices/:id', wrap(async (req, res) => {
     try { await pushConfigToAgentId(r.rows[0].agent_id); }
     catch (e) { console.error('[device update] push config failed:', e.message); }
   }
-  res.json(r.rows[0]);
+  res.json(publicDevice(r.rows[0], req));
 }));
 
 app.delete('/api/devices/:id', wrap(async (req, res) => {
@@ -3203,9 +3645,28 @@ app.get('/api/devices/:id/alerts', wrap(async (req, res) => {
   res.json({ rows: r.rows, total: cr.rows[0].n });
 }));
 
-// Per-day availability for the 90-day calendar (only days with data are
-// returned; the UI fills the rest as "no data"). incidents = device_down
-// alerts that started that day.
+// Per-day availability for the availability calendar. A complete, ordered day
+// series is returned; a day with no data anywhere carries total_checks = 0 and
+// the UI renders it as "no data". incidents = device_down alerts that started
+// that day.
+//
+// ⚠ Two sources, deliberately, and the fallback is load-bearing. Raw
+// `ping_results` is purged by the collector's retention tick (default
+// `retention_raw_days` = 14), while `availability_summary` keeps a daily rollup
+// for `retention_rollup_days` (default 730). Reading ONLY ping_results — which
+// this route did until 1.113 — made a "90-day" strip that was ~76/90 grey
+// "no data" squares on a device monitored since June, because the raw samples
+// behind those days had simply been rolled up and deleted. Per day: prefer the
+// raw samples when they still exist (freshest, and covers today, which the
+// rollup only gains on the next retention tick), else fall back to the rollup.
+// `source` tells the client which one answered.
+//
+// The raw branch counts a check as failed only on status = 'down', matching
+// availability_summary's own rollup expression (and the SLA report that reads
+// it). It used to count status <> 'up', which folded 'warning' (a slow but
+// SUCCESSFUL ping) into downtime — so the same day read as an amber <100%
+// square while raw samples survived and flipped to a green 100% once it aged
+// into the rollup. Keep the two expressions in step.
 app.get('/api/devices/:id/uptime-calendar', wrap(async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const days = safeInt(req.query.days, 90, 366);
@@ -3219,10 +3680,15 @@ app.get('/api/devices/:id/uptime-calendar', wrap(async (req, res) => {
     pings AS (
       SELECT date_trunc('day', ts) AS d,
              COUNT(*) AS total_checks,
-             SUM(CASE WHEN status <> 'up' THEN 1 ELSE 0 END) AS bad
+             SUM(CASE WHEN status = 'down' THEN 1 ELSE 0 END) AS bad
       FROM ping_results
       WHERE device_id = $1 AND ts >= date_trunc('day', NOW()) - (($2 - 1) || ' days')::interval
       GROUP BY 1
+    ),
+    roll AS (
+      SELECT date AS d, uptime_pct, total_checks
+      FROM availability_summary
+      WHERE device_id = $1 AND date >= (CURRENT_DATE - ($2 - 1))
     ),
     inc AS (
       SELECT date_trunc('day', triggered_at) AS d, COUNT(*) AS incidents
@@ -3232,12 +3698,20 @@ app.get('/api/devices/:id/uptime-calendar', wrap(async (req, res) => {
       GROUP BY 1
     )
     SELECT to_char(series.d, 'YYYY-MM-DD') AS day,
-           CASE WHEN p.total_checks > 0
-                THEN ROUND((1 - (p.bad::numeric / p.total_checks)) * 100, 1) ELSE NULL END AS uptime_pct,
-           COALESCE(p.total_checks, 0)::int AS total_checks,
-           COALESCE(i.incidents, 0)::int AS incidents
+           CASE WHEN COALESCE(p.total_checks, 0) > 0
+                     THEN ROUND((1 - (p.bad::numeric / p.total_checks)) * 100, 1)
+                WHEN COALESCE(r.total_checks, 0) > 0
+                     THEN ROUND(r.uptime_pct, 1)
+                ELSE NULL END AS uptime_pct,
+           CASE WHEN COALESCE(p.total_checks, 0) > 0 THEN p.total_checks
+                ELSE COALESCE(r.total_checks, 0) END::int AS total_checks,
+           COALESCE(i.incidents, 0)::int AS incidents,
+           CASE WHEN COALESCE(p.total_checks, 0) > 0 THEN 'raw'
+                WHEN COALESCE(r.total_checks, 0) > 0 THEN 'rollup'
+                ELSE 'none' END AS source
     FROM series
     LEFT JOIN pings p ON p.d = series.d
+    LEFT JOIN roll r  ON r.d = series.d::date
     LEFT JOIN inc i   ON i.d = series.d
     ORDER BY series.d
   `, [id, days]);
@@ -3249,9 +3723,34 @@ app.get('/api/devices/:id/uptime-calendar', wrap(async (req, res) => {
 app.get('/api/devices/:id/quick-stats', wrap(async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const [uptime, avg, baseline, alerts, health] = await Promise.all([
-    sv.query(`SELECT ROUND((1 - (SUM(CASE WHEN status <> 'up' THEN 1 ELSE 0 END)::numeric
-                   / NULLIF(COUNT(*), 0))) * 100, 2) AS pct
-                FROM ping_results WHERE device_id = $1 AND ts >= NOW() - INTERVAL '30 days'`, [id]),
+    // Same two-source rule as /uptime-calendar above: raw ping samples only go
+    // back `retention_raw_days` (14 by default), so a plain 30-day SELECT over
+    // ping_results silently measured a 14-day window and labelled it "30 days".
+    // Per day, prefer raw where it survives, else the availability_summary
+    // rollup; a failed check is status = 'down' in both branches.
+    sv.query(`
+      WITH raw AS (
+        SELECT ts::date AS d, COUNT(*) AS total_checks,
+               SUM(CASE WHEN status = 'down' THEN 1 ELSE 0 END) AS bad
+        FROM ping_results
+        WHERE device_id = $1 AND ts >= NOW() - INTERVAL '30 days'
+        GROUP BY 1
+      ),
+      roll AS (
+        SELECT date AS d, total_checks, failed_checks
+        FROM availability_summary
+        WHERE device_id = $1 AND date >= (CURRENT_DATE - 30)
+      ),
+      merged AS (
+        SELECT COALESCE(raw.d, roll.d) AS d,
+               CASE WHEN COALESCE(raw.total_checks, 0) > 0 THEN raw.total_checks
+                    ELSE COALESCE(roll.total_checks, 0) END AS total_checks,
+               CASE WHEN COALESCE(raw.total_checks, 0) > 0 THEN raw.bad
+                    ELSE COALESCE(roll.failed_checks, 0) END AS bad
+        FROM raw FULL OUTER JOIN roll ON roll.d = raw.d
+      )
+      SELECT ROUND((1 - (SUM(bad)::numeric / NULLIF(SUM(total_checks), 0))) * 100, 2) AS pct
+      FROM merged`, [id]),
     sv.query(`SELECT ROUND(AVG(response_ms)::numeric, 1) AS ms
                 FROM ping_results WHERE device_id = $1 AND ts >= NOW() - INTERVAL '7 days'
                   AND response_ms IS NOT NULL`, [id]),
@@ -3272,18 +3771,35 @@ app.get('/api/devices/:id/quick-stats', wrap(async (req, res) => {
   });
 }));
 
-// Latest per-interface status + traffic (for the interface status panel).
+// Latest per-interface status + traffic + link utilization (the device-detail
+// interface table, and the weathermap link-binding picker in the map editor).
+//
+// ⚠ Three metric-name families cover interfaces and they do NOT overlap in
+// coverage — reading only the first two (as this route did until 1.113) makes
+// the table look almost empty on a device that is in fact reporting every port:
+//   1. `if_oper_status` / `if_in_bps` / `if_out_bps` — the shared names written
+//      for a device with NO device_sensors rows at all (collector/discovery.js
+//      `candidatesToSamples`, the no-sensors branch). Every port, all three.
+//   2. `if_<idx>_oper` / `_in_bps` / `_out_bps` — the per-sensor names, written
+//      ONLY for ticked sensors. A switch with 357 interface sensors and 6 of
+//      them enabled reports exactly 2 ports through this family.
+//   3. `if_<idx>_in_util_pct` / `_out_util_pct` — synthesised by
+//      `candidatesToSamples` for EVERY interface candidate with a known link
+//      speed, regardless of which sensors are ticked. On the production box
+//      this is the widest family by far (89 ports on a device whose families
+//      1+2 cover 2, 24 of 26 on another).
+// So a port can legitimately have utilization but no oper/bps sample. Those
+// rows carry status = null (not a fabricated 'up'), and the UI labels them as
+// "status not collected" rather than guessing.
 app.get('/api/devices/:id/interfaces', wrap(async (req, res) => {
   const id = parseInt(req.params.id, 10);
-  // Handles both selective metric names (if_<idx>_oper/in_bps/out_bps) and the
-  // backward-compat shared names (if_oper_status/if_in_bps/if_out_bps); both
-  // carry if_index, so group on that column. DISTINCT keeps the latest sample
-  // per (metric_name, if_index).
+  // All three families carry if_index, so group on that column. DISTINCT ON
+  // keeps the latest sample per (metric_name, if_index).
   const r = await sv.query(`
-    SELECT DISTINCT ON (metric_name, if_index) metric_name, if_index, if_name, value
+    SELECT DISTINCT ON (metric_name, if_index) metric_name, if_index, if_name, value, ts
     FROM snmp_results
     WHERE device_id = $1
-      AND (metric_name ~ '^if_[0-9]+_(oper|in_bps|out_bps)$'
+      AND (metric_name ~ '^if_[0-9]+_(oper|in_bps|out_bps|in_util_pct|out_util_pct)$'
            OR metric_name IN ('if_oper_status', 'if_in_bps', 'if_out_bps'))
       AND if_index IS NOT NULL
       AND ts >= NOW() - INTERVAL '1 day'
@@ -3294,21 +3810,35 @@ app.get('/api/devices/:id/interfaces', wrap(async (req, res) => {
     const idx = Number(row.if_index);
     if (!isFinite(idx)) continue;
     const mn = row.metric_name;
+    // Order matters: `_in_util_pct` also ends with `_pct`, and `_in_bps` must
+    // not swallow it — test the util suffixes before the bps ones.
     const kind = (mn === 'if_oper_status' || /_oper$/.test(mn)) ? 'oper'
+      : /_in_util_pct$/.test(mn) ? 'in_util'
+      : /_out_util_pct$/.test(mn) ? 'out_util'
       : /_in_bps$/.test(mn) ? 'in'
       : /_out_bps$/.test(mn) ? 'out' : null;
     if (!kind) continue;
     let g = byIdx.get(idx);
-    if (!g) { g = { if_index: idx, if_name: row.if_name || `if${idx}`, status: null, in_bps: null, out_bps: null }; byIdx.set(idx, g); }
+    if (!g) {
+      g = {
+        if_index: idx, if_name: row.if_name || `if${idx}`, status: null,
+        in_bps: null, out_bps: null, in_util_pct: null, out_util_pct: null,
+        last_sample: null,
+      };
+      byIdx.set(idx, g);
+    }
     if (row.if_name && (!g.if_name || /^if\d+$/.test(g.if_name))) g.if_name = row.if_name;
+    if (row.ts && (!g.last_sample || row.ts > g.last_sample)) g.last_sample = row.ts;
     const v = row.value == null ? null : Number(row.value);
     if (kind === 'oper') g.status = v == null ? 'unknown' : (v >= 0.5 ? 'up' : 'down');
     else if (kind === 'in') g.in_bps = v;
     else if (kind === 'out') g.out_bps = v;
+    else if (kind === 'in_util') g.in_util_pct = v;
+    else if (kind === 'out_util') g.out_util_pct = v;
   }
-  const order = { up: 0, down: 1, unknown: 2 };
-  const list = Array.from(byIdx.values()).sort((a, b) =>
-    (order[a.status] ?? 2) - (order[b.status] ?? 2) || a.if_name.localeCompare(b.if_name));
+  // Natural port order (if_index ascending) — the table sorts client-side and
+  // the map editor's picker wants the ports in the order the device lists them.
+  const list = Array.from(byIdx.values()).sort((a, b) => a.if_index - b.if_index);
   res.json(list);
 }));
 
@@ -3461,7 +3991,7 @@ app.post('/api/devices/:id/set-gateway', wrap(async (req, res) => {
       [id]
     );
     await client.query('COMMIT');
-    res.json(r.rows[0]);
+    res.json(publicDevice(r.rows[0], req));
   } catch (err) {
     await client.query('ROLLBACK');
     throw err;
@@ -3478,7 +4008,7 @@ app.post('/api/devices/:id/clear-gateway', wrap(async (req, res) => {
     [id]
   );
   if (!r.rows[0]) return res.status(404).json({ error: 'Device not found' });
-  res.json(r.rows[0]);
+  res.json(publicDevice(r.rows[0], req));
 }));
 
 // ══════════════════════════════════════════════════════════════
@@ -4241,6 +4771,27 @@ app.get('/api/alerts', wrap(async (req, res) => {
   res.json(rows.rows);
 }));
 
+// Site-scope predicate for a WRITE against `alerts` (aliased `a`). The read
+// endpoint above scopes through its own LEFT JOINs; an UPDATE has no joins to
+// hang the filter on, so the same two paths (device site OR service-check
+// site) are expressed as EXISTS sub-selects instead. Returns null for an
+// unscoped caller (admin/super_admin — getSiteFilter already decided that),
+// in which case the caller adds no clause at all.
+// Deliberately mirrors GET /api/alerts exactly, INCLUDING the consequence that
+// an alert with neither a device nor a service check (wireless AP/controller/
+// client, agent) matches nothing for a site_admin: those rows are already
+// invisible to them on the read side, so allowing the write would let them act
+// on something they cannot see.
+function alertWriteSiteClause(siteFilter, params, caps) {
+  if (!siteFilter || !siteFilter.length) return null;
+  params.push(siteFilter);
+  const i = params.length;
+  const svc = caps.has_service_check_id
+    ? ` OR EXISTS (SELECT 1 FROM service_checks sc WHERE sc.id = a.service_check_id AND sc.site_id = ANY($${i}::int[]))`
+    : '';
+  return `(EXISTS (SELECT 1 FROM monitored_devices d WHERE d.id = a.device_id AND d.site_id = ANY($${i}::int[]))${svc})`;
+}
+
 app.post('/api/alerts/:id/acknowledge', wrap(async (req, res) => {
   const id = parseInt(req.params.id, 10);
   // Attribute to the verified session user (proxy-set header), not a client-
@@ -4251,22 +4802,148 @@ app.post('/api/alerts/:id/acknowledge', wrap(async (req, res) => {
   // Only write the note column if it exists yet (it's a later migration).
   const caps = await getAlertCaps();
   const setNote = caps.has_note ? ', note = COALESCE($3, note)' : '';
+  const params = caps.has_note ? [id, by, note] : [id, by];
+  const scope = alertWriteSiteClause(getSiteFilter(req), params, caps);
   const r = await sv.query(`
-    UPDATE alerts SET status = 'acknowledged', acknowledged_at = NOW(), acknowledged_by = $2${setNote}
-    WHERE id = $1 AND status = 'active' RETURNING *
-  `, caps.has_note ? [id, by, note] : [id, by]);
+    UPDATE alerts a SET status = 'acknowledged', acknowledged_at = NOW(), acknowledged_by = $2${setNote}
+    WHERE a.id = $1 AND a.status = 'active'${scope ? ' AND ' + scope : ''} RETURNING a.*
+  `, params);
   if (!r.rows[0]) return res.status(404).json({ error: 'Active alert not found' });
   res.json(r.rows[0]);
 }));
 
 app.post('/api/alerts/:id/resolve', wrap(async (req, res) => {
   const id = parseInt(req.params.id, 10);
+  const caps = await getAlertCaps();
+  const params = [id];
+  const scope = alertWriteSiteClause(getSiteFilter(req), params, caps);
   const r = await sv.query(`
-    UPDATE alerts SET status = 'resolved', resolved_at = NOW()
-    WHERE id = $1 AND status <> 'resolved' RETURNING *
-  `, [id]);
+    UPDATE alerts a SET status = 'resolved', resolved_at = NOW()
+    WHERE a.id = $1 AND a.status <> 'resolved'${scope ? ' AND ' + scope : ''} RETURNING a.*
+  `, params);
   if (!r.rows[0]) return res.status(404).json({ error: 'Alert not found or already resolved' });
   res.json(r.rows[0]);
+}));
+
+// ── Bulk acknowledge / resolve ────────────────────────────────
+// The Alerts page lets an operator tick many rows and act on them at once. A
+// loop of single-id POSTs would be N round trips through the proxy AND N
+// separate transactions, so both bulk verbs are ONE statement over an id array.
+//
+// The paths are single-segment (`bulk-acknowledge`, not `bulk/acknowledge`) on
+// purpose — a two-segment path would be matched by `/api/alerts/:id/<verb>`
+// with `:id = 'bulk'`, and `app.param('id')` rejects a non-numeric id with a
+// 400 before the handler ever runs. Keeping `acknowledge` IN the path name is
+// also deliberate: `enforceLicense`'s grace-period write-block exempts writes
+// whose `req.path.includes('acknowledge')`, so bulk ack stays permitted during
+// a grace period exactly like the single-id route, with no change to that
+// middleware. Bulk resolve is blocked in grace, again matching its single-id
+// twin.
+//
+// RBAC is the same as the single-id routes: the global write gate requires
+// site_admin+ (`/api/alerts` is not in ADMIN_ONLY_WRITE), and
+// alertWriteSiteClause() keeps a site_admin inside their assigned sites.
+// Ids outside the caller's scope, already in the target state, or simply
+// nonexistent are all reported back as `skipped` rather than failing the
+// batch — a partial result the UI can state honestly.
+const BULK_ALERT_MAX = 500;
+function parseBulkIds(body) {
+  const raw = body && Array.isArray(body.ids) ? body.ids : [];
+  const ids = [];
+  const seen = new Set();
+  for (const v of raw) {
+    const n = parseInt(v, 10);
+    if (!isNaN(n) && n > 0 && !seen.has(n)) { seen.add(n); ids.push(n); }
+    if (ids.length >= BULK_ALERT_MAX) break;
+  }
+  return ids;
+}
+
+app.post('/api/alerts/bulk-acknowledge', wrap(async (req, res) => {
+  const ids = parseBulkIds(req.body);
+  if (!ids.length) return res.status(400).json({ error: 'ids must be a non-empty array of alert ids' });
+  const by = req.headers['x-user-email'] || (req.body && req.body.acknowledged_by) || 'unknown';
+  const note = req.body && typeof req.body.note === 'string' && req.body.note.trim()
+    ? req.body.note.trim() : null;
+  const caps = await getAlertCaps();
+  const setNote = caps.has_note ? ', note = COALESCE($3, note)' : '';
+  const params = caps.has_note ? [ids, by, note] : [ids, by];
+  const scope = alertWriteSiteClause(getSiteFilter(req), params, caps);
+  const r = await sv.query(`
+    UPDATE alerts a SET status = 'acknowledged', acknowledged_at = NOW(), acknowledged_by = $2${setNote}
+    WHERE a.id = ANY($1::int[]) AND a.status = 'active'${scope ? ' AND ' + scope : ''}
+    RETURNING a.id
+  `, params);
+  const updated = r.rows.map((x) => x.id);
+  const done = new Set(updated);
+  res.json({
+    action: 'acknowledge',
+    requested: ids.length,
+    updated: updated.length,
+    ids: updated,
+    skipped: ids.filter((id) => !done.has(id)),
+  });
+}));
+
+app.post('/api/alerts/bulk-resolve', wrap(async (req, res) => {
+  const ids = parseBulkIds(req.body);
+  if (!ids.length) return res.status(400).json({ error: 'ids must be a non-empty array of alert ids' });
+  const caps = await getAlertCaps();
+  const params = [ids];
+  const scope = alertWriteSiteClause(getSiteFilter(req), params, caps);
+  const r = await sv.query(`
+    UPDATE alerts a SET status = 'resolved', resolved_at = NOW()
+    WHERE a.id = ANY($1::int[]) AND a.status <> 'resolved'${scope ? ' AND ' + scope : ''}
+    RETURNING a.id
+  `, params);
+  const updated = r.rows.map((x) => x.id);
+  const done = new Set(updated);
+  res.json({
+    action: 'resolve',
+    requested: ids.length,
+    updated: updated.length,
+    ids: updated,
+    skipped: ids.filter((id) => !done.has(id)),
+  });
+}));
+
+// ── 24h alert-volume histogram (Alerts page strip) ────────────
+// Hourly counts split by severity, for the compact bar strip above the alerts
+// table — "is this a storm or a trickle?" at a glance. Deliberately a SEPARATE
+// aggregate rather than something derived from GET /api/alerts in the browser:
+// that list is capped (limit, newest-first) and filtered by the page's status
+// select, so bucketing it client-side would draw a histogram of "whatever
+// happened to be fetched" and would go empty the moment a user picked
+// status=active. Every bucket in the window is emitted (generate_series LEFT
+// JOIN), so a quiet hour renders as a real zero rather than a missing bar and
+// the x-axis is evenly spaced.
+// Site-scoped with the same predicate as the write routes above.
+app.get('/api/alerts/volume', wrap(async (req, res) => {
+  const hours = safeInt(req.query.hours, 24, 168);
+  const caps = await getAlertCaps();
+  const params = [hours];
+  const scope = alertWriteSiteClause(getSiteFilter(req), params, caps);
+  const r = await sv.query(`
+    WITH bounds AS (
+      SELECT date_trunc('hour', NOW()) AS hi,
+             date_trunc('hour', NOW()) - make_interval(hours => ($1::int - 1)) AS lo
+    ),
+    slots AS (SELECT generate_series(b.lo, b.hi, INTERVAL '1 hour') AS h FROM bounds b),
+    hits AS (
+      SELECT date_trunc('hour', a.triggered_at) AS h,
+             COUNT(*) FILTER (WHERE a.severity = 'critical') AS critical,
+             COUNT(*) FILTER (WHERE a.severity <> 'critical') AS warning
+        FROM alerts a, bounds b
+       WHERE a.triggered_at >= b.lo${scope ? ' AND ' + scope : ''}
+       GROUP BY 1
+    )
+    SELECT s.h AS hour,
+           COALESCE(x.critical, 0)::int AS critical,
+           COALESCE(x.warning, 0)::int  AS warning
+      FROM slots s LEFT JOIN hits x ON x.h = s.h
+     ORDER BY s.h
+  `, params);
+  res.json({ hours, buckets: r.rows });
 }));
 
 // ══════════════════════════════════════════════════════════════
@@ -4291,7 +4968,7 @@ function mergeEffectiveRules(rows) {
   const prec = { global: 0, site: 1, device: 2, service: 2 };
   const byMetric = new Map();
   for (const rule of rows) {
-    const key = `${rule.metric} ${rule.sensor_key || ''}`;
+    const key = `${rule.metric}\u0000${rule.sensor_key || ''}`;
     const cur = byMetric.get(key);
     if (!cur || (prec[rule.scope] ?? 0) >= (prec[cur.scope] ?? 0)) byMetric.set(key, rule);
   }
@@ -4585,7 +5262,25 @@ async function fetchFullMap(mapId) {
   return { ...map, devices: devices.rows, connections: connRows, labels: labels.rows, shapes };
 }
 
-// List all maps (with a device count for the cards).
+// Geometry caps for the /api/maps card preview. A map larger than this still
+// draws — the miniature is simply truncated — but one pathological map can't
+// bloat the list response for every other card on the page.
+const MAP_PREVIEW_NODE_CAP = 400;
+const MAP_PREVIEW_LINK_CAP = 400;
+const MAP_PREVIEW_SHAPE_CAP = 80;
+
+// List all maps, each with a device count, a LIVE status rollup, and a coarse
+// geometry `preview` the /maps cards render as a real miniature of the map
+// (instead of a generic placeholder glyph).
+//
+// The preview deliberately carries no identifying data — only canvas-space
+// coordinates and a status bucket per node. Every status in it is already
+// fully readable (with names and IPs) via GET /api/maps/:id for any caller who
+// can list maps, so this adds no new exposure; it just saves the card from
+// having to fetch N full maps to draw N thumbnails.
+//
+// Cost stays flat in the number of maps: three extra queries total (nodes,
+// links, shapes), grouped in JS — never one query per map.
 app.get('/api/maps', wrap(async (_req, res) => {
   const r = await sv.query(`
     SELECT m.id, m.uuid, m.name, m.description, m.is_public,
@@ -4594,7 +5289,93 @@ app.get('/api/maps', wrap(async (_req, res) => {
     FROM sv_maps m
     ORDER BY m.updated_at DESC
   `);
-  res.json(r.rows);
+  const maps = r.rows;
+  if (!maps.length) return res.json(maps);
+
+  const nodes = await sv.query(`
+    SELECT md.map_id, md.id, md.x, md.y, md.width, md.height, md.node_style,
+           COALESCE(d.current_status, sc.current_status) AS status,
+           (md.device_id IS NOT NULL OR md.service_check_id IS NOT NULL) AS linked
+    FROM map_devices md
+    LEFT JOIN monitored_devices d ON d.id = md.device_id
+    LEFT JOIN service_checks sc ON sc.id = md.service_check_id
+    ORDER BY md.map_id, md.id
+  `);
+  const links = await sv.query(`
+    SELECT map_id, from_item_id, to_item_id, from_kind, to_kind
+    FROM map_connections ORDER BY map_id, id
+  `);
+  // map_shapes is a later migration — degrade to "no decorative shapes" on an
+  // un-migrated DB rather than 500-ing the whole list (same guard fetchFullMap
+  // already uses).
+  let shapeRows = [];
+  try {
+    const sh = await sv.query(`
+      SELECT map_id, id, x, y, width, height FROM map_shapes ORDER BY map_id, z_index, id
+    `);
+    shapeRows = sh.rows;
+  } catch (_e) { shapeRows = []; }
+
+  const byMap = new Map();
+  for (const m of maps) {
+    m.up_count = 0; m.down_count = 0; m.warning_count = 0; m.unknown_count = 0;
+    m.linked_count = 0;
+    m.preview = { nodes: [], links: [], shapes: [] };
+    byMap.set(m.id, m);
+  }
+
+  // x/y are NUMERIC (pg returns them as strings) while width/height are
+  // INTEGER — Number() normalises both so the client never does geometry math
+  // on a string.
+  const nodeCenter = new Map();  // map_devices.id  → { cx, cy }
+  for (const n of nodes.rows) {
+    const m = byMap.get(n.map_id);
+    if (!m) continue;
+    const x = Number(n.x) || 0, y = Number(n.y) || 0;
+    const w = Number(n.width) || 0, h = Number(n.height) || 0;
+    nodeCenter.set(n.id, { cx: x + w / 2, cy: y + h / 2 });
+    if (n.linked) {
+      m.linked_count++;
+      const s = String(n.status || 'unknown').toLowerCase();
+      if (s === 'up') m.up_count++;
+      else if (s === 'down') m.down_count++;
+      else if (s === 'warning') m.warning_count++;
+      else m.unknown_count++;
+    }
+    if (m.preview.nodes.length < MAP_PREVIEW_NODE_CAP) {
+      m.preview.nodes.push({
+        x, y, w, h,
+        // 'unlinked' = a label-only/empty node: real geometry, no live status.
+        s: n.linked ? String(n.status || 'unknown').toLowerCase() : 'unlinked',
+        i: n.node_style === 'icon' ? 1 : 0,
+      });
+    }
+  }
+
+  const shapeCenter = new Map();  // map_shapes.id → { cx, cy }
+  for (const s of shapeRows) {
+    const m = byMap.get(s.map_id);
+    if (!m) continue;
+    const x = Number(s.x) || 0, y = Number(s.y) || 0;
+    const w = Number(s.width) || 0, h = Number(s.height) || 0;
+    shapeCenter.set(s.id, { cx: x + w / 2, cy: y + h / 2 });
+    if (m.preview.shapes.length < MAP_PREVIEW_SHAPE_CAP) m.preview.shapes.push({ x, y, w, h });
+  }
+
+  for (const l of links.rows) {
+    const m = byMap.get(l.map_id);
+    if (!m || m.preview.links.length >= MAP_PREVIEW_LINK_CAP) continue;
+    // from_kind/to_kind decide WHICH table the item id belongs to — map_devices
+    // and map_shapes have independent sequences, so the same numeric id can
+    // exist in both and resolving without the kind would attach a link to the
+    // wrong element.
+    const a = l.from_kind === 'shape' ? shapeCenter.get(l.from_item_id) : nodeCenter.get(l.from_item_id);
+    const b = l.to_kind === 'shape' ? shapeCenter.get(l.to_item_id) : nodeCenter.get(l.to_item_id);
+    if (!a || !b) continue;
+    m.preview.links.push({ x1: a.cx, y1: a.cy, x2: b.cx, y2: b.cy });
+  }
+
+  res.json(maps);
 }));
 
 // Create a map.
@@ -4838,12 +5619,20 @@ app.post('/api/topology/discover', wrap(async (_req, res) => {
 }));
 
 // Discovery status: live run flag + derived last-run/link counts.
-app.get('/api/topology/status', wrap(async (_req, res) => {
+// Site-scoped on the FROM device, exactly like /links and /map below — this
+// feeds the page header ("Last run: X · N links · M devices") that sits
+// directly above the map, so an unscoped count here would contradict the
+// scoped map for a site_admin (and leak the estate-wide link count).
+app.get('/api/topology/status', wrap(async (req, res) => {
+  const params = [];
+  const sc = siteFilterClause(getSiteFilter(req), params, 'fd.site_id');
   const r = await sv.query(`
-    SELECT MAX(last_seen_at) AS last_run_at,
+    SELECT MAX(l.last_seen_at) AS last_run_at,
            COUNT(*)::int AS links_found,
-           COUNT(DISTINCT from_device_id)::int AS devices_discovered
-    FROM topology_links`);
+           COUNT(DISTINCT l.from_device_id)::int AS devices_discovered
+    FROM topology_links l
+    JOIN monitored_devices fd ON fd.id = l.from_device_id
+    ${sc ? `WHERE ${sc}` : ''}`, params);
   const row = r.rows[0] || {};
   res.json({
     running: topoRun.running,
@@ -4894,34 +5683,149 @@ function dedupeEdges(rows) {
   return out;
 }
 
-// Map-friendly topology: nodes (only devices with ≥1 link) + edges.
+// Stable-within-one-response identity for a discovered neighbour that is NOT a
+// monitored device. The NAME+IP PAIR is the key, never either field alone: two
+// distinct chassis can advertise the SAME management address (live example on
+// the production estate — CORESW1-8100 and CORESW2-8100 both report 10.1.1.2,
+// so keying on IP would merge two switches into one node), while plenty of
+// neighbours advertise a name with no management address at all (G8272-1,
+// NE1032-2). A row carrying neither falls back to its own link id so
+// unidentifiable far ends can never collapse into a single blob node.
+function neighborNodeKey(row) {
+  const name = (row.to_name || '').trim().toLowerCase();
+  const ip = (row.to_ip || '').trim();
+  if (!name && !ip) return `link:${row.id}`;
+  return `nb:${name}|${ip}`;
+}
+
+// Map-friendly topology: nodes (only endpoints with ≥1 link) + edges.
+//
+// Nodes are the monitored devices that discovered a link PLUS the discovered
+// neighbours themselves. A neighbour that is not itself a monitored device is
+// emitted as an UNMANAGED node (`managed: false`) carrying a SYNTHETIC NEGATIVE
+// `device_id`. That id is meaningful only inside this response — real
+// monitored_devices ids are always positive so the two can never collide,
+// nothing persists a synthetic id, and the frontend must not link an unmanaged
+// node to /devices/[id].
+//
+// ⛔ This route used to require `l.to_device_id IS NOT NULL` and INNER JOIN the
+// far end to monitored_devices, which dropped the WHOLE link — node and edge —
+// whenever the neighbour was not monitored. On a real estate almost no LLDP/CDP
+// neighbour is monitored (measured on production: 0 of 69 links had a resolved
+// to_device_id and 0 of 44 distinct neighbours matched a monitored device by IP
+// or by name), so the Visual Map rendered literally nothing from the day the
+// feature shipped, while /api/topology/status — which counts topology_links
+// rows with no such join — reported "69 links · 8 devices" in the header
+// directly above it. Do not reintroduce the to_device_id requirement.
 app.get('/api/topology/map', wrap(async (req, res) => {
   const params = [];
   const sc = siteFilterClause(getSiteFilter(req), params, 'fd.site_id');
-  const e = await sv.query(`
-    SELECT l.from_device_id, l.to_device_id, l.from_port, l.to_port, l.protocol
+  const r = await sv.query(`
+    SELECT l.id, l.from_device_id, l.from_port, l.to_port, l.protocol,
+           l.to_device_id, l.to_ip, l.to_name,
+           fd.name AS from_name, fd.ip_address AS from_ip,
+           fd.site_name AS from_site_name, fd.current_status AS from_status,
+           fd.is_gateway AS from_is_gateway,
+           td.name AS to_dev_name, td.ip_address AS to_dev_ip,
+           td.site_name AS to_dev_site_name, td.current_status AS to_dev_status,
+           td.is_gateway AS to_dev_is_gateway
     FROM topology_links l
     JOIN monitored_devices fd ON fd.id = l.from_device_id
-    JOIN monitored_devices td ON td.id = l.to_device_id
-    WHERE l.to_device_id IS NOT NULL${sc ? ` AND ${sc}` : ''}
+    LEFT JOIN monitored_devices td ON td.id = l.to_device_id
+    ${sc ? `WHERE ${sc}` : ''}
+    ORDER BY l.id
   `, params);
-  const edges = dedupeEdges(e.rows);
-  const ids = new Set();
-  for (const row of edges) { ids.add(row.from_device_id); ids.add(row.to_device_id); }
-  let nodes = [];
-  if (ids.size) {
-    const nr = await sv.query(`
-      SELECT id AS device_id, name, ip_address AS ip, site_name,
-             current_status AS status, is_gateway
-      FROM monitored_devices WHERE id = ANY($1::int[])
-    `, [Array.from(ids)]);
-    nodes = nr.rows;
+
+  const nodes = [];
+  const idByKey = new Map();   // node key → the device_id used in the graph
+  let nextSyntheticId = -1;    // unmanaged neighbours get -1, -2, -3, …
+
+  const addNode = (key, node) => {
+    const existing = idByKey.get(key);
+    if (existing != null) return existing;
+    idByKey.set(key, node.device_id);
+    nodes.push(node);
+    return node.device_id;
+  };
+
+  const rawEdges = [];
+  for (const row of r.rows) {
+    const fromId = addNode(`dev:${row.from_device_id}`, {
+      device_id: row.from_device_id,
+      name: row.from_name,
+      ip: row.from_ip,
+      site_name: row.from_site_name,
+      status: row.from_status || 'unknown',
+      is_gateway: !!row.from_is_gateway,
+      managed: true,
+    });
+
+    let toId;
+    if (row.to_device_id) {
+      toId = addNode(`dev:${row.to_device_id}`, {
+        device_id: row.to_device_id,
+        name: row.to_dev_name,
+        ip: row.to_dev_ip,
+        site_name: row.to_dev_site_name,
+        status: row.to_dev_status || 'unknown',
+        is_gateway: !!row.to_dev_is_gateway,
+        managed: true,
+      });
+    } else {
+      const key = neighborNodeKey(row);
+      const known = idByKey.get(key);
+      if (known != null) {
+        toId = known;
+      } else {
+        toId = nextSyntheticId--;
+        addNode(key, {
+          device_id: toId,
+          name: (row.to_name || '').trim() || row.to_ip || 'Unknown neighbour',
+          ip: row.to_ip || '',
+          // An unmanaged neighbour has no site of its own, so it inherits the
+          // site of the monitored device that discovered it — it is physically
+          // attached to that device's port. First discoverer wins (rows are
+          // ordered by link id) if two devices in different sites see it.
+          site_name: row.from_site_name,
+          status: 'unknown',
+          is_gateway: false,
+          managed: false,
+        });
+      }
+    }
+
+    if (fromId === toId) continue; // a device that LLDP-sees itself
+    rawEdges.push({
+      from_device_id: fromId,
+      to_device_id: toId,
+      from_port: row.from_port,
+      to_port: row.to_port,
+      protocol: row.protocol,
+    });
   }
-  res.json({ nodes, edges });
+
+  const edges = dedupeEdges(rawEdges);
+  // Only emit nodes that survived deduplication with at least one edge (a
+  // device whose every link was a self-link would otherwise float unconnected).
+  const linked = new Set();
+  for (const row of edges) { linked.add(row.from_device_id); linked.add(row.to_device_id); }
+  res.json({ nodes: nodes.filter((n) => linked.has(n.device_id)), edges });
 }));
 
 // Apply the discovered topology to an existing map: place new devices in a grid
 // (preserving any already-positioned ones) and recreate connections from links.
+//
+// Site-scoping: deliberately none. Every /api/topology/* write is admin-only
+// (ADMIN_ONLY_WRITE matches /^/api/topology//), and getSiteFilter() returns
+// null for admin/super_admin — a scoped caller can never reach this handler, so
+// a getSiteFilter call here would be dead code. Same for /apply-dependencies
+// and /discover. The two GET routes (/status, /links, /map) ARE scoped.
+//
+// Unlike /api/topology/map, this route still only places MONITORED devices:
+// map_devices.device_id is a real FK, so an unmanaged LLDP/CDP neighbour has no
+// row to point at. It therefore does nothing useful on an estate whose links
+// all have a NULL to_device_id — which is why the topology page only enables
+// its "Apply to Map" button when at least one edge joins two monitored devices.
 app.post('/api/topology/apply-to-map/:map_id', wrap(async (req, res) => {
   const mapId = parseInt(req.params.map_id, 10);
   const exists = await sv.query(`SELECT id FROM sv_maps WHERE id = $1`, [mapId]);
@@ -4982,6 +5886,9 @@ app.post('/api/topology/apply-to-map/:map_id', wrap(async (req, res) => {
 
 // Suggest site gateways from topology: devices spanning multiple sites, or the
 // most-connected device within a site, are likely gateways. Suggest-only.
+// Admin-only write, so unscoped by the same reasoning as /apply-to-map above.
+// Also monitored-devices-only (it reasons about site_id, which an unmanaged
+// neighbour does not have).
 app.post('/api/topology/apply-dependencies', wrap(async (_req, res) => {
   const e = await sv.query(`
     SELECT l.from_device_id, l.to_device_id,
@@ -7407,13 +8314,103 @@ async function getReportCaps() {
   return reportCaps;
 }
 
+// ── Saved-report site scoping ─────────────────────────────────
+// `saved_reports` has no site_id column of its own — a row's site relationship is
+// implied by (scope_type, scope_id): 'site' => a netvault sites.id, 'device' =>
+// a monitored_devices.id. A site_admin must not see (or act on) a saved report
+// pinned to a site outside their assignment — the row carries the recipient email
+// list and the schedule, and the /:id routes can delete it or email it on demand.
+// Estate-wide rows ('all', and the wireless 'controller' scope, which has no site
+// of its own) stay visible: they describe the whole estate, not one site's data.
+// Returns a SQL clause for table alias `alias`, or null when the caller is unscoped
+// (admin/viewer), pushing the site-id array onto `params`.
+function savedReportSiteClause(siteFilter, params, alias) {
+  if (!siteFilter || !siteFilter.length) return null;
+  params.push(siteFilter);
+  const n = params.length;
+  return `(
+    (${alias}.scope_type IS DISTINCT FROM 'site' AND ${alias}.scope_type IS DISTINCT FROM 'device')
+    OR (${alias}.scope_type = 'site' AND ${alias}.scope_id = ANY($${n}::int[]))
+    OR (${alias}.scope_type = 'device' AND EXISTS (
+          SELECT 1 FROM monitored_devices mdsc
+           WHERE mdsc.id = ${alias}.scope_id AND mdsc.site_id = ANY($${n}::int[])))
+  )`;
+}
+
+// Row-level equivalent of savedReportSiteClause, for the /:id routes (which fetch
+// the row first). Same rule, same justification — see the comment above.
+async function savedReportInScope(req, row) {
+  const siteFilter = getSiteFilter(req);
+  if (!siteFilter || !siteFilter.length) return true;
+  if (!row) return false;
+  if (row.scope_type === 'site') {
+    return row.scope_id != null && siteFilter.includes(Number(row.scope_id));
+  }
+  if (row.scope_type === 'device') {
+    if (row.scope_id == null) return false;
+    const r = await sv.query(
+      `SELECT 1 FROM monitored_devices WHERE id = $1 AND site_id = ANY($2::int[])`,
+      [row.scope_id, siteFilter]);
+    return r.rowCount > 0;
+  }
+  return true;
+}
+
 // ── Saved report configs (per-user via created_by) ────────────
 app.get('/api/reports/saved', wrap(async (req, res) => {
   const params = [];
-  let where = '';
-  if (req.query.created_by) { params.push(String(req.query.created_by)); where = 'WHERE created_by = $1'; }
-  const r = await sv.query(`SELECT * FROM saved_reports ${where} ORDER BY created_at DESC`, params);
+  const where = [];
+  if (req.query.created_by) { params.push(String(req.query.created_by)); where.push(`created_by = $${params.length}`); }
+  const sc = savedReportSiteClause(getSiteFilter(req), params, 'saved_reports');
+  if (sc) where.push(sc);
+  const r = await sv.query(
+    `SELECT * FROM saved_reports ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY created_at DESC`,
+    params);
   res.json(r.rows);
+}));
+
+// Read-only schedule + delivery overview for the Reports page. One call returns
+// every saved report that has an email cadence configured (with its next run and
+// the outcome of its last delivery) plus the most recent delivery attempts across
+// all of them — so the page doesn't have to make one /saved/:id/history call per
+// saved report just to show a "Scheduled" indicator and a recent-runs list.
+// Site-scoped by the same (scope_type, scope_id) rule as /api/reports/saved.
+app.get('/api/reports/schedules', wrap(async (req, res) => {
+  const siteFilter = getSiteFilter(req);
+
+  const p1 = [];
+  const where = ["sr.schedule IS NOT NULL", "sr.schedule <> 'none'"];
+  const sc1 = savedReportSiteClause(siteFilter, p1, 'sr');
+  if (sc1) where.push(sc1);
+  const schedules = await sv.query(`
+    SELECT sr.id, sr.name, sr.template, sr.scope_type, sr.scope_id, sr.scope_name,
+           sr.date_range, sr.schedule, sr.schedule_day, sr.schedule_hour,
+           sr.recipients, sr.next_run_at, sr.last_sent_at, sr.created_by, sr.created_at,
+           h.run_at AS last_run_at, h.status AS last_status, h.error AS last_error
+      FROM saved_reports sr
+      LEFT JOIN LATERAL (
+        SELECT run_at, status, error FROM report_history
+         WHERE report_id = sr.id ORDER BY run_at DESC LIMIT 1
+      ) h ON TRUE
+     WHERE ${where.join(' AND ')}
+     ORDER BY sr.next_run_at NULLS LAST, sr.name
+  `, p1);
+
+  const p2 = [];
+  const sc2 = savedReportSiteClause(siteFilter, p2, 'sr');
+  const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 25, 1), 100);
+  p2.push(limit);
+  const recent = await sv.query(`
+    SELECT rh.id, rh.report_id, rh.run_at, rh.status, rh.error, rh.recipients,
+           sr.name AS report_name, sr.template
+      FROM report_history rh
+      JOIN saved_reports sr ON sr.id = rh.report_id
+     ${sc2 ? `WHERE ${sc2}` : ''}
+     ORDER BY rh.run_at DESC
+     LIMIT $${p2.length}
+  `, p2);
+
+  res.json({ schedules: schedules.rows, recent: recent.rows });
 }));
 
 // Normalise schedule inputs from a request body into stored column values plus
@@ -7436,6 +8433,13 @@ function scheduleFields(b) {
 app.post('/api/reports/saved', wrap(async (req, res) => {
   const b = req.body || {};
   if (!b.name || !b.template) return res.status(400).json({ error: 'name and template are required' });
+  // A site_admin must not be able to CREATE a report pinned to another site: the
+  // scheduler runs it over loopback with no RBAC headers (so unscoped) and emails
+  // the result wherever `recipients` says — creating one would exfiltrate data the
+  // caller can't read on screen.
+  if (!(await savedReportInScope(req, { scope_type: b.scope_type || 'all', scope_id: b.scope_id || null }))) {
+    return res.status(403).json({ error: 'forbidden: scope outside your assigned sites' });
+  }
   const scopeIds = Array.isArray(b.scope_ids)
     ? b.scope_ids.map((n) => parseInt(n, 10)).filter((n) => !isNaN(n)) : null;
   const s = scheduleFields(b);
@@ -7459,6 +8463,11 @@ app.post('/api/reports/saved', wrap(async (req, res) => {
 app.put('/api/reports/saved/:id', wrap(async (req, res) => {
   const id = parseInt(req.params.id, 10);
   if (isNaN(id)) return res.status(400).json({ error: 'invalid id' });
+  const cur = await sv.query(`SELECT scope_type, scope_id FROM saved_reports WHERE id = $1`, [id]);
+  if (!cur.rows[0]) return res.status(404).json({ error: 'not found' });
+  if (!(await savedReportInScope(req, cur.rows[0]))) {
+    return res.status(403).json({ error: 'forbidden: saved report outside your assigned sites' });
+  }
   const s = scheduleFields(req.body || {});
   const r = await sv.query(`
     UPDATE saved_reports
@@ -7477,6 +8486,9 @@ app.post('/api/reports/saved/:id/run-now', wrap(async (req, res) => {
   const r = await sv.query(`SELECT * FROM saved_reports WHERE id = $1`, [id]);
   const report = r.rows[0];
   if (!report) return res.status(404).json({ error: 'not found' });
+  if (!(await savedReportInScope(req, report))) {
+    return res.status(403).json({ error: 'forbidden: saved report outside your assigned sites' });
+  }
   if (!report.recipients) return res.status(400).json({ error: 'no recipients configured' });
   try {
     const out = await reportScheduler.runAndEmailReport(sv, report, getSmtpSettings);
@@ -7495,6 +8507,11 @@ app.post('/api/reports/saved/:id/run-now', wrap(async (req, res) => {
 app.get('/api/reports/saved/:id/history', wrap(async (req, res) => {
   const id = parseInt(req.params.id, 10);
   if (isNaN(id)) return res.status(400).json({ error: 'invalid id' });
+  const owner = await sv.query(`SELECT scope_type, scope_id FROM saved_reports WHERE id = $1`, [id]);
+  if (!owner.rows[0]) return res.status(404).json({ error: 'not found' });
+  if (!(await savedReportInScope(req, owner.rows[0]))) {
+    return res.status(403).json({ error: 'forbidden: saved report outside your assigned sites' });
+  }
   const r = await sv.query(`
     SELECT id, report_id, run_at, status, error, recipients
     FROM report_history WHERE report_id = $1 ORDER BY run_at DESC LIMIT 50
@@ -7503,7 +8520,12 @@ app.get('/api/reports/saved/:id/history', wrap(async (req, res) => {
 }));
 
 app.delete('/api/reports/saved/:id', wrap(async (req, res) => {
-  await sv.query(`DELETE FROM saved_reports WHERE id = $1`, [parseInt(req.params.id, 10)]);
+  const id = parseInt(req.params.id, 10);
+  const owner = await sv.query(`SELECT scope_type, scope_id FROM saved_reports WHERE id = $1`, [id]);
+  if (owner.rows[0] && !(await savedReportInScope(req, owner.rows[0]))) {
+    return res.status(403).json({ error: 'forbidden: saved report outside your assigned sites' });
+  }
+  await sv.query(`DELETE FROM saved_reports WHERE id = $1`, [id]);
   res.json({ ok: true });
 }));
 

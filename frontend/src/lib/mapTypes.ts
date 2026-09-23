@@ -125,6 +125,26 @@ export type FullMap = {
   shapes: MapShape[];
 };
 
+// ── Card preview geometry (GET /api/maps) ──────────────────────────────
+// A coarse, identity-free miniature of a map's contents: enough to draw a real
+// thumbnail on the /maps cards without fetching the full map. All coordinates
+// are in the map's own canvas space, so a viewBox of `0 0 canvas_w canvas_h`
+// scales the whole preview to any thumbnail size with no extra math.
+export type MapPreviewNode = {
+  x: number; y: number; w: number; h: number;
+  /** 'up' | 'down' | 'warning' | 'unknown' | 'unlinked' (a label-only node). */
+  s: string;
+  /** 1 = node_style 'icon' (drawn as a disc), 0 = 'box' (drawn as a rect). */
+  i: 0 | 1;
+};
+export type MapPreviewLink = { x1: number; y1: number; x2: number; y2: number };
+export type MapPreviewShape = { x: number; y: number; w: number; h: number };
+export type MapPreview = {
+  nodes: MapPreviewNode[];
+  links: MapPreviewLink[];
+  shapes: MapPreviewShape[];
+};
+
 export type MapSummary = {
   id: number;
   uuid: string;
@@ -136,6 +156,16 @@ export type MapSummary = {
   canvas_h: number;
   updated_at: string;
   device_count: number;
+  // Live status rollup over the map's LINKED nodes (device- or service-backed);
+  // `device_count` counts every row in map_devices, including label-only nodes,
+  // so linked_count can legitimately be lower. Optional so the type still
+  // describes a response from an API that predates these fields.
+  linked_count?: number;
+  up_count?: number;
+  down_count?: number;
+  warning_count?: number;
+  unknown_count?: number;
+  preview?: MapPreview | null;
 };
 
 // Status → node fill colour.

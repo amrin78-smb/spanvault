@@ -6,10 +6,13 @@ import { useRouter } from 'next/navigation';
 import { useApi, apiSend } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
 import {
-  ErrorBox, fmtRel, PageHeader, CardSkeleton, EmptyState, useRefreshKey, Loading, useConfirm, useToast,
+  ErrorBox, fmtRel, fmtTime, PageHeader, TableSkeleton, EmptyState, useRefreshKey, Loading,
+  useConfirm, useToast, useTableSort, sortRows, SortTh,
 } from '@/components/ui';
-import { IconAgents } from '@/components/icons';
-import { AgentHealthData } from '@/components/AgentBits';
+import {
+  IconAgents, IconArrowUp, IconArrowDown, IconClock, IconRepeat, IconWarning,
+} from '@/components/icons';
+import { AgentHealthData, getHubUrl } from '@/components/AgentBits';
 
 type AgentSite = { site_id: number; site_name: string | null };
 export type Agent = {
@@ -30,6 +33,16 @@ export type Agent = {
 // on the agent detail page's health tiles — AgentBits.tsx).
 const DISK_WARN_PCT = 90;
 
+// An agent heartbeats every 30s and ws-server's monitor flips it to `offline`
+// ~90s after the last one. A row still marked `online` whose last_seen_at is
+// older than this is therefore NOT a healthy agent — it's one whose heartbeat
+// stopped landing (the monitor hasn't caught up, the UPDATE is failing, or the
+// clocks disagree). That state is invisible in a plain online/offline count,
+// which is exactly why it gets its own tile — see gotchas.md's "heartbeat
+// UPDATE" entry for the 16,665-occurrence production bug that presented this
+// way.
+const STALE_HEARTBEAT_MS = 150 * 1000;
+
 type StatusFilter = 'all' | 'online' | 'offline' | 'disabled';
 
 // Agent connection/enablement state, used by both the fleet-health rollup and
@@ -43,6 +56,40 @@ function agentMatchesStatus(a: Agent, filter: StatusFilter): boolean {
   // 'offline' — includes 'never_connected' and any other non-online state,
   // but not agents that are merely disabled (they get their own bucket).
   return !online && !a.disabled;
+}
+
+function isOnline(a: Agent): boolean {
+  return (a.status || '').toLowerCase() === 'online' && !a.disabled;
+}
+
+// Heartbeat has stopped landing while the row still claims to be online.
+function isStale(a: Agent, now: number): boolean {
+  if (!isOnline(a)) return false;
+  if (!a.last_seen_at) return true;
+  const t = Date.parse(a.last_seen_at);
+  if (Number.isNaN(t)) return false;
+  return now - t > STALE_HEARTBEAT_MS;
+}
+
+// Numeric-aware version compare for dotted versions ("1.10.0" > "1.9.0").
+// Only used to find the NEWEST version present in this fleet — SpanVault has
+// no notion of the "correct" agent version (the hub owns agent updates and
+// ships the signed bundle), so drift here means "behind another agent in the
+// same fleet", never "behind a release SpanVault knows about".
+function cmpVersion(a: string, b: string): number {
+  const pa = a.split(/[.\-+]/);
+  const pb = b.split(/[.\-+]/);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const na = parseInt(pa[i] || '0', 10);
+    const nb = parseInt(pb[i] || '0', 10);
+    if (Number.isNaN(na) || Number.isNaN(nb)) {
+      const c = (pa[i] || '').localeCompare(pb[i] || '');
+      if (c) return c;
+      continue;
+    }
+    if (na !== nb) return na - nb;
+  }
+  return 0;
 }
 
 // ── Status dot colour by agent connection state ────────────────
@@ -62,6 +109,7 @@ export default function AgentsPage() {
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  const { sort, onSort } = useTableSort({ key: 'name', dir: 'asc' });
 
   function toggleSelect(id: number) {
     setSelected((prev) => {
@@ -172,81 +220,112 @@ export default function AgentsPage() {
   }
 
   const list = agents.data || [];
-  const online = list.filter((a) => (a.status || '').toLowerCase() === 'online').length;
-  const devicesAssigned = list.reduce((sum, a) => sum + (a.device_count || 0), 0);
+  const now = Date.now();
 
-  // Fleet health rollup — counts that need admin attention. Only shown when
-  // non-zero (mirrors the suite's "quiet when healthy" convention used on the
-  // main dashboard's KPI row and agent-offline group — nothing to show when
-  // the fleet is clean).
+  // ── Fleet health rollup (every figure straight off GET /api/agents) ──
+  const onlineCount = list.filter(isOnline).length;
   const offlineCount = list.filter((a) => agentMatchesStatus(a, 'offline')).length;
+  const disabledCount = list.filter((a) => !!a.disabled).length;
+  const staleCount = list.filter((a) => isStale(a, now)).length;
+  const devicesAssigned = list.reduce((sum, a) => sum + (a.device_count || 0), 0);
+  // Devices an ONLINE agent is actually polling right now vs devices stranded
+  // on an offline/disabled one (those fall back to central polling).
+  const devicesOnline = list.filter(isOnline).reduce((sum, a) => sum + (a.device_count || 0), 0);
+  const devicesStranded = devicesAssigned - devicesOnline;
   const highDiskCount = list.filter((a) => (a.health?.disk_pct ?? -1) >= DISK_WARN_PCT).length;
-  const hasRollup = offlineCount > 0 || highDiskCount > 0;
+  const sitesCovered = new Set(list.flatMap((a) => (a.sites || []).map((s) => s.site_id))).size;
+
+  const versions = Array.from(new Set(list.map((a) => a.version).filter((v): v is string => !!v)));
+  const newestVersion = versions.length ? versions.slice().sort(cmpVersion).pop() as string : null;
+  const behindCount = newestVersion ? list.filter((a) => a.version && a.version !== newestVersion).length : 0;
+  const unknownVersionCount = list.filter((a) => !a.version).length;
 
   const filtered = list.filter((a) => {
     if (!agentMatchesStatus(a, statusFilter)) return false;
     const q = search.trim().toLowerCase();
     if (!q) return true;
-    const haystack = `${a.name} ${a.hostname || ''}`.toLowerCase();
+    const haystack = `${a.name} ${a.hostname || ''} ${a.ip_address || ''}`.toLowerCase();
     return haystack.includes(q);
   });
+  const rows = sortRows(filtered, sort, {
+    name: (a) => a.name,
+    host: (a) => a.hostname || a.ip_address,
+    sites: (a) => (a.sites || []).length,
+    devices: (a) => a.device_count,
+    version: (a) => a.version,
+    seen: (a) => a.last_seen_at,
+  });
   const filtersActive = statusFilter !== 'all' || search.trim() !== '';
+  const allSelected = rows.length > 0 && rows.every((a) => selected.has(a.id));
+  const hubUrl = getHubUrl();
 
   return (
     <div>
       {ConfirmUI}
       {ToastUI}
-      <PageHeader title="Agents" subtitle="Remote polling agents that monitor devices at sites the server can't reach directly." />
-
-      {/* Enrollment is owned by the NetVault hub (Phase 4) — agents are added there,
-          then appear here for site assignment and device discovery. */}
-      <div style={{
-        fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', margin: '0 0 14px',
-        padding: '8px 12px', background: 'var(--surface-subtle)',
-        border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
-      }}>
-        To add an agent, enroll it from the <strong>NetVault hub → Agents</strong> page. Once it
-        connects it appears here, where you can assign its sites and discover devices.
-      </div>
+      {/* Enrollment is owned by the NetVault hub (Phase 4) — agents are added
+          there, then appear here for site assignment and device discovery. The
+          guidance lives in exactly ONE place per state: this header action when
+          the fleet is populated, the empty-state panel when it isn't. */}
+      <PageHeader title="Agents" subtitle="Remote polling agents that monitor devices at sites the server can't reach directly.">
+        {!!list.length && (
+          <a className="sv-btn ghost sm" href={`${hubUrl}/agents`} target="_blank" rel="noreferrer"
+            title="Agent enrollment is owned by the NocVault hub">
+            Enroll an agent — NetVault Hub ↗
+          </a>
+        )}
+      </PageHeader>
 
       {agents.error && <ErrorBox message={agents.error} />}
 
-      {/* Slim summary row — no cards */}
       {!!list.length && (
-        <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', margin: '2px 0 14px' }}>
-          {list.length} {list.length === 1 ? 'agent' : 'agents'} · {online} online · {devicesAssigned} {devicesAssigned === 1 ? 'device' : 'devices'} assigned
-        </div>
-      )}
-
-      {/* Fleet health rollup — clickable where a matching status filter exists
-          (offline → status filter); disk/version counts have no equivalent
-          filter dimension so they render as static text. */}
-      {hasRollup && (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 14 }}>
-          {offlineCount > 0 && (
-            <button
-              className="sv-chip"
-              onClick={() => setStatusFilter('offline')}
-              style={{
-                height: 28, padding: '0 12px', fontSize: 'var(--text-sm)', display: 'inline-flex', alignItems: 'center',
-                color: 'var(--tint-danger-fg)', background: 'var(--tint-danger)', border: '1px solid transparent',
-              }}
-              title="Filter to offline agents"
-            >
-              {offlineCount} offline
-            </button>
-          )}
+        <div className="sv-cards" style={{ marginBottom: 16 }}>
+          <AgentStatTile
+            icon={<IconAgents width={19} height={19} />} variant="total"
+            value={list.length} label="Fleet"
+            sub={`${devicesAssigned} devices · ${sitesCovered} site${sitesCovered === 1 ? '' : 's'}${disabledCount ? ` · ${disabledCount} disabled` : ''}`}
+            tint={{ bg: 'var(--surface-subtle)', fg: 'var(--text-secondary)' }}
+            // Never rendered as "active": an outline here on first paint would
+            // imply a filter is applied when nothing is filtered.
+            onClick={() => setStatusFilter('all')}
+          />
+          <AgentStatTile
+            icon={<IconArrowUp width={19} height={19} />} variant="up"
+            value={onlineCount} label="Online"
+            sub={`${devicesOnline} device${devicesOnline === 1 ? '' : 's'} polled remotely`}
+            tint={{ bg: 'var(--tint-success)', fg: 'var(--tint-success-fg)' }}
+            active={statusFilter === 'online'}
+            onClick={() => setStatusFilter('online')}
+          />
+          <AgentStatTile
+            icon={<IconArrowDown width={19} height={19} />} variant="down"
+            value={offlineCount} label="Offline"
+            sub={offlineCount ? `${devicesStranded} device${devicesStranded === 1 ? '' : 's'} back on central polling` : 'Whole fleet reporting'}
+            tint={{ bg: 'var(--tint-danger)', fg: 'var(--tint-danger-fg)' }}
+            active={statusFilter === 'offline'}
+            onClick={() => setStatusFilter('offline')}
+          />
+          <AgentStatTile
+            icon={<IconClock width={19} height={19} />} variant="warning"
+            value={staleCount} label="Stale Heartbeat"
+            sub={`Online but silent > ${Math.round(STALE_HEARTBEAT_MS / 1000)}s`}
+            tint={{ bg: 'var(--tint-warn)', fg: 'var(--tint-warn-fg)' }}
+          />
+          <AgentStatTile
+            icon={<IconRepeat width={19} height={19} />} variant="unknown"
+            value={behindCount} label="Version Drift"
+            sub={newestVersion
+              ? `Newest in fleet v${newestVersion}${unknownVersionCount ? ` · ${unknownVersionCount} not reported` : ''}`
+              : 'No agent has reported a version'}
+            tint={{ bg: 'var(--tint-info)', fg: 'var(--tint-info-fg)' }}
+          />
           {highDiskCount > 0 && (
-            <span
-              className="sv-chip"
-              style={{
-                height: 28, padding: '0 12px', fontSize: 'var(--text-sm)', display: 'inline-flex', alignItems: 'center',
-                color: 'var(--tint-warn-fg)', background: 'var(--tint-warn)', cursor: 'default',
-              }}
-              title={`Agent(s) with host disk usage at or above ${DISK_WARN_PCT}%`}
-            >
-              {highDiskCount} over {DISK_WARN_PCT}% disk
-            </span>
+            <AgentStatTile
+              icon={<IconWarning width={19} height={19} />} variant="warning"
+              value={highDiskCount} label="Disk Pressure"
+              sub={`Host disk ≥ ${DISK_WARN_PCT}% full`}
+              tint={{ bg: 'var(--tint-warn)', fg: 'var(--tint-warn-fg)' }}
+            />
           )}
         </div>
       )}
@@ -259,10 +338,10 @@ export default function AgentsPage() {
         >
           <input
             className="sv-input"
-            placeholder="Search name or hostname…"
+            placeholder="Search name, hostname or IP…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            style={{ height: 32, padding: '0 10px', fontSize: 'var(--text-base)', minWidth: 220 }}
+            style={{ height: 32, padding: '0 10px', fontSize: 'var(--text-base)', minWidth: 240 }}
           />
           <select
             className="sv-select"
@@ -275,6 +354,12 @@ export default function AgentsPage() {
             <option value="offline">Offline</option>
             <option value="disabled">Disabled</option>
           </select>
+          <span style={{ flex: 1 }} />
+          <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>
+            {rows.length === list.length
+              ? `${list.length} agent${list.length === 1 ? '' : 's'}`
+              : `${rows.length} of ${list.length} agents`}
+          </span>
         </div>
       )}
 
@@ -294,20 +379,46 @@ export default function AgentsPage() {
       )}
 
       {agents.loading && !agents.data ? (
-        <div className="sv-agent-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
-          <CardSkeleton count={3} height={120} />
+        <div className="sv-panel" style={{ padding: 0 }}>
+          <TableSkeleton rows={4} cols={7} />
         </div>
-      ) : filtered.length ? (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
-          {filtered.map((a) => (
-            <AgentCard
-              key={a.id}
-              agent={a}
-              onDelete={handleDelete}
-              selected={selected.has(a.id)}
-              onToggleSelect={() => toggleSelect(a.id)}
-            />
-          ))}
+      ) : rows.length ? (
+        <div className="sv-panel" style={{ padding: 0, overflowX: 'auto' }}>
+          <table className="sv-table">
+            <thead>
+              <tr>
+                <th style={{ width: 36 }}>
+                  <input
+                    type="checkbox"
+                    aria-label="Select all agents"
+                    checked={allSelected}
+                    onChange={() => setSelected(allSelected ? new Set() : new Set(rows.map((a) => a.id)))}
+                    style={{ cursor: 'pointer' }}
+                  />
+                </th>
+                <SortTh label="Agent" col="name" sort={sort} onSort={onSort} />
+                <SortTh label="Host" col="host" sort={sort} onSort={onSort} />
+                <SortTh label="Sites" col="sites" sort={sort} onSort={onSort} align="right" />
+                <SortTh label="Devices" col="devices" sort={sort} onSort={onSort} align="right" />
+                <SortTh label="Version" col="version" sort={sort} onSort={onSort} />
+                <SortTh label="Last seen" col="seen" sort={sort} onSort={onSort} />
+                <th style={{ textAlign: 'right' }}>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((a) => (
+                <AgentRow
+                  key={a.id}
+                  agent={a}
+                  stale={isStale(a, now)}
+                  behind={!!(newestVersion && a.version && a.version !== newestVersion)}
+                  onDelete={handleDelete}
+                  selected={selected.has(a.id)}
+                  onToggleSelect={() => toggleSelect(a.id)}
+                />
+              ))}
+            </tbody>
+          </table>
         </div>
       ) : list.length && filtersActive ? (
         <div className="sv-panel" style={{ padding: 0 }}>
@@ -320,115 +431,242 @@ export default function AgentsPage() {
           />
         </div>
       ) : (
-        <div className="sv-panel" style={{ padding: 0 }}>
-          <EmptyState
-            icon={<IconAgents width={26} height={26} />}
-            title="No agents yet"
-            message="Enroll an agent from the NetVault hub's Agents page. Once it connects it appears here, where you can assign its sites and discover devices."
-          />
-        </div>
+        <AgentsEmptyState hubUrl={hubUrl} />
       )}
     </div>
   );
 }
 
-// ── Single agent card (top-level component) ────────────────────
-function AgentCard({ agent, onDelete, selected, onToggleSelect }: {
-  agent: Agent; onDelete: (a: Agent) => void; selected: boolean; onToggleSelect: () => void;
+// ── Fleet KPI tile (top-level component) ───────────────────────
+// Same shape as the Services page's StatTile — the suite's bordered card with a
+// status-keyed LEFT border (CLAUDE.md) plus a tinted icon disc. Rendered as a
+// <button> when it doubles as a status filter, so it stays keyboard-reachable.
+function AgentStatTile({ icon, value, label, sub, variant, tint, onClick, active }: {
+  icon: React.ReactNode;
+  value: number | string;
+  label: string;
+  sub?: string;
+  variant: 'total' | 'up' | 'down' | 'warning' | 'unknown';
+  tint: { bg: string; fg: string };
+  onClick?: () => void;
+  active?: boolean;
 }) {
+  const body = (
+    <>
+      <span
+        aria-hidden
+        style={{
+          width: 42, height: 42, flex: '0 0 auto',
+          borderRadius: '50%', /* intentional: true circle (stat tile icon) */
+          display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+          background: tint.bg, color: tint.fg,
+        }}
+      >
+        {icon}
+      </span>
+      <span style={{ minWidth: 0, textAlign: 'left' }}>
+        <span className="num" style={{ display: 'block', lineHeight: 1.1 }}>{value}</span>
+        <span className="label" style={{ display: 'block' }}>{label}</span>
+        {sub && (
+          <span className="sv-muted" style={{ display: 'block', fontSize: 'var(--text-sm)', marginTop: 2 }}>
+            {sub}
+          </span>
+        )}
+      </span>
+    </>
+  );
+  const style: React.CSSProperties = {
+    display: 'flex', alignItems: 'center', gap: 14, font: 'inherit', textAlign: 'left',
+    ...(onClick ? { cursor: 'pointer', width: '100%' } : {}),
+    ...(active && onClick ? { outline: '2px solid var(--primary)', outlineOffset: -2 } : {}),
+  };
+  if (!onClick) return <div className={`sv-card ${variant}`} style={style}>{body}</div>;
   return (
-    <div
-      style={{
-        background: 'var(--bg-card)',
-        border: `1px solid ${selected ? 'var(--primary)' : 'var(--border)'}`,
-        borderRadius: 'var(--radius-sm)',
-        padding: '12px 16px',
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 6,
-        minHeight: 120,
-      }}
-    >
-      {/* line 1 — checkbox + status dot + name + vendor badge */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+    <button type="button" className={`sv-card ${variant}`} style={style} onClick={onClick}
+      aria-pressed={!!active} title={`Filter to ${label.toLowerCase()}`}>
+      {body}
+    </button>
+  );
+}
+
+// ── One agent row (top-level component) ────────────────────────
+function AgentRow({ agent, stale, behind, onDelete, selected, onToggleSelect }: {
+  agent: Agent;
+  stale: boolean;
+  behind: boolean;
+  onDelete: (a: Agent) => void;
+  selected: boolean;
+  onToggleSelect: () => void;
+}) {
+  const siteCount = (agent.sites || []).length;
+  const siteNames = (agent.sites || []).map((s) => s.site_name || `#${s.site_id}`).join(', ');
+  const disk = agent.health?.disk_pct ?? null;
+  return (
+    <tr style={selected ? { background: 'var(--surface-subtle)' } : undefined}>
+      <td>
         <input
           type="checkbox"
           checked={selected}
           onChange={onToggleSelect}
           aria-label={`select ${agent.name}`}
-          style={{ flex: 'none', cursor: 'pointer' }}
+          style={{ cursor: 'pointer' }}
         />
-        <span
-          aria-label={`status: ${agent.status}`}
-          title={agent.status}
-          style={{ width: 8, height: 8, borderRadius: '50%', flex: 'none', background: dotColor(agent.status) }}
-        />
-        <Link
-          href={`/agents/${agent.id}`}
-          style={{ fontWeight: 600, fontSize: 'var(--text-md)', color: 'var(--text-primary)', textDecoration: 'none', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-        >
-          {agent.name}
-        </Link>
-        {agent.disabled && (
+      </td>
+      <td>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           <span
-            style={{
-              fontSize: 'var(--text-xs)', color: 'var(--red)', border: '1px solid var(--red)',
-              borderRadius: 'var(--radius-sm)', padding: '1px 7px', flex: 'none', whiteSpace: 'nowrap',
-            }}
-          >
-            Disabled
-          </span>
-        )}
-        {agent.hub_agent_id && (
-          <span
-            title="Enrolled via the NetVault hub — restart and logs run from the hub's Agents page"
-            style={{
-              fontSize: 'var(--text-xs)', color: 'var(--tint-info-fg)', background: 'var(--tint-info)',
-              borderRadius: 'var(--radius-sm)', padding: '1px 7px', flex: 'none', whiteSpace: 'nowrap',
-            }}
-          >
-            Hub-managed
-          </span>
-        )}
-        <span
-          style={{
-            fontSize: 'var(--text-xs)', color: 'var(--text-muted)', border: '1px solid var(--border)',
-            borderRadius: 'var(--radius-sm)', padding: '1px 7px', flex: 'none', whiteSpace: 'nowrap',
-          }}
-        >
-          SpanVault
-        </span>
-      </div>
-
-      {/* line 2 — IP · hostname */}
-      <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-        {agent.ip_address || '—'} · {agent.hostname || 'no hostname'}
-      </div>
-
-      {/* line 3 — devices · version */}
-      <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-primary)' }}>
-        {agent.device_count} {agent.device_count === 1 ? 'device' : 'devices'} · {agent.version ? `v${agent.version}` : 'v—'}
-      </div>
-
-      {/* line 4 — last seen */}
-      <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>
-        Last seen: {fmtRel(agent.last_seen_at)}
-      </div>
-
-      {/* footer — Configure (left) / Delete (right) */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 'auto', paddingTop: 4 }}>
+            aria-label={`status: ${agent.status}`}
+            title={agent.status}
+            style={{ width: 8, height: 8, borderRadius: '50%', flex: 'none', background: dotColor(agent.status) }}
+          />
+          <Link href={`/agents/${agent.id}`} style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
+            {agent.name}
+          </Link>
+          {agent.disabled && <RowBadge text="Disabled" bg="var(--tint-danger)" fg="var(--tint-danger-fg)" />}
+          {stale && (
+            <RowBadge
+              text="Stale heartbeat" bg="var(--tint-warn)" fg="var(--tint-warn-fg)"
+              title="Still marked online, but its heartbeat stopped landing"
+            />
+          )}
+          {agent.hub_agent_id && (
+            <RowBadge
+              text="Hub-managed" bg="var(--tint-info)" fg="var(--tint-info-fg)"
+              title="Enrolled via the NetVault hub — restart and logs run from the hub's Agents page"
+            />
+          )}
+        </div>
+      </td>
+      <td>
+        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--text-sm)' }}>{agent.ip_address || '—'}</div>
+        <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>
+          {agent.hostname || 'no hostname'}
+          {disk != null && disk >= DISK_WARN_PCT && (
+            <span style={{ color: 'var(--red)', fontWeight: 700 }}>{` · disk ${disk}%`}</span>
+          )}
+        </div>
+      </td>
+      <td style={{ textAlign: 'right' }} title={siteNames || 'No sites assigned'}>
+        {siteCount || <span style={{ color: 'var(--text-muted)' }}>none</span>}
+      </td>
+      <td style={{ textAlign: 'right' }}>{agent.device_count}</td>
+      <td>
+        {agent.version
+          ? <span style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--text-sm)', color: behind ? 'var(--yellow)' : undefined }}
+              title={behind ? 'Behind the newest version running in this fleet' : undefined}>
+              v{agent.version}
+            </span>
+          : <span style={{ color: 'var(--text-muted)' }}>—</span>}
+      </td>
+      <td style={{ color: 'var(--text-muted)' }} title={agent.last_seen_at ? fmtTime(agent.last_seen_at) : undefined}>
+        {fmtRel(agent.last_seen_at)}
+      </td>
+      <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
         <Link href={`/agents/${agent.id}`} className="sv-btn ghost sm">Configure</Link>
         {/* Hub-enrolled agents are deleted from the hub, which owns their identity
             and fans the removal back here — same split as restart/logs. */}
         <button
           className="sv-btn danger sm"
+          style={{ marginLeft: 6 }}
           onClick={() => onDelete(agent)}
           disabled={!!agent.hub_agent_id}
           title={agent.hub_agent_id ? 'Managed by NocVault Hub — delete from the hub\'s Agents page' : undefined}
         >
           Delete
         </button>
+      </td>
+    </tr>
+  );
+}
+
+function RowBadge({ text, bg, fg, title }: { text: string; bg: string; fg: string; title?: string }) {
+  return (
+    <span
+      title={title}
+      style={{
+        fontSize: 'var(--text-xs)', fontWeight: 600, color: fg, background: bg,
+        borderRadius: 'var(--radius-sm)', padding: '1px 7px', whiteSpace: 'nowrap',
+      }}
+    >
+      {text}
+    </span>
+  );
+}
+
+// ── Empty state (top-level component) ──────────────────────────
+// The single place the enrollment guidance lives when no agent exists (the
+// populated view carries it as the header action instead — it used to be
+// spelled out in a banner AND repeated verbatim in this panel).
+function AgentsEmptyState({ hubUrl }: { hubUrl: string }) {
+  return (
+    <div className="sv-panel">
+      <div style={{
+        display: 'flex', flexDirection: 'column', alignItems: 'center',
+        textAlign: 'center', padding: '36px 24px 28px',
+      }}>
+        <div style={{
+          width: 56, height: 56, borderRadius: 'var(--radius)', marginBottom: 16,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          background: 'var(--bg-primary)', border: '1px solid var(--border)', color: 'var(--text-muted)',
+        }}>
+          <IconAgents width={26} height={26} />
+        </div>
+        <div style={{ fontSize: 'var(--text-md)', fontWeight: 600, color: 'var(--text-primary)' }}>
+          No agents enrolled
+        </div>
+        <div style={{ fontSize: 'var(--text-base)', color: 'var(--text-muted)', marginTop: 6, maxWidth: 520 }}>
+          SpanVault polls remote sites through the unified NocVault agent, which is enrolled and
+          updated by the hub. Nothing is assigned to SpanVault yet — everything here stays empty
+          until an agent connects.
+        </div>
+        <a className="sv-btn" style={{ marginTop: 18 }} href={`${hubUrl}/agents`} target="_blank" rel="noreferrer">
+          Enroll an agent — NetVault Hub ↗
+        </a>
       </div>
+
+      <div style={{
+        display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14,
+        borderTop: '1px solid var(--border)', paddingTop: 18,
+      }}>
+        <EmptyStep
+          n={1} title="Enroll on the hub"
+          body="Install the NocVault agent from NetVault → Agents. It registers with the hub, which owns its identity, version and restart controls."
+        />
+        <EmptyStep
+          n={2} title="Assign its sites"
+          body="Once it connects it appears here. Assign the sites it should own and every monitored device at those sites moves onto it."
+        />
+        <EmptyStep
+          n={3} title="Discover devices"
+          body="Run a subnet sweep from the agent and adopt what it finds straight into monitoring, keeping the SNMP credentials it discovered with."
+        />
+      </div>
+    </div>
+  );
+}
+
+function EmptyStep({ n, title, body }: { n: number; title: string; body: string }) {
+  return (
+    <div style={{ display: 'flex', gap: 10 }}>
+      <span
+        aria-hidden
+        style={{
+          width: 22, height: 22, flex: '0 0 auto', borderRadius: '50%', /* intentional: numbered step disc */
+          display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+          background: 'var(--surface-subtle)', border: '1px solid var(--border)',
+          color: 'var(--text-secondary)', fontSize: 'var(--text-xs)', fontWeight: 700,
+        }}
+      >
+        {n}
+      </span>
+      <span>
+        <span style={{ display: 'block', fontSize: 'var(--text-base)', fontWeight: 600, color: 'var(--text-primary)' }}>
+          {title}
+        </span>
+        <span style={{ display: 'block', fontSize: 'var(--text-sm)', color: 'var(--text-muted)', marginTop: 3 }}>
+          {body}
+        </span>
+      </span>
     </div>
   );
 }

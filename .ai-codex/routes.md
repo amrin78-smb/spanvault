@@ -42,7 +42,10 @@ deliberately skip it).
 - `POST /api/sso` [public] [external] — server-to-server proxy of hub's `/api/auth/sso-verify`; the ONE deliberately-unauthenticated write (it's how a session is created); exempt from RBAC write-gate and license write-block
 
 ## Dashboard
-- `GET /api/dashboard/summary` [auth] [db] — up/down/warning/unknown counts + agent-offline + active alerts + agent online count
+- `GET /api/dashboard/summary` [auth] [db] — up/down/warning/unknown counts + agent-offline + active alerts (`active_alerts` total plus the `active_alerts_critical`/`active_alerts_warning` severity split the dashboard Overview uses) + agent online count
+- `GET /api/dashboard/kpi-trends` [auth] [db] — prior-period series + delta per KPI tile (sparklines); reads `availability_summary` joined to `monitored_devices`, site-scoped
+- `GET /api/dashboard/alert-histogram` [auth] [db] — alert counts bucketed by hour, severity-split; `?window=24h|7d`, site-scoped
+- `GET /api/dashboard/noisiest` [auth] [db] — top-N devices by alert count; `?window=24h|7d`, `?limit=` (capped 20), site-scoped
 - `GET /api/dashboard/agent-offline` [auth] [db] — devices unreachable because their polling agent is offline, grouped by agent
 - `GET /api/dashboard/problems` [auth] [db] — every device currently down/warning, worst first; suppressed devices hidden (covered by their gateway's entry)
 - `GET /api/dashboard/top-worst` [auth] [db] — top 10 by avg response time, last 1h
@@ -113,6 +116,9 @@ deliberately skip it).
 - `GET /api/alerts` [auth] [db] — site-scoped via device OR service-check site (device_id can be NULL)
 - `POST /api/alerts/:id/acknowledge` [auth+write:site_admin+] [db] — attributed to verified session user, not client-supplied
 - `POST /api/alerts/:id/resolve` [auth+write:site_admin+] [db]
+- `POST /api/alerts/bulk-acknowledge` [auth+write:site_admin+] [db] — batch ack by id list; each id re-checked against the caller's sites via `alertWriteSiteClause`, out-of-scope ids are skipped not failed
+- `POST /api/alerts/bulk-resolve` [auth+write:site_admin+] [db] — batch resolve, same scoping rule as bulk-acknowledge
+- `GET /api/alerts/volume` [auth] [db] — hourly alert volume for the alerts-page strip; `?hours=` (default 24, max 168), gap-filled with `generate_series`, site-scoped
 - `GET /api/alert-rules` [auth] [db]
 - `GET /api/alert-rules/effective/:device_id` [auth] [db] — effective ruleset after global->site->device inheritance
 - `GET /api/alert-rules/effective-service/:service_check_id` [auth] [db] — same, namespaced to SERVICE_METRICS
@@ -122,7 +128,7 @@ deliberately skip it).
 
 ## Network map (devices grouped by site) + interactive map designer
 - `GET /api/map` [auth] [db] — legacy simple map, devices grouped by site
-- `GET /api/maps` [auth] [db] — list with device count
+- `GET /api/maps` [auth] [db] — list with device count, a live status rollup (`linked_count` + `up_count`/`down_count`/`warning_count`/`unknown_count`) and a coarse `preview` ({nodes:[{x,y,w,h,s,i}], links:[{x1,y1,x2,y2}], shapes:[{x,y,w,h}]}, canvas coords) the /maps cards draw as a real thumbnail. Three extra grouped queries total, NOT one per map; capped at 400 nodes / 400 links / 80 shapes per map; `map_shapes` read is try/caught for un-migrated DBs. Link endpoints resolve via `from_kind`/`to_kind` — map_devices and map_shapes ids come from independent sequences and collide
 - `POST /api/maps` [auth+write:site_admin+] [db]
 - `GET /api/maps/:id` [auth] [db] — full map: properties + content + live device status
 - `PUT /api/maps/:id` [auth+write:site_admin+] [db] — properties only
@@ -134,9 +140,9 @@ deliberately skip it).
 
 ## Topology discovery (LLDP/CDP)
 - `POST /api/topology/discover` [auth+write:admin+] [external] — triggers async job, poll /status for completion
-- `GET /api/topology/status` [auth] [db] — live run flag + derived last-run/link counts
-- `GET /api/topology/links` [auth] [db] — all discovered links, both ends joined; `?device_id=` scopes
-- `GET /api/topology/map` [auth] [db] — map-friendly nodes (only devices with >=1 link) + edges
+- `GET /api/topology/status` [auth] [db] [site-scoped: fd.site_id] — live run flag + derived last-run/link counts
+- `GET /api/topology/links` [auth] [db] [site-scoped: fd.site_id] — all discovered links, both ends joined; `?device_id=` scopes
+- `GET /api/topology/map` [auth] [db] [site-scoped: fd.site_id] — `{nodes, edges}` for the Visual Map tab. Nodes = every endpoint with >=1 link: the monitored devices that discovered links AND the discovered NEIGHBOURS. A neighbour that is not in `monitored_devices` is emitted with `managed:false` and a **synthetic negative `device_id`** valid only inside that response (never link it to /devices/[id]); it inherits the discovering device's `site_name` and `status:'unknown'`. Monitored nodes are `managed:true` with their real id/status/is_gateway. Edges are `dedupeEdges`d (one line per undirected pair+protocol)
 - `POST /api/topology/apply-to-map/:map_id` [auth+write:admin+] [db] — grid-places new devices, preserves positioned ones, recreates connections
 - `POST /api/topology/apply-dependencies` [auth+write:admin+] [db] — suggests site gateways from topology fan-out
 
@@ -195,6 +201,7 @@ deliberately skip it).
 - `GET /api/reports/sla/summary` [auth] [db]
 - `GET /api/reports/bandwidth` [auth] [db]
 - `GET /api/reports/saved` [auth] [db] — per-user via created_by
+- `GET /api/reports/schedules` [auth] [db] — scheduled-report list for the Reports page: `saved_reports` + LATERAL last `report_history` run (run_at/status/error), site-scoped
 - `POST /api/reports/saved` [auth+write:site_admin+] [db]
 - `PUT /api/reports/saved/:id` [auth+write:site_admin+] [db] — recomputes next_run_at
 - `POST /api/reports/saved/:id/run-now` [auth+write:site_admin+] [db+external] — runs + emails immediately, doesn't change next_run_at

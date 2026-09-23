@@ -135,3 +135,50 @@ export const IconArrowDown = (p: SVGProps<SVGSVGElement>) => (
 export const IconPlug = (p: SVGProps<SVGSVGElement>) => (
   <svg {...base(p)}><path d="M9 2v6" /><path d="M15 2v6" /><path d="M6 8h12v3a6 6 0 0 1-12 0z" /><path d="M12 17v5" /></svg>
 );
+// ── Added for the Reports page emoji→SVG sweep + its schedule/preview panels ──
+// Same 24×24 stroke-based currentColor style as everything above. ADDITIVE only.
+export const IconClipboard = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base(p)}><rect x="8" y="2" width="8" height="4" rx="1" /><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" /><line x1="8" y1="12" x2="16" y2="12" /><line x1="8" y1="16" x2="13" y2="16" /></svg>
+);
+export const IconBuilding = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base(p)}><path d="M4 22V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18" /><path d="M16 9h2a2 2 0 0 1 2 2v11" /><line x1="2" y1="22" x2="22" y2="22" /><line x1="8" y1="6" x2="8" y2="6.01" /><line x1="12" y1="6" x2="12" y2="6.01" /><line x1="8" y1="11" x2="8" y2="11.01" /><line x1="12" y1="11" x2="12" y2="11.01" /><line x1="8" y1="16" x2="8" y2="16.01" /><line x1="12" y1="16" x2="12" y2="16.01" /></svg>
+);
+export const IconCheckCircle = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base(p)}><circle cx="12" cy="12" r="9" /><polyline points="8.5 12.5 11 15 15.5 9.5" /></svg>
+);
+export const IconTrendingUp = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base(p)}><polyline points="22 7 13.5 15.5 8.5 10.5 2 17" /><polyline points="16 7 22 7 22 13" /></svg>
+);
+export const IconUsers = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base(p)}><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M22 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
+);
+export const IconActivity = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base(p)}><polyline points="22 12 18 12 15 21 9 3 6 12 2 12" /></svg>
+);
+export const IconGauge = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base(p)}><path d="M3 18a9 9 0 1 1 18 0" /><line x1="12" y1="18" x2="16.5" y2="11.5" /><line x1="3" y1="18" x2="21" y2="18" /></svg>
+);
+export const IconTransfer = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base(p)}><polyline points="17 4 21 8 17 12" /><line x1="21" y1="8" x2="4" y2="8" /><polyline points="7 12 3 16 7 20" /><line x1="3" y1="16" x2="20" y2="16" /></svg>
+);
+export const IconAntenna = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base(p)}><path d="M5 10a7 7 0 0 1 2-5" /><path d="M19 10a7 7 0 0 0-2-5" /><path d="M8.5 9.5a3.5 3.5 0 0 1 1-2.5" /><path d="M15.5 9.5a3.5 3.5 0 0 0-1-2.5" /><circle cx="12" cy="11" r="1.8" /><path d="M11 12.6 8 22" /><path d="m13 12.6 3 9.4" /><line x1="9.4" y1="18.5" x2="14.6" y2="18.5" /></svg>
+);
+export const IconCalendar = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base(p)}><rect x="3" y="5" width="18" height="16" rx="2" /><line x1="3" y1="10" x2="21" y2="10" /><line x1="8" y1="3" x2="8" y2="7" /><line x1="16" y1="3" x2="16" y2="7" /></svg>
+);
+export const IconMail = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base(p)}><rect x="2" y="4" width="20" height="16" rx="2" /><polyline points="2.5 6 12 13 21.5 6" /></svg>
+);
+export const IconDatabase = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base(p)}><ellipse cx="12" cy="5" rx="8" ry="3" /><path d="M4 5v6c0 1.66 3.58 3 8 3s8-1.34 8-3V5" /><path d="M4 11v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6" /></svg>
+);
+export const IconInfo = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base(p)}><circle cx="12" cy="12" r="9" /><line x1="12" y1="11" x2="12" y2="16" /><line x1="12" y1="8" x2="12.01" y2="8" /></svg>
+);
+export const IconHistory = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base(p)}><path d="M3 12a9 9 0 1 0 2.64-6.36L3 8" /><polyline points="3 3 3 8 8 8" /><path d="M12 8v4.5l3 1.8" /></svg>
+);
+export const IconLayers = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base(p)}><polygon points="12 2 22 8 12 14 2 8 12 2" /><polyline points="2 16 12 22 22 16" /><polyline points="2 12 12 18 22 12" /></svg>
+);

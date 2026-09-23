@@ -1,11 +1,12 @@
 'use client';
 
-import { Fragment, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { useApi, apiSend } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
-import { Loading, ErrorBox, Empty, fmtRel, fmtTime, useTableSort, sortRows, SortTh } from '@/components/ui';
+import { Loading, ErrorBox, Empty, EmptyState, fmtRel, fmtTime, useTableSort, sortRows, SortTh } from '@/components/ui';
 import { StatusDot } from '@/components/StatusDot';
 import TopologyMapView from '@/components/TopologyMapView';
+import type { TopoLayout } from '@/components/TopologyMapView';
 
 // ── API response types ─────────────────────────────────────────
 interface TopologyStatus {
@@ -15,12 +16,19 @@ interface TopologyStatus {
 }
 
 interface TopologyMapNode {
+  // Positive = a real monitored_devices.id. Negative = a synthetic id for an
+  // UNMANAGED neighbour (see GET /api/topology/map) — never link it to
+  // /devices/[id].
   device_id: number;
   name: string;
   ip: string;
   site_name: string | null;
   status: string;
   is_gateway: boolean;
+  managed: boolean;
+  // Added client-side by the map tab's filter, never by the API: how many of
+  // this node's links point at a node the current filter removed.
+  hidden_links?: number;
 }
 
 interface TopologyMapEdge {
@@ -110,12 +118,70 @@ function exportLinksCsv(rows: TopologyLink[]): void {
   URL.revokeObjectURL(url);
 }
 
+// Shown on the two actions that need a link between two MONITORED devices.
+const MANAGED_ONLY_HINT =
+  'Needs at least one discovered link between two monitored devices. Every neighbour discovered here is unmanaged, so there is nothing to place or analyse.';
+
+// ── View state ↔ URL query string ──────────────────────────────
+// The whole canvas scope (tab, site selection, layout, monitored-only, search)
+// lives in the query string so an operator can bookmark or paste "the SMT
+// access tier" instead of describing it. Written with history.replaceState —
+// NOT useSearchParams(), which would force this statically-prerendered page
+// dynamic (the same reason the wireless page reads window.location directly).
+const LAYOUTS: { key: TopoLayout; label: string; hint: string }[] = [
+  { key: 'sites', label: 'Sites', hint: 'Group nodes into a boundary box per site' },
+  {
+    key: 'tiered',
+    label: 'Tiered',
+    hint: 'Hierarchical core → distribution → access, inferred from link fan-out',
+  },
+  { key: 'force', label: 'Force', hint: 'Force-directed spring layout (deterministic)' },
+];
+
+const UNASSIGNED_SITE = 'Unassigned';
+
+function siteLabel(n: TopologyMapNode): string {
+  return n.site_name && n.site_name.trim() ? n.site_name : UNASSIGNED_SITE;
+}
+
+function sortSiteNames(a: string, b: string): number {
+  if (a === UNASSIGNED_SITE) return 1;
+  if (b === UNASSIGNED_SITE) return -1;
+  return a.localeCompare(b);
+}
+
+// Merge a set of params into the current URL without touching the others (the
+// map tab and the link table both write here) and without a history entry.
+function patchQuery(patch: Record<string, string | null>): void {
+  if (typeof window === 'undefined') return;
+  const sp = new URLSearchParams(window.location.search);
+  Object.keys(patch).forEach((k: string) => {
+    const v = patch[k];
+    if (v === null || v === '') sp.delete(k);
+    else sp.set(k, v);
+  });
+  const qs = sp.toString();
+  window.history.replaceState({}, '', window.location.pathname + (qs ? '?' + qs : ''));
+}
+
 // ════════════════════════════════════════════════════════════
 // Page
 // ════════════════════════════════════════════════════════════
 export default function TopologyPage() {
   const { canEdit } = useRbac();
   const [tab, setTab] = useState<'map' | 'links'>('map');
+  // Deep-link/bookmark support: ?tab=links lands on the Link Table. Read on
+  // mount only (see the patchQuery comment above for why not useSearchParams).
+  useEffect(() => {
+    const t = new URLSearchParams(window.location.search).get('tab');
+    if (t === 'links' || t === 'map') setTab(t);
+  }, []);
+
+  function selectTab(next: 'map' | 'links') {
+    setTab(next);
+    patchQuery({ tab: next === 'map' ? null : next });
+  }
+
   const status = useApi<TopologyStatus>('/api/topology/status', 0);
   const [running, setRunning] = useState(false);
   const [toast, setToast] = useState<React.ReactNode | null>(null);
@@ -182,16 +248,18 @@ export default function TopologyPage() {
       {status.error && <ErrorBox message={status.error} />}
 
       <div className="sv-tabs sticky" style={{ marginBottom: 0 }}>
-        <button className={`sv-tab ${tab === 'map' ? 'active' : ''}`} onClick={() => setTab('map')}>
+        <button className={`sv-tab ${tab === 'map' ? 'active' : ''}`} onClick={() => selectTab('map')}>
           Visual Map
         </button>
-        <button className={`sv-tab ${tab === 'links' ? 'active' : ''}`} onClick={() => setTab('links')}>
+        <button className={`sv-tab ${tab === 'links' ? 'active' : ''}`} onClick={() => selectTab('links')}>
           Link Table
         </button>
       </div>
 
       <div style={{ flex: 1, minHeight: 0 }}>
-        {tab === 'map' ? <MapTab canEdit={canEdit} flash={flash} /> : <LinkTable canEdit={canEdit} flash={flash} />}
+        {tab === 'map'
+          ? <MapTab canEdit={canEdit} flash={flash} status={last || null} />
+          : <LinkTable canEdit={canEdit} flash={flash} />}
       </div>
     </div>
   );
@@ -201,15 +269,69 @@ export default function TopologyPage() {
 function MapTab({
   canEdit,
   flash,
+  status,
 }: {
   canEdit: boolean;
   flash: (node: React.ReactNode) => void;
+  // The same /api/topology/status payload the header bar renders. The map must
+  // not contradict it: an empty canvas that says "run topology discovery" while
+  // the header right above it reports "69 links · 8 devices" is the bug this
+  // tab shipped with for its whole life.
+  status: TopologyStatus | null;
 }) {
   const tmap = useApi<TopologyMap>('/api/topology/map', 0);
   const maps = useApi<MapOption[]>('/api/maps', 0);
   const [showApply, setShowApply] = useState(false);
   const [suggestions, setSuggestions] = useState<DependencySuggestion[] | null>(null);
   const [applyingDeps, setApplyingDeps] = useState(false);
+
+  // ── Canvas scope (all four mirrored into the query string) ────────────
+  const [layout, setLayout] = useState<TopoLayout>('sites');
+  const [siteSel, setSiteSel] = useState<string[]>([]); // [] = every site
+  const [monitoredOnly, setMonitoredOnly] = useState(false);
+  const [q, setQ] = useState('');
+
+  useEffect(() => {
+    const sp = new URLSearchParams(window.location.search);
+    const l = sp.get('layout');
+    if (l === 'sites' || l === 'tiered' || l === 'force') setLayout(l);
+    const s = sp.get('sites');
+    if (s) setSiteSel(s.split(',').map((x: string) => x.trim()).filter(Boolean));
+    if (sp.get('managed') === '1') setMonitoredOnly(true);
+    const qq = sp.get('q');
+    if (qq) setQ(qq);
+  }, []);
+
+  function chooseLayout(next: TopoLayout) {
+    setLayout(next);
+    patchQuery({ layout: next === 'sites' ? null : next });
+  }
+  function toggleSite(name: string) {
+    const next = siteSel.includes(name)
+      ? siteSel.filter((x: string) => x !== name)
+      : siteSel.concat(name);
+    setSiteSel(next);
+    patchQuery({ sites: next.length ? next.join(',') : null });
+  }
+  function selectAllSites() {
+    setSiteSel([]);
+    patchQuery({ sites: null });
+  }
+  function toggleMonitoredOnly() {
+    const next = !monitoredOnly;
+    setMonitoredOnly(next);
+    patchQuery({ managed: next ? '1' : null });
+  }
+  function changeQ(v: string) {
+    setQ(v);
+    patchQuery({ q: v || null });
+  }
+  function clearFilters() {
+    setSiteSel([]);
+    setMonitoredOnly(false);
+    setQ('');
+    patchQuery({ sites: null, managed: null, q: null });
+  }
 
   async function applyDependencies() {
     setApplyingDeps(true);
@@ -223,6 +345,64 @@ function MapTab({
     }
   }
 
+  // ── Derived view. Every filter is CLIENT-SIDE on purpose: the whole graph is
+  //    52 nodes / 47 edges, so a round trip per chip click would be slower and
+  //    would need three new query params on a route three other things read.
+  const allNodes: TopologyMapNode[] = tmap.data ? tmap.data.nodes : [];
+  const allEdges: TopologyMapEdge[] = tmap.data ? tmap.data.edges : [];
+
+  const siteRows = useMemo(() => {
+    const total = new Map<string, number>();
+    const mon = new Map<string, number>();
+    allNodes.forEach((n: TopologyMapNode) => {
+      const s = siteLabel(n);
+      total.set(s, (total.get(s) || 0) + 1);
+      if (n.managed !== false) mon.set(s, (mon.get(s) || 0) + 1);
+    });
+    return Array.from(total.keys())
+      .sort(sortSiteNames)
+      .map((name: string) => ({
+        name,
+        count: total.get(name) || 0,
+        monitored: mon.get(name) || 0,
+      }));
+  }, [allNodes]);
+
+  const view = useMemo(() => {
+    const sel = new Set(siteSel);
+    const kept = allNodes.filter(
+      (n: TopologyMapNode) =>
+        (!monitoredOnly || n.managed !== false) && (sel.size === 0 || sel.has(siteLabel(n))),
+    );
+    const keptIds = new Set(kept.map((n: TopologyMapNode) => n.device_id));
+    const edges = allEdges.filter(
+      (e: TopologyMapEdge) => keptIds.has(e.from_device_id) && keptIds.has(e.to_device_id),
+    );
+    // How many of each surviving node's links point at a node the filter
+    // removed — drawn as a "+N" badge so a scoped canvas never reads as though
+    // a switch genuinely has fewer neighbours than it does.
+    const hidden = new Map<number, number>();
+    allEdges.forEach((e: TopologyMapEdge) => {
+      const a = keptIds.has(e.from_device_id);
+      const b = keptIds.has(e.to_device_id);
+      if (a && !b) hidden.set(e.from_device_id, (hidden.get(e.from_device_id) || 0) + 1);
+      else if (b && !a) hidden.set(e.to_device_id, (hidden.get(e.to_device_id) || 0) + 1);
+    });
+    const nodes = kept.map((n: TopologyMapNode) => {
+      const h = hidden.get(n.device_id);
+      return h ? { ...n, hidden_links: h } : n;
+    });
+    const needle = q.trim().toLowerCase();
+    const matched = needle
+      ? nodes.filter((n: TopologyMapNode) =>
+          [n.name, n.ip, n.site_name].filter(Boolean).join(' ').toLowerCase().includes(needle),
+        ).length
+      : 0;
+    const monitoredShown = nodes.filter((n: TopologyMapNode) => n.managed !== false).length;
+    const sitesShown = new Set(nodes.map((n: TopologyMapNode) => siteLabel(n))).size;
+    return { nodes, edges, matched, monitoredShown, sitesShown };
+  }, [allNodes, allEdges, siteSel, monitoredOnly, q]);
+
   if (tmap.loading && !tmap.data) {
     return <div className="sv-panel"><Loading /></div>;
   }
@@ -231,20 +411,86 @@ function MapTab({
   }
 
   const hasGraph = !!tmap.data && tmap.data.edges.length > 0 && tmap.data.nodes.length > 0;
+  // "Apply to Map" and "Apply Dependencies" both work off links whose BOTH ends
+  // are monitored devices (map_devices.device_id is a real FK; the dependency
+  // heuristic reasons about site_id). A map made entirely of unmanaged
+  // neighbours is a perfectly good picture but gives those two nothing to do —
+  // and Apply to Map would clear the target map's connections and add none
+  // back — so they are disabled rather than silently destructive.
+  const hasManagedEdges =
+    !!tmap.data && tmap.data.edges.some((e) => e.from_device_id > 0 && e.to_device_id > 0);
+  const linksFound = status ? status.links_found : 0;
+  const emptyMessage =
+    linksFound > 0
+      ? `Discovery found ${linksFound} link${linksFound === 1 ? '' : 's'}, but none of them could be placed on the map. See the Link Table tab for the raw results.`
+      : status && status.last_run_at
+        ? 'Topology discovery has run but found no LLDP/CDP neighbours. Check that SNMP is reachable on your devices and that LLDP or CDP is enabled on them.'
+        : 'No topology discovered yet — run topology discovery to see device connections →';
+
+  const filtersActive = siteSel.length > 0 || monitoredOnly || q.trim() !== '';
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10, height: '100%', minHeight: 0 }}>
+      {hasGraph && (
+        <MapControls
+          layout={layout}
+          onLayout={chooseLayout}
+          sites={siteRows}
+          siteSel={siteSel}
+          onToggleSite={toggleSite}
+          onAllSites={selectAllSites}
+          monitoredOnly={monitoredOnly}
+          onToggleMonitoredOnly={toggleMonitoredOnly}
+          q={q}
+          onQ={changeQ}
+          filtersActive={filtersActive}
+          onClear={clearFilters}
+          shownNodes={view.nodes.length}
+          totalNodes={allNodes.length}
+          shownEdges={view.edges.length}
+          totalEdges={allEdges.length}
+          monitoredShown={view.monitoredShown}
+          sitesShown={view.sitesShown}
+          totalSites={siteRows.length}
+          matched={view.matched}
+        />
+      )}
+
       <div
         className="sv-panel"
         style={{ padding: 4, flex: 1, minHeight: 360, display: 'flex', flexDirection: 'column' }}
       >
         {hasGraph && tmap.data ? (
-          <div style={{ flex: 1, minHeight: 0, width: '100%', background: '#f8fafc', borderRadius: 'var(--radius-sm)', overflow: 'hidden' }}>
-            <TopologyMapView nodes={tmap.data.nodes} edges={tmap.data.edges} interactive />
-          </div>
+          view.nodes.length > 0 ? (
+            <div style={{ flex: 1, minHeight: 0, width: '100%', background: '#f8fafc', borderRadius: 'var(--radius-sm)', overflow: 'hidden' }}>
+              <TopologyMapView
+                nodes={view.nodes}
+                edges={view.edges}
+                interactive
+                layout={layout}
+                highlight={q}
+                // The page has already reduced the graph to exactly what should
+                // be drawn, so the view must not silently drop anything else.
+                // This matters for "Monitored only": managed-to-managed links
+                // number ZERO on a real estate, so every monitored device is
+                // isolated in that view and the default drop-unconnected rule
+                // would blank the canvas.
+                showIsolated
+              />
+            </div>
+          ) : (
+            <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <EmptyState
+                title="No nodes match the current filter"
+                message={`All ${allNodes.length} discovered node${allNodes.length === 1 ? '' : 's'} are hidden by the site / monitored-only filter.`}
+                actionLabel="Clear filters"
+                onAction={clearFilters}
+              />
+            </div>
+          )
         ) : (
           <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <Empty message="No topology discovered yet — run topology discovery to see device connections →" />
+            <Empty message={emptyMessage} />
           </div>
         )}
       </div>
@@ -288,18 +534,45 @@ function MapTab({
                 </span>
               ))}
               <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                {/* Mirrors the dashed outlined "ghost" box TopologyMapView draws for a
+                    neighbour that is not a monitored device. Raw hex for the same reason
+                    as the swatches above — it matches a fixed-palette SVG canvas. */}
+                <span style={{ display: 'inline-block', width: 10, height: 10, background: '#ffffff', border: '1.5px dashed #94a3b8', borderRadius: 3 }} />
+                Not monitored
+              </span>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                 <span style={{ color: '#f59e0b' }}>★</span>
                 Gateway
               </span>
+              {layout !== 'sites' && (
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                  {/* Mirrors the site-coloured bar TopologyMapView draws along the top
+                      edge of every node in the layouts that have no site boxes. */}
+                  <span style={{ display: 'inline-block', width: 14, height: 3, background: '#7c3aed', borderRadius: 2 }} />
+                  Site colour
+                </span>
+              )}
             </>
           )}
           <div style={{ flex: 1 }} />
           {canEdit && hasGraph && (
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-              <button className="sv-btn ghost sm" style={{ height: 32 }} onClick={() => { setShowApply(true); maps.reload(); }}>
+              <button
+                className="sv-btn ghost sm"
+                style={{ height: 32 }}
+                disabled={!hasManagedEdges}
+                title={hasManagedEdges ? undefined : MANAGED_ONLY_HINT}
+                onClick={() => { setShowApply(true); maps.reload(); }}
+              >
                 Apply to Map
               </button>
-              <button className="sv-btn ghost sm" style={{ height: 32 }} onClick={applyDependencies} disabled={applyingDeps}>
+              <button
+                className="sv-btn ghost sm"
+                style={{ height: 32 }}
+                onClick={applyDependencies}
+                disabled={applyingDeps || !hasManagedEdges}
+                title={hasManagedEdges ? undefined : MANAGED_ONLY_HINT}
+              >
                 {applyingDeps ? 'Analyzing…' : 'Apply Dependencies'}
               </button>
             </div>
@@ -316,6 +589,162 @@ function MapTab({
           flash={flash}
         />
       )}
+    </div>
+  );
+}
+
+// ── Canvas control bar (top-level component) ───────────────────
+// Local styles only — nothing added to globals.css (several agents are editing
+// it concurrently). CTL_LABEL and the divider below are the two candidates to
+// promote to shared classes later (e.g. .sv-ctl-label / .sv-ctl-divider);
+// everything else reuses the existing .sv-chip / .sv-btn / .sv-input system.
+const CTL_LABEL: React.CSSProperties = {
+  fontSize: 'var(--text-xs)',
+  fontWeight: 700,
+  textTransform: 'uppercase',
+  letterSpacing: '0.05em',
+  color: 'var(--text-muted)',
+  flex: 'none',
+};
+
+const CTL_DIVIDER: React.CSSProperties = {
+  width: 1,
+  height: 20,
+  background: 'var(--border)',
+  flex: 'none',
+};
+
+function MapControls({
+  layout,
+  onLayout,
+  sites,
+  siteSel,
+  onToggleSite,
+  onAllSites,
+  monitoredOnly,
+  onToggleMonitoredOnly,
+  q,
+  onQ,
+  filtersActive,
+  onClear,
+  shownNodes,
+  totalNodes,
+  shownEdges,
+  totalEdges,
+  monitoredShown,
+  sitesShown,
+  totalSites,
+  matched,
+}: {
+  layout: TopoLayout;
+  onLayout: (l: TopoLayout) => void;
+  sites: { name: string; count: number; monitored: number }[];
+  siteSel: string[];
+  onToggleSite: (name: string) => void;
+  onAllSites: () => void;
+  monitoredOnly: boolean;
+  onToggleMonitoredOnly: () => void;
+  q: string;
+  onQ: (v: string) => void;
+  filtersActive: boolean;
+  onClear: () => void;
+  shownNodes: number;
+  totalNodes: number;
+  shownEdges: number;
+  totalEdges: number;
+  monitoredShown: number;
+  sitesShown: number;
+  totalSites: number;
+  matched: number;
+}) {
+  const hiddenNodes = totalNodes - shownNodes;
+  return (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 8,
+        padding: '10px 12px',
+        background: 'var(--bg-card)',
+        border: '1px solid var(--border)',
+        borderRadius: 'var(--radius-sm)',
+      }}
+    >
+      {/* Row 1 — layout mode, monitored-only, search/highlight */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        <span style={CTL_LABEL}>Layout</span>
+        <div className="sv-chips" style={{ margin: 0 }}>
+          {LAYOUTS.map((l) => (
+            <button
+              key={l.key}
+              type="button"
+              title={l.hint}
+              className={`sv-chip ${layout === l.key ? 'active' : ''}`}
+              onClick={() => onLayout(l.key)}
+            >
+              {l.label}
+            </button>
+          ))}
+        </div>
+        <span style={CTL_DIVIDER} />
+        <button
+          type="button"
+          className={`sv-chip ${monitoredOnly ? 'active' : ''}`}
+          title="Hide every LLDP/CDP neighbour that is not in SpanVault monitoring, leaving just the monitored core"
+          onClick={onToggleMonitoredOnly}
+        >
+          Monitored only
+        </button>
+        <div style={{ flex: 1 }} />
+        <input
+          className="sv-input"
+          value={q}
+          onChange={(e) => onQ(e.target.value)}
+          placeholder="Highlight name, IP or site…"
+          style={{ maxWidth: 260, height: 32 }}
+        />
+      </div>
+
+      {/* Row 2 — site scope + what is currently on the canvas */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        <span style={CTL_LABEL}>Sites</span>
+        <div className="sv-chips" style={{ margin: 0 }}>
+          <button
+            type="button"
+            className={`sv-chip ${siteSel.length === 0 ? 'active' : ''}`}
+            onClick={onAllSites}
+            title="Show every site"
+          >
+            All sites
+          </button>
+          {sites.map((s) => (
+            <button
+              key={s.name}
+              type="button"
+              className={`sv-chip ${siteSel.includes(s.name) ? 'active' : ''}`}
+              onClick={() => onToggleSite(s.name)}
+              title={`${s.name} — ${s.count} node${s.count === 1 ? '' : 's'}, ${s.monitored} monitored`}
+            >
+              {s.name} <span style={{ opacity: 0.7 }}>{monitoredOnly ? s.monitored : s.count}</span>
+            </button>
+          ))}
+        </div>
+        <div style={{ flex: 1 }} />
+        <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>
+          <strong style={{ color: 'var(--text-primary)' }}>{shownNodes}</strong> of {totalNodes} node
+          {totalNodes === 1 ? '' : 's'}
+          {' '}({monitoredShown} monitored · {shownNodes - monitoredShown} unmanaged) ·{' '}
+          <strong style={{ color: 'var(--text-primary)' }}>{shownEdges}</strong> of {totalEdges} link
+          {totalEdges === 1 ? '' : 's'} · {sitesShown} of {totalSites} site{totalSites === 1 ? '' : 's'}
+          {hiddenNodes > 0 ? ` · ${hiddenNodes} hidden` : ''}
+          {q.trim() ? ` · ${matched} match${matched === 1 ? '' : 'es'}` : ''}
+        </span>
+        {filtersActive && (
+          <button className="sv-btn ghost sm" style={{ height: 28 }} onClick={onClear}>
+            Clear filters
+          </button>
+        )}
+      </div>
     </div>
   );
 }

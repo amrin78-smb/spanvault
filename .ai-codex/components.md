@@ -45,7 +45,7 @@ importing them are already client components.
 - `SiteBox`  cluster — internal to TopologyMapView.tsx, not exported
 - `Connection`  (topology link line) — internal to TopologyMapView.tsx, not exported
 - `DeviceNode` (topology variant) — internal to TopologyMapView.tsx, not exported — NOTE: same name as SVGMapView's exported `DeviceNode`, different module, not a collision (both are module-scoped)
-- (c) `TopologyMapView`  nodes, edges, interactive? — default export, LLDP/CDP link map grouped by site
+- (c) `TopologyMapView`  nodes, edges, interactive? — default export, LLDP/CDP link map grouped by site. `TopoNode` carries `managed?: boolean` (default true): `managed:false` renders a dashed outlined "ghost" box instead of a status-coloured one and is NOT clickable, because its `device_id` is a synthetic negative id from `/api/topology/map` with no device page behind it
 - (c) `UpdateFailureBanner`  (no props) — default export, admin-only (`useRbac().canManageSettings`) red banner surfacing a failed `Update-SpanVault.ps1` run, polls `/api/system/last-update-status` every 5min, dismissible per-timestamp
 - (c) `UpdateNotifier`  (no props) — default export, cross-app "update available" banner
 - `icons.tsx` — 30+ small `IconX = (p: SVGProps<SVGSVGElement>) => (...)` const exports (IconDashboard, IconDevices, IconAlerts, IconReports, IconMap, IconSettings, IconAgents, IconIntelligence, IconTopology, IconWireless, IconServices, IconHome, IconLogout, IconCheck, IconSearch, IconBell, IconSun, IconMoon, IconWarning, IconEdit, IconTrash, IconRefresh, IconRepeat, IconStar, IconMonitor, IconTool, IconLock, IconUnlock, IconUndo, IconRedo, ...) — no `(c)` marker needed, pure SVG, no hooks
@@ -107,3 +107,30 @@ any useClientPagination resetKey so changing sort returns to page 1; leave
 action/checkbox columns as plain <th>; and do NOT make configuration lists sortable
 (escalation steps, on-call shifts, notification routes, maintenance windows) — their
 existing order carries meaning. 132 sortable columns across 13 files as of 1.89.0.
+
+## Wide-table layout (shared CSS, globals.css) — `.sv-table-scroll` + `.sv-table-pin-actions`
+Not components — two GENERIC classes for any `.sv-table` wider than its card.
+Currently used by `(app)/services/page.tsx` (9 cols) and `(app)/alerts/page.tsx`
+(7 cols); adopt them anywhere else a table outgrows the ~1216px content area.
+```
+<div className="sv-table-scroll">              <- wrapper DIV, table is its only child
+  <table className="sv-table sv-table-pin-actions">
+```
+- `.sv-table-scroll` — `overflow-x: auto`. Without it a too-wide table either spills
+  out of an `overflow: visible` card and off the viewport (the /services bug) or is
+  silently cut off by an `overflow: hidden` card (the /alerts bug).
+  ⚠ `overflow-x: auto` computes `overflow-y` to `auto` too, so an `absolute`-positioned
+  popup inside the table gets clipped by the wrapper. Anchor such menus with
+  `position: fixed` measured from the trigger — see `ServiceRowMenu` (services/page.tsx),
+  which was converted for exactly this.
+- `.sv-table-pin-actions` — pins the LAST column (the actions cell) with
+  `position: sticky; right: 0` so it stays reachable while the rest scrolls under it.
+  Opaque backgrounds per the suite sticky rule; `:not([colspan])` keeps full-width
+  expansion/detail rows out of it, and `> thead >` / `> tbody >` keep NESTED tables out.
+  A row that paints its own tint (alerts' `.sv-incident-head`) must also set
+  `--sv-row-tint` to the same token, so the pinned cell keeps the tint over its
+  opaque base — the `--tint-*` tokens are translucent in dark mode.
+- New token `--table-tint-solid` (globals.css `:root` + `[data-theme="dark"]`) — the
+  OPAQUE equivalent of `.sv-table`'s th / row-hover surface (`rgba(255,255,255,0.03)`
+  over `--bg-card` in dark). Use it for any sticky cell that would otherwise inherit
+  that translucent tint.

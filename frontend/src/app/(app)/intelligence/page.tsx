@@ -109,6 +109,38 @@ function ScoreMiniBar({ score, width = 60, height = 4, showValue = true }: {
   );
 }
 
+// How many site rows the Overview's "Site Health Breakdown" panel shows before
+// the "Show all" toggle. The panel used to be a fixed 220px scroll box, which is
+// 33px (header row) + 4.5 × 41px (row) — so with more sites than fit, the 5th
+// row was sliced horizontally through the middle of its text by the panel's
+// bottom edge, with no visible scrollbar to explain why. The panel now sizes to
+// the rows it renders (never a partial row, whatever a row's real height turns
+// out to be) and the toggle below reveals the rest.
+const SITE_PREVIEW_ROWS = 5;
+
+// Header-slot toggle for a panel that previews the first N of a longer list.
+// Renders nothing when everything already fits. Top-level per the project's
+// "no component inside a component" rule.
+function ShowAllToggle({ total, preview, expanded, onToggle, noun }: {
+  total: number; preview: number; expanded: boolean; onToggle: () => void; noun: string;
+}) {
+  if (total <= preview) return null;
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-expanded={expanded}
+      style={{
+        background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+        fontSize: 'var(--text-sm)', fontWeight: 600, color: 'var(--primary)',
+        textTransform: 'none', letterSpacing: 'normal',
+      }}
+    >
+      {expanded ? 'Show less' : `Showing ${preview} of ${total} ${noun} — show all`}
+    </button>
+  );
+}
+
 // ════════════════════════════════════════════════════════════════
 
 export default function IntelligencePage() {
@@ -159,6 +191,8 @@ function OverviewTab() {
   const siteSort = useTableSort();
   const anomSort = useTableSort();
   const incSort = useTableSort();
+  // Site Health Breakdown previews SITE_PREVIEW_ROWS rows; this reveals the rest.
+  const [allSites, setAllSites] = useState(false);
 
   const siteRows = useMemo(() => sortRows(d?.sites || [], siteSort.sort, {
     site: (s) => s.site_name,
@@ -238,11 +272,22 @@ function OverviewTab() {
 
       {/* ── Row 2: Site Health (55) + At-Risk Devices (45) ── */}
       <div style={{ display: 'grid', gridTemplateColumns: '55fr 45fr', gap: 12, alignItems: 'stretch' }}>
-        <SectionCard title="Site Health Breakdown">
+        <SectionCard
+          title="Site Health Breakdown"
+          action={
+            <ShowAllToggle
+              total={siteRows.length} preview={SITE_PREVIEW_ROWS} expanded={allSites}
+              onToggle={() => setAllSites((v) => !v)} noun="sites"
+            />
+          }
+        >
           {!d.sites.length ? (
             <Empty message="No site health computed yet." />
           ) : (
-            <div style={{ maxHeight: 220, overflowY: 'auto' }}>
+            // No max-height: the panel is sized by the rows it renders, so a row
+            // can never be cut in half by the panel's bottom edge (see
+            // SITE_PREVIEW_ROWS).
+            <div>
               <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                 <thead>
                   <tr>
@@ -255,7 +300,7 @@ function OverviewTab() {
                   </tr>
                 </thead>
                 <tbody>
-                  {siteRows.map((s) => (
+                  {(allSites ? siteRows : siteRows.slice(0, SITE_PREVIEW_ROWS)).map((s) => (
                     <tr key={`${s.site_id}-${s.site_name}`} style={ROW_STYLE}>
                       <IntelTD>{s.site_id ? <Link href={`/sites/${s.site_id}`}>{s.site_name}</Link> : s.site_name}</IntelTD>
                       <IntelTD><ScoreMiniBar score={s.score} width={60} /></IntelTD>
@@ -275,10 +320,13 @@ function OverviewTab() {
           {!d.at_risk_devices.length ? (
             <Empty message="No device health scores yet." />
           ) : (
-            <div style={{ maxHeight: 220, overflowY: 'auto' }}>
+            // Same rule as Site Health above: sized by its rows (the API already
+            // caps this list at 5), never a clipped partial row. The two panels
+            // stay the same height because the grid row stretches both cards.
+            <div>
               <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                 <tbody>
-                  {d.at_risk_devices.slice(0, 5).map((dev) => (
+                  {d.at_risk_devices.slice(0, SITE_PREVIEW_ROWS).map((dev) => (
                     <tr key={dev.id} style={ROW_STYLE}>
                       <IntelTD style={{ width: 18 }}><StatusDot status={dev.current_status} size={10} /></IntelTD>
                       <IntelTD><Link href={`/devices/${dev.id}`} style={{ fontWeight: 600 }}>{dev.name}</Link></IntelTD>

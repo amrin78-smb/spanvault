@@ -517,35 +517,58 @@ function StatTile({ icon, value, label, sub, variant, tint }: {
 // ── Per-row overflow menu ────────────────────────────────────
 // Modelled on RowMenu in devices/page.tsx: outside-click + Escape aware, with
 // the ARIA the suite already uses.
+// The menu is anchored with `position: fixed`, NOT `absolute`: the table now
+// lives inside a `.sv-table-scroll` wrapper, and `overflow-x: auto` computes
+// `overflow-y` to `auto` too — an absolutely positioned panel would be clipped
+// by that wrapper (worst on the last row, where the whole menu falls below the
+// table). Fixed escapes it; the trade-off is that the anchor has to be measured
+// on open and the menu closed on any scroll.
 function ServiceRowMenu({ items }: { items: { label: string; onClick: () => void; danger?: boolean }[] }) {
   const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState<{ top: number; right: number } | null>(null);
   const ref = useRef<HTMLSpanElement>(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     if (!open) return;
     const away = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
     const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    const close = () => setOpen(false);
     document.addEventListener('mousedown', away);
     document.addEventListener('keydown', esc);
-    return () => { document.removeEventListener('mousedown', away); document.removeEventListener('keydown', esc); };
+    // Capture phase: the wrapper / page scrollers don't bubble their scroll events.
+    document.addEventListener('scroll', close, true);
+    window.addEventListener('resize', close);
+    return () => {
+      document.removeEventListener('mousedown', away);
+      document.removeEventListener('keydown', esc);
+      document.removeEventListener('scroll', close, true);
+      window.removeEventListener('resize', close);
+    };
   }, [open]);
+  function toggle() {
+    const r = btnRef.current?.getBoundingClientRect();
+    if (r) setPos({ top: r.bottom + 4, right: Math.max(8, window.innerWidth - r.right) });
+    setOpen((o) => !o);
+  }
   if (!items.length) return null;
   return (
     <span ref={ref} style={{ position: 'relative', display: 'inline-flex' }}>
       <button
+        ref={btnRef}
         className="sv-btn ghost sm"
         aria-label="More actions"
         aria-haspopup="menu"
         aria-expanded={open}
-        onClick={(e) => { e.stopPropagation(); setOpen((o) => !o); }}
+        onClick={(e) => { e.stopPropagation(); toggle(); }}
         style={{ height: 26, padding: '0 8px' }}
       >
         ⋮
       </button>
-      {open && (
+      {open && pos && (
         <span
           className="sv-dropdown"
           role="menu"
-          style={{ position: 'absolute', right: 0, top: 'calc(100% + 4px)', zIndex: 50, minWidth: 150 }}
+          style={{ position: 'fixed', top: pos.top, right: pos.right, zIndex: 50, minWidth: 150 }}
           onClick={(e) => e.stopPropagation()}
         >
           {items.map((it) => (
@@ -1119,34 +1142,41 @@ export default function ServicesPage() {
           </div>
 
           <div className="sv-panel" style={{ padding: 0 }}>
-            <table className="sv-table">
-              <thead>
-                <tr>
-                  <SortTh label="Status" col="status" sort={sort} onSort={onSort} />
-                  <SortTh label="Service" col="name" sort={sort} onSort={onSort} />
-                  <SortTh label="Target" col="target" sort={sort} onSort={onSort} />
-                  <th>Checks</th>
-                  <SortTh label="Collector" col="collector" sort={sort} onSort={onSort} />
-                  <SortTh label="Latency" col="latency" sort={sort} onSort={onSort} />
-                  <SortTh label="Certificate" col="cert" sort={sort} onSort={onSort} />
-                  <SortTh label="Last Check" col="checked" sort={sort} onSort={onSort} />
-                  <th style={{ textAlign: 'right' }}>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {pg.pageRows.map((g) => (
-                  <ServiceGroupRow
-                    key={g.key}
-                    group={g}
-                    colCount={colCount}
-                    canEdit={canEdit}
-                    onEdit={openEditGroup}
-                    onDelete={handleDelete}
-                    onTogglePause={handleTogglePause}
-                  />
-                ))}
-              </tbody>
-            </table>
+            {/* 9 columns overflow the ~1216px content area at 1512px wide, so the
+                table scrolls inside this wrapper and the Actions column stays
+                pinned to the right edge — before this the wrapper did not exist,
+                the table spilled out of the panel and the row kebab rendered off
+                the right of the viewport. */}
+            <div className="sv-table-scroll">
+              <table className="sv-table sv-table-pin-actions">
+                <thead>
+                  <tr>
+                    <SortTh label="Status" col="status" sort={sort} onSort={onSort} />
+                    <SortTh label="Service" col="name" sort={sort} onSort={onSort} />
+                    <SortTh label="Target" col="target" sort={sort} onSort={onSort} />
+                    <th>Checks</th>
+                    <SortTh label="Collector" col="collector" sort={sort} onSort={onSort} />
+                    <SortTh label="Latency" col="latency" sort={sort} onSort={onSort} />
+                    <SortTh label="Certificate" col="cert" sort={sort} onSort={onSort} />
+                    <SortTh label="Last Check" col="checked" sort={sort} onSort={onSort} />
+                    <th style={{ textAlign: 'right' }}>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pg.pageRows.map((g) => (
+                    <ServiceGroupRow
+                      key={g.key}
+                      group={g}
+                      colCount={colCount}
+                      canEdit={canEdit}
+                      onEdit={openEditGroup}
+                      onDelete={handleDelete}
+                      onTogglePause={handleTogglePause}
+                    />
+                  ))}
+                </tbody>
+              </table>
+            </div>
             {!filtered.length && (
               <EmptyState
                 title="No services match"

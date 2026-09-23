@@ -26,6 +26,10 @@ import {
 type Summary = {
   total: number; up: number; down: number; warning: number; unknown: number; active_alerts: number;
   agent_offline: number; agents_total: number; agents_online: number;
+  // Severity split of active_alerts. Optional because an older API build (or a
+  // frontend deployed a beat ahead of the API) returns only the total — the
+  // Overview must still render, just without the breakdown line.
+  active_alerts_critical?: number; active_alerts_warning?: number;
 };
 type AgentOfflineRow = {
   agent_id: number; agent_name: string; hostname: string | null;
@@ -116,7 +120,45 @@ type ServiceCheck = {
   last_response_ms: number | null; last_detail: string | null; last_checked_at: string | null;
 };
 
+// ── Alert-activity panel types (Overview bottom row) ───────────
+type AlertWindow = '24h' | '7d';
+type HistogramPoint = { bucket: string; total: number; critical: number; warning: number; other: number };
+type AlertHistogram = { window: AlertWindow; bucket_hours: number; points: HistogramPoint[] };
+type NoisyKind = 'device' | 'ap' | 'service' | 'controller' | 'agent' | 'other';
+type NoisyRow = {
+  kind: NoisyKind; entity_id: number; name: string | null; site_name: string | null;
+  alert_count: number; critical_count: number; worst_severity: string;
+  last_at: string; last_alert_type: string;
+};
+type Noisiest = { window: AlertWindow; rows: NoisyRow[] };
+
+// ── KPI sparkline / delta feed ─────────────────────────────────
+// A key is present ONLY when real history is stored for that KPI. `unavailable`
+// carries the reason for each one that is missing, so the tile can explain
+// itself on hover instead of silently rendering nothing.
+type KpiSeries = {
+  points: { t: string; v: number | null }[];
+  current: number | null;
+  previous: number | null;
+  delta: number | null;
+  better: 'higher' | 'lower';
+  unit: string;
+  compare_label: string;
+};
+type KpiTrends = {
+  sla?: KpiSeries;
+  unacked?: KpiSeries;
+  unavailable?: Record<string, string>;
+};
+
 const REFRESH_MS = 30000;
+// The alert-activity panels re-query `alerts`, which carries no index on
+// triggered_at (seq scan, 13-70ms against 40k rows). Cheap on its own, not
+// cheap on the dashboard's 30s tick — so these poll on their own slower clock.
+const ALERT_PANEL_MS = 60000;
+// Sparklines are daily series. Re-fetching 60 days of rollups every 30s buys
+// nothing; 5 minutes is already far finer than the data's own resolution.
+const KPI_TREND_MS = 300000;
 
 // Shape returned by useApi() — kept explicit so child components can be typed.
 type Api<T> = { data: T | null; error: string | null; loading: boolean; reload: () => void };
@@ -126,6 +168,10 @@ type Api<T> = { data: T | null; error: string | null; loading: boolean; reload: 
 // in half — the cut row reads as a rendering fault rather than as "scroll for
 // more". 248 lands on a row boundary for every list card on this page.
 const CARD_H = 248;
+// The Overview alert-activity row runs taller than CARD_H: an hourly histogram
+// needs vertical range to be readable, and this row is what fills the ~690px of
+// dead space Overview used to leave below the Network row.
+const ACTIVITY_H = 300;
 
 const CARD_STYLE: React.CSSProperties = {
   padding: '16px 20px',
@@ -288,6 +334,20 @@ export default function DashboardPage() {
     setSection(id);
     try { localStorage.setItem('spanvault-dash-section', id); } catch { /* ignore */ }
   };
+  // Window shared by BOTH Overview alert panels (histogram + noisiest), so they
+  // can never describe different periods. Persisted like the section above, and
+  // hydrated in an effect for the same server/client-render reason.
+  const [alertWindow, setAlertWindow] = useState<AlertWindow>('24h');
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('spanvault-dash-alert-window');
+      if (saved === '24h' || saved === '7d') setAlertWindow(saved);
+    } catch { /* ignore */ }
+  }, []);
+  const selectAlertWindow = (w: AlertWindow) => {
+    setAlertWindow(w);
+    try { localStorage.setItem('spanvault-dash-alert-window', w); } catch { /* ignore */ }
+  };
   // Passing null to useApi skips the fetch AND its poll timer. Only feeds a
   // section? Gate it. Feeds the always-visible KPI strip too? It must stay
   // ungated, or the strip loses data the moment you switch away.
@@ -304,6 +364,10 @@ export default function DashboardPage() {
   const sla = useApi<Sla>('/api/dashboard/sla', REFRESH_MS);
   const services = useApi<ServiceCheck[]>('/api/service-checks', REFRESH_MS);
   const trend = useApi<TrendPoint[]>('/api/dashboard/network-trend', REFRESH_MS);
+  // Ungated for the same reason as `sla`/`ops`: it feeds the always-visible KPI
+  // strip. Its own slow clock — the series are daily rollups, and the query is a
+  // seq scan of `alerts` (no triggered_at index).
+  const kpiTrends = useApi<KpiTrends>('/api/dashboard/kpi-trends', KPI_TREND_MS);
 
   // ── Section-scoped: fetched only while their section is open ──
   const problems = useApi<Problem[]>(on('overview', '/api/dashboard/problems'), REFRESH_MS);
@@ -314,6 +378,10 @@ export default function DashboardPage() {
   const topTalkers = useApi<TopTalker[]>(on('performance', '/api/dashboard/top-talkers'), REFRESH_MS);
   const leastReliable = useApi<LeastReliable[]>(on('performance', '/api/dashboard/least-reliable'), REFRESH_MS);
   const sites = useApi<SiteHealth[]>(on('overview', '/api/dashboard/site-health'), REFRESH_MS);
+  const alertHistogram = useApi<AlertHistogram>(
+    on('overview', `/api/dashboard/alert-histogram?window=${alertWindow}`), ALERT_PANEL_MS);
+  const noisiest = useApi<Noisiest>(
+    on('overview', `/api/dashboard/noisiest?window=${alertWindow}&limit=5`), ALERT_PANEL_MS);
   // Daily counts change slowly — no point re-fetching 14 days on the 30s tick.
   const alertTrend = useApi<AlertTrendResp>(on('availability', '/api/dashboard/alert-trend?days=14'), 300000);
   const capacity = useApi<CapacityRow[]>(on('predictive', '/api/dashboard/capacity'), REFRESH_MS);
@@ -330,9 +398,14 @@ export default function DashboardPage() {
     intel.reload(); ops.reload(); incidents.reload(); sla.reload();
     capacity.reload(); patterns.reload(); leastReliable.reload(); topTalkers.reload();
     maintenance.reload(); services.reload();
+    kpiTrends.reload(); alertHistogram.reload(); noisiest.reload();
   });
 
   const s = summary.data;
+  // Present only where real history exists — see /api/dashboard/kpi-trends.
+  const slaSeries = kpiSeries(kpiTrends.data, 'sla');
+  const unackedSeries = kpiSeries(kpiTrends.data, 'unacked');
+  const noTrend = kpiTrends.data?.unavailable || {};
   const tDir = availTrend(trend.data);
   // DOWN card: availability improving means fewer down.
   const downTrend = tDir === 'up' ? 'good' : tDir === 'down' ? 'bad' : null;
@@ -359,7 +432,7 @@ export default function DashboardPage() {
       {summary.loading && !s ? (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 8, marginBottom: 10 }}>
           {Array.from({ length: 10 }).map((_, i) => (
-            <div key={i} style={{ ...CARD_STYLE, height: 74, padding: '10px 13px' }}>
+            <div key={i} style={{ ...CARD_STYLE, height: TILE_H, padding: '10px 13px' }}>
               <Skeleton height={20} width="55%" />
               <div style={{ height: 6 }} />
               <Skeleton height={9} width="75%" />
@@ -381,18 +454,26 @@ export default function DashboardPage() {
               something is actually down) — they stay meta/boring noise when
               healthy, but earn their spot the moment they're not. */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 8, marginBottom: 10 }}>
-            <StatTile href="/devices" color="var(--text-primary)" value={s.total} label="Total" />
+            {/* Sparklines/deltas are passed ONLY to the two tiles whose metric
+                is genuinely recorded over time (SLA from availability_summary,
+                Unack'd replayed from the alerts' own timestamps). The other
+                four get `noTrendReason` instead — a hover explanation — because
+                drawing a plausible-looking line from a metric the schema never
+                stored is worse on an NOC wall than drawing nothing. */}
+            <StatTile href="/devices" color="var(--text-primary)" value={s.total} label="Total"
+              noTrendReason={noTrend.total} />
             <StatTile href="/devices?status=down" color="var(--red)" value={s.down} label="Down"
-              pulse={s.down > 0} trend={downTrend} arrow={downArrow} />
+              pulse={s.down > 0} trend={downTrend} arrow={downArrow} noTrendReason={noTrend.down} />
             <StatTile href="/devices?status=warning" color="var(--yellow)" value={s.warning} label="Warning"
-              pulse={s.warning > 0} />
-            <HealthScoreTile data={intel.data} />
-            <SlaTile api={sla} />
+              pulse={s.warning > 0} noTrendReason={noTrend.warning} />
+            <HealthScoreTile data={intel.data} noTrendReason={noTrend.health} />
+            <SlaTile api={sla} series={slaSeries} />
             <OpsTile
               color={ops.data && ops.data.unacked_count > 0 ? 'var(--red)' : 'var(--green)'}
               value={ops.data ? ops.data.unacked_count : 0}
               label="Unack'd"
               alert={!!(ops.data && ops.data.unacked_count > 0)}
+              series={unackedSeries}
             />
             <AgentsTile canManageAgents={canManageAgents} agentsOnline={s.agents_online} agentsTotal={s.agents_total} />
             <ServicesTile checks={services.data || []} />
@@ -447,9 +528,37 @@ export default function DashboardPage() {
         <AgentOfflineGroup api={agentOffline} />
 
         {/* Every card above self-hides when it has nothing to show, so say so
-            explicitly rather than leaving the default section blank. */}
-        {problems.data != null && problems.data.length === 0 &&
-         incidents.data != null && incidents.data.length === 0 && <AllClearCard />}
+            explicitly rather than leaving the default section blank.
+
+            "Nothing needs attention" must be judged against ACTIVE ALERTS too,
+            not just the two device-centric feeds. `problems` is monitored_devices
+            rows that are down/warning and `incidents` is correlated device
+            outages — a wireless/AP alert (AP DOWN, HIGH RETRY RATE, WEAK
+            CLIENTS…) appears in NEITHER, so the green all-clear card rendered
+            live on a network carrying 53 active alerts, 28 of them critical.
+            `summary.active_alerts` is the one already-fetched source that counts
+            every active alert regardless of what it hangs off.
+
+            The card still has to render SOMETHING in this slot — that is the
+            whole reason AllClearCard exists (see its comment) — so when alerts
+            are outstanding we swap in the alert summary rather than going
+            blank. */}
+        {(() => {
+          // Still loading any of the three feeds → decide nothing yet.
+          if (problems.data == null || incidents.data == null || agentOffline.data == null || !s) return null;
+          // A self-hiding card above is already showing real content.
+          if (problems.data.length > 0 || incidents.data.length > 0 || agentOffline.data.length > 0) return null;
+          if (s.active_alerts > 0) {
+            return (
+              <ActiveAlertsCard
+                total={s.active_alerts}
+                critical={s.active_alerts_critical ?? 0}
+                warning={s.active_alerts_warning ?? 0}
+              />
+            );
+          }
+          return <AllClearCard />;
+        })()}
 
         {/* ── Always-present content. Overview must never depend solely on cards
              that hide themselves — site health always has rows, and services and
@@ -465,6 +574,17 @@ export default function DashboardPage() {
           </div>
           <ServicesOverview checks={services.data || []} />
           <WirelessHealthCard />
+        </div>
+
+        {/* ── Alert activity. Overview used to stop at the Network row, leaving
+             most of a 1512x945 viewport empty below it — the app's front door
+             ending in whitespace. These two answer the questions the strip
+             above only hints at: WHEN the noise happened, and WHERE it came
+             from. Both read the same window toggle. ── */}
+        <div style={GROUP_LABEL}>Alert Activity</div>
+        <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 10, alignItems: 'stretch', marginBottom: 16 }}>
+          <AlertHistogramCard api={alertHistogram} win={alertWindow} onWin={selectAlertWindow} height={ACTIVITY_H} />
+          <NoisiestCard api={noisiest} win={alertWindow} height={ACTIVITY_H} />
         </div>
       </>)}
 
@@ -541,6 +661,49 @@ function AllClearCard() {
         </div>
       </div>
     </div>
+  );
+}
+
+// ── Active-alert summary (top-level component) ─────────────────
+// Renders in AllClearCard's slot when alerts ARE outstanding but every
+// self-hiding Overview card has nothing of its own to show. Overview must never
+// go blank (the reason AllClearCard exists), and it must never claim all-clear
+// while alerts are active — wireless/AP alerts are in neither the `problems`
+// nor the `incidents` feed, which is exactly how a 53-alert network used to get
+// the green card. Counts come from /api/dashboard/summary, already polled for
+// the KPI strip, so this costs no extra request.
+function ActiveAlertsCard({ total, critical, warning }: { total: number; critical: number; warning: number }) {
+  const danger = critical > 0;
+  const parts: string[] = [];
+  if (critical > 0) parts.push(`${critical} critical`);
+  if (warning > 0) parts.push(`${warning} warning`);
+  // Whatever is left is a severity the split doesn't name (or an API build that
+  // predates the split) — never let the parts add up to less than the total.
+  const other = total - critical - warning;
+  if (other > 0) parts.push(`${other} other`);
+  return (
+    <Link href="/alerts?status=active" style={{ textDecoration: 'none', display: 'block' }}>
+      <div style={{ ...CARD_STYLE, padding: '14px 18px', flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 10 }}>
+        <div style={{ width: 34, height: 34, borderRadius: '50%', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+          background: danger ? 'var(--tint-danger)' : 'var(--tint-warn)',
+          color: danger ? 'var(--tint-danger-fg)' : 'var(--tint-warn-fg)' }}>
+          <IconWarning width={18} height={18} aria-hidden />
+        </div>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 'var(--text-md)', fontWeight: 600, color: 'var(--text-primary)' }}>
+            {total} active alert{total === 1 ? '' : 's'}
+          </div>
+          <div className="sv-muted" style={{ fontSize: 'var(--text-base)', marginTop: 2 }}>
+            {parts.length > 0
+              ? `${parts.join(' · ')} — no devices down, so nothing above needs attention.`
+              : 'No devices down, so nothing above needs attention.'}
+          </div>
+        </div>
+        <span style={{ marginLeft: 'auto', flexShrink: 0, fontSize: 'var(--text-base)', fontWeight: 600, color: 'var(--primary)' }}>
+          View alerts →
+        </span>
+      </div>
+    </Link>
   );
 }
 
@@ -635,60 +798,146 @@ function UpdatedNotice() {
 }
 
 // ── KPI stat tile (clickable link) ─────────────────────────────
-// Global stat-card style: ~75px height, 12px/16px padding, 24px/800 value,
-// 11px uppercase muted label, 3px coloured left border.
+// Global stat-card style: 12px/16px padding, 24px/800 value, 11px uppercase
+// muted label, 3px coloured left border.
+//
+// The tile grew from 74px to TILE_H when sparklines landed. Every tile in the
+// strip shares TILE_BASE so the row stays even whether or not a given KPI has
+// history to draw — a tile that shrank because its metric has no stored series
+// would read as a rendering fault rather than as "no trend for this one".
+// Content is TOP-aligned (not centred) for the same reason: the numbers and
+// labels line up across the row, and the sparkline sits on the bottom edge.
+const TILE_H = 94;
+const TILE_BASE: React.CSSProperties = {
+  display: 'flex', flexDirection: 'column', justifyContent: 'flex-start', gap: 2,
+  height: TILE_H, padding: '10px 13px', borderRadius: 'var(--radius-sm)',
+  background: 'var(--bg-card)', border: '1px solid var(--border)',
+  textDecoration: 'none', minWidth: 0,
+};
+const TILE_VALUE: React.CSSProperties = {
+  fontSize: 'var(--text-xl)', fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1,
+};
+const TILE_LABEL: React.CSSProperties = {
+  fontSize: 'var(--text-xs)', textTransform: 'uppercase', letterSpacing: '0.04em',
+  color: 'var(--text-muted)', fontWeight: 600,
+};
+
+// ── Sparkline (top-level component) ────────────────────────────
+// Axis-less mini area chart for a KPI tile. Only ever rendered with a REAL
+// stored series — see /api/dashboard/kpi-trends for which KPIs have one.
+function Sparkline({ points, color, height = 22 }: { points: number[]; color: string; height?: number }) {
+  if (points.length < 2) return null;
+  const min = Math.min(...points);
+  const max = Math.max(...points);
+  // A constant series has a zero-height domain, and recharts then pins the line
+  // to the very top of the band — a perfectly flat 100% SLA would look like a
+  // ceiling hit rather than "unchanged". Pad the domain so flat renders flat,
+  // in the middle.
+  const pad = max === min ? Math.max(Math.abs(max) * 0.01, 0.5) : (max - min) * 0.18;
+  const data = points.map((v, i) => ({ i, v }));
+  return (
+    <div style={{ height, marginTop: 'auto', marginLeft: -2, marginRight: -2 }} aria-hidden>
+      <ResponsiveContainer width="100%" height="100%">
+        <AreaChart data={data} margin={{ top: 1, right: 0, bottom: 1, left: 0 }}>
+          <YAxis hide domain={[min - pad, max + pad]} />
+          <Area type="monotone" dataKey="v" stroke={color} strokeWidth={1.5}
+            fill={color} fillOpacity={0.15} dot={false} isAnimationActive={false} />
+        </AreaChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+// ── Period-over-period delta chip (top-level component) ────────
+// `better` says which DIRECTION is an improvement — it is not the same for
+// every KPI (more SLA is good, more unacknowledged alerts is not), so the
+// colour cannot be derived from the sign alone.
+//
+// A delta of EXACTLY zero renders neutral-grey with a ± glyph, never as a green
+// "up". `null` (no comparison available) renders nothing at all — "we can't
+// compare" and "nothing changed" are different statements.
+function DeltaChip({ delta, better, unit, title }: {
+  delta: number | null | undefined; better: 'higher' | 'lower'; unit?: string; title?: string;
+}) {
+  if (delta == null) return null;
+  const flat = Math.abs(delta) < 1e-9;
+  const improved = !flat && (better === 'higher' ? delta > 0 : delta < 0);
+  const fg = flat ? 'var(--text-muted)' : improved ? 'var(--tint-success-fg)' : 'var(--tint-danger-fg)';
+  const bg = flat ? 'var(--surface-subtle)' : improved ? 'var(--tint-success)' : 'var(--tint-danger)';
+  const mag = Math.abs(delta);
+  const shown = unit === 'pp' ? mag.toFixed(2) : mag.toLocaleString();
+  const glyph = flat ? '±' : delta > 0 ? '↑' : '↓';
+  return (
+    <span
+      title={title}
+      style={{
+        display: 'inline-flex', alignItems: 'center', gap: 1, flexShrink: 0,
+        padding: '1px 5px', borderRadius: 999, background: bg, color: fg,
+        fontSize: 'var(--text-xs)', fontWeight: 700, lineHeight: 1.5, whiteSpace: 'nowrap',
+      }}
+    >
+      {glyph}{flat ? '0' : shown}{unit === 'pp' ? '' : ''}
+    </span>
+  );
+}
+
+// Pull one KPI's series out of the feed. Returns null — so the caller renders
+// NO sparkline — whenever the API omitted that key, which is how it reports
+// "no history is stored for this metric".
+function kpiSeries(t: KpiTrends | null, key: 'sla' | 'unacked'): KpiSeries | null {
+  const s = t ? t[key] : null;
+  if (!s || !s.points || s.points.length < 2) return null;
+  return s;
+}
+function kpiValues(s: KpiSeries): number[] {
+  return s.points.map((p) => (p.v == null ? 0 : p.v));
+}
+
 function StatTile({
-  href, value, label, color, pulse, trend, arrow,
+  href, value, label, color, pulse, trend, arrow, noTrendReason,
 }: {
   href: string; value: number | string; label: string; color: string;
   pulse?: boolean; trend?: 'good' | 'bad' | null; arrow?: string;
+  noTrendReason?: string;
 }) {
   const trendColor = trend === 'good' ? 'var(--green)' : trend === 'bad' ? 'var(--red)' : 'var(--text-muted)';
   return (
     <Link
       href={href}
       className={pulse ? 'sv-stat pulse' : undefined}
-      style={{
-        display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 2,
-        height: 74, padding: '10px 13px', borderRadius: 'var(--radius-sm)',
-        background: 'var(--bg-card)', border: '1px solid var(--border)',
-        borderLeft: `3px solid ${color}`, textDecoration: 'none', minWidth: 0,
-      }}
+      title={noTrendReason}
+      style={{ ...TILE_BASE, borderLeft: `3px solid ${color}` }}
     >
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-        <span style={{ fontSize: 'var(--text-xl)', fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1 }}>{value}</span>
+        <span style={TILE_VALUE}>{value}</span>
         {trend && arrow ? <span style={{ fontSize: 'var(--text-base)', fontWeight: 700, color: trendColor }}>{arrow}</span> : null}
       </div>
-      <div style={{ fontSize: 'var(--text-xs)', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', fontWeight: 600 }}>
-        {label}
-      </div>
+      <div style={TILE_LABEL}>{label}</div>
     </Link>
   );
 }
 
 // ── Health-score stat tile (top-level component) ───────────────
-function HealthScoreTile({ data }: { data: Overview | null }) {
+// No sparkline: `device_health_scores` is UPSERTed one row per device and holds
+// only the CURRENT score — there is no health-score history anywhere in the
+// schema to plot. The API says so in kpi-trends.unavailable.health; that string
+// becomes this tile's hover title rather than a silently bare tile.
+function HealthScoreTile({ data, noTrendReason }: { data: Overview | null; noTrendReason?: string }) {
   const score = data ? data.overall_score : null;
   const c = scoreColor(score);
   return (
     <Link
       href="/intelligence"
-      style={{
-        display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 2,
-        height: 74, padding: '10px 13px', borderRadius: 'var(--radius-sm)',
-        background: 'var(--bg-card)', border: '1px solid var(--border)',
-        borderLeft: `3px solid ${c}`, textDecoration: 'none', minWidth: 0,
-      }}
+      title={noTrendReason}
+      style={{ ...TILE_BASE, borderLeft: `3px solid ${c}` }}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-        <span style={{ fontSize: 'var(--text-xl)', fontWeight: 800, color: c, lineHeight: 1 }}>
+        <span style={{ ...TILE_VALUE, color: c }}>
           {score != null ? Math.round(score) : '—'}
         </span>
         {data && <GradeBadge grade={data.overall_grade} />}
       </div>
-      <div style={{ fontSize: 'var(--text-xs)', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', fontWeight: 600 }}>
-        Health
-      </div>
+      <div style={TILE_LABEL}>Health</div>
     </Link>
   );
 }
@@ -708,19 +957,10 @@ function AgentsTile({ canManageAgents, agentsOnline, agentsTotal }: {
     <Link
       href="/agents"
       className="sv-stat pulse"
-      style={{
-        display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 2,
-        height: 74, padding: '10px 13px', borderRadius: 'var(--radius-sm)',
-        background: 'var(--bg-card)', border: '1px solid var(--border)',
-        borderLeft: '3px solid var(--red)', textDecoration: 'none', minWidth: 0,
-      }}
+      style={{ ...TILE_BASE, borderLeft: '3px solid var(--red)' }}
     >
-      <span style={{ fontSize: 'var(--text-xl)', fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1 }}>
-        {agentsOnline}/{agentsTotal}
-      </span>
-      <div style={{ fontSize: 'var(--text-xs)', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', fontWeight: 600 }}>
-        Agents
-      </div>
+      <span style={TILE_VALUE}>{agentsOnline}/{agentsTotal}</span>
+      <div style={TILE_LABEL}>Agents</div>
     </Link>
   );
 }
@@ -745,19 +985,10 @@ function ServicesTile({ checks }: { checks: ServiceCheck[] }) {
     <Link
       href="/services"
       className="sv-stat pulse"
-      style={{
-        display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 2,
-        height: 74, padding: '10px 13px', borderRadius: 'var(--radius-sm)',
-        background: 'var(--bg-card)', border: '1px solid var(--border)',
-        borderLeft: `3px solid ${color}`, textDecoration: 'none', minWidth: 0,
-      }}
+      style={{ ...TILE_BASE, borderLeft: `3px solid ${color}` }}
     >
-      <span style={{ fontSize: 'var(--text-xl)', fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1 }}>
-        {up}/{total}
-      </span>
-      <div style={{ fontSize: 'var(--text-xs)', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', fontWeight: 600 }}>
-        Services
-      </div>
+      <span style={TILE_VALUE}>{up}/{total}</span>
+      <div style={TILE_LABEL}>Services</div>
       <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
         {down} down · {warning} warning
       </div>
@@ -1158,6 +1389,183 @@ function AlertVolumeCard({ api }: { api: Api<AlertTrendResp> }) {
   );
 }
 
+// ── Alert-activity window toggle (top-level component) ─────────
+// One control drives BOTH Overview alert panels. Two independent toggles would
+// let the histogram and the noisiest list disagree about what window they are
+// describing, which is the kind of thing an operator reads straight past.
+function AlertWindowToggle({ value, onChange }: { value: AlertWindow; onChange: (w: AlertWindow) => void }) {
+  const opts: AlertWindow[] = ['24h', '7d'];
+  return (
+    <div style={{ display: 'inline-flex', gap: 2, padding: 2, borderRadius: 999, background: 'var(--surface-subtle)', border: '1px solid var(--border)' }}>
+      {opts.map((o) => {
+        const active = o === value;
+        return (
+          <button
+            key={o}
+            type="button"
+            onClick={() => onChange(o)}
+            aria-pressed={active}
+            style={{
+              border: 'none', cursor: 'pointer', borderRadius: 999, padding: '2px 10px',
+              fontSize: 'var(--text-xs)', fontWeight: 700, letterSpacing: '0.02em',
+              background: active ? 'var(--bg-card)' : 'transparent',
+              color: active ? 'var(--text-primary)' : 'var(--text-muted)',
+              boxShadow: active ? '0 1px 2px rgba(0,0,0,0.10)' : 'none',
+            }}
+          >
+            {o}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── Alert-volume histogram (top-level component) ───────────────
+// 24 one-hour bars, or 7 days in 4-hour bars. Stacked on ONE axis, unlike the
+// Availability tab's 14-day AlertVolumeCard which pushes criticals to a second
+// axis — there the question is "how many criticals"; here it is "when does the
+// noise land", and splitting axes would break the stack that answers it.
+function AlertHistogramCard({ api, win, onWin, height }: {
+  api: Api<AlertHistogram>; win: AlertWindow; onWin: (w: AlertWindow) => void; height: number;
+}) {
+  const points = api.data?.points || [];
+  const hourly = (api.data?.bucket_hours ?? 1) === 1;
+  const data = points.map((p) => {
+    const d = new Date(p.bucket);
+    return {
+      label: hourly
+        ? `${String(d.getHours()).padStart(2, '0')}:00`
+        : `${d.getDate()}/${d.getMonth() + 1} ${String(d.getHours()).padStart(2, '0')}h`,
+      full: p.bucket,
+      critical: p.critical, warning: p.warning, other: p.other, total: p.total,
+    };
+  });
+  const total = points.reduce((s, p) => s + p.total, 0);
+  const crit = points.reduce((s, p) => s + p.critical, 0);
+  const peak = points.reduce((m, p) => (p.total > m.total ? p : m), { total: -1, bucket: '' } as HistogramPoint);
+  // Deliberately NOT hhmm() — that renders locale 12-hour ("05:00 PM") while
+  // this chart's own axis is 24-hour, and a summary line disagreeing with the
+  // axis right beneath it is worse than no summary line.
+  const peakLabel = peak.total > 0
+    ? data.find((d) => d.full === peak.bucket)?.label || ''
+    : '';
+
+  return (
+    <div style={{ ...CARD_STYLE, height }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6, flexWrap: 'wrap' }}>
+        <span style={{ ...SECTION_HEADING, marginBottom: 0 }}>
+          Alert Volume {hourly ? 'by Hour' : 'by 4h Block'}
+        </span>
+        <AlertWindowToggle value={win} onChange={onWin} />
+        <span style={{ marginLeft: 'auto', fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>
+          {total.toLocaleString()} alerts · {crit.toLocaleString()} critical
+          {peakLabel ? ` · peak ${peak.total} at ${peakLabel}` : ''}
+        </span>
+      </div>
+      <div style={{ flex: 1, minHeight: 0 }}>
+        {api.loading && !api.data ? <Skeleton height={height - 60} />
+          : api.error ? <ErrorBox message={api.error} />
+          : total === 0 ? <Empty message={`No alerts triggered in the last ${win === '7d' ? '7 days' : '24 hours'}.`} />
+          : (
+            <ResponsiveContainer width="100%" height="100%">
+              <ComposedChart data={data} margin={{ top: 4, right: 4, left: -22, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--border-light)" vertical={false} />
+                <XAxis dataKey="label" tick={{ fontSize: 11 }} interval="preserveStartEnd" minTickGap={18}
+                  tickLine={false} axisLine={false} />
+                <YAxis tick={{ fontSize: 11 }} allowDecimals={false} tickLine={false} axisLine={false} />
+                <Tooltip {...CHART_TOOLTIP} labelFormatter={(_l, p: any) => (p && p[0] ? fmtTime(String(p[0].payload.full)) : '')} />
+                <Legend wrapperStyle={{ fontSize: 11 }} />
+                {/* Critical sits at the BOTTOM of the stack so it always starts
+                    from the same baseline and stays comparable bar to bar. */}
+                <Bar dataKey="critical" name="Critical" stackId="s" fill="var(--red)" />
+                <Bar dataKey="warning" name="Warning" stackId="s" fill="var(--yellow)" />
+                <Bar dataKey="other" name="Other" stackId="s" fill="var(--text-muted)" radius={[3, 3, 0, 0]} />
+              </ComposedChart>
+            </ResponsiveContainer>
+          )}
+      </div>
+    </div>
+  );
+}
+
+// ── Noisiest entities (top-level component) ────────────────────
+// "Where is the noise coming from" — the panel an operator actually acts on.
+// Rows are NOT devices-only: an alert hangs off whichever of the six owner
+// columns is set, and in practice almost all of them are APs, so each row
+// carries its own `kind` and links at the page that can actually show it.
+const NOISY_KIND_LABEL: Record<string, string> = {
+  device: 'Device', ap: 'Access point', service: 'Service check',
+  controller: 'WLC', agent: 'Agent', other: 'Other',
+};
+function noisyHref(r: NoisyRow): string | null {
+  if (r.kind === 'device') return `/devices/${r.entity_id}`;
+  if (r.kind === 'ap') return wirelessHref(r.entity_id, null);
+  if (r.kind === 'controller') return wirelessHref(null, r.entity_id);
+  if (r.kind === 'service') return `/services/${r.entity_id}`;
+  if (r.kind === 'agent') return `/agents/${r.entity_id}`;
+  return null;
+}
+function NoisiestCard({ api, win, height }: { api: Api<Noisiest>; win: AlertWindow; height: number }) {
+  const rows = api.data?.rows || [];
+  const max = rows.length ? Math.max(...rows.map((r) => r.alert_count)) : 0;
+  return (
+    <div style={{ ...CARD_STYLE, height }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+        <span style={{ ...SECTION_HEADING, marginBottom: 0 }}>Noisiest ({win})</span>
+        <Link href="/alerts" style={{ marginLeft: 'auto', fontSize: 'var(--text-sm)', fontWeight: 600, color: 'var(--primary)', textDecoration: 'none' }}>
+          All alerts →
+        </Link>
+      </div>
+      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', margin: '0 -4px' }}>
+        {api.loading && !api.data ? <TableSkeleton rows={5} cols={2} />
+          : api.error ? <ErrorBox message={api.error} />
+          : !rows.length ? <Empty message="No alerts in this window." />
+          : rows.map((r) => {
+            const href = noisyHref(r);
+            const crit = r.critical_count > 0;
+            const body = (
+              <>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, minWidth: 0 }}>
+                  <StatusDot status={crit ? 'down' : 'warning'} />
+                  <span style={{ fontWeight: 600, fontSize: 'var(--text-base)', color: 'var(--text-primary)',
+                    whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {r.name || `${NOISY_KIND_LABEL[r.kind] || r.kind} #${r.entity_id}`}
+                  </span>
+                  <span style={{ marginLeft: 'auto', flexShrink: 0, fontWeight: 700, fontSize: 'var(--text-base)',
+                    color: crit ? 'var(--red)' : 'var(--yellow)' }}>
+                    {r.alert_count}
+                  </span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 2 }}>
+                  {/* Share-of-worst bar: the count alone does not say whether
+                      #1 is twice #2 or fifty times it. */}
+                  <div style={{ flex: 1, height: 4, borderRadius: 2, background: 'var(--surface-subtle)', overflow: 'hidden', minWidth: 0 }}>
+                    <div style={{ width: `${max > 0 ? Math.max(3, (r.alert_count / max) * 100) : 0}%`, height: '100%',
+                      background: crit ? 'var(--red)' : 'var(--yellow)' }} />
+                  </div>
+                  <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', whiteSpace: 'nowrap', flexShrink: 0 }}>
+                    {NOISY_KIND_LABEL[r.kind] || r.kind}
+                    {r.site_name ? ` · ${r.site_name}` : ''}
+                    {r.critical_count > 0 ? ` · ${r.critical_count} crit` : ''}
+                  </span>
+                </div>
+              </>
+            );
+            const rowStyle: React.CSSProperties = {
+              display: 'block', padding: '6px 4px', borderBottom: '1px solid var(--border-light)',
+              textDecoration: 'none', minWidth: 0,
+            };
+            const title = `${humanEvent(r.last_alert_type)} — last ${fmtRel(r.last_at)}`;
+            return href
+              ? <Link key={`${r.kind}-${r.entity_id}`} href={href} style={rowStyle} title={title}>{body}</Link>
+              : <div key={`${r.kind}-${r.entity_id}`} style={rowStyle} title={title}>{body}</div>;
+          })}
+      </div>
+    </div>
+  );
+}
+
 function NetworkAvailabilityCard({ api }: { api: Api<TrendPoint[]> }) {
   return (
     <div style={{ ...CARD_STYLE, height: CARD_H }}>
@@ -1350,23 +1758,27 @@ function AgentOfflineGroup({ api }: { api: Api<AgentOfflineRow[]> }) {
 
 // ── Ops metrics (Unacknowledged) ────────────────────────────────
 // Plain (non-link) KPI tile matching the StatTile visual spec.
-function OpsTile({ value, label, color, alert }: {
-  value: string | number; label: string; color: string; alert?: boolean;
+// `series` is the unacknowledged-backlog replay from /api/dashboard/kpi-trends
+// (one point per day for 14 days, reconstructed from each alert's
+// triggered/acknowledged/resolved timestamps). Fewer unacknowledged alerts is
+// the improvement, hence better='lower'.
+function OpsTile({ value, label, color, alert, series }: {
+  value: string | number; label: string; color: string; alert?: boolean; series?: KpiSeries | null;
 }) {
   return (
     <div
       className={alert ? 'sv-stat pulse' : undefined}
-      style={{
-        display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 2,
-        height: 74, padding: '10px 13px', borderRadius: 'var(--radius-sm)',
-        background: 'var(--bg-card)', border: '1px solid var(--border)',
-        borderLeft: `3px solid ${color}`, minWidth: 0,
-      }}
+      style={{ ...TILE_BASE, borderLeft: `3px solid ${color}` }}
     >
-      <span style={{ fontSize: 'var(--text-xl)', fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1 }}>{value}</span>
-      <div style={{ fontSize: 'var(--text-xs)', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', fontWeight: 600 }}>
-        {label}
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 5, minWidth: 0 }}>
+        <span style={TILE_VALUE}>{value}</span>
+        {series && (
+          <DeltaChip delta={series.delta} better={series.better} unit={series.unit}
+            title={`${series.compare_label} (${series.previous ?? '—'} then, ${series.current ?? '—'} now)`} />
+        )}
       </div>
+      <div style={TILE_LABEL}>{label}</div>
+      {series && <Sparkline points={kpiValues(series)} color="var(--red)" />}
     </div>
   );
 }
@@ -1426,28 +1838,33 @@ function OpenIncidents({ api }: { api: Api<OpenIncident[]> }) {
 }
 
 // ── 30-day SLA KPI tile ────────────────────────────────────────
-function SlaTile({ api }: { api: Api<Sla> }) {
+// `series` is the DAILY availability rollup (`availability_summary`) behind the
+// same 30-day number this tile already shows, plus a check-weighted comparison
+// against the prior 30 days. Delta is in percentage POINTS, so it is formatted
+// to 2dp — a real SLA move is 0.02, not 2.
+function SlaTile({ api, series }: { api: Api<Sla>; series?: KpiSeries | null }) {
   const pct = num(api.data ? api.data.overall_pct : null);
   const target = api.data ? api.data.sla_target : null;
   const c = uptimeColor(pct);
   return (
-    <div
-      style={{
-        display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 2,
-        height: 74, padding: '10px 13px', borderRadius: 'var(--radius-sm)',
-        background: 'var(--bg-card)', border: '1px solid var(--border)',
-        borderLeft: `3px solid ${c}`, minWidth: 0,
-      }}
-    >
-      <span style={{ fontSize: 'var(--text-xl)', fontWeight: 800, color: c, lineHeight: 1 }}>
-        {pct != null ? `${pct.toFixed(1)}%` : '—'}
-      </span>
-      <div style={{ fontSize: 'var(--text-xs)', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', fontWeight: 600 }}>
-        SLA 30d
+    <div style={{ ...TILE_BASE, borderLeft: `3px solid ${c}` }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 5, minWidth: 0 }}>
+        <span style={{ ...TILE_VALUE, color: c }}>
+          {pct != null ? `${pct.toFixed(1)}%` : '—'}
+        </span>
+        {series && (
+          <DeltaChip delta={series.delta} better={series.better} unit={series.unit}
+            title={`${series.compare_label} (${series.previous != null ? `${series.previous}%` : '—'} then, ${series.current != null ? `${series.current}%` : '—'} now)`} />
+        )}
       </div>
-      <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)' }}>
-        Target {target != null ? `${Number(target).toFixed(1)}%` : '—'}
+      {/* The target moves onto the label line rather than its own row: the
+          sparkline takes the third line, and dropping the target outright
+          would lose the one piece of context that makes the percentage mean
+          anything. */}
+      <div style={TILE_LABEL}>
+        SLA 30d{target != null ? <span style={{ fontWeight: 500, textTransform: 'none' }}> · target {Number(target).toFixed(1)}%</span> : null}
       </div>
+      {series && <Sparkline points={kpiValues(series)} color="var(--green)" />}
     </div>
   );
 }

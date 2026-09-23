@@ -72,6 +72,12 @@
   --tint-warn: #fffbeb;     --tint-warn-fg: #b45309;
   --tint-danger: #fef2f2;   --tint-danger-fg: #b91c1c;
   --tint-purple: #f5f3ff;   --tint-purple-fg: #6d28d9;
+
+  /* OPAQUE stand-in for the `.sv-table` header / row-hover surface. Both are
+     `var(--bg-primary)` in light, but a semi-transparent white overlay in dark —
+     which a STICKY cell cannot use (rows scrolling under it bleed through, the
+     suite-wide sticky rule). Any pinned table cell uses this instead. */
+  --table-tint-solid: var(--bg-primary);
 }
 
 /* Square-corner mode. This overrides ONLY the three radius tokens, which is
@@ -108,6 +114,11 @@
   --tint-warn: rgba(217,119,6,0.15);      --tint-warn-fg: #fcd34d;
   --tint-danger: rgba(220,38,38,0.13);    --tint-danger-fg: #fca5a5;
   --tint-purple: rgba(139,92,246,0.15);   --tint-purple-fg: #c4b5fd;
+
+  /* Opaque composite of `rgba(255,255,255,0.03)` over `--bg-card` (#1a2235) — the
+     exact colour the dark `.sv-table` th / row-hover tint renders as. Sticky cells
+     must be opaque, so they use this instead of the translucent overlay. */
+  --table-tint-solid: #21293b;
 }
 
 html, body {
@@ -845,6 +856,48 @@ a { color: inherit; text-decoration: none; }
 .sv-table tr:last-child td { border-bottom: none; }
 .sv-table tbody tr:hover td { background: var(--bg-primary); }
 [data-theme="dark"] .sv-table tbody tr:hover td { background: rgba(255,255,255,0.03); }
+
+/* ── Wide data table: scrollable wrapper + right-pinned actions column ──────
+   SHARED, generic — adopt on any page whose table is wider than its card.
+
+   `.sv-table-scroll` is a wrapper DIV placed immediately inside the card, with
+   the table as its only child. Without it a table wider than the card either
+   spills past the card and off the viewport (an `overflow: visible` card — the
+   /services regression) or is silently CUT OFF (an `overflow: hidden` card — the
+   /alerts one). Note `overflow-x: auto` computes `overflow-y` to `auto` as well,
+   so a descendant popup/menu positioned `absolute` inside the table WILL be
+   clipped by this wrapper — anchor such menus with `position: fixed` instead
+   (see ServiceRowMenu in services/page.tsx).
+
+   `.sv-table-pin-actions` (added to the <table> alongside `.sv-table`) keeps the
+   LAST column — the actions cell — visible against the right edge while the rest
+   of the table scrolls under it. Per the suite sticky rule the pinned cells carry
+   an OPAQUE background token and a z-index above the body rows. Cells carrying a
+   `colspan` (full-width expansion/detail rows) are excluded, and the `> thead >`/
+   `> tbody >` child combinators keep nested tables out of it.
+   A row that paints its own tint (e.g. an incident header) must also set
+   `--sv-row-tint` to that same token so the pinned cell keeps the tint over an
+   opaque base. */
+.sv-table-scroll { width: 100%; overflow-x: auto; }
+.sv-table-scroll > .sv-table { min-width: 100%; }
+
+.sv-table-pin-actions > thead > tr > th:last-child,
+.sv-table-pin-actions > tbody > tr > td:last-child:not([colspan]) {
+  position: sticky; right: 0;
+  border-left: 1px solid var(--border);
+}
+.sv-table-pin-actions > thead > tr > th:last-child {
+  z-index: 6;
+  background-color: var(--table-tint-solid);
+}
+.sv-table-pin-actions > tbody > tr > td:last-child:not([colspan]) {
+  z-index: 2;
+  background-color: var(--bg-card);
+  background-image: linear-gradient(var(--sv-row-tint, transparent), var(--sv-row-tint, transparent));
+}
+.sv-table-pin-actions > tbody > tr:hover > td:last-child:not([colspan]) {
+  background-color: var(--table-tint-solid);
+}
 
 /* Clickable KPI stat tiles (Wireless Insights drill-downs) */
 .sv-statcard-clickable:hover {

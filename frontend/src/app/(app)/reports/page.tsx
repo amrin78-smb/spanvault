@@ -1,9 +1,17 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState, type ComponentType, type SVGProps } from 'react';
 import { useSession } from 'next-auth/react';
 import { useApi, apiSend } from '@/lib/api';
+import { useRbac } from '@/lib/rbac';
 import { ErrorBox, Loading } from '@/components/ui';
+import {
+  IconClipboard, IconReports, IconBuilding, IconCheckCircle, IconTrendingUp,
+  IconWarning, IconBell, IconWireless, IconAntenna, IconUsers, IconActivity,
+  IconGauge, IconShield, IconTransfer, IconMonitor, IconPlug,
+  IconCalendar, IconMail, IconDatabase, IconInfo, IconHistory, IconLayers,
+  IconClock, IconCheck, IconClose,
+} from '@/components/icons';
 import NetworkSummaryReport from '@/components/reports/NetworkSummaryReport';
 import SiteReport from '@/components/reports/SiteReport';
 import DeviceDetailReport from '@/components/reports/DeviceDetailReport';
@@ -38,13 +46,43 @@ type SavedReport = {
   // Multi-entity detail reports (AP/Device/Service Detail) persist their selected
   // entity ids here so the selection survives a save/reload (backend scope_ids column).
   scope_ids: number[] | null;
+  // Schedule columns — GET /api/reports/saved is a `SELECT *`, so these have always
+  // been on the wire; the page just never typed or used them.
+  schedule?: string | null;
+  schedule_day?: number | null;
+  schedule_hour?: number | null;
+  recipients?: string | null;
+  next_run_at?: string | null;
+  last_sent_at?: string | null;
+  created_at?: string | null;
+  created_by?: string | null;
 };
+// GET /api/reports/schedules — every saved report with an email cadence, plus the
+// most recent delivery attempts across all of them.
+type ScheduleRow = {
+  id: number; name: string; template: string;
+  scope_type: string; scope_id: number | null; scope_name: string | null;
+  date_range: string; schedule: string; schedule_day: number | null; schedule_hour: number | null;
+  recipients: string | null; next_run_at: string | null; last_sent_at: string | null;
+  created_by: string | null; created_at: string | null;
+  last_run_at: string | null; last_status: string | null; last_error: string | null;
+};
+type HistoryRow = {
+  id: number; report_id: number; run_at: string; status: string;
+  error: string | null; recipients: string | null;
+  report_name: string | null; template: string | null;
+};
+type SchedulesPayload = { schedules: ScheduleRow[]; recent: HistoryRow[] };
 // Scope modes a template supports.
 // 'apMulti'/'deviceMulti'/'serviceMulti' = Phase-1 granular detail reports: pick
 // one or many entities, each rendered as its own charted section.
 type ScopeKind = 'all' | 'site' | 'device' | 'flexible' | 'flexibleNoDevice' | 'apMulti' | 'deviceMulti' | 'serviceMulti';
+type IconComp = ComponentType<SVGProps<SVGSVGElement>>;
 type Template = {
-  key: string; icon: string; label: string; desc: string;
+  // `Icon` is a component from components/icons.tsx — the rail used to render a
+  // literal emoji here, which renders differently per-platform and ignores the
+  // theme. Every other page in the app already uses this SVG set.
+  key: string; Icon: IconComp; label: string; desc: string;
   scope: ScopeKind; sla?: boolean; metric?: boolean; wireless?: boolean;
   // granular = uses the flexible time range / bucket / metric-checkbox controls.
   granular?: boolean;
@@ -73,29 +111,121 @@ type Applied = {
 const GROUP_ORDER = ['Overview', 'Performance & SLA', 'Wireless', 'Detail'];
 
 const TEMPLATES: Template[] = [
-  { key: 'executive', icon: '📋', label: 'Executive', desc: 'Management-level overview with recommendations', scope: 'all', category: 'Overview' },
-  { key: 'network-summary', icon: '📊', label: 'Network Summary', desc: 'Overall health across all sites and devices', scope: 'all', category: 'Overview' },
-  { key: 'site-summary', icon: '🏢', label: 'Site Report', desc: 'All devices in a site with comparison table', scope: 'site', category: 'Overview' },
-  { key: 'sla-compliance', icon: '✅', label: 'SLA Compliance', desc: 'Pass/fail per device vs SLA target', scope: 'flexible', sla: true, category: 'Performance & SLA' },
-  { key: 'capacity', icon: '📈', label: 'Capacity', desc: 'Bandwidth trends and utilization projections', scope: 'flexibleNoDevice', category: 'Performance & SLA' },
-  { key: 'top-worst', icon: '⚠', label: 'Top 10 Worst', desc: 'Lowest availability, highest latency or most alerts', scope: 'flexibleNoDevice', metric: true, category: 'Performance & SLA' },
-  { key: 'alert-analysis', icon: '🔔', label: 'Alerts & Anomalies', desc: 'Most alerted devices, MTTR, and patterns', scope: 'flexibleNoDevice', category: 'Performance & SLA' },
-  { key: 'wireless-overview', icon: '📶', label: 'Wireless Overview', desc: 'AP status, clients and utilization across all sites', scope: 'all', wireless: true, category: 'Wireless' },
-  { key: 'wireless-ap-health', icon: '📡', label: 'Wireless AP Health', desc: 'Per-AP health scores, channels and utilization', scope: 'all', wireless: true, category: 'Wireless' },
-  { key: 'wireless-clients', icon: '👥', label: 'Wireless Client', desc: 'Client distribution, problem clients and roaming', scope: 'all', wireless: true, category: 'Wireless' },
-  { key: 'wireless-rf', icon: '📻', label: 'Wireless RF', desc: 'Co-channel interference, band steering and RF scores', scope: 'all', wireless: true, category: 'Wireless' },
-  { key: 'wireless-capacity', icon: '📊', label: 'Wireless Capacity', desc: 'AP capacity usage and client growth trends', scope: 'all', wireless: true, category: 'Wireless' },
-  { key: 'wireless-security', icon: '🛡️', label: 'Wireless Security', desc: 'Rogue AP detections and SSID encryption posture', scope: 'all', wireless: true, category: 'Wireless' },
-  { key: 'wireless-bandwidth', icon: '⚡', label: 'Wireless Bandwidth', desc: 'Top bandwidth-consuming clients over time', scope: 'all', wireless: true, category: 'Wireless' },
-  { key: 'device-detail', icon: '🖥', label: 'Device Detail', desc: 'Time-series charts, history and metrics for one or more devices', scope: 'deviceMulti', granular: true, category: 'Detail' },
-  { key: 'ap-detail', icon: '📡', label: 'AP Detail', desc: 'Time-series charts, clients, RF and throughput for one or more access points', scope: 'apMulti', granular: true, category: 'Detail' },
-  { key: 'service-detail', icon: '🔌', label: 'Service Detail', desc: 'Status history, response time and alerts for one or more service checks', scope: 'serviceMulti', granular: true, category: 'Detail' },
+  { key: 'executive', Icon: IconClipboard, label: 'Executive', desc: 'Management-level overview with recommendations', scope: 'all', category: 'Overview' },
+  { key: 'network-summary', Icon: IconReports, label: 'Network Summary', desc: 'Overall health across all sites and devices', scope: 'all', category: 'Overview' },
+  { key: 'site-summary', Icon: IconBuilding, label: 'Site Report', desc: 'All devices in a site with comparison table', scope: 'site', category: 'Overview' },
+  { key: 'sla-compliance', Icon: IconCheckCircle, label: 'SLA Compliance', desc: 'Pass/fail per device vs SLA target', scope: 'flexible', sla: true, category: 'Performance & SLA' },
+  { key: 'capacity', Icon: IconTrendingUp, label: 'Capacity', desc: 'Bandwidth trends and utilization projections', scope: 'flexibleNoDevice', category: 'Performance & SLA' },
+  { key: 'top-worst', Icon: IconWarning, label: 'Top 10 Worst', desc: 'Lowest availability, highest latency or most alerts', scope: 'flexibleNoDevice', metric: true, category: 'Performance & SLA' },
+  { key: 'alert-analysis', Icon: IconBell, label: 'Alerts & Anomalies', desc: 'Most alerted devices, MTTR, and patterns', scope: 'flexibleNoDevice', category: 'Performance & SLA' },
+  { key: 'wireless-overview', Icon: IconWireless, label: 'Wireless Overview', desc: 'AP status, clients and utilization across all sites', scope: 'all', wireless: true, category: 'Wireless' },
+  { key: 'wireless-ap-health', Icon: IconAntenna, label: 'Wireless AP Health', desc: 'Per-AP health scores, channels and utilization', scope: 'all', wireless: true, category: 'Wireless' },
+  { key: 'wireless-clients', Icon: IconUsers, label: 'Wireless Client', desc: 'Client distribution, problem clients and roaming', scope: 'all', wireless: true, category: 'Wireless' },
+  { key: 'wireless-rf', Icon: IconActivity, label: 'Wireless RF', desc: 'Co-channel interference, band steering and RF scores', scope: 'all', wireless: true, category: 'Wireless' },
+  { key: 'wireless-capacity', Icon: IconGauge, label: 'Wireless Capacity', desc: 'AP capacity usage and client growth trends', scope: 'all', wireless: true, category: 'Wireless' },
+  { key: 'wireless-security', Icon: IconShield, label: 'Wireless Security', desc: 'Rogue AP detections and SSID encryption posture', scope: 'all', wireless: true, category: 'Wireless' },
+  { key: 'wireless-bandwidth', Icon: IconTransfer, label: 'Wireless Bandwidth', desc: 'Top bandwidth-consuming clients over time', scope: 'all', wireless: true, category: 'Wireless' },
+  { key: 'device-detail', Icon: IconMonitor, label: 'Device Detail', desc: 'Time-series charts, history and metrics for one or more devices', scope: 'deviceMulti', granular: true, category: 'Detail' },
+  { key: 'ap-detail', Icon: IconAntenna, label: 'AP Detail', desc: 'Time-series charts, clients, RF and throughput for one or more access points', scope: 'apMulti', granular: true, category: 'Detail' },
+  { key: 'service-detail', Icon: IconPlug, label: 'Service Detail', desc: 'Status history, response time and alerts for one or more service checks', scope: 'serviceMulti', granular: true, category: 'Detail' },
 ];
 const TEMPLATE_BY_KEY: Record<string, Template> = Object.fromEntries(TEMPLATES.map((t) => [t.key, t]));
-// Catalog rows (display metadata) derived once from the templates.
-const CATALOG_REPORTS: CatalogReport[] = TEMPLATES.map((t) => ({
-  key: t.key, short: t.label, title: t.label, desc: t.desc, icon: t.icon, category: t.category,
-}));
+
+// ── Per-template briefing metadata ─────────────────────────────
+// `includes` = the sections the on-screen report actually renders (taken from the
+// matching component in components/reports/, using its own wording).
+// `sources`  = the spanvault tables the matching /api/reports/<key> handler reads.
+// This is documentation of what already exists, kept next to the templates so the
+// two stay in step — it is NOT computed and does not affect report generation.
+// `covers` picks which live estate count the header line quotes.
+type TemplateMeta = { includes: string[]; sources: string[]; covers: 'devices' | 'wireless' | 'services' | 'none' };
+const TEMPLATE_META: Record<string, TemplateMeta> = {
+  executive: {
+    includes: ['Headline & reporting period', 'Uptime / incidents / downtime / service uptime KPIs', 'Network performance vs previous period', 'Sites summary with health grade', 'Recommendations'],
+    sources: ['ping_results', 'monitored_devices', 'alerts', 'incidents', 'service_check_results', 'snmp_results', 'device_health_scores'],
+    covers: 'devices',
+  },
+  'network-summary': {
+    includes: ['Devices / uptime / alerts / avg response / MTTR KPIs', 'Per-site breakdown table', 'Key findings', 'Top issues', 'Health grade distribution'],
+    sources: ['monitored_devices', 'ping_results', 'alerts', 'snmp_results', 'device_health_scores'],
+    covers: 'devices',
+  },
+  'site-summary': {
+    includes: ['Devices / up / down / uptime KPIs for the site', 'Site analysis narrative', 'Per-device table with SLA + health grade'],
+    sources: ['monitored_devices', 'ping_results', 'alerts', 'device_health_scores'],
+    covers: 'devices',
+  },
+  'sla-compliance': {
+    includes: ['SLA target, meeting / failing counts', 'Overall uptime, total downtime, service uptime', 'Per-device pass/fail table with downtime minutes', 'Risk assessment'],
+    sources: ['monitored_devices', 'ping_results', 'alerts', 'service_checks', 'service_check_results'],
+    covers: 'devices',
+  },
+  capacity: {
+    includes: ['Per-interface average in/out throughput', 'Peak in/out and trend direction', '30 / 60 / 90-day utilization projections', 'At-risk interface flagging'],
+    sources: ['snmp_results', 'monitored_devices'],
+    covers: 'devices',
+  },
+  'top-worst': {
+    includes: ['Ranked bottom-10 table for the chosen metric', 'Per-device site and scored bar', 'Metric is selectable: availability, response time or alerts'],
+    sources: ['monitored_devices', 'ping_results', 'alerts', 'device_health_scores'],
+    covers: 'devices',
+  },
+  'alert-analysis': {
+    includes: ['Total alerts, average MTTR, busiest hour', 'Top alerted devices', 'Breakdown by type and by severity', 'Breakdown by site'],
+    sources: ['alerts', 'monitored_devices', 'service_checks'],
+    covers: 'devices',
+  },
+  'wireless-overview': {
+    includes: ['Controllers / APs / online / offline / clients KPIs', 'Average utilization and overall health score', 'Site breakdown', 'Top APs by clients and top SSIDs', 'Offline AP list'],
+    sources: ['wireless_aps', 'wireless_controllers', 'wireless_intelligence', 'wireless_ssids'],
+    covers: 'wireless',
+  },
+  'wireless-ap-health': {
+    includes: ['Total / online / offline AP counts', 'Average health score, overloaded and high-util counts', 'Per-AP table: status, clients, channels, util, noise, uptime, grade'],
+    sources: ['wireless_aps', 'wireless_controllers', 'wireless_ap_intelligence'],
+    covers: 'wireless',
+  },
+  'wireless-clients': {
+    includes: ['Total, problem, low-signal and frequently-roaming clients', '24h roaming events and band split', 'Band distribution', 'Problem-client list and busiest APs'],
+    sources: ['wireless_clients', 'wireless_client_events'],
+    covers: 'wireless',
+  },
+  'wireless-rf': {
+    includes: ['Overall, interference, band-steering and load-balance scores', 'Measured 2.4 / 5 GHz interference and reporting AP counts', 'Recommendations', 'Channel distribution and AP grade distribution'],
+    sources: ['wireless_intelligence', 'wireless_aps', 'wireless_ap_intelligence'],
+    covers: 'wireless',
+  },
+  'wireless-capacity': {
+    includes: ['Licensed vs used APs and capacity %', 'Average clients per AP, peak clients, growth rate', '30-day client trend', 'Growth projection and high-utilization APs'],
+    sources: ['wireless_controllers', 'wireless_aps', 'wireless_history'],
+    covers: 'wireless',
+  },
+  'wireless-security': {
+    includes: ['Rogue APs detected, needs-attention and informational counts', 'SSIDs configured and weak / no-encryption counts', 'Recommendations', 'Rogue & neighbouring AP detections', 'SSID encryption posture'],
+    sources: ['wireless_rogue_aps', 'wireless_controllers', 'wireless_ssids'],
+    covers: 'wireless',
+  },
+  'wireless-bandwidth': {
+    includes: ['Clients with bandwidth data', 'Average bandwidth and top client average', 'Top clients by bandwidth over the window'],
+    sources: ['wireless_client_history', 'wireless_controllers', 'wireless_clients'],
+    covers: 'wireless',
+  },
+  'device-detail': {
+    includes: ['Uptime, average response, alerts and downtime per device', '90-day availability strip and response-time history', 'Latency & packet loss, CPU, memory, sessions charts', 'Per-interface throughput and SNMP metrics', 'Alert history and connected devices'],
+    sources: ['monitored_devices', 'ping_results', 'snmp_results', 'alerts', 'device_sensors', 'topology_links'],
+    covers: 'devices',
+  },
+  'ap-detail': {
+    includes: ['Uptime, samples, down events and disconnects per AP', 'Connected clients, radio utilization, noise floor and throughput charts', 'RF intelligence', 'Current clients and recent events'],
+    sources: ['wireless_aps', 'wireless_history', 'wireless_ap_intelligence', 'wireless_clients', 'wireless_client_events'],
+    covers: 'wireless',
+  },
+  'service-detail': {
+    includes: ['Uptime, average response, alerts and downtime per check', '90-day status history strip', 'Response-time chart', 'Alert history'],
+    sources: ['service_checks', 'service_check_results', 'alerts', 'agents'],
+    covers: 'services',
+  },
+};
 
 const RANGES = [
   { key: '24h', label: 'Last 24h' },
@@ -306,6 +436,126 @@ function scopeLabel(a: Applied): string {
   return 'All Sites';
 }
 
+// ── Schedule formatting helpers (top-level) ────────────────────
+const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const CADENCE_OPTIONS = [
+  { key: 'none', label: 'Not scheduled' },
+  { key: 'daily', label: 'Daily' },
+  { key: 'weekly', label: 'Weekly' },
+  { key: 'monthly', label: 'Monthly' },
+];
+// "Weekly · Monday 07:00" — the cadence exactly as api/reportScheduler.js's
+// calculateNextRun() interprets it (hour defaults to 7, weekly day defaults to Monday).
+function cadenceLabel(s: { schedule?: string | null; schedule_day?: number | null; schedule_hour?: number | null }): string {
+  const hour = s.schedule_hour != null ? s.schedule_hour : 7;
+  const at = `${String(hour).padStart(2, '0')}:00`;
+  if (s.schedule === 'daily') return `Daily · ${at}`;
+  if (s.schedule === 'weekly') return `Weekly · ${DAY_NAMES[s.schedule_day != null ? s.schedule_day : 1]} ${at}`;
+  if (s.schedule === 'monthly') return `Monthly · 1st ${at}`;
+  return 'Not scheduled';
+}
+function fmtDateTime(v: string | null | undefined): string {
+  if (!v) return '—';
+  const d = new Date(v);
+  return isNaN(d.getTime()) ? '—' : d.toLocaleString();
+}
+// "in 4h 20m" / "2d ago" — relative to now, for next_run_at / last_sent_at.
+function fmtRelative(v: string | null | undefined): string {
+  if (!v) return '';
+  const t = new Date(v).getTime();
+  if (isNaN(t)) return '';
+  const diff = t - Date.now();
+  const abs = Math.abs(diff);
+  const mins = Math.round(abs / 60000);
+  let out: string;
+  if (mins < 1) out = 'less than a minute';
+  else if (mins < 60) out = `${mins}m`;
+  else if (mins < 60 * 24) out = `${Math.floor(mins / 60)}h ${mins % 60}m`;
+  else out = `${Math.round(mins / (60 * 24))}d`;
+  return diff >= 0 ? `in ${out}` : `${out} ago`;
+}
+function recipientList(v: string | null | undefined): string[] {
+  return String(v || '').split(',').map((e) => e.trim()).filter(Boolean);
+}
+// Live estate scale for the briefing header — read off the lists the page already
+// fetches, so this costs no extra request and is never a made-up number.
+function coverageLine(
+  tplKey: string,
+  counts: { sites: number; devices: number; aps: number; services: number; controllers: number },
+): string | null {
+  const meta = TEMPLATE_META[tplKey];
+  if (!meta) return null;
+  const n = (v: number) => v.toLocaleString();
+  if (meta.covers === 'wireless') {
+    if (!counts.aps && !counts.controllers) return null;
+    return `${n(counts.aps)} access point${counts.aps === 1 ? '' : 's'} on ${n(counts.controllers)} controller${counts.controllers === 1 ? '' : 's'} currently monitored`;
+  }
+  if (meta.covers === 'services') {
+    if (!counts.services) return null;
+    return `${n(counts.services)} service check${counts.services === 1 ? '' : 's'} currently monitored`;
+  }
+  if (meta.covers === 'devices') {
+    if (!counts.devices) return null;
+    return `${n(counts.devices)} device${counts.devices === 1 ? '' : 's'} across ${n(counts.sites)} site${counts.sites === 1 ? '' : 's'} currently monitored`;
+  }
+  return null;
+}
+
+// Summarise what the config bar is currently set to — i.e. exactly what
+// "Run Report →" will use. Read off live state (nothing has been run yet), so a
+// preset window is resolved the same way runReport() resolves it.
+// `mounted` gates the resolved absolute window: a preset range resolves against
+// `new Date()` and renders through `toLocaleString()`, so computing it during SSR
+// and again on the client produces two different strings and React throws a
+// hydration mismatch (caught live). Until mount we show the preset name only.
+function pendingConfigRows(a: {
+  tpl: Template; range: string; from: string; to: string; bucket: string;
+  scopeMode: string; siteLabel: string; deviceLabel: string; controllerLabel: string;
+  slaTarget: string; metric: string; entityCount: number; mounted: boolean;
+}): { label: string; value: string }[] {
+  const rows: { label: string; value: string }[] = [];
+  const fmt = (iso: string) => {
+    if (!iso) return '…';
+    const d = new Date(iso);
+    return isNaN(d.getTime()) ? '…' : d.toLocaleString();
+  };
+  const presetName = a.range === 'custom'
+    ? 'Custom'
+    : (RANGES.find((x) => x.key === a.range)?.label || a.range);
+  if (a.mounted) {
+    const r = resolveRange(a.range, a.from, a.to);
+    rows.push({ label: 'Window', value: `${presetName} · ${fmt(r.from)} → ${fmt(r.to)}` });
+  } else {
+    rows.push({ label: 'Window', value: presetName });
+  }
+
+  if (a.tpl.scope === 'apMulti' || a.tpl.scope === 'deviceMulti' || a.tpl.scope === 'serviceMulti') {
+    const noun = detailNoun(a.tpl.key);
+    rows.push({
+      label: 'Selection',
+      value: a.entityCount
+        ? `${a.entityCount} ${noun.toLowerCase()}${a.entityCount === 1 ? '' : 's'} selected`
+        : `No ${noun.toLowerCase()} selected yet — pick at least one to run`,
+    });
+  } else if (a.tpl.wireless) {
+    rows.push({ label: 'Scope', value: a.controllerLabel || 'All controllers' });
+  } else if (a.scopeMode === 'site') {
+    rows.push({ label: 'Scope', value: a.siteLabel ? `Site: ${a.siteLabel}` : 'Site: not chosen yet' });
+  } else if (a.scopeMode === 'device') {
+    rows.push({ label: 'Scope', value: a.deviceLabel ? `Device: ${a.deviceLabel}` : 'Device: not chosen yet' });
+  } else {
+    rows.push({ label: 'Scope', value: 'All sites' });
+  }
+
+  if (a.tpl.granular) {
+    rows.push({ label: 'Resolution', value: BUCKETS.find((b) => b.key === a.bucket)?.label || a.bucket });
+  }
+  if (a.tpl.sla) rows.push({ label: 'SLA target', value: `${a.slaTarget || '99.5'}%` });
+  if (a.tpl.metric) rows.push({ label: 'Ranked by', value: METRICS.find((m) => m.key === a.metric)?.label || a.metric });
+  rows.push({ label: 'Output', value: 'On screen, plus a server-rendered PDF via Export PDF' });
+  return rows;
+}
+
 // ── Shared inline-style constants ──────────────────────────────
 const CTRL_H = 32;
 const ctrlBase: React.CSSProperties = {
@@ -326,9 +576,34 @@ const presetBtn = (active: boolean): React.CSSProperties => ({
   background: active ? 'var(--primary)' : 'var(--bg-card)',
   color: active ? '#fff' : 'var(--text-primary)',
 });
+// Briefing/schedule panel chrome. Local to this page — globals.css is shared and
+// deliberately not touched for a single page's layout.
+const panelBox: React.CSSProperties = {
+  border: '1px solid var(--border)', borderRadius: 'var(--radius)',
+  background: 'var(--bg-card)', padding: 14, minWidth: 0,
+};
+const panelHead: React.CSSProperties = {
+  display: 'flex', alignItems: 'center', gap: 7, marginBottom: 10,
+  fontSize: 'var(--text-xs)', fontWeight: 700, letterSpacing: '0.05em',
+  textTransform: 'uppercase', color: 'var(--text-muted)',
+};
+const chip = (tint: string, fg: string): React.CSSProperties => ({
+  display: 'inline-flex', alignItems: 'center', gap: 5, height: 20, padding: '0 8px',
+  borderRadius: 'var(--radius-pill)', background: tint, color: fg,
+  fontSize: 'var(--text-xs)', fontWeight: 600, whiteSpace: 'nowrap',
+});
+const srcChip: React.CSSProperties = {
+  display: 'inline-block', padding: '2px 7px', borderRadius: 'var(--radius-sm)',
+  background: 'var(--surface-subtle)', color: 'var(--text-secondary)',
+  fontSize: 'var(--text-xs)', fontFamily: 'var(--font-mono)',
+};
 
 export default function ReportsPage() {
   const { data: session } = useSession();
+  // Reports writes (save / schedule / send-now) are site_admin+ server-side
+  // (ROLE_RANK in api/server.js) — only a viewer is read-only.
+  const { role } = useRbac();
+  const canWrite = role !== 'viewer';
   const email = session?.user?.email || '';
   const userName = session?.user?.name || email || 'Unknown user';
   const sites = useApi<Site[]>('/api/netvault/sites');
@@ -337,6 +612,10 @@ export default function ReportsPage() {
   const services = useApi<ServiceLite[]>('/api/service-checks');
   const controllers = useApi<Controller[]>('/api/wireless/controllers');
   const saved = useApi<SavedReport[]>(email ? `/api/reports/saved?created_by=${encodeURIComponent(email)}` : '/api/reports/saved');
+  // Scheduled email deliveries + recent delivery attempts, estate-wide (not filtered
+  // by created_by — a schedule is an operational fact of the system, not a personal
+  // bookmark, and the route site-scopes it server-side).
+  const schedules = useApi<SchedulesPayload>('/api/reports/schedules');
 
   const [template, setTemplate] = useState('network-summary');
   const [range, setRange] = useState('30d');
@@ -360,10 +639,44 @@ export default function ReportsPage() {
   const [saving, setSaving] = useState(false);
   const [saveName, setSaveName] = useState('');
   const [showSave, setShowSave] = useState(false);
-  // Right-workspace active tab (View = configure + render; Saved = saved reports).
-  const [tab, setTab] = useState<'view' | 'saved'>('view');
+  // Right-workspace active tab (View = configure + render; Schedule = email
+  // deliveries; Saved = saved report configs).
+  const [tab, setTab] = useState<'view' | 'schedule' | 'saved'>('view');
+  // Which saved report's schedule is open for editing in the Schedule tab.
+  const [editSchedId, setEditSchedId] = useState<number | null>(null);
+  // Set after the first client render. Anything whose value depends on the
+  // current clock or the viewer's locale must wait for this, or SSR and the
+  // client produce different text and hydration fails.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => { setMounted(true); }, []);
+  const [schedBusy, setSchedBusy] = useState<number | null>(null);
+  const [schedMsg, setSchedMsg] = useState<{ id: number; kind: 'ok' | 'error'; text: string } | null>(null);
 
   const tpl = TEMPLATE_BY_KEY[template];
+
+  const scheduleRows = schedules.data?.schedules || [];
+  const recentRuns = schedules.data?.recent || [];
+  // template key → its scheduled deliveries, for the rail badge and the briefing.
+  const schedulesByTemplate = useMemo(() => {
+    const m: Record<string, ScheduleRow[]> = {};
+    for (const s of scheduleRows) (m[s.template] = m[s.template] || []).push(s);
+    return m;
+  }, [scheduleRows]);
+  // Catalog rows: SVG icon + a "Scheduled" count badge when the template has one.
+  const catalogReports: CatalogReport[] = useMemo(() => TEMPLATES.map((t) => {
+    const n = (schedulesByTemplate[t.key] || []).length;
+    return {
+      key: t.key, short: t.label, title: t.label, desc: t.desc, category: t.category,
+      icon: <t.Icon width={16} height={16} />,
+      badge: n > 0
+        ? {
+            icon: <IconCalendar width={11} height={11} aria-hidden />,
+            label: n > 1 ? String(n) : undefined,
+            title: `${n} scheduled email deliver${n > 1 ? 'ies' : 'y'}`,
+          }
+        : undefined,
+    };
+  }), [schedulesByTemplate]);
 
   // Reset scope mode when switching to a template with a fixed scope.
   useEffect(() => {
@@ -546,6 +859,43 @@ export default function ReportsPage() {
   async function deleteSaved(id: number) {
     await apiSend(`/api/reports/saved/${id}`, 'DELETE');
     saved.reload();
+    schedules.reload();
+  }
+
+  // Persist a saved report's email cadence. PUT /api/reports/saved/:id is the
+  // route api/reportScheduler.js's next_run_at is recomputed by — this is the
+  // only place in the UI that has ever driven it.
+  async function saveSchedule(id: number, fields: {
+    schedule: string; schedule_day: number | null; schedule_hour: number; recipients: string;
+  }) {
+    setSchedBusy(id);
+    setSchedMsg(null);
+    try {
+      await apiSend(`/api/reports/saved/${id}`, 'PUT', fields);
+      setEditSchedId(null);
+      schedules.reload();
+      saved.reload();
+    } catch (e) {
+      setSchedMsg({ id, kind: 'error', text: (e as Error).message || 'Could not save the schedule' });
+    } finally {
+      setSchedBusy(null);
+    }
+  }
+
+  // Email a scheduled report immediately (does not move next_run_at).
+  async function sendScheduleNow(id: number) {
+    setSchedBusy(id);
+    setSchedMsg(null);
+    try {
+      const out: any = await apiSend(`/api/reports/saved/${id}/run-now`, 'POST', {});
+      const to = Array.isArray(out?.recipients) ? out.recipients.join(', ') : '';
+      setSchedMsg({ id, kind: 'ok', text: to ? `Sent to ${to}` : 'Sent' });
+      schedules.reload();
+    } catch (e) {
+      setSchedMsg({ id, kind: 'error', text: (e as Error).message || 'Send failed' });
+    } finally {
+      setSchedBusy(null);
+    }
   }
 
   function loadSaved(s: SavedReport) {
@@ -659,7 +1009,7 @@ export default function ReportsPage() {
           borderRadius: 'var(--radius)', padding: 12, display: 'flex', flexDirection: 'column', minHeight: 0,
         }}>
           <ReportsCatalog
-            reports={CATALOG_REPORTS}
+            reports={catalogReports}
             groupOrder={GROUP_ORDER}
             activeKey={template}
             onSelect={selectTemplate}
@@ -676,6 +1026,7 @@ export default function ReportsPage() {
           <div className="sv-no-print" style={{ display: 'flex', gap: 4, padding: '0 16px', borderBottom: '1px solid var(--border-light)', flexShrink: 0 }}>
             {([
               { key: 'view' as const, label: 'View' },
+              { key: 'schedule' as const, label: `Schedule (${scheduleRows.length})` },
               { key: 'saved' as const, label: `Saved (${saved.data?.length || 0})` },
             ]).map((t) => {
               const on = tab === t.key;
@@ -705,12 +1056,23 @@ export default function ReportsPage() {
             {tab === 'view' && (
               <>
                 {/* Selected-template header */}
-                <div className="sv-no-print" style={{ padding: '16px 18px', borderBottom: '1px solid var(--border-light)' }}>
-                  <div style={{ fontSize: 'var(--text-lg)', fontWeight: 700, color: 'var(--text-primary)', display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-                    <span aria-hidden style={{ fontSize: 'var(--text-lg)', lineHeight: 1 }}>{tpl.icon}</span>
-                    {tpl.label}
+                <div className="sv-no-print" style={{ padding: '16px 18px', borderBottom: '1px solid var(--border-light)', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: 'var(--text-lg)', fontWeight: 700, color: 'var(--text-primary)', display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                      <tpl.Icon width={18} height={18} aria-hidden style={{ color: 'var(--primary)', flexShrink: 0 }} />
+                      {tpl.label}
+                    </div>
+                    <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', fontStyle: 'italic', marginTop: 4 }}>{tpl.desc}</div>
                   </div>
-                  <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', fontStyle: 'italic', marginTop: 4 }}>{tpl.desc}</div>
+                  {/* Scheduled-delivery indicator for THIS template, mirroring the rail badge. */}
+                  {(schedulesByTemplate[template] || []).length > 0 && (
+                    <button type="button" onClick={() => setTab('schedule')}
+                      style={{ ...chip('var(--tint-info)', 'var(--tint-info-fg)'), height: 24, border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}
+                      title="Show this template's scheduled email deliveries">
+                      <IconCalendar width={12} height={12} aria-hidden />
+                      {(schedulesByTemplate[template] || []).length} scheduled
+                    </button>
+                  )}
                 </div>
 
                 {/* Sticky config bar — opaque bg + z-index so scrolled report content
@@ -951,13 +1313,145 @@ export default function ReportsPage() {
           ) : null}
                 </div>
                 ) : (
-                  <div className="sv-no-print" style={{ padding: 48, textAlign: 'center' }}>
-                    <p className="sv-muted" style={{ margin: 0 }}>
-                      Configure the options above and choose “Run Report →” to generate the {tpl.label} report.
-                    </p>
-                  </div>
+                  <ReportBriefing
+                    tpl={tpl}
+                    coverage={coverageLine(template, {
+                      sites: sites.data?.length || 0,
+                      devices: devices.data?.length || 0,
+                      aps: aps.data?.length || 0,
+                      services: services.data?.length || 0,
+                      controllers: controllers.data?.length || 0,
+                    })}
+                    schedules={schedulesByTemplate[template] || []}
+                    recent={recentRuns.filter((r) => r.template === template)}
+                    savedForTemplate={(saved.data || []).filter((s) => s.template === template)}
+                    schedulesLoading={schedules.loading}
+                    schedulesError={schedules.error}
+                    config={pendingConfigRows({
+                      tpl, range, from, to, bucket, scopeMode,
+                      siteLabel: sites.data?.find((s) => String(s.id) === siteId)?.name || '',
+                      deviceLabel: devices.data?.find((d) => String(d.id) === deviceId)?.name || '',
+                      controllerLabel: controllers.data?.find((c) => String(c.id) === controllerId)?.name || '',
+                      slaTarget, metric, entityCount: entityIds.length, mounted,
+                    })}
+                    onLoadSaved={loadSaved}
+                    onOpenSchedule={() => setTab('schedule')}
+                  />
                 )}
               </>
+            )}
+
+            {/* ── SCHEDULE TAB — every saved report with an email cadence ── */}
+            {tab === 'schedule' && (
+              <div className="sv-no-print" style={{ padding: 18, display: 'flex', flexDirection: 'column', gap: 16 }}>
+                <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+                  <div>
+                    <div style={{ fontSize: 'var(--text-lg)', fontWeight: 700, color: 'var(--text-primary)' }}>Scheduled delivery</div>
+                    <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', marginTop: 3 }}>
+                      Saved reports the server runs on a cadence and emails as PDF. The scheduler
+                      checks for due reports every 15 minutes, so a run can land a little after its
+                      scheduled time.
+                    </div>
+                  </div>
+                  <button type="button" onClick={() => { schedules.reload(); saved.reload(); }}
+                    style={{ ...presetBtn(false), padding: '0 12px', flex: 'none' }}>
+                    Refresh
+                  </button>
+                </div>
+
+                {schedules.error ? (
+                  <ErrorBox message={schedules.error} />
+                ) : schedules.loading && !schedules.data ? (
+                  <div style={panelBox}><Loading label="Loading schedules…" /></div>
+                ) : (
+                  <>
+                    <div style={panelBox}>
+                      <div style={panelHead}><IconCalendar width={13} height={13} aria-hidden /> Active schedules ({scheduleRows.length})</div>
+                      {scheduleRows.length === 0 ? (
+                        <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', lineHeight: 1.6 }}>
+                          Nothing is scheduled. Run a report on the <strong>View</strong> tab, save it from the
+                          <strong> Saved</strong> tab, then give it a cadence below — the saved report&apos;s template,
+                          scope and date range are what the scheduled run uses.
+                        </div>
+                      ) : (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                          {scheduleRows.map((s) => (
+                            <ScheduleCard
+                              /* Key carries the schedule signature: ScheduleCard seeds its
+                                 editor state from props, so it must remount when the stored
+                                 schedule changes (after a save/reload) or a reopened editor
+                                 would show the pre-save values. */
+                              key={`${s.id}:${s.schedule}:${s.schedule_day}:${s.schedule_hour}:${s.recipients}`}
+                              row={s}
+                              templateLabel={TEMPLATE_BY_KEY[s.template]?.label || s.template}
+                              TemplateIcon={TEMPLATE_BY_KEY[s.template]?.Icon}
+                              editing={editSchedId === s.id}
+                              busy={schedBusy === s.id}
+                              msg={schedMsg && schedMsg.id === s.id ? schedMsg : null}
+                              canWrite={canWrite}
+                              onEdit={() => { setEditSchedId(editSchedId === s.id ? null : s.id); setSchedMsg(null); }}
+                              onSave={(f) => saveSchedule(s.id, f)}
+                              onSendNow={() => sendScheduleNow(s.id)}
+                              onOpenTemplate={() => selectTemplate(s.template)}
+                            />
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Saved reports with no cadence yet — the only place a schedule can be created. */}
+                    {(() => {
+                      const unscheduled = (saved.data || []).filter((s) => !s.schedule || s.schedule === 'none');
+                      if (unscheduled.length === 0) return null;
+                      return (
+                        <div style={panelBox}>
+                          <div style={panelHead}><IconClock width={13} height={13} aria-hidden /> Saved reports without a schedule ({unscheduled.length})</div>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                            {unscheduled.map((s) => (
+                              <ScheduleCard
+                                key={`${s.id}:${s.schedule}:${s.schedule_day}:${s.schedule_hour}:${s.recipients}`}
+                                row={{
+                                  id: s.id, name: s.name, template: s.template,
+                                  scope_type: s.scope_type, scope_id: s.scope_id, scope_name: s.scope_name,
+                                  date_range: s.date_range, schedule: 'none',
+                                  schedule_day: s.schedule_day ?? null, schedule_hour: s.schedule_hour ?? null,
+                                  recipients: s.recipients ?? null, next_run_at: null,
+                                  last_sent_at: s.last_sent_at ?? null, created_by: s.created_by ?? null,
+                                  created_at: s.created_at ?? null,
+                                  last_run_at: null, last_status: null, last_error: null,
+                                }}
+                                templateLabel={TEMPLATE_BY_KEY[s.template]?.label || s.template}
+                                TemplateIcon={TEMPLATE_BY_KEY[s.template]?.Icon}
+                                editing={editSchedId === s.id}
+                                busy={schedBusy === s.id}
+                                msg={schedMsg && schedMsg.id === s.id ? schedMsg : null}
+                                canWrite={canWrite}
+                                onEdit={() => { setEditSchedId(editSchedId === s.id ? null : s.id); setSchedMsg(null); }}
+                                onSave={(f) => saveSchedule(s.id, f)}
+                                onSendNow={() => sendScheduleNow(s.id)}
+                                onOpenTemplate={() => selectTemplate(s.template)}
+                              />
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })()}
+
+                    <div style={panelBox}>
+                      <div style={panelHead}><IconHistory width={13} height={13} aria-hidden /> Recent deliveries</div>
+                      <DeliveryList
+                        rows={recentRuns}
+                        emptyText="No scheduled report has been delivered yet. Every scheduled run and every “Send now” is logged here with its recipients and outcome."
+                        showTemplate
+                      />
+                      <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', marginTop: 10, lineHeight: 1.5 }}>
+                        Only emailed runs are logged. An on-demand <strong>Export PDF</strong> from the View tab is
+                        streamed straight to your browser and is not retained on the server.
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
             )}
 
             {/* ── SAVED TAB — the existing saved-reports UI ── */}
@@ -1018,6 +1512,371 @@ export default function ReportsPage() {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ── Pre-run briefing (top-level component) ─────────────────────
+// What the right-hand workspace shows BEFORE a report has been run. Replaces the
+// single "Configure the options above…" sentence that used to leave ~500px blank:
+// what the report contains, which tables feed it, how much of the estate it covers
+// right now, whether it is scheduled to anyone, and what has already been delivered.
+function ReportBriefing({
+  tpl, coverage, schedules, recent, savedForTemplate, schedulesLoading, schedulesError,
+  config, onLoadSaved, onOpenSchedule,
+}: {
+  tpl: Template;
+  coverage: string | null;
+  schedules: ScheduleRow[];
+  recent: HistoryRow[];
+  savedForTemplate: SavedReport[];
+  schedulesLoading: boolean;
+  schedulesError: string | null;
+  config: { label: string; value: string }[];
+  onLoadSaved: (s: SavedReport) => void;
+  onOpenSchedule: () => void;
+}) {
+  const meta = TEMPLATE_META[tpl.key];
+  return (
+    <div className="sv-no-print" style={{ padding: 18, display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 14 }}>
+
+        {/* ── About this report ── */}
+        <div style={panelBox}>
+          <div style={panelHead}><IconInfo width={13} height={13} aria-hidden /> What this report contains</div>
+          {meta ? (
+            <ul style={{ margin: 0, padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 7 }}>
+              {meta.includes.map((line) => (
+                <li key={line} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', lineHeight: 1.45 }}>
+                  <IconCheck width={13} height={13} aria-hidden style={{ color: 'var(--tint-success-fg)', flexShrink: 0, marginTop: 2 }} />
+                  <span>{line}</span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>{tpl.desc}</div>
+          )}
+          {meta && (
+            <div style={{ marginTop: 12, paddingTop: 11, borderTop: '1px solid var(--border-light)' }}>
+              <div style={{ ...panelHead, marginBottom: 7 }}><IconDatabase width={13} height={13} aria-hidden /> Data sources</div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
+                {meta.sources.map((s) => <span key={s} style={srcChip}>{s}</span>)}
+              </div>
+            </div>
+          )}
+          {coverage && (
+            <div style={{ marginTop: 11, display: 'flex', alignItems: 'center', gap: 7, fontSize: 'var(--text-sm)', color: 'var(--text-secondary)' }}>
+              <IconLayers width={13} height={13} aria-hidden style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
+              {coverage}
+            </div>
+          )}
+        </div>
+
+        {/* ── What Run Report will actually use ── */}
+        <div style={panelBox}>
+          <div style={panelHead}><IconClock width={13} height={13} aria-hidden /> This run</div>
+          <dl style={{ margin: 0, display: 'grid', gridTemplateColumns: 'auto 1fr', columnGap: 12, rowGap: 7, alignItems: 'baseline' }}>
+            {config.map((c) => (
+              <div key={c.label} style={{ display: 'contents' }}>
+                <dt style={{ fontSize: 'var(--text-xs)', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em', whiteSpace: 'nowrap' }}>
+                  {c.label}
+                </dt>
+                <dd style={{ margin: 0, fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', wordBreak: 'break-word' }}>
+                  {c.value}
+                </dd>
+              </div>
+            ))}
+          </dl>
+        </div>
+
+        {/* ── Scheduled delivery for this template ── */}
+        <div style={panelBox}>
+          <div style={panelHead}><IconCalendar width={13} height={13} aria-hidden /> Scheduled delivery</div>
+          {schedulesError ? (
+            <div style={{ fontSize: 'var(--text-sm)', color: 'var(--tint-danger-fg)' }}>{schedulesError}</div>
+          ) : schedulesLoading ? (
+            <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>Loading…</div>
+          ) : schedules.length === 0 ? (
+            <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', lineHeight: 1.55 }}>
+              No email schedule for {tpl.label}. Run it, save it, then set a cadence on the{' '}
+              <button type="button" onClick={onOpenSchedule}
+                style={{ border: 'none', background: 'transparent', padding: 0, cursor: 'pointer', color: 'var(--primary)', fontWeight: 600, fontSize: 'var(--text-sm)', fontFamily: 'inherit', textDecoration: 'underline' }}>
+                Schedule tab
+              </button>.
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {schedules.map((s) => {
+                const to = recipientList(s.recipients);
+                return (
+                  <div key={s.id} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap' }}>
+                      <span style={{ fontSize: 'var(--text-md)', fontWeight: 600, color: 'var(--text-primary)' }}>{s.name}</span>
+                      <span style={chip('var(--tint-info)', 'var(--tint-info-fg)')}>{cadenceLabel(s)}</span>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--text-sm)', color: 'var(--text-secondary)' }}>
+                      <IconClock width={12} height={12} aria-hidden style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
+                      Next run {fmtDateTime(s.next_run_at)}
+                      {s.next_run_at && <span style={{ color: 'var(--text-muted)' }}>({fmtRelative(s.next_run_at)})</span>}
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, fontSize: 'var(--text-sm)', color: 'var(--text-secondary)' }}>
+                      <IconMail width={12} height={12} aria-hidden style={{ color: 'var(--text-muted)', flexShrink: 0, marginTop: 3 }} />
+                      <span style={{ wordBreak: 'break-word' }}>
+                        {to.length ? to.join(', ') : <span style={{ color: 'var(--tint-warn-fg)' }}>No recipients — this schedule will never send</span>}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>
+                      Last sent {fmtDateTime(s.last_sent_at)}
+                      {s.last_status && <> · last run <StatusPill status={s.last_status} /></>}
+                    </div>
+                  </div>
+                );
+              })}
+              <button type="button" onClick={onOpenSchedule}
+                style={{ ...presetBtn(false), alignSelf: 'flex-start', padding: '0 12px' }}>
+                Manage schedules
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ── Saved configurations for this template ── */}
+      {savedForTemplate.length > 0 && (
+        <div style={panelBox}>
+          <div style={panelHead}><IconClipboard width={13} height={13} aria-hidden /> Saved configurations for this report</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {savedForTemplate.map((s) => (
+              <button key={s.id} type="button" onClick={() => onLoadSaved(s)}
+                title={`Load "${s.name}" — ${s.scope_name || s.scope_type} · ${s.date_range}`}
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 6, height: 26, padding: '0 10px',
+                  border: '1px solid var(--border)', borderRadius: 'var(--radius-pill)',
+                  background: 'var(--bg-card)', cursor: 'pointer', fontFamily: 'inherit',
+                  fontSize: 'var(--text-xs)', fontWeight: 600, color: 'var(--text-primary)',
+                }}>
+                {s.name}
+                <span style={{ color: 'var(--text-muted)', fontWeight: 500 }}>
+                  {s.scope_name || (s.scope_type === 'all' ? 'all sites' : s.scope_type)} · {s.date_range}
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── Recent deliveries of this template ── */}
+      <div style={panelBox}>
+        <div style={panelHead}><IconHistory width={13} height={13} aria-hidden /> Recent {tpl.label} deliveries</div>
+        <DeliveryList
+          rows={recent}
+          emptyText={`No ${tpl.label} report has been emailed yet. Scheduled runs and “Send now” deliveries are logged here; an on-demand Export PDF is streamed to your browser and not retained on the server.`}
+        />
+      </div>
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>
+        <IconInfo width={13} height={13} aria-hidden style={{ flexShrink: 0 }} />
+        Set the options in the bar above, then choose <strong style={{ color: 'var(--text-secondary)' }}>Run Report →</strong> to generate the {tpl.label} report.
+      </div>
+    </div>
+  );
+}
+
+// ── Delivery-history list (top-level component) ────────────────
+function DeliveryList({ rows, emptyText, showTemplate }: {
+  rows: HistoryRow[]; emptyText: string; showTemplate?: boolean;
+}) {
+  if (rows.length === 0) {
+    return <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', lineHeight: 1.55 }}>{emptyText}</div>;
+  }
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      {rows.map((r) => (
+        <div key={r.id} style={{
+          display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+          padding: '7px 9px', borderRadius: 'var(--radius-sm)', background: 'var(--surface-subtle)',
+        }}>
+          <StatusPill status={r.status} />
+          <span style={{ fontSize: 'var(--text-sm)', fontWeight: 600, color: 'var(--text-primary)' }}>
+            {r.report_name || `#${r.report_id}`}
+          </span>
+          {showTemplate && r.template && (
+            <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)' }}>
+              {TEMPLATE_BY_KEY[r.template]?.label || r.template}
+            </span>
+          )}
+          <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)' }}>{fmtDateTime(r.run_at)}</span>
+          <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)' }}>{fmtRelative(r.run_at)}</span>
+          {r.recipients && (
+            <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', wordBreak: 'break-word' }}>→ {r.recipients}</span>
+          )}
+          {r.error && (
+            <span style={{ fontSize: 'var(--text-xs)', color: 'var(--tint-danger-fg)', wordBreak: 'break-word' }}>{r.error}</span>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function StatusPill({ status }: { status: string }) {
+  const ok = status === 'success';
+  return (
+    <span style={chip(ok ? 'var(--tint-success)' : 'var(--tint-danger)', ok ? 'var(--tint-success-fg)' : 'var(--tint-danger-fg)')}>
+      {ok ? <IconCheck width={11} height={11} aria-hidden /> : <IconClose width={11} height={11} aria-hidden />}
+      {ok ? 'Sent' : 'Failed'}
+    </span>
+  );
+}
+
+// ── One schedule row + inline cadence editor (top-level component) ──
+// Must stay top-level: defining it inside ReportsPage would remount the recipient
+// input on every keystroke and drop focus (the repo-wide rule).
+function ScheduleCard({
+  row, templateLabel, TemplateIcon, editing, busy, msg, canWrite,
+  onEdit, onSave, onSendNow, onOpenTemplate,
+}: {
+  row: ScheduleRow;
+  templateLabel: string;
+  TemplateIcon?: IconComp;
+  editing: boolean;
+  busy: boolean;
+  msg: { kind: 'ok' | 'error'; text: string } | null;
+  canWrite: boolean;
+  onEdit: () => void;
+  onSave: (f: { schedule: string; schedule_day: number | null; schedule_hour: number; recipients: string }) => void;
+  onSendNow: () => void;
+  onOpenTemplate: () => void;
+}) {
+  const [cadence, setCadence] = useState(row.schedule || 'none');
+  const [day, setDay] = useState(row.schedule_day != null ? String(row.schedule_day) : '1');
+  const [hour, setHour] = useState(row.schedule_hour != null ? String(row.schedule_hour) : '7');
+  const [to, setTo] = useState(row.recipients || '');
+  const active = row.schedule && row.schedule !== 'none';
+  const recips = recipientList(row.recipients);
+
+  return (
+    <div style={{
+      border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
+      background: 'var(--surface-subtle)', padding: '10px 12px',
+      display: 'flex', flexDirection: 'column', gap: 8,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 9, flexWrap: 'wrap' }}>
+        {TemplateIcon && <TemplateIcon width={15} height={15} aria-hidden style={{ color: 'var(--text-muted)', flexShrink: 0 }} />}
+        <span style={{ fontSize: 'var(--text-md)', fontWeight: 700, color: 'var(--text-primary)' }}>{row.name}</span>
+        <button type="button" onClick={onOpenTemplate} title="Open this template on the View tab"
+          style={{ border: 'none', background: 'transparent', padding: 0, cursor: 'pointer', color: 'var(--primary)', fontSize: 'var(--text-xs)', fontWeight: 600, fontFamily: 'inherit' }}>
+          {templateLabel}
+        </button>
+        <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)' }}>
+          {row.scope_name || (row.scope_type === 'all' ? 'All sites' : row.scope_type)} · {row.date_range}
+        </span>
+        <span style={active
+          ? chip('var(--tint-info)', 'var(--tint-info-fg)')
+          : chip('var(--surface-subtle)', 'var(--text-muted)')}>
+          {cadenceLabel(row)}
+        </span>
+        {row.last_status && <StatusPill status={row.last_status} />}
+        <div style={{ flex: 1 }} />
+        {canWrite && (
+          <>
+            <button type="button" onClick={onEdit} disabled={busy}
+              style={{ ...presetBtn(false), height: 24, padding: '0 10px', fontSize: 'var(--text-xs)' }}>
+              {editing ? 'Cancel' : active ? 'Edit schedule' : 'Add schedule'}
+            </button>
+            {active && recips.length > 0 && (
+              <button type="button" onClick={onSendNow} disabled={busy}
+                style={{ ...presetBtn(false), height: 24, padding: '0 10px', fontSize: 'var(--text-xs)', opacity: busy ? 0.6 : 1 }}>
+                {busy ? 'Working…' : 'Send now'}
+              </button>
+            )}
+          </>
+        )}
+      </div>
+
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '3px 16px', fontSize: 'var(--text-sm)', color: 'var(--text-secondary)' }}>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+          <IconClock width={12} height={12} aria-hidden style={{ color: 'var(--text-muted)' }} />
+          Next run {fmtDateTime(row.next_run_at)}
+          {row.next_run_at && <span style={{ color: 'var(--text-muted)' }}>({fmtRelative(row.next_run_at)})</span>}
+        </span>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+          <IconHistory width={12} height={12} aria-hidden style={{ color: 'var(--text-muted)' }} />
+          Last sent {fmtDateTime(row.last_sent_at)}
+        </span>
+        <span style={{ display: 'inline-flex', alignItems: 'flex-start', gap: 6, maxWidth: '100%' }}>
+          <IconMail width={12} height={12} aria-hidden style={{ color: 'var(--text-muted)', marginTop: 3, flexShrink: 0 }} />
+          <span style={{ wordBreak: 'break-word' }}>
+            {recips.length ? recips.join(', ')
+              : <span style={{ color: active ? 'var(--tint-warn-fg)' : 'var(--text-muted)' }}>
+                  {active ? 'No recipients — this schedule will never send' : 'No recipients'}
+                </span>}
+          </span>
+        </span>
+      </div>
+
+      {row.last_error && (
+        <div style={{ fontSize: 'var(--text-xs)', color: 'var(--tint-danger-fg)', wordBreak: 'break-word' }}>
+          Last failure: {row.last_error}
+        </div>
+      )}
+
+      {editing && (
+        <div style={{
+          display: 'flex', flexWrap: 'wrap', alignItems: 'flex-end', gap: 10,
+          paddingTop: 9, borderTop: '1px solid var(--border-light)',
+        }}>
+          <label style={fieldLabel}>Cadence
+            <select style={ctrlBase} value={cadence} onChange={(e) => setCadence(e.target.value)}>
+              {CADENCE_OPTIONS.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
+            </select>
+          </label>
+          {cadence === 'weekly' && (
+            <label style={fieldLabel}>Day
+              <select style={ctrlBase} value={day} onChange={(e) => setDay(e.target.value)}>
+                {DAY_NAMES.map((d, i) => <option key={d} value={i}>{d}</option>)}
+              </select>
+            </label>
+          )}
+          {cadence !== 'none' && (
+            <label style={fieldLabel}>Hour
+              <select style={ctrlBase} value={hour} onChange={(e) => setHour(e.target.value)}>
+                {Array.from({ length: 24 }, (_, h) => (
+                  <option key={h} value={h}>{String(h).padStart(2, '0')}:00</option>
+                ))}
+              </select>
+            </label>
+          )}
+          <label style={{ ...fieldLabel, flex: '1 1 260px', alignItems: 'stretch', flexDirection: 'column', gap: 4 }}>
+            Recipients
+            <input style={{ ...ctrlBase, width: '100%' }} value={to} onChange={(e) => setTo(e.target.value)}
+              placeholder="ops@example.com, noc@example.com" />
+          </label>
+          <button type="button" disabled={busy}
+            onClick={() => onSave({
+              schedule: cadence,
+              schedule_day: cadence === 'weekly' ? parseInt(day, 10) : null,
+              schedule_hour: parseInt(hour, 10),
+              recipients: to.trim(),
+            })}
+            style={{ ...presetBtn(true), padding: '0 14px', opacity: busy ? 0.6 : 1 }}>
+            {busy ? 'Saving…' : 'Save schedule'}
+          </button>
+        </div>
+      )}
+
+      {editing && cadence !== 'none' && !to.trim() && (
+        <div style={{ fontSize: 'var(--text-xs)', color: 'var(--tint-warn-fg)' }}>
+          A cadence with no recipients is stored but never sent — the scheduler only picks up
+          reports that have at least one recipient.
+        </div>
+      )}
+
+      {msg && (
+        <div style={{ fontSize: 'var(--text-xs)', fontWeight: 600, color: msg.kind === 'ok' ? 'var(--tint-success-fg)' : 'var(--tint-danger-fg)' }}>
+          {msg.text}
+        </div>
+      )}
     </div>
   );
 }

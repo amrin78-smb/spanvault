@@ -13,7 +13,7 @@ import { vendorLabel } from '@/lib/vendor';
 import { StatusDot } from '@/components/StatusDot';
 import SensorManager from '@/components/SensorManager';
 import { DeviceForm } from '@/components/DeviceModals';
-import { StatusBadge, Loading, ErrorBox, Empty, fmtTime, fmtRel, fmtBps, Pager, useClientPagination, useConfirm, CHART_TOOLTIP, useTableSort, sortRows, SortTh } from '@/components/ui';
+import { StatusBadge, Loading, ErrorBox, Empty, fmtTime, fmtRel, fmtBps, Pager, useClientPagination, useConfirm, CHART_TOOLTIP, useTableSort, sortRows, SortTh, TableSkeleton, UtilBar } from '@/components/ui';
 import { GradeBadge, ScoreBar, TrendArrow, n as intelNum } from '@/components/intel';
 
 type Device = {
@@ -269,9 +269,17 @@ export default function DeviceDetailPage() {
         </div>
       )}
 
-      {/* Compact 2×2 summary grid (collapses to 1 column on narrow screens). */}
+      {/* Per-port interface table — full width; it is the densest table on the
+          page and was previously squeezed into a quarter of the summary grid. */}
+      <InterfacesSection
+        deviceId={d.id}
+        snmpOn={snmpOn}
+        canEdit={canEdit}
+        onManageSensors={() => setSensorsOpen(true)}
+      />
+
+      {/* Compact summary grid (collapses to 1 column on narrow screens). */}
       <div className="sv-device-summary-grid">
-        {snmpOn && <InterfacePanel deviceId={d.id} />}
         <ConnectedDevices deviceId={d.id} />
         <DeviceIntelligence deviceId={d.id} />
         <SiteGateway device={d} onChanged={() => device.reload()} />
@@ -878,8 +886,25 @@ function QuickStats({ deviceId }: { deviceId: number }) {
   );
 }
 
-// ── 90-day availability calendar (top-level component) ─────────
-type CalDay = { day: string; uptime_pct: number | null; total_checks: number; incidents: number };
+// ── Availability calendar (top-level components) ───────────────
+// The API returns one row per day over the requested window, backed by raw ping
+// samples where they still exist and by the availability_summary daily rollup
+// beyond the raw-retention horizon (`source` says which answered). Before that
+// fallback existed the strip read only raw samples, so a device monitored since
+// June rendered ~76 of 90 squares as grey "no data" — a "90-DAY AVAILABILITY"
+// heading over a widget that was mostly nothing.
+//
+// A day can still legitimately have no data at all: a device added last week
+// cannot have 90 days of history. The strip therefore TRIMS the leading
+// no-data run and the heading names the window actually drawn, so the label can
+// never over-claim. Interior gaps are kept (they are real monitoring gaps, not
+// "before this device existed") and are drawn as an explicit, de-emphasised
+// no-data cell that the legend distinguishes from an outage.
+const CAL_DAYS = 90;
+type CalDay = {
+  day: string; uptime_pct: number | null; total_checks: number;
+  incidents: number; source?: string;
+};
 function calColor(d: CalDay | undefined): string {
   if (!d || !d.total_checks) return 'var(--sv-unknown)';
   const pct = d.uptime_pct == null ? 100 : Number(d.uptime_pct);
@@ -893,132 +918,361 @@ function dayLabel(day: string): string {
   if (!y || !m || !d) return day;
   return new Date(y, m - 1, d).toLocaleDateString([], { month: 'short', day: 'numeric' });
 }
+const CAL_CELL: CSSProperties = {
+  width: 10, height: 10, borderRadius: 2, flex: 'none', cursor: 'default',
+  boxSizing: 'border-box',
+};
+// A no-data day is deliberately NOT a solid grey block: solid grey reads as a
+// measured state sitting next to the measured greens and reds. Hollow + dashed
+// reads as absence.
+const CAL_CELL_EMPTY: CSSProperties = {
+  ...CAL_CELL, background: 'var(--surface-subtle)', border: '1px dashed var(--border)',
+};
+function CalLegendItem({ label, style }: { label: string; style: CSSProperties }) {
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+      <span style={style} />
+      <span>{label}</span>
+    </span>
+  );
+}
 function UptimeCalendar({ deviceId }: { deviceId: number }) {
-  const cal = useApi<CalDay[]>(`/api/devices/${deviceId}/uptime-calendar?days=90`, 0);
+  const cal = useApi<CalDay[]>(`/api/devices/${deviceId}/uptime-calendar?days=${CAL_DAYS}`, 0);
   // The API returns a complete, ordered day series (gaps already filled), so we
   // render it directly — no client-side date keying / timezone matching.
-  const days = cal.data || [];
-  if (!days.length) return null;
+  const all = useMemo(() => cal.data || [], [cal.data]);
+  const view = useMemo(() => {
+    const firstWithData = all.findIndex((c) => c.total_checks > 0);
+    const shown = firstWithData > 0 ? all.slice(firstWithData) : all;
+    let checks = 0;
+    let bad = 0;
+    let covered = 0;
+    let outages = 0;
+    for (const c of shown) {
+      if (!c.total_checks) continue;
+      covered += 1;
+      const pct = c.uptime_pct == null ? 100 : Number(c.uptime_pct);
+      checks += c.total_checks;
+      bad += c.total_checks * (1 - pct / 100);
+      if (c.incidents > 0 || pct < 99) outages += 1;
+    }
+    return {
+      shown,
+      truncated: firstWithData > 0,
+      hasData: firstWithData !== -1,
+      covered,
+      gaps: shown.length - covered,
+      outages,
+      avgPct: checks > 0 ? Math.round((1 - bad / checks) * 1000) / 10 : null,
+    };
+  }, [all]);
+
+  if (!all.length) return null;
+
+  const heading = view.hasData ? `${view.shown.length}-day availability` : 'Availability';
+  const summary: string[] = [];
+  if (view.hasData) {
+    summary.push(`${dayLabel(view.shown[0].day)} – ${dayLabel(view.shown[view.shown.length - 1].day)}`);
+    if (view.avgPct != null) summary.push(`${view.avgPct}% average`);
+    summary.push(`${view.outages} bad day${view.outages === 1 ? '' : 's'}`);
+    if (view.gaps) summary.push(`${view.gaps} day${view.gaps === 1 ? '' : 's'} with no data`);
+    if (view.truncated) summary.push(`no history before ${dayLabel(view.shown[0].day)}`);
+  }
+
   return (
     <div style={{ ...SECTION_CARD, padding: '12px 16px' }}>
-      <div style={SECTION_HEADING}>90-day availability</div>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 2, maxHeight: 56, overflow: 'hidden' }}>
-        {days.map((c) => {
-          const tip = c.total_checks
-            ? `${dayLabel(c.day)} — ${c.uptime_pct ?? 100}% uptime, ${c.incidents} incident${c.incidents === 1 ? '' : 's'}`
-            : `${dayLabel(c.day)} — no data`;
-          return (
-            <span
-              key={c.day}
-              title={tip}
-              /* intentional: 2px on a 10x10 heatmap cell — --radius-sm would render it as a circle. */
-              style={{ width: 10, height: 10, borderRadius: 2, background: calColor(c), flex: 'none', cursor: 'default' }}
-            />
-          );
-        })}
+      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+        <div style={{ ...SECTION_HEADING, margin: 0 }}>{heading}</div>
+        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', fontSize: 'var(--text-xs)', color: 'var(--text-muted)' }}>
+          <CalLegendItem label="100%" style={{ ...CAL_CELL, background: 'var(--sv-up)' }} />
+          <CalLegendItem label="Degraded" style={{ ...CAL_CELL, background: 'var(--sv-warning)' }} />
+          <CalLegendItem label="Outage" style={{ ...CAL_CELL, background: 'var(--sv-down)' }} />
+          <CalLegendItem label="No data" style={CAL_CELL_EMPTY} />
+        </div>
       </div>
+      {!view.hasData ? (
+        <p className="sv-muted" style={{ fontSize: 'var(--text-sm)', margin: '8px 0 0' }}>
+          No availability history recorded for this device yet.
+        </p>
+      ) : (
+        <>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 2, marginTop: 8 }}>
+            {view.shown.map((c) => {
+              const tip = c.total_checks
+                ? `${dayLabel(c.day)} — ${c.uptime_pct ?? 100}% uptime, ${c.incidents} incident${c.incidents === 1 ? '' : 's'}`
+                  + ` (${c.total_checks} check${c.total_checks === 1 ? '' : 's'}${c.source === 'rollup' ? ', daily rollup' : ''})`
+                : `${dayLabel(c.day)} — no data collected`;
+              return (
+                <span
+                  key={c.day}
+                  title={tip}
+                  /* intentional: 2px on a 10x10 heatmap cell — --radius-sm would render it as a circle. */
+                  style={c.total_checks ? { ...CAL_CELL, background: calColor(c) } : CAL_CELL_EMPTY}
+                />
+              );
+            })}
+          </div>
+          <div className="sv-muted" style={{ fontSize: 'var(--text-xs)', marginTop: 8 }}>
+            {summary.join(' · ')}
+          </div>
+        </>
+      )}
     </div>
   );
 }
 
-// ── Interface status panel (top-level components) ──────────────
-type IfRow = { if_index: number; if_name: string; status: string | null; in_bps: number | null; out_bps: number | null };
+// ── Interface table (top-level components) ─────────────────────
+// Every enterprise NMS puts a per-port table on a switch/router page, and this
+// one is built strictly from what SpanVault genuinely stores — see the header
+// comment on GET /api/devices/:id/interfaces for the three metric families and
+// why their coverage differs per port. What that means for the columns here:
+//   • Port name comes from snmp_results.if_name (ifName/ifDescr at discovery).
+//   • Oper status exists only for ports whose Status sensor is enabled (or on a
+//     device with no sensor selection at all, where every port is written).
+//     A port without one shows "not collected", NEVER a guessed Up — a
+//     fabricated green dot on an unmonitored port is worse than an honest dash.
+//   • In/Out bps likewise come from enabled In/Out sensors.
+//   • In/Out utilisation % is derived by the collector for every port with a
+//     known link speed, so it is usually the widest-covering column of the three.
+// NOT collected today, and therefore deliberately absent rather than shown
+// empty: admin status (ifAdminStatus), errors/discards (ifInErrors etc.), link
+// speed as a value, ifAlias, and last-change (ifLastChange). Adding any of them
+// is a collector change (collector/discovery.js), not a UI one.
+type IfRow = {
+  if_index: number; if_name: string; status: string | null;
+  in_bps: number | null; out_bps: number | null;
+  in_util_pct: number | null; out_util_pct: number | null;
+  last_sample: string | null;
+};
 
-// Compact grid cell — used in the expanded "show all" view.
+// Compact toggle link, shared with the Connected Devices panel below.
 const COMPACT_TOGGLE: CSSProperties = {
   background: 'transparent', border: 'none', color: 'var(--primary)', cursor: 'pointer',
   fontSize: 'var(--text-sm)', fontWeight: 600, padding: '4px 0',
 };
-function IfGridCell({ r }: { r: IfRow }) {
-  const bps =
-    r.status === 'down' || (r.in_bps == null && r.out_bps == null)
-      ? '—'
-      : `${fmtBps(r.in_bps)} / ${fmtBps(r.out_bps)}`;
+
+const IF_PER_PAGE = 25;
+type IfFilter = 'all' | 'up' | 'down' | 'active';
+const IF_FILTERS: { key: IfFilter; label: string }[] = [
+  { key: 'all', label: 'All' },
+  { key: 'up', label: 'Up' },
+  { key: 'down', label: 'Down' },
+  { key: 'active', label: 'Carrying traffic' },
+];
+// Column accessors for the shared sorting primitive. Nulls sort last on a
+// descending pass by mapping to -1 rather than leaving them undefined.
+const IF_SORT: Record<string, (r: IfRow) => unknown> = {
+  port: (r) => r.if_index,
+  status: (r) => (r.status === 'up' ? 0 : r.status === 'down' ? 1 : 2),
+  in: (r) => (r.in_bps == null ? -1 : r.in_bps),
+  out: (r) => (r.out_bps == null ? -1 : r.out_bps),
+  inutil: (r) => (r.in_util_pct == null ? -1 : r.in_util_pct),
+  oututil: (r) => (r.out_util_pct == null ? -1 : r.out_util_pct),
+  last: (r) => r.last_sample || '',
+};
+function ifCarryingTraffic(r: IfRow): boolean {
+  return (r.in_bps ?? 0) > 0 || (r.out_bps ?? 0) > 0
+    || (r.in_util_pct ?? 0) > 0 || (r.out_util_pct ?? 0) > 0;
+}
+const IF_COUNT_PILL: CSSProperties = {
+  display: 'inline-flex', alignItems: 'center', gap: 6,
+  fontSize: 'var(--text-sm)', fontWeight: 600,
+};
+const IF_NUM_CELL: CSSProperties = {
+  textAlign: 'right', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap',
+};
+const IF_DASH: CSSProperties = { color: 'var(--text-muted)' };
+
+function IfStatusCell({ status }: { status: string | null }) {
+  if (!status || status === 'unknown') {
+    return (
+      <span
+        className="sv-muted"
+        style={{ fontSize: 'var(--text-xs)' }}
+        title="No operational-status sample for this port. Enable its Status sensor in Manage Sensors to monitor it."
+      >
+        not collected
+      </span>
+    );
+  }
   return (
-    <div
-      title={`${r.if_name} — ${r.status || 'unknown'}`}
-      style={{
-        display: 'flex', alignItems: 'center', gap: 8, height: 28, padding: '0 8px',
-        border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
-        background: 'var(--bg-primary)', fontSize: 'var(--text-sm)', minWidth: 0,
-      }}
-    >
-      <StatusDot status={r.status || 'unknown'} size={9} title={`Interface ${r.status || 'unknown'}`} />
-      <span style={{ fontWeight: 600, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.if_name}</span>
-      <span style={{ marginLeft: 'auto', color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums', fontSize: 'var(--text-xs)' }}>{bps}</span>
-    </div>
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+      <StatusDot status={status} size={9} title={`Interface ${status}`} />
+      <span style={{ fontWeight: 600, textTransform: 'capitalize' }}>{status}</span>
+    </span>
   );
 }
 
-function InterfacePanel({ deviceId }: { deviceId: number }) {
-  const ifs = useApi<IfRow[]>(`/api/devices/${deviceId}/interfaces`, 30000);
-  const storageKey = `sv-iface-expanded-${deviceId}`;
-  const [expanded, setExpanded] = useState(false);
+function IfUtilCell({ pct }: { pct: number | null }) {
+  if (pct == null) return <span style={IF_DASH}>—</span>;
+  return <UtilBar pct={pct} width={116} />;
+}
 
-  // Sync from localStorage after mount to avoid hydration mismatch.
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    try {
-      if (window.localStorage.getItem(storageKey) === '1') setExpanded(true);
-    } catch {
-      /* ignore */
-    }
-  }, [storageKey]);
+function InterfacesSection({ deviceId, snmpOn, canEdit, onManageSensors }: {
+  deviceId: number; snmpOn: boolean; canEdit: boolean; onManageSensors: () => void;
+}) {
+  // Hooks must run unconditionally — useApi takes a null url and stays idle, so
+  // an SNMP-disabled device skips the request without changing the hook order.
+  const ifs = useApi<IfRow[]>(snmpOn ? `/api/devices/${deviceId}/interfaces` : null, 30000);
+  const [query, setQuery] = useState('');
+  const [filter, setFilter] = useState<IfFilter>('all');
+  const { sort, onSort } = useTableSort({ key: 'port', dir: 'asc' });
 
-  function toggle(next: boolean) {
-    setExpanded(next);
-    if (typeof window !== 'undefined') {
-      try {
-        window.localStorage.setItem(storageKey, next ? '1' : '0');
-      } catch {
-        /* ignore */
-      }
-    }
+  const all = useMemo(() => ifs.data || [], [ifs.data]);
+  const counts = useMemo(() => ({
+    total: all.length,
+    up: all.filter((r) => r.status === 'up').length,
+    down: all.filter((r) => r.status === 'down').length,
+    noStatus: all.filter((r) => !r.status || r.status === 'unknown').length,
+    active: all.filter(ifCarryingTraffic).length,
+  }), [all]);
+  const filtered = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    return all.filter((r) => {
+      if (needle && !r.if_name.toLowerCase().includes(needle) && String(r.if_index) !== needle) return false;
+      if (filter === 'up') return r.status === 'up';
+      if (filter === 'down') return r.status === 'down';
+      if (filter === 'active') return ifCarryingTraffic(r);
+      return true;
+    });
+  }, [all, query, filter]);
+  // Sort the WHOLE filtered set before paginating, so page 1 is the top of the
+  // chosen order rather than a re-sorted slice of the current page.
+  const rows = useMemo(() => sortRows(filtered, sort, IF_SORT), [filtered, sort]);
+  // Stable string reset key — an object identity here resets the pager every render.
+  const pg = useClientPagination(
+    rows, IF_PER_PAGE, `${filter}|${query}|${sort ? `${sort.key}:${sort.dir}` : ''}`,
+  );
+
+  let body: ReactNode;
+  if (!snmpOn) {
+    body = (
+      <p className="sv-muted" style={{ fontSize: 'var(--text-base)', margin: '4px 0 0' }}>
+        Per-port data comes from SNMP, which is turned off for this device. Enable SNMP
+        in <strong>Edit</strong>, then run Discovery to pick up its interfaces.
+      </p>
+    );
+  } else if (ifs.loading && !ifs.data) {
+    body = <TableSkeleton rows={5} cols={7} />;
+  } else if (ifs.error) {
+    body = <ErrorBox message={ifs.error} />;
+  } else if (!all.length) {
+    body = (
+      <div>
+        <p className="sv-muted" style={{ fontSize: 'var(--text-base)', margin: '4px 0 10px' }}>
+          No interface samples recorded in the last 24 hours. Run Discovery to enumerate this
+          device&apos;s ports, then enable the ones you want monitored.
+        </p>
+        {canEdit && <button className="sv-btn ghost sm" onClick={onManageSensors}>Manage Sensors</button>}
+      </div>
+    );
+  } else if (!rows.length) {
+    body = <Empty message="No interfaces match this filter." />;
+  } else {
+    body = (
+      <>
+        <table className="sv-table">
+          <thead>
+            <tr>
+              <SortTh label="Port" col="port" sort={sort} onSort={onSort} />
+              <SortTh label="Status" col="status" sort={sort} onSort={onSort} />
+              <SortTh label="In" col="in" sort={sort} onSort={onSort} align="right" />
+              <SortTh label="Out" col="out" sort={sort} onSort={onSort} align="right" />
+              <SortTh label="In util" col="inutil" sort={sort} onSort={onSort} />
+              <SortTh label="Out util" col="oututil" sort={sort} onSort={onSort} />
+              <SortTh label="Last sample" col="last" sort={sort} onSort={onSort} align="right" />
+            </tr>
+          </thead>
+          <tbody>
+            {pg.pageRows.map((r) => (
+              <tr key={r.if_index}>
+                <td style={{ fontWeight: 600 }} title={`ifIndex ${r.if_index}`}>{r.if_name}</td>
+                <td><IfStatusCell status={r.status} /></td>
+                <td style={IF_NUM_CELL}>
+                  {r.in_bps == null ? <span style={IF_DASH}>—</span> : fmtBps(r.in_bps)}
+                </td>
+                <td style={IF_NUM_CELL}>
+                  {r.out_bps == null ? <span style={IF_DASH}>—</span> : fmtBps(r.out_bps)}
+                </td>
+                <td><IfUtilCell pct={r.in_util_pct} /></td>
+                <td><IfUtilCell pct={r.out_util_pct} /></td>
+                <td style={{ ...IF_NUM_CELL, color: 'var(--text-muted)' }}>{fmtRel(r.last_sample)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <Pager
+          page={pg.page}
+          pageCount={pg.pageCount}
+          start={pg.start}
+          perPage={IF_PER_PAGE}
+          total={pg.total}
+          onPrev={pg.prev}
+          onNext={pg.next}
+        />
+        {counts.noStatus > 0 && (
+          <p className="sv-muted" style={{ fontSize: 'var(--text-xs)', margin: '6px 0 0' }}>
+            Up/Down status and throughput are recorded only for ports with those sensors enabled
+            ({counts.total - counts.noStatus} of {counts.total}). Utilisation % is derived for every
+            port with a known link speed.
+            {canEdit && (
+              <>
+                {' '}
+                <button type="button" style={{ ...COMPACT_TOGGLE, fontSize: 'var(--text-xs)', padding: 0 }} onClick={onManageSensors}>
+                  Manage Sensors
+                </button>
+              </>
+            )}
+          </p>
+        )}
+      </>
+    );
   }
-
-  if (ifs.loading && !ifs.data) return null;
-  if (!ifs.data || !ifs.data.length) return null;
-
-  const rows = ifs.data;
-  const total = rows.length;
-  const upCount = rows.filter((r) => r.status === 'up').length;
-  const downCount = rows.filter((r) => r.status === 'down').length;
-  const unknownCount = total - upCount - downCount;
 
   return (
     <div style={SECTION_CARD}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 8 }}>
-        <div style={{ ...SECTION_HEADING, margin: 0 }}>Interface Status</div>
-        <button type="button" style={COMPACT_TOGGLE} onClick={() => toggle(!expanded)}>
-          {expanded ? 'Show summary' : `Show all ${total} interfaces`}
-        </button>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 10 }}>
+        <div style={{ ...SECTION_HEADING, margin: 0 }}>Interfaces</div>
+        {snmpOn && all.length > 0 && (
+          <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap' }}>
+            <span style={IF_COUNT_PILL}>{counts.total} ports</span>
+            {counts.up > 0 && (
+              <span style={IF_COUNT_PILL}><StatusDot status="up" size={9} title="Up" /> {counts.up} up</span>
+            )}
+            {counts.down > 0 && (
+              <span style={IF_COUNT_PILL}><StatusDot status="down" size={9} title="Down" /> {counts.down} down</span>
+            )}
+            <span style={{ ...IF_COUNT_PILL, color: 'var(--text-muted)', fontWeight: 500 }}>
+              {counts.active} carrying traffic
+            </span>
+          </div>
+        )}
+        <div style={{ flex: 1 }} />
+        {snmpOn && all.length > 0 && (
+          <>
+            <div style={{ display: 'flex', gap: 4 }}>
+              {IF_FILTERS.map((f) => (
+                <button
+                  key={f.key}
+                  type="button"
+                  style={filter === f.key ? TAB_BTN_ACTIVE : TAB_BTN_BASE}
+                  onClick={() => setFilter(f.key)}
+                >
+                  {f.label}
+                </button>
+              ))}
+            </div>
+            <input
+              className="sv-input sv-input-sm"
+              style={{ padding: '4px 8px', fontSize: 'var(--text-sm)' }}
+              placeholder="Find a port…"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+            />
+          </>
+        )}
       </div>
-
-      {expanded ? (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
-          {rows.map((r) => (
-            <IfGridCell key={r.if_index} r={r} />
-          ))}
-        </div>
-      ) : (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 18, fontSize: 'var(--text-base)' }}>
-          {upCount > 0 && (
-            <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600 }}>
-              <StatusDot status="up" size={10} title="Up" /> {upCount} Up
-            </span>
-          )}
-          {downCount > 0 && (
-            <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600 }}>
-              <StatusDot status="down" size={10} title="Down" /> {downCount} Down
-            </span>
-          )}
-          {unknownCount > 0 && (
-            <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600 }}>
-              <StatusDot status="unknown" size={10} title="Unknown" /> {unknownCount} Unknown
-            </span>
-          )}
-        </div>
-      )}
+      {body}
     </div>
   );
 }
