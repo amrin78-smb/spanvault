@@ -260,9 +260,9 @@ const DEVICE_COLUMNS: DeviceCol[] = [
   { key: 'os',        label: 'Version / OS',   w: 0,  wOs: 9, osOnly: true },
   { key: 'status',    label: 'Status',         w: 8,  wOs: 7 },
   { key: 'health',    label: 'Health Score',   w: 11, wOs: 10 },
-  { key: 'latency',   label: 'Latency (24h)',  w: 12, wOs: 11 },
+  { key: 'latency',   label: 'Latency (24h)',  w: 11, wOs: 10 },
   { key: 'lastalert', label: 'Last Alert',     w: 10, wOs: 9 },
-  { key: 'lastseen',  label: 'Last Seen',      w: 8,  wOs: 7 },
+  { key: 'lastseen',  label: 'Last Seen',      w: 9,  wOs: 8 },
   { key: 'actions',   label: 'Actions',        w: 6,  wOs: 7, right: true, sortable: false },
 ];
 // Dev-only guard for the invariant above. Stripped from the production bundle

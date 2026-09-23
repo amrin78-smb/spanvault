@@ -36,6 +36,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.113.2': [
+    'Devices: rebalanced the last two column widths so the "Last Seen" heading is no longer clipped. Widening Latency in 1.113.1 had taken the space from its neighbour.',
+  ],
   '1.113.1': [
     'Completes the Devices page work that 1.113.0 shipped half-finished. The new "Latency (24h)" column had no cell behind it at all: the header declared ten columns and each row drew nine, so from Health Score rightwards every value sat one column left of its own heading - Last Alert appeared under Latency, and Last Seen under Last Alert. The column alignment check missed it because the cells were still geometrically flush with the header; they were simply the wrong cells.',
     'The latency trend line now actually draws. The data was being fetched for every device on the page and then never read.',
