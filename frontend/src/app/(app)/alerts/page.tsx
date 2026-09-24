@@ -415,7 +415,7 @@ function AlertVolumeStrip({
         <ResponsiveContainer width="100%" height={84}>
           <BarChart
             data={data}
-            margin={{ top: 4, right: 4, left: -28, bottom: 0 }}
+            margin={{ top: 4, right: 4, left: 0, bottom: 0 }}
             barCategoryGap="18%"
             onClick={(st: any) => {
               const iso = st?.activePayload?.[0]?.payload?.iso;
@@ -425,7 +425,7 @@ function AlertVolumeStrip({
           >
             <CartesianGrid strokeDasharray="3 3" stroke="var(--border-light)" vertical={false} />
             <XAxis dataKey="label" tick={{ fontSize: 10 }} interval={2} tickLine={false} axisLine={false} />
-            <YAxis tick={{ fontSize: 10 }} allowDecimals={false} width={38} tickLine={false} axisLine={false} />
+            <YAxis tick={{ fontSize: 10 }} allowDecimals={false} width={30} tickLine={false} axisLine={false} />
             <Tooltip {...CHART_TOOLTIP} cursor={{ fill: 'var(--surface-subtle)' }} />
             <Bar dataKey="warning" name="Warning" stackId="s" fill="var(--yellow)" />
             <Bar dataKey="critical" name="Critical" stackId="s" fill="var(--red)" radius={[3, 3, 0, 0]} />
@@ -976,14 +976,18 @@ export default function AlertsPage() {
           />
           {/* Grouping toggle — grouped correlates one situation per row; flat is
               the right view during a live incident, where the sequence matters. */}
-          <div className="sv-segmented" role="group" aria-label="Row grouping">
+          <div className="segmented" role="group" aria-label="Row grouping">
             <button
-              className={`sv-seg ${grouped ? 'on' : ''}`}
+              type="button"
+              className={grouped ? 'active' : ''}
+              aria-pressed={grouped}
               onClick={() => setGroupedPersist(true)}
               title="One row per device/entity, expandable"
             >Grouped</button>
             <button
-              className={`sv-seg ${grouped ? '' : 'on'}`}
+              type="button"
+              className={grouped ? '' : 'active'}
+              aria-pressed={!grouped}
               onClick={() => setGroupedPersist(false)}
               title="One row per alert, newest first"
             >Flat</button>
@@ -1025,7 +1029,7 @@ export default function AlertsPage() {
             className="sv-select"
             value={activeView}
             onChange={(e) => applyView(e.target.value)}
-            style={{ height: 28, minWidth: 190, fontSize: 'var(--text-sm)' }}
+            style={{ height: 32, minWidth: 190, fontSize: 'var(--text-sm)' }}
             aria-label="Saved views"
           >
             <option value="">{views.length ? 'Select a saved view…' : 'No saved views yet'}</option>

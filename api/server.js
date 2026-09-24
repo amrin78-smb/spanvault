@@ -36,6 +36,13 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.113.6': [
+    'Alerts: the Grouped / Flat switch was rendering as two plain grey browser buttons. It was written against two style names that were never defined anywhere, so none of its intended appearance existed. It now uses the same segmented control as the rest of the suite.',
+    'Alerts: the numbers down the left of the volume chart were cut off to a sliver. The chart carried a negative left margin that pulled its axis outside the drawing area, so the labels were painted off the edge of the chart and clipped.',
+    'Alerts: the bulk action bar that appears when you tick several alerts had no styling at all - same cause, a style name that was referenced but never defined. It is now a proper bar pinned to the bottom of the list while a selection is active.',
+    'Alerts: the saved-views dropdown was shorter than the filter controls beside it, which cramped its text. It now matches them.',
+    'Swept the whole app for the same class of mistake - a style name used in the markup but never defined. Ten were found; the three introduced by the recent work are fixed here. The other seven are long-standing and pair with inline styles, so they render correctly and were left alone.',
+  ],
   '1.113.5': [
     'Internal tidy-up with no intended visual change: four styles that were written inline on individual pages are now shared rules in the stylesheet - the sticky shared table header, the fixed table layout that keeps grouped tables aligned with it, the link-style text button, and the padding compensation that stops content showing through above any element pinned to the top of the page.',
     'One of those, "sv-link-btn", was already being referenced by a button on the Wireless page but had never actually been defined anywhere, so the button was carrying a full set of inline styles instead. It now uses the real rule, and gains a hover state.',
