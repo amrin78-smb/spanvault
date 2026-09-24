@@ -954,6 +954,19 @@ a { color: inherit; text-decoration: none; }
   color: var(--text-primary);
 }
 
+/* Alerts device cell. The column is nowrap with no cap, so auto table layout
+   handed it every spare pixel (307px for ~150px of text) and pushed the
+   Triggered column past the wrapper edge. Capping it lets the table fit; the
+   name ellipsises and keeps its title tooltip, and the entity badge beside it
+   is never squeezed out. */
+.sv-alert-device { max-width: 220px; }
+.sv-alert-device > span { max-width: 100%; min-width: 0; }
+.sv-alert-device a,
+.sv-alert-device > span > span:first-child:not(.sv-type-badge) {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+}
+.sv-alert-device .sv-type-badge { flex: 0 0 auto; }
+
 /* Clickable KPI stat tiles (Wireless Insights drill-downs) */
 .sv-statcard-clickable:hover {
   box-shadow: var(--shadow-md, 0 2px 8px rgba(0,0,0,0.12));
@@ -1036,8 +1049,16 @@ a { color: inherit; text-decoration: none; }
 [data-theme="dark"] .sv-btn.tint-amber.on,
 [data-theme="dark"] .sv-btn.tint-green.on { color: #fff; }
 
+/* Single-line controls express their size as a HEIGHT, not as vertical padding.
+   Both are `<input>`/`<select>` only (never a textarea), and `box-sizing:
+   border-box` is global, so 9px of vertical padding on a call site that sets
+   `height: 32` inline left 32 - 18 - 2 = 12px for a 13px font and clipped the
+   descenders — visible on the Alerts filter selects. 36px reproduces exactly
+   what the old padding computed to, so unconstrained controls are unchanged,
+   while a call site can now set a shorter height and still have room for its
+   text. The control centres its own text vertically. */
 .sv-input, .sv-select {
-  padding: 9px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  height: 36px; padding: 0 12px; border: 1px solid var(--border); border-radius: var(--radius-sm);
   font-size: var(--text-base); background: var(--bg-card); color: var(--text-primary); font-family: inherit;
   transition: border-color 0.15s, box-shadow 0.15s; outline: none;
 }
@@ -1976,7 +1997,7 @@ body.sv-noc .sv-content:has(.sv-sticky-top) > :first-child { padding-top: 28px; 
 .sv-editor-name { font-weight: 600; min-width: 160px; max-width: 220px; }
 .sv-editor-tools { display: flex; gap: 4px; padding: 0 4px; border-left: 1px solid var(--border); border-right: 1px solid var(--border); margin: 0 2px; }
 .sv-btn.ghost.active { background: var(--primary); color: #fff; border-color: var(--primary); }
-.sv-select.sm { padding: 5px 9px; font-size: var(--text-base); }
+.sv-select.sm { height: 28px; padding: 0 9px; font-size: var(--text-base); }
 .sv-editor-shareurl {
   font-size: var(--text-sm); color: var(--text-muted); max-width: 220px; overflow: hidden;
   text-overflow: ellipsis; white-space: nowrap;

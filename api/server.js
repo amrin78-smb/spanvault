@@ -36,6 +36,11 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.113.7': [
+    'Dropdowns and text boxes were cutting off the bottom of their own text. Any control that asked for a specific height got it, but kept the 9 pixels of padding above and below meant for an unsized one - which left 12 pixels of room for 13-pixel text. The size of these controls is now set as a height rather than as padding, so a shorter control still has room for its text. Unsized controls are unchanged, down to the pixel.',
+    'This affected about a dozen controls across the app, not only the Alerts filters where it was reported.',
+    'Alerts: the Triggered column was being pushed off the right edge. The Device column had no width limit, so the table layout handed it every spare pixel - 307 of them for about 150 pixels of text. It is now capped and the name shortens with an ellipsis, which lets the rest of the table fit.',
+  ],
   '1.113.6': [
     'Alerts: the Grouped / Flat switch was rendering as two plain grey browser buttons. It was written against two style names that were never defined anywhere, so none of its intended appearance existed. It now uses the same segmented control as the rest of the suite.',
     'Alerts: the numbers down the left of the volume chart were cut off to a sliver. The chart carried a negative left margin that pulled its axis outside the drawing area, so the labels were painted off the edge of the chart and clipped.',

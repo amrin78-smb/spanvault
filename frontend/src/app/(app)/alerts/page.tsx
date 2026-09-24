@@ -781,7 +781,7 @@ export default function AlertsPage() {
             <span className="sv-type-badge">{prettyType(a.alert_type)}</span>
           </td>
           {/* device, or agent for agent_down alerts */}
-          <td style={{ whiteSpace: 'nowrap' }}>
+          <td className="sv-alert-device" style={{ whiteSpace: 'nowrap' }}>
             {a.device_id == null && a.service_name ? (
               <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                 <Link href="/services" onClick={(e) => e.stopPropagation()} style={{ color: 'var(--sv-crimson)', fontWeight: 600 }}>
