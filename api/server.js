@@ -36,6 +36,10 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.113.5': [
+    'Internal tidy-up with no intended visual change: four styles that were written inline on individual pages are now shared rules in the stylesheet - the sticky shared table header, the fixed table layout that keeps grouped tables aligned with it, the link-style text button, and the padding compensation that stops content showing through above any element pinned to the top of the page.',
+    'One of those, "sv-link-btn", was already being referenced by a button on the Wireless page but had never actually been defined anywhere, so the button was carrying a full set of inline styles instead. It now uses the real rule, and gains a hover state.',
+  ],
   '1.113.4': [
     'Devices: the "Actions" heading was overflowing its column by two pixels. Measured properly this time - a cell with overflow:hidden clamps its own scrollWidth, so the usual check cannot see hard clipping; the text run has to be measured directly.',
   ],

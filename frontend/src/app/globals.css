@@ -899,6 +899,43 @@ a { color: inherit; text-decoration: none; }
   background-color: var(--table-tint-solid);
 }
 
+/* ── Shared column header for a list of grouped tables ──────────────────────
+   A page that splits one dataset across several tables (devices grouped by
+   site, each an accordion) renders ONE header above the groups instead of
+   repeating a <thead> per group. Sticky so it stays visible while scrolling
+   through them, with the suite's opaque-background rule applied: a translucent
+   sticky header lets the scrolled rows bleed through and garbles the text in
+   dark mode. Pair it with `.sv-sticky-top` on the same element so the scroller's
+   top padding doesn't leave a gap above the pinned bar. */
+.sv-sticky-thead {
+  position: sticky; top: 0; z-index: 5;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 1px 0 var(--border);
+  margin-bottom: 8px;
+  overflow: hidden;
+}
+
+/* Fixed layout is what keeps every group table in line with the shared header
+   above: auto-sizing lets each table pick its own widths from its own rows, so
+   three groups on one page can disagree by tens of pixels. The column widths
+   themselves come from a <colgroup> the header and every group both render. */
+.sv-dev-table { table-layout: fixed; }
+
+/* Text button that reads as a link — "show all", "View all N clients →".
+   A real <button> (so it is keyboard- and screen-reader-correct) with the
+   chrome removed. `.sm` is the caption-sized variant. */
+.sv-link-btn {
+  background: none; border: none; padding: 0;
+  font-family: inherit; font-size: var(--text-base); font-weight: 600;
+  color: var(--primary); cursor: pointer;
+  text-transform: none; letter-spacing: normal;
+}
+.sv-link-btn.sm { font-size: var(--text-sm); }
+.sv-link-btn:hover { color: var(--primary-dark); text-decoration: underline; }
+.sv-link-btn:disabled { color: var(--text-muted); cursor: default; text-decoration: none; }
+
 /* Clickable KPI stat tiles (Wireless Insights drill-downs) */
 .sv-statcard-clickable:hover {
   box-shadow: var(--shadow-md, 0 2px 8px rgba(0,0,0,0.12));
@@ -1461,10 +1498,17 @@ body.sv-noc .sv-tabs.sticky { margin-left: -36px; margin-right: -36px; padding-l
    gap above the pinned bar where scrolling content shows through. Drop the top padding
    here and restore the breathing room on the page's first child, so the bar pins flush
    to the top and fully covers content scrolling underneath. */
-.sv-content:has(.sv-tabs.sticky) { padding-top: 0; }
-.sv-content:has(.sv-tabs.sticky) > :first-child { padding-top: 24px; }
-body.sv-noc .sv-content:has(.sv-tabs.sticky) { padding-top: 0; }
-body.sv-noc .sv-content:has(.sv-tabs.sticky) > :first-child { padding-top: 28px; }
+/* `.sv-sticky-top` is the generic marker for ANY element that pins to the top of
+   the .sv-content scroller (the sticky tab bar was just the first). Without this,
+   the scroller's own top padding leaves a band above the pinned element where
+   content shows through as it scrolls past. */
+.sv-content:has(.sv-tabs.sticky), .sv-content:has(.sv-sticky-top) { padding-top: 0; }
+.sv-content:has(.sv-tabs.sticky) > :first-child,
+.sv-content:has(.sv-sticky-top) > :first-child { padding-top: 24px; }
+body.sv-noc .sv-content:has(.sv-tabs.sticky),
+body.sv-noc .sv-content:has(.sv-sticky-top) { padding-top: 0; }
+body.sv-noc .sv-content:has(.sv-tabs.sticky) > :first-child,
+body.sv-noc .sv-content:has(.sv-sticky-top) > :first-child { padding-top: 28px; }
 .sv-tab {
   padding: 9px 16px; cursor: pointer; font-size: var(--text-md); font-weight: 600;
   color: var(--text-muted); border-bottom: 2px solid transparent; background: none; border-top: none; border-left: none; border-right: none;

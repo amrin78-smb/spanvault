@@ -3091,10 +3091,7 @@ function ApDetailDrawer({
                 type="button"
                 className="sv-link-btn"
                 onClick={() => onViewAllClients(ap.id)}
-                style={{
-                  marginTop: 8, background: 'none', border: 'none', padding: 0,
-                  color: 'var(--primary)', fontSize: 'var(--text-base)', fontWeight: 600, cursor: 'pointer',
-                }}
+                style={{ marginTop: 8 }}
               >
                 View all {apClients.length} clients →
               </button>

@@ -130,11 +130,7 @@ function ShowAllToggle({ total, preview, expanded, onToggle, noun }: {
       type="button"
       onClick={onToggle}
       aria-expanded={expanded}
-      style={{
-        background: 'none', border: 'none', padding: 0, cursor: 'pointer',
-        fontSize: 'var(--text-sm)', fontWeight: 600, color: 'var(--primary)',
-        textTransform: 'none', letterSpacing: 'normal',
-      }}
+      className="sv-link-btn sm"
     >
       {expanded ? 'Show less' : `Showing ${preview} of ${total} ${noun} — show all`}
     </button>

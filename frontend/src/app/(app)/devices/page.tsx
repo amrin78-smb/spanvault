@@ -292,7 +292,6 @@ function DeviceCols({ showOs }: { showOs: boolean }) {
     </colgroup>
   );
 }
-const DEVICE_TABLE_STYLE: React.CSSProperties = { tableLayout: 'fixed' };
 
 // The page's single column header. Sticky so it stays visible while scrolling
 // through the site groups: opaque background token + z-index 5 + a bottom
@@ -302,17 +301,8 @@ function DeviceTableHeader({ showOs, sort, onSort }: {
   showOs: boolean; sort: SortState; onSort: (col: string) => void;
 }) {
   return (
-    <div
-      style={{
-        position: 'sticky', top: 0, zIndex: 5,
-        background: 'var(--bg-card)',
-        border: '1px solid var(--border)',
-        borderRadius: 'var(--radius)',
-        boxShadow: '0 1px 0 var(--border)',
-        marginBottom: 8, overflow: 'hidden',
-      }}
-    >
-      <table className="sv-table sv-dev-table" style={DEVICE_TABLE_STYLE}>
+    <div className="sv-sticky-thead sv-sticky-top">
+      <table className="sv-table sv-dev-table">
         <DeviceCols showOs={showOs} />
         <thead>
           <tr>
@@ -1129,7 +1119,7 @@ function SiteAccordion({
         // No <thead> here: the column header is rendered ONCE for the page (see
         // DeviceTableHeader). The shared <colgroup> + table-layout:fixed are what
         // keep these rows aligned with it.
-        <table className="sv-table sv-dev-table" style={DEVICE_TABLE_STYLE}>
+        <table className="sv-table sv-dev-table">
           <DeviceCols showOs={showOs} />
           <tbody>
             {rows.map((d) => <DeviceRow key={d.id} device={d} showOs={showOs} />)}
