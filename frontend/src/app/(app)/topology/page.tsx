@@ -1,6 +1,6 @@
 'use client';
 
-import { Fragment, useEffect, useMemo, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useApi, apiSend } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
 import { Loading, ErrorBox, Empty, EmptyState, fmtRel, fmtTime, useTableSort, sortRows, SortTh } from '@/components/ui';
@@ -10,6 +10,10 @@ import type { TopoLayout } from '@/components/TopologyMapView';
 
 // ── API response types ─────────────────────────────────────────
 interface TopologyStatus {
+  // Live flag from the API process: true from the moment POST
+  // /api/topology/discover accepts a run until the walk over every SNMP device
+  // finishes. This is what the page watches to know when to reload the map.
+  running: boolean;
   last_run_at: string | null;
   links_found: number;
   devices_discovered: number;
@@ -140,6 +144,12 @@ const LAYOUTS: { key: TopoLayout; label: string; hint: string }[] = [
 
 const UNASSIGNED_SITE = 'Unassigned';
 
+// While a discovery run is in flight the header re-reads /api/topology/status
+// on this interval; DISCOVERY_MAX_WAIT_MS is how long it keeps watching before
+// it stops claiming the map will update by itself.
+const DISCOVERY_POLL_MS = 2000;
+const DISCOVERY_MAX_WAIT_MS = 5 * 60 * 1000;
+
 function siteLabel(n: TopologyMapNode): string {
   return n.site_name && n.site_name.trim() ? n.site_name : UNASSIGNED_SITE;
 }
@@ -170,6 +180,11 @@ function patchQuery(patch: Record<string, string | null>): void {
 export default function TopologyPage() {
   const { canEdit } = useRbac();
   const [tab, setTab] = useState<'map' | 'links'>('map');
+  // Bumped once a discovery run finishes; MapTab re-fetches /api/topology/map
+  // when it changes. The map hook lives inside MapTab (it must survive tab
+  // switches without the page owning the payload), so this counter is the
+  // whole refresh channel between the header's button and the canvas.
+  const [mapReloadToken, setMapReloadToken] = useState(0);
   // Deep-link/bookmark support: ?tab=links lands on the Link Table. Read on
   // mount only (see the patchQuery comment above for why not useSearchParams).
   useEffect(() => {
@@ -182,30 +197,92 @@ export default function TopologyPage() {
     patchQuery({ tab: next === 'map' ? null : next });
   }
 
-  const status = useApi<TopologyStatus>('/api/topology/status', 0);
-  const [running, setRunning] = useState(false);
+  // `watching` = a run is in flight and we are waiting it out. It is what makes
+  // the status route poll at all: outside a run the header is fetched once on
+  // mount, exactly as before.
+  const [watching, setWatching] = useState(false);
+  const [starting, setStarting] = useState(false);
+  const status = useApi<TopologyStatus>('/api/topology/status', watching ? DISCOVERY_POLL_MS : 0);
   const [toast, setToast] = useState<React.ReactNode | null>(null);
+  const watchDeadline = useRef(0);
+  // The status payload as it stood BEFORE the run was kicked off. useApi hands
+  // back a new object on every successful fetch, so identity is enough to stop
+  // the pre-run reading (running: false, from page load) being mistaken for
+  // "the run has already finished" on the very first render after the POST.
+  const preRunStatus = useRef<TopologyStatus | null>(null);
+  // Set when we stop waiting on a run that outlived DISCOVERY_MAX_WAIT_MS.
+  // Without it the "a run is happening, start watching" effect below would see
+  // the still-true `running` flag from the last poll and immediately re-arm the
+  // watch (with a fresh deadline) — a loop that never ends.
+  const abandoned = useRef(false);
 
-  function flash(node: React.ReactNode) {
+  const flash = useCallback((node: React.ReactNode) => {
     setToast(node);
     setTimeout(() => setToast(null), 6000);
-  }
+  }, []);
 
   async function runDiscovery() {
-    setRunning(true);
+    setStarting(true);
     try {
-      await apiSend('/api/topology/discover', 'POST', {});
-      await new Promise((r) => setTimeout(r, 1500));
-      await status.reload();
-      flash('Discovery started — results will update shortly.');
+      const r = await apiSend<{ started: boolean; running?: boolean }>('/api/topology/discover', 'POST', {});
+      watchDeadline.current = Date.now() + DISCOVERY_MAX_WAIT_MS;
+      preRunStatus.current = status.data;
+      abandoned.current = false;
+      setWatching(true);
+      flash(
+        r && r.started === false
+          ? 'Discovery is already running — the map will refresh when it finishes.'
+          : 'Discovery started — the map and the counts above refresh automatically when it finishes.',
+      );
     } catch (e: any) {
       flash(e?.message || 'Failed to start discovery');
     } finally {
-      setRunning(false);
+      setStarting(false);
     }
   }
 
+  // A run started elsewhere (another tab, another operator) still deserves the
+  // same treatment — `running` is process-wide, not per-session.
+  const serverRunning = !!status.data && status.data.running;
+  useEffect(() => {
+    if (!serverRunning) {
+      abandoned.current = false;
+      return;
+    }
+    if (watching || abandoned.current) return;
+    watchDeadline.current = Date.now() + DISCOVERY_MAX_WAIT_MS;
+    setWatching(true);
+  }, [serverRunning, watching]);
+
+  // Completion. status.data is a brand-new object on every successful poll, so
+  // identity alone distinguishes a fresh reading from the pre-run one; the
+  // timeout is kept on an absolute deadline so repeated poll FAILURES (which
+  // leave status.data unchanged and therefore never re-run this effect) cannot
+  // strand the page in "Discovering…" forever.
+  const polled = status.data;
+  useEffect(() => {
+    if (!watching) return;
+    if (polled && polled !== preRunStatus.current && !polled.running) {
+      setWatching(false);
+      preRunStatus.current = null;
+      setMapReloadToken((t: number) => t + 1);
+      flash(
+        `Discovery finished — ${polled.links_found} link${polled.links_found === 1 ? '' : 's'} across ` +
+        `${polled.devices_discovered} device${polled.devices_discovered === 1 ? '' : 's'}. Map updated.`,
+      );
+      return;
+    }
+    const t = setTimeout(() => {
+      abandoned.current = true;
+      setWatching(false);
+      setMapReloadToken((tk: number) => tk + 1);
+      flash('Discovery is still running after 5 minutes — reload the page to pick up the rest.');
+    }, Math.max(1000, watchDeadline.current - Date.now()));
+    return () => clearTimeout(t);
+  }, [watching, polled, flash]);
+
   const last = status.data;
+  const running = starting || watching;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12, height: '100%' }}>
@@ -258,7 +335,7 @@ export default function TopologyPage() {
 
       <div style={{ flex: 1, minHeight: 0 }}>
         {tab === 'map'
-          ? <MapTab canEdit={canEdit} flash={flash} status={last || null} />
+          ? <MapTab canEdit={canEdit} flash={flash} status={last || null} reloadToken={mapReloadToken} />
           : <LinkTable canEdit={canEdit} flash={flash} />}
       </div>
     </div>
@@ -270,6 +347,7 @@ function MapTab({
   canEdit,
   flash,
   status,
+  reloadToken,
 }: {
   canEdit: boolean;
   flash: (node: React.ReactNode) => void;
@@ -278,8 +356,22 @@ function MapTab({
   // the header right above it reports "69 links · 8 devices" is the bug this
   // tab shipped with for its whole life.
   status: TopologyStatus | null;
+  // Changes when the page has watched a discovery run to completion. Until
+  // this existed the map had NO reload path at all — the toast promised
+  // "results will update shortly" and nothing updated short of a full page
+  // reload or a Map→Links→Map round trip.
+  reloadToken: number;
 }) {
   const tmap = useApi<TopologyMap>('/api/topology/map', 0);
+  const reloadMap = tmap.reload;
+  // Seeded with the current token so a plain remount (tab switch) does not
+  // fire a second fetch on top of useApi's own mount fetch.
+  const handledToken = useRef(reloadToken);
+  useEffect(() => {
+    if (handledToken.current === reloadToken) return;
+    handledToken.current = reloadToken;
+    reloadMap();
+  }, [reloadToken, reloadMap]);
   const maps = useApi<MapOption[]>('/api/maps', 0);
   const [showApply, setShowApply] = useState(false);
   const [suggestions, setSuggestions] = useState<DependencySuggestion[] | null>(null);
@@ -392,16 +484,25 @@ function MapTab({
       const h = hidden.get(n.device_id);
       return h ? { ...n, hidden_links: h } : n;
     });
-    const needle = q.trim().toLowerCase();
-    const matched = needle
-      ? nodes.filter((n: TopologyMapNode) =>
-          [n.name, n.ip, n.site_name].filter(Boolean).join(' ').toLowerCase().includes(needle),
-        ).length
-      : 0;
     const monitoredShown = nodes.filter((n: TopologyMapNode) => n.managed !== false).length;
     const sitesShown = new Set(nodes.map((n: TopologyMapNode) => siteLabel(n))).size;
-    return { nodes, edges, matched, monitoredShown, sitesShown };
-  }, [allNodes, allEdges, siteSel, monitoredOnly, q]);
+    return { nodes, edges, monitoredShown, sitesShown };
+    // `q` is deliberately NOT a dependency: the highlight only rings nodes, it
+    // never adds or removes one. Including it rebuilt view.nodes on every
+    // keystroke, and TopologyMapView keys its (O(iterations x n^2)) layout off
+    // the node array it is handed — so typing in the highlight box re-ran the
+    // whole force embedding per character. The match COUNT below is its own
+    // memo for the same reason.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allNodes, allEdges, siteSel, monitoredOnly]);
+
+  const matched = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    if (!needle) return 0;
+    return view.nodes.filter((n: TopologyMapNode) =>
+      [n.name, n.ip, n.site_name].filter(Boolean).join(' ').toLowerCase().includes(needle),
+    ).length;
+  }, [view, q]);
 
   if (tmap.loading && !tmap.data) {
     return <div className="sv-panel"><Loading /></div>;
@@ -452,7 +553,7 @@ function MapTab({
           monitoredShown={view.monitoredShown}
           sitesShown={view.sitesShown}
           totalSites={siteRows.length}
-          matched={view.matched}
+          matched={matched}
         />
       )}
 
@@ -552,6 +653,13 @@ function MapTab({
                   Site colour
                 </span>
               )}
+              <span style={{ color: 'var(--border)' }}>·</span>
+              {/* The canvas only zooms on Ctrl/Cmd + wheel so a plain wheel (and a
+                  trackpad two-finger scroll) still scrolls THIS page — see the
+                  wheel handler in TopologyMapView. Stated here as well as in the
+                  in-canvas flash, so the gesture is discoverable before it is
+                  attempted. */}
+              <span>Drag to pan · Ctrl (⌘) + scroll to zoom</span>
             </>
           )}
           <div style={{ flex: 1 }} />

@@ -42,17 +42,17 @@ deliberately skip it).
 - `POST /api/sso` [public] [external] — server-to-server proxy of hub's `/api/auth/sso-verify`; the ONE deliberately-unauthenticated write (it's how a session is created); exempt from RBAC write-gate and license write-block
 
 ## Dashboard
-- `GET /api/dashboard/summary` [auth] [db] — up/down/warning/unknown counts + agent-offline + active alerts (`active_alerts` total plus the `active_alerts_critical`/`active_alerts_warning` severity split the dashboard Overview uses) + agent online count
+- `GET /api/dashboard/summary` [auth] [db] — up/down/warning/unknown counts + agent-offline + active alerts (`active_alerts` total plus the `active_alerts_critical`/`active_alerts_warning` severity split the dashboard Overview uses) + agent online count. The alert counts are site-scoped by **alert ownership** (`alertSiteScope`, the one shared predicate — see gotchas.md), not by device: they were an INNER JOIN `monitored_devices` and read 0 for a site_admin whose alerts are all wireless
 - `GET /api/dashboard/kpi-trends` [auth] [db] — prior-period series + delta per KPI tile (sparklines); reads `availability_summary` joined to `monitored_devices`, site-scoped
-- `GET /api/dashboard/alert-histogram` [auth] [db] — alert counts bucketed by hour, severity-split; `?window=24h|7d`, site-scoped
-- `GET /api/dashboard/noisiest` [auth] [db] — top-N devices by alert count; `?window=24h|7d`, `?limit=` (capped 20), site-scoped
+- `GET /api/dashboard/alert-histogram` [auth] [db] — alert counts bucketed by hour, severity-split (`total`/`critical`/`warning`/`other`); `?window=24h|7d`, site-scoped by alert ownership. The window is **bucket-aligned**: rows are filtered from the first generated bucket's start (`bnd.lo`), not `NOW() - hours`, so the charted total always equals the window total (24 buckets / 24h, 42 buckets / 168h). Same bounds pattern as `/api/alerts/volume`
+- `GET /api/dashboard/noisiest` [auth] [db] — top-N entities (device/AP/service/controller/agent, `kind` + `entity_id`) by alert count; `?window=24h|7d`, `?limit=` (capped 20), site-scoped by alert ownership
 - `GET /api/dashboard/agent-offline` [auth] [db] — devices unreachable because their polling agent is offline, grouped by agent
 - `GET /api/dashboard/problems` [auth] [db] — every device currently down/warning, worst first; suppressed devices hidden (covered by their gateway's entry)
 - `GET /api/dashboard/top-worst` [auth] [db] — top 10 by avg response time, last 1h
 - `GET /api/dashboard/network-trend` [auth] [db] — 24h availability trend in 30-min buckets
 - `GET /api/dashboard/site-health` [auth] [db] — per-site device counts + 24h uptime
-- `GET /api/dashboard/events` [auth] [db] — last 20 alerts triggered/resolved in 24h; LEFT JOINs device/service/wireless since alert rows can have device_id=NULL
-- `GET /api/dashboard/ops-summary` [auth] [db] — MTTR/MTTA (30d avg) + unacknowledged count + open incidents
+- `GET /api/dashboard/events` [auth] [db] — last 20 alerts triggered/resolved in 24h; LEFT JOINs device/service/wireless since alert rows can have device_id=NULL. Site-scoped by alert ownership (was device-OR-service, which showed a site_admin 1 of their 674 events)
+- `GET /api/dashboard/ops-summary` [auth] [db] — MTTR/MTTA (30d avg) + unacknowledged count + open incidents; site-scoped by alert ownership (was `d.site_id`, device-only, so a site_admin's tiles read 0/near-0)
 - `GET /api/dashboard/incidents` [auth] [db] — latest 10 open incidents with root-cause device
 - `GET /api/dashboard/sla` [auth] [db] — 30-day rolling SLA % + per-device breaches vs configurable target (default 99.5%)
 - `GET /api/dashboard/capacity` [auth] [db] — devices with CPU/mem p95 >= 80% (approaching capacity)
@@ -113,12 +113,12 @@ deliberately skip it).
 - `POST /api/agents/:id/discovered/adopt` [auth+write:admin+] [db] — adopt into monitoring, keeps discovered SNMP community/version
 
 ## Alerts / alert rules
-- `GET /api/alerts` [auth] [db] — site-scoped via device OR service-check site (device_id can be NULL)
-- `POST /api/alerts/:id/acknowledge` [auth+write:site_admin+] [db] — attributed to verified session user, not client-supplied
+- `GET /api/alerts` [auth] [db] — site-scoped by alert ownership: `COALESCE(device, AP, service-check, controller).site_id` (`alertSiteWhere`, rendered against this route's own joins). An alert owned by none of those four resolves to NULL and is invisible to a site-scoped caller, admin-only
+- `POST /api/alerts/:id/acknowledge` [auth+write:site_admin+] [db] — attributed to verified session user, not client-supplied. Write scope == read scope exactly (`alertWriteSiteClause` now renders the same ownership predicate with correlated sub-selects): a site_admin can ack the wireless alerts at their own sites, which the old device-OR-service clause matched 0 of
 - `POST /api/alerts/:id/resolve` [auth+write:site_admin+] [db]
 - `POST /api/alerts/bulk-acknowledge` [auth+write:site_admin+] [db] — batch ack by id list; each id re-checked against the caller's sites via `alertWriteSiteClause`, out-of-scope ids are skipped not failed
 - `POST /api/alerts/bulk-resolve` [auth+write:site_admin+] [db] — batch resolve, same scoping rule as bulk-acknowledge
-- `GET /api/alerts/volume` [auth] [db] — hourly alert volume for the alerts-page strip; `?hours=` (default 24, max 168), gap-filled with `generate_series`, site-scoped
+- `GET /api/alerts/volume` [auth] [db] — hourly alert volume for the alerts-page strip; `?hours=` (default 24, max 168), gap-filled with `generate_series`, site-scoped by alert ownership. Buckets are `{hour, critical, warning, other, total}` — `warning` was `severity <> 'critical'` (every `info` row drawn as a warning, disagreeing with the histogram's `other` bucket); `other`/`total` added so a caller never re-derives a total as `critical + warning`
 - `GET /api/alert-rules` [auth] [db]
 - `GET /api/alert-rules/effective/:device_id` [auth] [db] — effective ruleset after global->site->device inheritance
 - `GET /api/alert-rules/effective-service/:service_check_id` [auth] [db] — same, namespaced to SERVICE_METRICS
@@ -296,4 +296,4 @@ was attempted and removed).
 ### Dashboard/wireless visualisation aggregates (1.98.0)
 - `GET /api/wireless/trend` [auth] [db] [site-scoped] — fleet client count + per-band airtime over time. `?hours=` (1-720, default 24). **The per-AP-then-sum subquery is load-bearing**: `wireless_history` holds ~1 row per AP per 5-min poll, so a flat `SUM(clients_total) GROUP BY hour` returns ~13x the real count (15,334 vs 1,172). 60s TTL cache.
 - `GET /api/wireless/distribution` [auth] [db] [site-scoped] — `{channels_2g, channels_5g, signal, band, total_aps}`. Channel buckets are online APs only; `signal` buckets clients by `rssi_dbm` on the conventional RSSI bands; `band` EXCLUDES `aruba_central` APs (no per-band breakdown — their `clients_2g/5g` are 0, not a confirmed zero) and reports `covered_aps`. 60s TTL cache.
-- `GET /api/dashboard/alert-trend` [auth] [db] [site-scoped] — daily alert counts by severity. `?days=` (1-90, default 14). Counts by `triggered_at`, not current status.
+- `GET /api/dashboard/alert-trend` [auth] [db] [site-scoped] — daily alert counts by severity. `?days=` (1-90, default 14). Counts by `triggered_at`, not current status. Site-scoped by alert ownership; it previously used `d.site_id = ANY(...) OR a.device_id IS NULL`, which leaked every other site's device-less (wireless/service/agent) alerts into a site_admin's chart.

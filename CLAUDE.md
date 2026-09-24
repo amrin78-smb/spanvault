@@ -714,6 +714,27 @@ Rule: a tinted callout/badge/banner uses the matching `--tint-*` for its
 background (and border) and `--tint-*-fg` for its text; a plain neutral surface
 uses `--surface-subtle`.
 
+### `--canvas-light` / `.sv-canvas-light` — the deliberate light island
+Some surfaces must stay light in BOTH themes because they render user-owned
+content that does not belong to our palette: a network map's stored `bg_color`,
+and the topology canvas (whose SVG paints dark text into it). `--canvas-light`
+(`:root` only, **no dark override** — that is the point) names that surface.
+
+The trap this exists for: anything layered ON TOP of such a surface still
+inherits the page's theme-dependent tokens, which in dark mode are chosen for a
+dark background. The maps "Public" badge used `--tint-success`/`-fg` over a white
+thumbnail and measured **1.20:1** in dark mode — invisible. Putting
+`.sv-canvas-light` on the canvas element re-pins `--surface-subtle`, the five
+`--tint-*`/`--tint-*-fg` pairs and the `--text-*` tokens to their light values
+for that subtree, so overlaid chrome reads correctly (measured 4.79:1 after)
+without freezing colours that are correct elsewhere — the same badge on the map
+detail page sits on normal page chrome and must keep flipping.
+
+So: don't hardcode a light hex for these, and don't "fix" an unreadable overlay
+by pinning the component's own colours — mark the CANVAS instead. Note
+`.sv-map-zoomctl` and `.sv-map-legend` still hardcode `rgba(255,255,255,0.92)`
++ `#1a2744` for this same reason and are candidates to convert.
+
 ### Sticky headers / pinned toolbars MUST be opaque (suite-wide standard)
 Any element with `position: sticky` that content scrolls UNDERNEATH (sticky table
 `<thead>`/header rows, pinned toolbars/filter bars, sticky tab bars) MUST have an

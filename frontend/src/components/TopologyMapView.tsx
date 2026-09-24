@@ -63,6 +63,11 @@ const TIER_GAP = 96;        // vertical gap between two tier bands
 const BLOCK_GAP = 54;       // horizontal gap between two core-rooted blocks
 const BAND_LABEL_W = 108;   // left gutter holding the Core/Distribution/Access labels
 const TIER_NAMES = ['Core', 'Distribution', 'Access'];
+// A row of core-rooted blocks wraps to the next line once it is this much
+// wider than it is tall; TIER_ROW_GAP separates two such rows (it must clear
+// the 18px TierBand backdrop overhang at both ends).
+const TIER_ROW_ASPECT = 2.8;
+const TIER_ROW_GAP = 120;
 
 const UNASSIGNED = 'Unassigned';
 
@@ -114,6 +119,27 @@ const ZOOM_MAX = 3;
 function clampZoom(z: number): number {
   if (!isFinite(z)) return 1;
   return Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, z));
+}
+
+// How far past the "content exactly fills the viewport" position a drag may
+// push the canvas, as a fraction of the viewBox extent. Without a clamp a
+// single drag could park the whole graph off-screen (measured: translate(2931,
+// 2198) with 0 of 52 nodes visible, while the highlight box still counted "34
+// matches" against a blank canvas).
+const PAN_SLACK = 0.15;
+
+// Clamp one axis of the pan translate. The transform is
+// translate(pan) scale(zoom), so content spans [pan, pan + extent*zoom] inside
+// a viewBox of [0, extent]: keeping pan between 0 and extent - extent*zoom
+// (whichever way round those fall) is exactly "no blank gutter", and PAN_SLACK
+// then allows a little overshoot so the edges are still comfortable to reach.
+function clampPanAxis(v: number, zoom: number, extent: number): number {
+  if (!isFinite(v)) return 0;
+  const flush = extent - extent * zoom;
+  const slack = extent * PAN_SLACK;
+  const lo = Math.min(0, flush) - slack;
+  const hi = Math.max(0, flush) + slack;
+  return v < lo ? lo : v > hi ? hi : v;
 }
 
 // Convert a client-space point (mouse coords) into the SVG's user coordinate
@@ -414,27 +440,58 @@ function layoutTiered(nodes: TopoNode[], edges: TopoEdge[]): LayoutResult {
     b.t2.sort((x: TopoNode, y: TopoNode) => (x.name || '').localeCompare(y.name || ''));
   });
 
-  // Band geometry.
-  let band1Rows = 0;
-  let band2Rows = 0;
+  // Per-block geometry, then WRAP the blocks into rows.
+  //
+  // `cursorX += g.w + BLOCK_GAP` with no row break made the tiered width grow
+  // linearly and the height stay at three bands: a 500-node graph drew a
+  // 12666x780 strip whose nodes were 13.3x5.7px. layoutSites has always wrapped
+  // (clusterCols = ceil(sqrt(numSites))); this gives the tiered layout the
+  // equivalent, with the row budget derived from the blocks' own widths so the
+  // finished canvas lands near TIER_ROW_ASPECT instead of a fixed column count.
   const geom = blocks.map((b: Block) => {
     const c1 = gridCols(b.t1.length, 4);
     const c2 = gridCols(b.t2.length, 6);
     const r1 = b.t1.length ? Math.ceil(b.t1.length / c1) : 0;
     const r2 = b.t2.length ? Math.ceil(b.t2.length / c2) : 0;
-    if (r1 > band1Rows) band1Rows = r1;
-    if (r2 > band2Rows) band2Rows = r2;
     const w = Math.max(NODE_W, b.t1.length ? gridW(c1) : 0, b.t2.length ? gridW(c2) : 0);
     return { c1, c2, r1, r2, w };
   });
 
-  const band0H = NODE_H;
-  const band1H = gridH(band1Rows);
-  const band2H = gridH(band2Rows);
+  let maxR1 = 0;
+  let maxR2 = 0;
+  let totalW = 0;
+  geom.forEach((g, i: number) => {
+    if (g.r1 > maxR1) maxR1 = g.r1;
+    if (g.r2 > maxR2) maxR2 = g.r2;
+    totalW += g.w + (i > 0 ? BLOCK_GAP : 0);
+  });
+  // Tallest a row can be, used only to choose the row count.
+  const rowHGuess =
+    NODE_H + TIER_GAP + gridH(maxR1) + (maxR1 > 0 ? TIER_GAP : 0) + gridH(maxR2) + TIER_ROW_GAP;
+  const rowCount = Math.max(
+    1,
+    Math.min(
+      blocks.length || 1,
+      Math.round(Math.sqrt(Math.max(1, totalW) / Math.max(1, rowHGuess * TIER_ROW_ASPECT))),
+    ),
+  );
+  const budget = Math.max(NODE_W, totalW / rowCount);
 
-  const y0 = OUTER_MARGIN;
-  const y1 = y0 + band0H + TIER_GAP;
-  const y2 = band1H > 0 ? y1 + band1H + TIER_GAP : y1;
+  const rows: number[][] = [];
+  let current: number[] = [];
+  let currentW = 0;
+  geom.forEach((g, i: number) => {
+    const add = g.w + (current.length ? BLOCK_GAP : 0);
+    if (current.length && currentW + add > budget) {
+      rows.push(current);
+      current = [i];
+      currentW = g.w;
+      return;
+    }
+    current.push(i);
+    currentW += add;
+  });
+  if (current.length) rows.push(current);
 
   const posMap = new Map<number, NodePos>();
   const placed: DeviceLayout[] = [];
@@ -443,43 +500,75 @@ function layoutTiered(nodes: TopoNode[], edges: TopoEdge[]): LayoutResult {
     placed.push({ node, x, y });
   };
 
-  let cursorX = OUTER_MARGIN + BAND_LABEL_W;
-  blocks.forEach((b: Block, bi: number) => {
-    const g = geom[bi];
-    const centre = cursorX + g.w / 2;
-    put(b.core, centre - NODE_W / 2, y0);
+  // Every row carries its own Core/Distribution/Access bands, sized from the
+  // blocks in THAT row — a tall block in row 1 must not pad out row 2.
+  const bands: BandLayout[] = [];
+  let rowTop = OUTER_MARGIN;
+  let lastBottom = OUTER_MARGIN + NODE_H;
+  let widest = 0;
 
-    if (b.t1.length) {
-      const rowW = gridW(g.c1);
-      const left = centre - rowW / 2;
-      b.t1.forEach((n: TopoNode, i: number) => {
-        const c = i % g.c1;
-        const r = Math.floor(i / g.c1);
-        put(n, left + c * (NODE_W + GAP_X), y1 + r * (NODE_H + GAP_Y));
-      });
-    }
-    if (b.t2.length) {
-      const rowW = gridW(g.c2);
-      const left = centre - rowW / 2;
-      b.t2.forEach((n: TopoNode, i: number) => {
-        const c = i % g.c2;
-        const r = Math.floor(i / g.c2);
-        put(n, left + c * (NODE_W + GAP_X), y2 + r * (NODE_H + GAP_Y));
-      });
-    }
-    cursorX += g.w + BLOCK_GAP;
+  rows.forEach((row: number[]) => {
+    let r1 = 0;
+    let r2 = 0;
+    row.forEach((bi: number) => {
+      if (geom[bi].r1 > r1) r1 = geom[bi].r1;
+      if (geom[bi].r2 > r2) r2 = geom[bi].r2;
+    });
+    const band1H = gridH(r1);
+    const band2H = gridH(r2);
+    const y0 = rowTop;
+    const y1 = y0 + NODE_H + TIER_GAP;
+    const y2 = band1H > 0 ? y1 + band1H + TIER_GAP : y1;
+
+    const counts = [0, 0, 0];
+    let cursorX = OUTER_MARGIN + BAND_LABEL_W;
+    row.forEach((bi: number) => {
+      const b = blocks[bi];
+      const g = geom[bi];
+      const centre = cursorX + g.w / 2;
+      put(b.core, centre - NODE_W / 2, y0);
+      counts[0] += 1;
+
+      if (b.t1.length) {
+        const rowW = gridW(g.c1);
+        const left = centre - rowW / 2;
+        b.t1.forEach((nd: TopoNode, i: number) => {
+          const c = i % g.c1;
+          const r = Math.floor(i / g.c1);
+          put(nd, left + c * (NODE_W + GAP_X), y1 + r * (NODE_H + GAP_Y));
+        });
+        counts[1] += b.t1.length;
+      }
+      if (b.t2.length) {
+        const rowW = gridW(g.c2);
+        const left = centre - rowW / 2;
+        b.t2.forEach((nd: TopoNode, i: number) => {
+          const c = i % g.c2;
+          const r = Math.floor(i / g.c2);
+          put(nd, left + c * (NODE_W + GAP_X), y2 + r * (NODE_H + GAP_Y));
+        });
+        counts[2] += b.t2.length;
+      }
+      cursorX += g.w + BLOCK_GAP;
+    });
+
+    const right = cursorX - BLOCK_GAP;
+    if (right > widest) widest = right;
+
+    [
+      { label: TIER_NAMES[0], count: counts[0], y: y0, h: NODE_H },
+      { label: TIER_NAMES[1], count: counts[1], y: y1, h: band1H },
+      { label: TIER_NAMES[2], count: counts[2], y: y2, h: band2H },
+    ].forEach((b: BandLayout) => {
+      if (b.count > 0 && b.h > 0) bands.push(b);
+    });
+
+    lastBottom = band2H > 0 ? y2 + band2H : band1H > 0 ? y1 + band1H : y0 + NODE_H;
+    rowTop = lastBottom + TIER_ROW_GAP;
   });
 
-  const width = Math.max(cursorX - BLOCK_GAP, OUTER_MARGIN + BAND_LABEL_W + NODE_W) + OUTER_MARGIN;
-  const height = y2 + (band2H || NODE_H) + OUTER_MARGIN;
-
-  const counts = [0, 0, 0];
-  nodes.forEach((n: TopoNode) => { counts[tierOf(n.device_id)] += 1; });
-  const bands: BandLayout[] = [
-    { label: TIER_NAMES[0], count: counts[0], y: y0, h: band0H },
-    { label: TIER_NAMES[1], count: counts[1], y: y1, h: band1H },
-    { label: TIER_NAMES[2], count: counts[2], y: y2, h: band2H },
-  ].filter((b: BandLayout) => b.count > 0 && b.h > 0);
+  const width = Math.max(widest, OUTER_MARGIN + BAND_LABEL_W + NODE_W) + OUTER_MARGIN;
+  const height = lastBottom + OUTER_MARGIN;
 
   return { placed, posMap, clusters: [], bands, width, height };
 }
@@ -490,17 +579,124 @@ function layoutTiered(nodes: TopoNode[], edges: TopoEdge[]): LayoutResult {
 // positions so the same graph always draws the same picture (a layout that
 // reshuffles on every re-render is unusable as a reference diagram), followed
 // by a rectangle-separation pass because FR treats nodes as points while we
-// draw 130x56 boxes. Cost is O(iterations x n^2) — 52 nodes is ~1M cheap
-// float ops, and the whole thing is memoized on the node/edge set.
+// draw 130x56 boxes.
+//
+// Three properties below are load-bearing and easy to lose again:
+//
+//  1. THE FRAME CLAMP on the integration step. Textbook FR bounds every node
+//     into the WxH frame on every iteration; the first version of this function
+//     did not. With `temp` starting at W/10 and decaying 0.965 over 320
+//     iterations a node can travel ~5300 units, and unconnected pairs only ever
+//     repel, so the drawing inflated without limit: measured on production, a
+//     52-node graph produced a 10025x9587 canvas that fit at 0.058 — 7.6x3.3px
+//     nodes under a 0.70px label, which ZOOM_MAX = 3 cannot rescue. The clamp
+//     is what makes the canvas a function of the node count instead of a
+//     function of how long the simulation ran.
+//  2. THE FRAME SIZE. W/H are derived from n so the result stays comparable to
+//     layoutSites/layoutTiered as the graph grows: room for n padded boxes at
+//     FRAME_DENSITY times their own area, in a FRAME_ASPECT-wide rectangle
+//     (the map panel is much wider than it is tall, so a square frame would
+//     throw away fit scale). k then lands near the separation padding, which
+//     is what keeps the post-pass cheap.
+//  3. CENTRE GRAVITY. Unconnected pairs only repel, so nothing pulls a
+//     disconnected component — or a fully isolated node — back toward the rest;
+//     with the clamp alone they end up smeared along the frame border. That is
+//     a normal case here, not a theoretical one: under the page's "Monitored
+//     only" filter EVERY node is isolated (managed-to-managed links number zero
+//     on a real estate). A weak spring to the centre, weighted up for
+//     low-degree nodes, packs each component instead.
+//
+// The repulsion loop is O(n^2) per iteration and runs synchronously on the main
+// thread, so the iteration count is a BUDGET (FORCE_PAIR_BUDGET total pair
+// visits) rather than a constant: 320 iterations at the sizes that can afford
+// them, fewer as n^2 grows, never below FORCE_ITER_MIN. Cooling is derived from
+// whatever count that yields so the schedule always lands on TEMP_FLOOR at the
+// last iteration — the old fixed 0.965 spent its final ~150 iterations moving
+// nodes by less than a pixel at n = 52, and cooled far too slowly to settle at
+// all once the count was reduced.
+const FRAME_DENSITY = 2.2;   // frame area per node, in padded-box areas
+const FRAME_ASPECT = 2.3;    // frame width / height
+const SEP_PAD = 18;          // extra space around a node box in the separation pass
+const FORCE_ITER_MAX = 320;
+const FORCE_ITER_MIN = 60;
+const FORCE_PAIR_BUDGET = 12e6;
+const TEMP_FLOOR = 0.5;      // the step cap at the final iteration, in user units
+const GRAVITY = 0.04;
+// Separation passes are budgeted the same way (each pass is O(n)).
+const SEP_PASS_MAX = 600;
+const SEP_PASS_MIN = 120;
+const SEP_PASS_BUDGET = 250e3;
+
+// Rectangle separation: FR packs point-masses, we draw 130x56 boxes. Two nodes
+// can only overlap when they sit within one PADX x PADY cell of each other, so
+// each pass buckets the positions into that grid and compares a node only
+// against the nine cells around it — O(n) per pass instead of O(n^2), which is
+// what lets the pass count (SEP_PASS_BUDGET / n) be high enough to CONVERGE.
+// (At the previous 70 O(n^2) passes a 150-node graph still finished with 82
+// overlapping pairs once the frame clamp gave it a realistic density.) The
+// buckets are rebuilt every pass, so a stale bucket entry can at worst defer an
+// overlap to the next pass. Deliberately NOT clamped to the force frame: a node
+// pinned against the frame edge could never resolve its overlap.
+function separateBoxes(px: Float64Array, py: Float64Array, n: number): void {
+  const PADX = NODE_W + SEP_PAD;
+  const PADY = NODE_H + SEP_PAD;
+  // Cell key: offset so negative cells still map to a distinct positive
+  // integer, and spaced so the two axes can never collide.
+  const cellKey = (gx: number, gy: number): number => (gy + 1e6) * 4e6 + (gx + 1e6);
+  const buckets = new Map<number, number[]>();
+  const passes = Math.max(
+    SEP_PASS_MIN,
+    Math.min(SEP_PASS_MAX, Math.round(SEP_PASS_BUDGET / Math.max(1, n))),
+  );
+  for (let pass = 0; pass < passes; pass++) {
+    buckets.clear();
+    for (let i = 0; i < n; i++) {
+      const k = cellKey(Math.floor(px[i] / PADX), Math.floor(py[i] / PADY));
+      const b = buckets.get(k);
+      if (b) b.push(i);
+      else buckets.set(k, [i]);
+    }
+    let moved = false;
+    for (let i = 0; i < n; i++) {
+      const gx = Math.floor(px[i] / PADX);
+      const gy = Math.floor(py[i] / PADY);
+      for (let a = -1; a <= 1; a++) {
+        for (let b = -1; b <= 1; b++) {
+          const cell = buckets.get(cellKey(gx + a, gy + b));
+          if (!cell) continue;
+          for (let ci = 0; ci < cell.length; ci++) {
+            const j = cell[ci];
+            if (j <= i) continue;
+            const ox = PADX - Math.abs(px[i] - px[j]);
+            const oy = PADY - Math.abs(py[i] - py[j]);
+            if (ox <= 0 || oy <= 0) continue;
+            moved = true;
+            if (ox / PADX < oy / PADY) {
+              const s = (px[i] >= px[j] ? 1 : -1) * (ox / 2 + 0.5);
+              px[i] += s; px[j] -= s;
+            } else {
+              const s = (py[i] >= py[j] ? 1 : -1) * (oy / 2 + 0.5);
+              py[i] += s; py[j] -= s;
+            }
+          }
+        }
+      }
+    }
+    if (!moved) break;
+  }
+}
+
 function layoutForce(nodes: TopoNode[], edges: TopoEdge[]): LayoutResult {
   const n = nodes.length;
   const idx = new Map<number, number>();
   nodes.forEach((nd: TopoNode, i: number) => idx.set(nd.device_id, i));
 
-  const span = Math.max(900, Math.ceil(Math.sqrt(n)) * (NODE_W + GAP_X) * 1.5);
-  const W = span;
-  const H = Math.max(600, Math.round(span * 0.62));
+  const cellArea = (NODE_W + SEP_PAD) * (NODE_H + SEP_PAD) * FRAME_DENSITY;
+  const W = Math.max(900, Math.round(Math.sqrt(cellArea * Math.max(1, n) * FRAME_ASPECT)));
+  const H = Math.max(390, Math.round(W / FRAME_ASPECT));
   const k = Math.sqrt((W * H) / Math.max(1, n));
+  const cx = W / 2;
+  const cy = H / 2;
 
   const px = new Float64Array(n);
   const py = new Float64Array(n);
@@ -508,22 +704,32 @@ function layoutForce(nodes: TopoNode[], edges: TopoEdge[]): LayoutResult {
   for (let i = 0; i < n; i++) {
     const a = i * GOLDEN;
     const r = (Math.sqrt(i + 0.5) / Math.sqrt(n)) * Math.min(W, H) * 0.45;
-    px[i] = W / 2 + r * Math.cos(a);
-    py[i] = H / 2 + r * Math.sin(a);
+    px[i] = cx + r * Math.cos(a);
+    py[i] = cy + r * Math.sin(a);
   }
 
   const links: number[][] = [];
+  const degree = new Float64Array(n);
   edges.forEach((e: TopoEdge) => {
     const a = idx.get(e.from_device_id);
     const b = idx.get(e.to_device_id);
-    if (a !== undefined && b !== undefined && a !== b) links.push([a, b]);
+    if (a !== undefined && b !== undefined && a !== b) {
+      links.push([a, b]);
+      degree[a] += 1;
+      degree[b] += 1;
+    }
   });
 
-  const ITER = 320;
+  const pairs = Math.max(1, (n * (n - 1)) / 2);
+  const iterations = Math.max(
+    FORCE_ITER_MIN,
+    Math.min(FORCE_ITER_MAX, Math.round(FORCE_PAIR_BUDGET / pairs)),
+  );
   let temp = W * 0.1;
+  const cool = Math.pow(TEMP_FLOOR / temp, 1 / iterations);
   const dx = new Float64Array(n);
   const dy = new Float64Array(n);
-  for (let it = 0; it < ITER; it++) {
+  for (let it = 0; it < iterations; it++) {
     dx.fill(0);
     dy.fill(0);
     for (let i = 0; i < n; i++) {
@@ -557,43 +763,46 @@ function layoutForce(nodes: TopoNode[], edges: TopoEdge[]): LayoutResult {
       dx[a] -= ux; dy[a] -= uy;
       dx[b] += ux; dy[b] += uy;
     }
+    // Gravity — see note 3 above. Same shape as the attractive term, anchored
+    // at the frame centre, scaled up to 3x for a node with no links at all.
+    for (let i = 0; i < n; i++) {
+      const gx = px[i] - cx;
+      const gy = py[i] - cy;
+      const gd = Math.sqrt(gx * gx + gy * gy);
+      if (gd < 1) continue;
+      const gw = GRAVITY * (1 + 2 / (1 + degree[i]));
+      const gf = (gw * gd * gd) / k;
+      dx[i] -= (gx / gd) * gf;
+      dy[i] -= (gy / gd) * gf;
+    }
+    // Integration, clamped into the frame — see note 1 above.
+    let maxStep = 0;
     for (let i = 0; i < n; i++) {
       const d = Math.sqrt(dx[i] * dx[i] + dy[i] * dy[i]) || 1;
       const m = Math.min(d, temp);
-      px[i] += (dx[i] / d) * m;
-      py[i] += (dy[i] / d) * m;
+      let nx = px[i] + (dx[i] / d) * m;
+      let ny = py[i] + (dy[i] / d) * m;
+      if (!isFinite(nx)) nx = cx;
+      if (!isFinite(ny)) ny = cy;
+      px[i] = nx < 0 ? 0 : nx > W ? W : nx;
+      py[i] = ny < 0 ? 0 : ny > H ? H : ny;
+      if (m > maxStep) maxStep = m;
     }
-    temp *= 0.965;
+    temp *= cool;
+    if (maxStep < 0.5) break;
   }
 
-  // Rectangle separation: FR packs point-masses, we draw boxes.
-  const PADX = NODE_W + 18;
-  const PADY = NODE_H + 18;
-  for (let pass = 0; pass < 70; pass++) {
-    let moved = false;
-    for (let i = 0; i < n; i++) {
-      for (let j = i + 1; j < n; j++) {
-        const ox = PADX - Math.abs(px[i] - px[j]);
-        const oy = PADY - Math.abs(py[i] - py[j]);
-        if (ox <= 0 || oy <= 0) continue;
-        moved = true;
-        if (ox / PADX < oy / PADY) {
-          const s = (px[i] >= px[j] ? 1 : -1) * (ox / 2 + 0.5);
-          px[i] += s; px[j] -= s;
-        } else {
-          const s = (py[i] >= py[j] ? 1 : -1) * (oy / 2 + 0.5);
-          py[i] += s; py[j] -= s;
-        }
-      }
-    }
-    if (!moved) break;
-  }
+  separateBoxes(px, py, n);
 
   let minX = Infinity;
   let minY = Infinity;
   let maxX = -Infinity;
   let maxY = -Infinity;
   for (let i = 0; i < n; i++) {
+    // Belt and braces: a non-finite coordinate here would poison the viewBox
+    // for the whole canvas, not just its own node.
+    if (!isFinite(px[i])) px[i] = cx;
+    if (!isFinite(py[i])) py[i] = cy;
     if (px[i] < minX) minX = px[i];
     if (py[i] < minY) minY = py[i];
     if (px[i] > maxX) maxX = px[i];
@@ -615,8 +824,8 @@ function layoutForce(nodes: TopoNode[], edges: TopoEdge[]): LayoutResult {
     posMap,
     clusters: [],
     bands: [],
-    width: maxX - minX + NODE_W + 2 * OUTER_MARGIN,
-    height: maxY - minY + NODE_H + 2 * OUTER_MARGIN,
+    width: Math.round(maxX - minX) + NODE_W + 2 * OUTER_MARGIN,
+    height: Math.round(maxY - minY) + NODE_H + 2 * OUTER_MARGIN,
   };
 }
 
@@ -881,23 +1090,57 @@ export default function TopologyMapView({
   const panning = useRef<{ sx: number; sy: number; ox: number; oy: number; moved: boolean } | null>(null);
   const justPanned = useRef(false);
   const [grabbing, setGrabbing] = useState(false);
+  // Flashed when someone wheels over the canvas WITHOUT the modifier, so the
+  // gesture that no longer zooms says why instead of doing nothing visible.
+  const [wheelHint, setWheelHint] = useState(false);
+  const hintTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Live geometry for the event handlers, which are bound once ([] deps) and
+  // would otherwise close over the first render's values.
+  const geomRef = useRef({ w: 100, h: 100 });
+  const zoomRef = useRef(1);
 
-  // Wheel zoom toward the cursor (non-passive so we can preventDefault scroll).
+  const clampPan = (p: { x: number; y: number }, z: number): { x: number; y: number } => ({
+    x: clampPanAxis(p.x, z, geomRef.current.w),
+    y: clampPanAxis(p.y, z, geomRef.current.h),
+  });
+
+  // Wheel zoom toward the cursor.
+  //
+  // The modifier is required ON PURPOSE. This handler used to preventDefault()
+  // every wheel event, which swallowed page scroll: at 1366x700 the page really
+  // does scroll (657 content px into a 589px viewport) and the map occupies 350
+  // of those 589, so wheeling over it zoomed instead of scrolling and the Apply
+  // buttons and legend below the fold could not be reached by the natural
+  // gesture. A trackpad two-finger scroll emits the same deltaY, so trackpad
+  // users got zoom with no way to opt out. Ctrl/Cmd + wheel is the conventional
+  // map-zoom gesture and is also what a trackpad PINCH sends, so pinch-to-zoom
+  // keeps working and no longer zooms the whole browser page.
   useEffect(() => {
     const el = svgRef.current;
     if (!el) return;
     function onWheel(e: WheelEvent) {
+      if (!e.ctrlKey && !e.metaKey) {
+        // Not ours — let the page scroll, and say so.
+        setWheelHint(true);
+        if (hintTimer.current) clearTimeout(hintTimer.current);
+        hintTimer.current = setTimeout(() => setWheelHint(false), 1900);
+        return;
+      }
       e.preventDefault();
       const u = clientToUser(el!, e.clientX, e.clientY);
       setZoom((z: number) => {
         const nz = clampZoom(z * (e.deltaY < 0 ? 1.1 : 1 / 1.1));
         const k = nz / z;
-        if (u) setPan((p) => ({ x: u.x - (u.x - p.x) * k, y: u.y - (u.y - p.y) * k }));
+        if (u) setPan((p) => clampPan({ x: u.x - (u.x - p.x) * k, y: u.y - (u.y - p.y) * k }, nz));
         return nz;
       });
     }
     el.addEventListener('wheel', onWheel, { passive: false });
-    return () => el.removeEventListener('wheel', onWheel);
+    return () => {
+      el.removeEventListener('wheel', onWheel);
+      if (hintTimer.current) clearTimeout(hintTimer.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Drag to pan (window listeners so the drag survives leaving the element).
@@ -911,7 +1154,7 @@ export default function TopologyMapView({
       const rawDx = e.clientX - p.sx;
       const rawDy = e.clientY - p.sy;
       if (Math.abs(rawDx) + Math.abs(rawDy) > 3) p.moved = true;
-      setPan({ x: p.ox + rawDx / s, y: p.oy + rawDy / s });
+      setPan(clampPan({ x: p.ox + rawDx / s, y: p.oy + rawDy / s }, zoomRef.current));
     }
     function up() {
       const p = panning.current;
@@ -948,7 +1191,7 @@ export default function TopologyMapView({
     setZoom((z: number) => {
       const nz = clampZoom(z * factor);
       const k = nz / z;
-      if (u) setPan((p) => ({ x: u.x - (u.x - p.x) * k, y: u.y - (u.y - p.y) * k }));
+      if (u) setPan((p) => clampPan({ x: u.x - (u.x - p.x) * k, y: u.y - (u.y - p.y) * k }, nz));
       return nz;
     });
   };
@@ -972,16 +1215,43 @@ export default function TopologyMapView({
     return nodes.filter((n: TopoNode) => connected.has(n.device_id));
   }, [nodes, edges, showIsolated]);
 
-  // 2. Layout. Memoized: the force embedder is O(iterations x n^2) and pan/zoom
-  //    re-renders must not recompute it.
-  const lay = useMemo<LayoutResult>(() => {
-    if (included.length === 0) {
-      return { placed: [], posMap: new Map(), clusters: [], bands: [], width: 100, height: 100 };
-    }
-    if (layout === 'tiered') return layoutTiered(included, edges);
-    if (layout === 'force') return layoutForce(included, edges);
-    return layoutSites(included);
+  // 2. Layout, keyed on the graph's SHAPE rather than on array identity.
+  //
+  //    A plain useMemo([included, edges, layout]) re-paid the whole embedding
+  //    whenever the page handed down a new array — and the page rebuilds
+  //    `view.nodes` on every filter change and (before this was split out) on
+  //    every keystroke in the highlight box, so the force layout was being
+  //    recomputed for renders that could not move a single node. The signature
+  //    below covers everything the three layouts actually read: which nodes are
+  //    present, the fields they sort/group by, and the edge list.
+  const layoutKey = useMemo(() => {
+    const ns = included.map((n: TopoNode) =>
+      n.device_id + ':' + (n.name || '') + ':' + (n.site_name || '') +
+      ':' + (n.managed === false ? '0' : '1') + (n.is_gateway ? '1' : '0'),
+    ).join('|');
+    const es = edges.map((e: TopoEdge) => e.from_device_id + '>' + e.to_device_id).join('|');
+    return layout + '#' + ns + '#' + es;
   }, [included, edges, layout]);
+
+  const layoutCache = useRef<{ key: string; value: LayoutResult } | null>(null);
+  const lay = useMemo<LayoutResult>(() => {
+    const cached = layoutCache.current;
+    if (cached && cached.key === layoutKey) return cached.value;
+    const value: LayoutResult = included.length === 0
+      ? { placed: [], posMap: new Map(), clusters: [], bands: [], width: 100, height: 100 }
+      : layout === 'tiered'
+        ? layoutTiered(included, edges)
+        : layout === 'force'
+          ? layoutForce(included, edges)
+          : layoutSites(included);
+    layoutCache.current = { key: layoutKey, value };
+    return value;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [layoutKey]);
+
+  // Geometry the once-bound wheel/drag handlers read (see geomRef above).
+  geomRef.current = { w: lay.width, h: lay.height };
+  zoomRef.current = zoom;
 
   // Re-fit whenever the drawn graph changes shape (layout switch, filter
   // change) — otherwise a pan left over from the previous picture leaves the
@@ -1002,6 +1272,30 @@ export default function TopologyMapView({
     });
     return s;
   }, [included, needle]);
+
+  // Bring the first search match into view if the canvas is panned/zoomed away
+  // from it. Without this a highlight could report "34 matches" while the
+  // viewport showed empty canvas. Deliberately a no-op when the match is
+  // already on screen, so typing in the highlight box does not jitter the map.
+  const firstMatchKey = (() => {
+    if (!needle) return '';
+    for (let i = 0; i < lay.placed.length; i++) {
+      if (matches.has(lay.placed[i].node.device_id)) return String(lay.placed[i].node.device_id);
+    }
+    return '';
+  })();
+  useEffect(() => {
+    if (!firstMatchKey) return;
+    const hit = lay.posMap.get(Number(firstMatchKey));
+    if (!hit) return;
+    setPan((p) => {
+      const sx = p.x + hit.cx * zoom;
+      const sy = p.y + hit.cy * zoom;
+      if (sx >= 0 && sx <= lay.width && sy >= 0 && sy <= lay.height) return p; // already visible
+      return clampPan({ x: lay.width / 2 - hit.cx * zoom, y: lay.height / 2 - hit.cy * zoom }, zoom);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [firstMatchKey, lay, zoom]);
 
   const handleNodeClick = (deviceId: number): void => {
     if (justPanned.current) return; // ignore the click that ends a pan-drag
@@ -1035,15 +1329,24 @@ export default function TopologyMapView({
         height="100%"
         preserveAspectRatio="xMidYMid meet"
         onMouseDown={onSvgMouseDown}
-        style={{ display: 'block', cursor: grabbing ? 'grabbing' : 'grab', touchAction: 'none' }}
+        style={{
+          display: 'block',
+          cursor: grabbing ? 'grabbing' : 'grab',
+          // pan-y, not none: the map must not be a dead zone that swallows a
+          // touch scroll of the PAGE (same reasoning as the wheel modifier
+          // above). Dragging to pan is a mouse gesture and is unaffected.
+          touchAction: 'pan-y',
+        }}
       >
         <g transform={`translate(${pan.x},${pan.y}) scale(${zoom})`}>
           {/* 1. Backdrops: site boundary boxes ('sites') or tier bands ('tiered') */}
           {lay.clusters.map((c: ClusterLayout) => (
             <SiteBox key={'box-' + c.siteName} cluster={c} />
           ))}
-          {lay.bands.map((b: BandLayout) => (
-            <TierBand key={'band-' + b.label} band={b} width={lay.width} />
+          {/* Keyed by index, not by label: the tiered layout emits one
+              Core/Distribution/Access set PER WRAPPED ROW, so labels repeat. */}
+          {lay.bands.map((b: BandLayout, i: number) => (
+            <TierBand key={'band-' + i} band={b} width={lay.width} />
           ))}
 
           {/* 2. Connections (on top of the backdrop) — anchored to node edges */}
@@ -1100,6 +1403,19 @@ export default function TopologyMapView({
         <button type="button" title="Fit to view" onClick={fitView}>⤢</button>
         <span className="lvl">{Math.round(zoom * 100)}%</span>
       </div>
+
+      {/* Just-in-time affordance: shown only for the gesture that no longer
+          zooms, so a plain wheel scroll explains itself instead of appearing
+          to do nothing. Reuses the existing .sv-map-legend chip styling — no
+          new global CSS (several agents are editing globals.css). */}
+      {wheelHint && (
+        <div
+          className="sv-map-legend"
+          style={{ left: '50%', bottom: 12, transform: 'translateX(-50%)', pointerEvents: 'none', fontWeight: 600 }}
+        >
+          Hold Ctrl (⌘ on Mac) and scroll to zoom · drag to pan
+        </div>
+      )}
     </div>
   );
 }

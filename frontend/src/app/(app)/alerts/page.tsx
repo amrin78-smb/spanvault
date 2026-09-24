@@ -31,7 +31,7 @@ type Alert = {
   wireless_client_mac?: string | null;
 };
 
-type VolumeBucket = { hour: string; critical: number; warning: number };
+type VolumeBucket = { hour: string; critical: number; warning: number; other: number; total: number };
 type VolumeResponse = { hours: number; buckets: VolumeBucket[] };
 
 // ── style tokens ──────────────────────────────────────────────
@@ -110,6 +110,9 @@ function fmtDuration(sec: number): string {
   const rem = m % 60;
   return rem ? `${h}h ${rem}m` : `${h}h`;
 }
+
+// "" / "s" — used wherever a count is rendered into a label or aria-label.
+function plural(n: number): string { return n === 1 ? '' : 's'; }
 
 // Quick-filter chips applied client-side over the fetched alert list.
 // `last24h / lastnight / thisweek / critical / unack` are pure client filters;
@@ -252,6 +255,16 @@ function buildGroups(list: Alert[], grouped: boolean): Group[] {
   return groups;
 }
 
+// Group keys for the rows that render as an expandable header — the same
+// condition the tbody uses to choose groupRow over alertRow. Used to open
+// every collapsed group a page-wide select-all is about to select into.
+function headerGroupKeys(gs: Group[]): string[] {
+  return gs
+    .filter((g) => g.kind !== 'single' && g.alerts.length > 1
+      && g.alerts.some((x) => x.status !== 'resolved'))
+    .map((g) => g.key);
+}
+
 function worstSeverity(alerts: Alert[]): string {
   return alerts.some((a) => a.severity === 'critical') ? 'critical' : 'warning';
 }
@@ -364,14 +377,22 @@ function AlertStatCard({ num, label, color }: { num: number; label: string; colo
 // fetched" and go blank on status=active. The strip therefore always shows the
 // true 24h picture regardless of how the table below it is filtered.
 // Clicking a bar focuses the table on that hour; clicking it again clears.
+// `matched` is how many of the focused hour's alerts the table below will
+// actually list — i.e. the filtered client-side set. The strip's own numbers
+// are a 24h server aggregate over ALL statuses (see the block comment above),
+// which is deliberate; what was NOT honest was the focus chip printing that
+// server number ("09:00–10:00 · 203") immediately above a 22-row table with
+// nothing to explain the gap. The chip now prints both, smaller number first,
+// with the full explanation on its tooltip.
 function AlertVolumeStrip({
-  data, focus, onFocus, loading, error,
+  data, focus, onFocus, loading, error, matched,
 }: {
   data: { iso: string; label: string; critical: number; warning: number; total: number }[];
   focus: string | null;
   onFocus: (iso: string | null) => void;
   loading: boolean;
   error: string | null;
+  matched: number;
 }) {
   const total = data.reduce((s, d) => s + d.total, 0);
   const crit = data.reduce((s, d) => s + d.critical, 0);
@@ -399,9 +420,10 @@ function AlertVolumeStrip({
           <button
             className="sv-chip active"
             onClick={() => onFocus(null)}
+            title={`${focused.total} alert${plural(focused.total)} triggered in this hour across ALL statuses, counted server-side over the full 24h window. ${matched} of them match the current status/severity/quick filters and the fetched window — those ${matched === 1 ? 'is the one' : 'are the ones'} listed below. Click to clear the hour focus.`}
             style={{ height: 22, fontSize: 'var(--text-xs)', padding: '0 10px' }}
           >
-            {focused.label}–{String((new Date(focused.iso).getHours() + 1) % 24).padStart(2, '0')}:00 · {focused.total} ✕
+            {focused.label}–{String((new Date(focused.iso).getHours() + 1) % 24).padStart(2, '0')}:00 · listing {matched} of {focused.total} ✕
           </button>
         ) : (
           <span style={MICRO}>Click a bar to focus that hour</span>
@@ -427,6 +449,10 @@ function AlertVolumeStrip({
             <XAxis dataKey="label" tick={{ fontSize: 10 }} interval={2} tickLine={false} axisLine={false} />
             <YAxis tick={{ fontSize: 10 }} allowDecimals={false} width={30} tickLine={false} axisLine={false} />
             <Tooltip {...CHART_TOOLTIP} cursor={{ fill: 'var(--surface-subtle)' }} />
+            {/* `other` (info and anything future) sits at the bottom of the
+                stack. Without it these bars would be shorter than the caption's
+                total, which now comes from the API rather than being derived. */}
+            <Bar dataKey="other" name="Other" stackId="s" fill="var(--text-muted)" />
             <Bar dataKey="warning" name="Warning" stackId="s" fill="var(--yellow)" />
             <Bar dataKey="critical" name="Critical" stackId="s" fill="var(--red)" radius={[3, 3, 0, 0]} />
           </BarChart>
@@ -598,6 +624,26 @@ export default function AlertsPage() {
       return n;
     });
   }
+  function expandGroups(keys: string[]) {
+    if (!keys.length) return;
+    setExpanded((prev) => {
+      const n = new Set(prev);
+      let changed = false;
+      for (const k of keys) if (!n.has(k)) { n.add(k); changed = true; }
+      return changed ? n : prev;
+    });
+  }
+  // Ticking a group header (or the thead select-all) selects that group's
+  // CHILD alerts — which a collapsed group has not rendered. The bulk bar
+  // would then offer to acknowledge/resolve rows the operator cannot see.
+  // Selecting therefore also opens every group it selects into, so the count
+  // beside the bulk buttons is always backed by visible rows. Clearing a
+  // selection deliberately leaves the group open — collapsing it again would
+  // yank rows out from under the pointer.
+  function selectGroupAlerts(keys: string[], ids: number[], on: boolean) {
+    setManySelected(ids, on);
+    if (on) expandGroups(keys);
+  }
 
   const all = useMemo(() => alerts.data || [], [alerts.data]);
   const filtered = useMemo(() => {
@@ -645,7 +691,13 @@ export default function AlertsPage() {
       label: `${String(d.getHours()).padStart(2, '0')}:00`,
       critical: b.critical,
       warning: b.warning,
-      total: b.critical + b.warning,
+      // `other` is every severity that is neither critical nor warning (info
+      // today). `warning` used to mean "not critical" and so absorbed it; now
+      // that the API reports the three separately, deriving the total as
+      // critical + warning would silently drop those alerts from both the bars
+      // and the caption. Take the API's own total.
+      other: b.other ?? 0,
+      total: b.total ?? (b.critical + b.warning + (b.other ?? 0)),
     };
   }), [volume.data]);
 
@@ -776,14 +828,26 @@ export default function AlertsPage() {
           onClick={href ? () => router.push(href) : undefined}
           role={href ? 'button' : undefined}
           tabIndex={href ? 0 : undefined}
-          onKeyDown={href ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); router.push(href); } } : undefined}
+          // Only keys that ORIGINATED on the <tr> navigate. The row is
+          // keyboard-activatable (role=button, tabIndex 0), but it now contains
+          // focusable controls of its own — the select checkbox and the
+          // Ack/Resolve buttons — whose Enter/Space keydown bubbles up here.
+          // Without this guard the row's preventDefault() swallowed the
+          // checkbox's native Space toggle and pushed the row's href instead
+          // (measured: focus the first row's checkbox, press Space, land on
+          // /wireless?tab=aps&apId=35 with the box still unticked). The td's
+          // onClick stopPropagation only ever covered pointer events.
+          onKeyDown={href ? (e) => {
+            if (e.target !== e.currentTarget) return;
+            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); router.push(href); }
+          } : undefined}
         >
           {/* select */}
           <td style={{ width: 34, paddingLeft: 12, paddingRight: 0 }} onClick={(e) => e.stopPropagation()}>
             {selectable && (
               <input
                 type="checkbox"
-                aria-label={`Select alert ${a.id}`}
+                aria-label={`Select ${prettyType(a.alert_type)} alert for ${entityName(a) || `#${a.id}`}`}
                 checked={selected.has(a.id)}
                 onChange={() => toggleSelected(a.id)}
                 style={{ cursor: 'pointer' }}
@@ -885,7 +949,14 @@ export default function AlertsPage() {
     const sev = worstSeverity(g.alerts);
     const dur = fmtDuration(groupDurationSec(g.alerts));
     const newest = g.alerts.reduce((m, a) => (new Date(a.triggered_at) > new Date(m.triggered_at) ? a : m), g.alerts[0]);
-    const hasActive = g.alerts.some((a) => a.status === 'active');
+    // Three counts live on this header and they are NOT interchangeable:
+    // every alert in the group, the unresolved ones (all the checkbox can
+    // select — a resolved alert has no action left) and the still-active ones
+    // (all "Ack All" could ever acknowledge). Measured on production: a header
+    // reading "AP111_FL26_GAC-02 · AP · 7 alerts" whose checkbox was labelled
+    // "Select all 1 alerts" and selected exactly 1. Each control now states
+    // the count it acts on, and the header states both when they differ.
+    const ackIds = g.alerts.filter((a) => a.status === 'active').map((a) => a.id);
     const ids = g.alerts.filter((a) => a.status !== 'resolved').map((a) => a.id);
     const allSel = ids.length > 0 && ids.every((id) => selected.has(id));
     const tint = sev === 'critical' ? 'var(--tint-danger)' : 'var(--tint-warn)';
@@ -900,41 +971,72 @@ export default function AlertsPage() {
             {canAcknowledgeAlerts && ids.length > 0 && (
               <input
                 type="checkbox"
-                aria-label={`Select all ${ids.length} alerts for ${g.title}`}
+                aria-label={ids.length === g.alerts.length
+                  ? `Select all ${ids.length} alert${plural(ids.length)} for ${g.title}`
+                  : `Select the ${ids.length} unresolved alert${plural(ids.length)} of ${g.alerts.length} for ${g.title}`}
+                title={ids.length === g.alerts.length
+                  ? `Select all ${ids.length} alert${plural(ids.length)} in this group`
+                  : `Selects the ${ids.length} unresolved alert${plural(ids.length)} in this group — the other ${g.alerts.length - ids.length} ${g.alerts.length - ids.length === 1 ? 'is' : 'are'} already resolved and ${g.alerts.length - ids.length === 1 ? 'has' : 'have'} no action left`}
                 checked={allSel}
-                onChange={() => setManySelected(ids, !allSel)}
+                onChange={() => selectGroupAlerts([g.key], ids, !allSel)}
                 style={{ cursor: 'pointer' }}
               />
             )}
           </td>
-          <td colSpan={ALERT_COLS - 2} onClick={() => toggleGroup(g.key)} style={{ cursor: 'pointer' }}>
-            <span style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          {/* The toggle is a real <button>, not a bare onClick on the cell:
+              the cell carried no tabindex/role/aria-expanded and no key
+              handler, so a keyboard or screen-reader user could never open a
+              correlated group — and with Grouped the persisted default, every
+              child alert inside one was unreachable. The button fills the cell
+              (the td's own padding moves onto it) so the mouse target is
+              unchanged, and the global button:focus-visible ring applies. */}
+          <td colSpan={ALERT_COLS - 2} style={{ padding: 0 }}>
+            <button
+              type="button"
+              onClick={() => toggleGroup(g.key)}
+              aria-expanded={open}
+              aria-label={`${open ? 'Collapse' : 'Expand'} ${g.title} — ${g.alerts.length} alert${plural(g.alerts.length)}, worst ${sev === 'critical' ? 'critical' : 'warning'}`}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+                width: '100%', padding: '12px 16px', textAlign: 'left', cursor: 'pointer',
+                background: 'none', border: 'none', borderRadius: 'var(--radius-sm)',
+                color: 'inherit', fontFamily: 'inherit', fontSize: 'inherit',
+                fontWeight: 'inherit', outlineOffset: -2,
+              }}
+            >
               <StatusDot status={sev === 'critical' ? 'down' : 'warning'} size={10} />
               <span style={{ fontWeight: 700, color: 'var(--text-primary)' }}>{g.title}</span>
               {g.kind === 'entity' && (
                 <span className="sv-type-badge" style={{ marginTop: 0 }}>{entityKindLabel(first)}</span>
               )}
-              <span style={MICRO}>{g.alerts.length} alerts</span>
+              <span style={MICRO}>
+                {g.alerts.length} alert{plural(g.alerts.length)}
+                {ids.length !== g.alerts.length && ` · ${ids.length} unresolved`}
+              </span>
               <span style={MICRO}>· worst: {sev === 'critical' ? 'Critical' : 'Warning'}</span>
               <span style={MICRO} title={fmtTime(newest.triggered_at)}>· {fmtRel(newest.triggered_at)}</span>
               {dur !== '0s' && <span style={MICRO}>· spans {dur}</span>}
               <span style={{ ...MICRO, color: 'var(--text-secondary)' }}>· {typeSummary(g.alerts)}</span>
-              <span style={{ marginLeft: 'auto', fontSize: 'var(--text-xs)', fontWeight: 600, color: 'var(--primary)' }}>
+              <span aria-hidden="true" style={{ marginLeft: 'auto', fontSize: 'var(--text-xs)', fontWeight: 600, color: 'var(--primary)' }}>
                 {open ? 'Collapse ▲' : 'Expand ▼'}
               </span>
-            </span>
+            </button>
           </td>
           <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
-            {canAcknowledgeAlerts && hasActive && (
+            {canAcknowledgeAlerts && ackIds.length > 0 && (
               <button
                 className="sv-btn ghost sm"
                 style={{ height: 24, padding: '0 10px', fontSize: 'var(--text-xs)' }}
+                aria-label={`Acknowledge the ${ackIds.length} active alert${plural(ackIds.length)} for ${g.title}`}
+                title={ackIds.length === g.alerts.length
+                  ? `Acknowledge all ${ackIds.length} alert${plural(ackIds.length)} in this group`
+                  : `Acknowledges only the ${ackIds.length} still-active alert${plural(ackIds.length)} of the ${g.alerts.length} in this group — the rest are already acknowledged, suppressed or resolved`}
                 onClick={(e) => {
                   e.stopPropagation();
-                  runBulk('acknowledge', g.alerts.filter((a) => a.status === 'active').map((a) => a.id));
+                  runBulk('acknowledge', ackIds);
                 }}
                 disabled={bulkBusy}
-              >Ack All</button>
+              >Ack {ackIds.length}</button>
             )}
           </td>
         </tr>
@@ -964,6 +1066,7 @@ export default function AlertsPage() {
         onFocus={(iso) => { setHourFocus(iso); setActiveView(''); }}
         loading={volume.loading}
         error={volume.error}
+        matched={filtered.length}
       />
 
       {/* ── Filter bar (3 rows) ──────────────────────────────── */}
@@ -1079,10 +1182,13 @@ export default function AlertsPage() {
                     {canAcknowledgeAlerts && (
                       <input
                         type="checkbox"
-                        aria-label="Select all alerts on this page"
+                        aria-label={`Select all ${selectableOnPage.length} unresolved alert${plural(selectableOnPage.length)} on this page`}
+                        title={`Selects the ${selectableOnPage.length} unresolved alert${plural(selectableOnPage.length)} on this page, including those inside collapsed groups (which are opened so you can see them)`}
                         checked={allPageSelected}
                         disabled={!selectableOnPage.length}
-                        onChange={() => setManySelected(selectableOnPage, !allPageSelected)}
+                        onChange={() => selectGroupAlerts(
+                          headerGroupKeys(groupPg.pageRows), selectableOnPage, !allPageSelected,
+                        )}
                         style={{ cursor: 'pointer' }}
                       />
                     )}

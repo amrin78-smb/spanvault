@@ -1,13 +1,13 @@
 'use client';
 
-import { createContext, useContext, useState, useEffect, useMemo, useRef } from 'react';
+import { createContext, useContext, useState, useEffect, useMemo, useRef, Fragment } from 'react';
 import Link from 'next/link';
 import { useApi } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
 import { vendorLabel } from '@/lib/vendor';
 import { copyText } from '@/lib/clipboard';
 import {
-  ErrorBox, fmtRel, PageHeader, TableSkeleton, EmptyState, useRefreshKey,
+  ErrorBox, fmtRel, PageHeader, TableSkeleton, CardSkeleton, EmptyState, useRefreshKey,
   useTableSort, sortRows, SortTh, SortState,
 } from '@/components/ui';
 import { StatusDot } from '@/components/StatusDot';
@@ -104,7 +104,11 @@ const DENSITY_SIZES: Record<Density, { ring: number; sparkW: number; sparkH: num
 // Cap on how many device ids go into one sparkline request. 13 devices live
 // today, but this page paginates SITES, not devices, so a large estate would
 // otherwise put every id in the querystring. Beyond the cap the column degrades
-// to an em-dash rather than the request degrading.
+// to a labelled placeholder rather than the request degrading.
+//
+// WHICH devices fall past the cap is decided by the page's own render order —
+// see the `sparkScopeIds` comment. It used to be decided by `d.id` ascending,
+// which is not a property of anything on screen.
 const SPARK_MAX_DEVICES = 400;
 
 // Top-level grouping by polling agent (agent_id null = local collector).
@@ -394,10 +398,22 @@ type DeviceRowCtxT = {
   sparks: SparkMap | null;
   sparksLoading: boolean;
   sizes: { ring: number; sparkW: number; sparkH: number; accHead: number };
+  // The ids the sparkline request actually covered, but ONLY when the page's
+  // device count exceeded SPARK_MAX_DEVICES — `null` (the normal case) means
+  // everything on screen was requested. A row missing from this set is over the
+  // cap, which is a completely different statement from "this device has no
+  // ping history", and the two must not render the same way.
+  requested: Set<number> | null;
 };
 const DeviceRowCtx = createContext<DeviceRowCtxT>({
-  sparks: null, sparksLoading: false, sizes: DENSITY_SIZES.comfortable,
+  sparks: null, sparksLoading: false, sizes: DENSITY_SIZES.comfortable, requested: null,
 });
+
+// Shown on a row whose device is past SPARK_MAX_DEVICES, so no history was
+// requested for it. A module const, not an inline string: the caption above the
+// list quotes the same sentence, and the two must not drift apart.
+const SPARK_CAP_NOTE =
+  `24h trend is loaded for the first ${SPARK_MAX_DEVICES.toLocaleString()} devices on this page`;
 
 // ── Latency sparkline ──────────────────────────────────────────
 // 24 clock-aligned hourly buckets of ICMP response time, from ONE aggregate
@@ -417,14 +433,46 @@ const DeviceRowCtx = createContext<DeviceRowCtxT>({
 //   number → mean response time of that hour's successful pings
 // The number beside the line is the device's CURRENT reading and wears a text
 // token, never the line colour — colour never carries the value's meaning.
-function LatencySpark({ series, currentMs, width, height, loading }: {
+function LatencySpark({ series, currentMs, width, height, loading, overCap }: {
   series: (number | null)[] | null;
   currentMs: number | null;
   width: number;
   height: number;
   loading: boolean;
+  // True when this device is past the page's history cap. Deliberately NOT
+  // folded into `series === null`: that renders the dashed "no history"
+  // placeholder, which would claim a device nobody asked about has never been
+  // polled. The current reading is still real, so it is still printed.
+  overCap?: boolean;
 }) {
   const label = currentMs == null ? null : `${Math.round(currentMs)} ms`;
+
+  if (overCap) {
+    const tip = `${SPARK_CAP_NOTE} — narrow the list with the site filter or the search box to include this one.`;
+    return (
+      <span
+        style={{ display: 'inline-flex', alignItems: 'center', gap: 6, minWidth: 0 }}
+        title={tip}
+      >
+        <span
+          aria-label={tip} role="img" className="sv-muted"
+          style={{
+            width, height, flex: 'none', display: 'inline-flex',
+            alignItems: 'center', justifyContent: 'center',
+            fontSize: 'var(--text-xs)', letterSpacing: '0.1em',
+          }}
+        >
+          ···
+        </span>
+        <span
+          className="sv-muted"
+          style={{ fontSize: 'var(--text-xs)', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}
+        >
+          {label ?? '—'}
+        </span>
+      </span>
+    );
+  }
 
   // Positive readings only drive the scale: a 0 means "down", not "0 ms", and
   // flattening the scale onto it would squash every real reading against the top.
@@ -570,6 +618,100 @@ function DeviceStatTile({ icon, value, label, sub, variant, tint, title }: {
   );
 }
 
+// ── KPI strip ──────────────────────────────────────────────────
+// THREE states, and the distinction is the whole point of this component.
+// `kpi` is counted over the filtered device list, which is `[]` both while the
+// first load is still in flight AND after a first load has FAILED — so
+// rendering the tiles unconditionally published "0 DEVICES / 0 UP / 0 DOWN /
+// 0 WARNING" as a measurement, an all-clear invented from no data, and left it
+// on screen permanently next to the error box. The table below already had a
+// skeleton; the strip above it did not.
+//
+//   'loading' — skeleton tiles, matching the TableSkeleton under the list
+//   'error'   — em-dash tiles on the neutral 'unknown' border, no percentages;
+//               the ErrorBox directly beneath carries the reason
+//   'ready'   — the real figures
+//
+// ⛔ The caller must decide 'error' from `useApi`'s `error` field EXPLICITLY,
+// never by inferring it from an empty array: useApi keeps the last good `data`
+// when a POLL fails, and an errored poll after a success must keep showing the
+// stale figures rather than dropping to em-dashes. (Same fix the dashboard's
+// own strip already carries.)
+type DeviceKpi = {
+  up: number; down: number; warning: number; unknown: number;
+  total: number; scored: number;
+  avgHealth: number | null; avgAvail: number | null; degraded: number;
+};
+type KpiState = 'loading' | 'error' | 'ready';
+
+function DeviceKpiStrip({ kpi, state }: { kpi: DeviceKpi; state: KpiState }) {
+  if (state === 'loading') {
+    return (
+      <div className="sv-cards" style={{ marginBottom: 12 }} aria-busy="true" aria-label="Loading device totals">
+        {/* 110px is the loaded tile's measured height at 1512px (42px icon
+            circle beside value + label + sub line), so the strip keeps its
+            place and nothing below it jumps when the data lands. */}
+        <CardSkeleton count={5} height={110} />
+      </div>
+    );
+  }
+  const out = state === 'error';
+  // One reason string on every tile, so no single tile reads as a real figure.
+  const outTitle = 'Device list could not be loaded — see the error below.';
+  const pct = (n: number) => (kpi.total ? Math.round((n / kpi.total) * 100) : 0);
+  // The health tile's left border reports the estate's own grade rather than
+  // sitting neutral — the average IS a status, and a colourless tile next to
+  // four coloured ones reads as "not applicable". With no data there is no
+  // grade to report, so it drops to 'unknown' along with everything else.
+  const healthVariant: 'up' | 'warning' | 'down' | 'unknown' =
+    kpi.avgHealth == null ? 'unknown' : kpi.avgHealth >= 80 ? 'up' : kpi.avgHealth >= 60 ? 'warning' : 'down';
+
+  return (
+    <div className="sv-cards" style={{ marginBottom: 12 }}>
+      <DeviceStatTile
+        variant={out ? 'unknown' : 'total'} icon={<IconDevices width={20} height={20} />}
+        tint={{ bg: 'var(--surface-subtle)', fg: 'var(--text-secondary)' }}
+        value={out ? '—' : kpi.total} label="DEVICES"
+        sub={out ? 'unavailable' : (kpi.avgAvail == null ? undefined : `${kpi.avgAvail.toFixed(2)}% avail (24h)`)}
+        title={out ? outTitle : undefined}
+      />
+      <DeviceStatTile
+        variant={out ? 'unknown' : 'up'} icon={<IconArrowUp width={20} height={20} />}
+        tint={{ bg: 'var(--tint-success)', fg: 'var(--tint-success-fg)' }}
+        value={out ? '—' : kpi.up} label="UP"
+        sub={out ? 'unavailable' : `${pct(kpi.up)}% of devices`}
+        title={out ? outTitle : undefined}
+      />
+      <DeviceStatTile
+        variant={out ? 'unknown' : 'down'} icon={<IconArrowDown width={20} height={20} />}
+        tint={{ bg: 'var(--tint-danger)', fg: 'var(--tint-danger-fg)' }}
+        value={out ? '—' : kpi.down} label="DOWN"
+        sub={out ? 'unavailable' : `${pct(kpi.down)}% of devices`}
+        title={out ? outTitle : undefined}
+      />
+      <DeviceStatTile
+        variant={out ? 'unknown' : 'warning'} icon={<IconWarning width={20} height={20} />}
+        tint={{ bg: 'var(--tint-warn)', fg: 'var(--tint-warn-fg)' }}
+        value={out ? '—' : kpi.warning} label="WARNING"
+        sub={out ? 'unavailable' : `${pct(kpi.warning)}% of devices`}
+        title={out ? outTitle : undefined}
+      />
+      <DeviceStatTile
+        variant={out ? 'unknown' : healthVariant} icon={<IconGauge width={20} height={20} />}
+        tint={{ bg: 'var(--tint-info)', fg: 'var(--tint-info-fg)' }}
+        value={out || kpi.avgHealth == null ? '—' : Math.round(kpi.avgHealth)}
+        label="AVG HEALTH"
+        sub={out ? 'unavailable' : (kpi.scored === 0 ? 'no scores yet' : `${kpi.degraded} graded D or F`)}
+        title={out
+          ? outTitle
+          : (kpi.scored === kpi.total
+            ? undefined
+            : `Averaged over the ${kpi.scored} of ${kpi.total} devices that have a health score.`)}
+      />
+    </div>
+  );
+}
+
 export default function DevicesPage() {
   const { canEdit } = useRbac();
   const [q, setQ] = useState('');
@@ -624,33 +766,6 @@ export default function DevicesPage() {
 
   const all = useMemo(() => devices.data || [], [devices.data]);
 
-  // ONE aggregate request for the whole page's latency column. The id list is
-  // sorted and joined into a stable string so the path — and therefore useApi's
-  // fetch effect — only changes when the device SET changes, not on every 20s
-  // device poll (the array identity is new each time). Built from `all`, not
-  // from the client-side filtered `visible`, so changing a type/vendor chip
-  // filters the rows without refetching any history.
-  //
-  // Polled at 5 minutes, not the list's 20s: the buckets are hourly, so a faster
-  // poll would redraw an identical line and pay for the aggregate 15× over.
-  const sparkIds = useMemo(
-    () => all.map((d) => d.id).sort((a, b) => a - b).slice(0, SPARK_MAX_DEVICES).join(','),
-    [all]
-  );
-  const sparks = useApi<SparkMap>(
-    sparkIds ? `/api/devices/sparklines?metrics=ping&device_ids=${sparkIds}` : null,
-    300000
-  );
-
-  useRefreshKey(() => { devices.reload(); sites.reload(); sparks.reload(); });
-  // Memoised: a fresh object literal here would give every DeviceRow a new
-  // context value on each render of this page (it re-renders every 20s on the
-  // device poll), defeating the point of keeping the series out of props.
-  const rowCtxValue = useMemo<DeviceRowCtxT>(
-    () => ({ sparks: sparks.data ?? null, sparksLoading: sparks.loading, sizes }),
-    [sparks.data, sparks.loading, sizes]
-  );
-
   // Type / vendor option lists come from the loaded devices, so they only ever
   // offer values that actually match something.
   const typeOptions = useMemo(
@@ -695,6 +810,76 @@ export default function DevicesPage() {
   // yank the user back to page 1 every 20 seconds.
   useEffect(() => { setPage(1); }, [siteCount]);
 
+  // ── Latency history (the sparkline column) ───────────────────
+  // ONE aggregate request for the whole page's latency column, never one per
+  // row. THREE properties have to hold at once, and the obvious implementation
+  // of any one of them breaks another:
+  //
+  // 1. The ids requested must be the ids the page is actually RENDERING. This
+  //    page paginates SITES, not devices, so the original
+  //    `all.map(d => d.id).sort((a,b) => a-b).slice(0, 400)` kept the 400
+  //    LOWEST ids — it decided whether a row got a sparkline by its primary
+  //    key. Above the cap, an operator on site-page 3 could see a table of
+  //    empty sparklines while page 1 was fully drawn, with nothing on screen
+  //    explaining why. The scope below walks the page's OWN groups in the
+  //    page's OWN order, so the cap — when it bites at all — drops a contiguous
+  //    TAIL of the page instead of a scatter of high device ids.
+  // 2. It must not refire on the 20s device poll. `all` is a brand-new array
+  //    every poll, so the request key is the id list JOINED into a string:
+  //    same devices → byte-identical string → same useApi path → no refetch.
+  // 3. A client-side type/vendor/chip filter must not refetch history. Those
+  //    filters only ever thin rows INSIDE sites that are already on screen, so
+  //    the scope is resolved out of `all` through the rendered groups' SITE
+  //    KEYS — never out of `visible` itself. Flipping a chip changes which rows
+  //    are drawn and changes nothing about the request. (A filter that empties
+  //    a whole site and so shifts which sites land on this page IS a different
+  //    page of sites, and refetching for it is the correct answer, not a bug.)
+  //
+  // Polled at 5 minutes, not the list's 20s: the buckets are hourly, so a faster
+  // poll would redraw an identical line and pay for the aggregate 15x over.
+  const sparkScopeIds = useMemo(() => {
+    const out: number[] = [];
+    if (hasAgents) {
+      // Agent mode renders every group — it has no site pager — so the scope is
+      // the whole estate, walked in the page's agent -> site -> row order.
+      for (const ag of groupByAgent(all)) {
+        for (const sg of groupBySite(ag.devices)) for (const d of sg.devices) out.push(d.id);
+      }
+    } else {
+      const onPage = new Set(pagedGroups.map((g) => g.key));
+      for (const sg of groupBySite(all)) {
+        if (!onPage.has(sg.key)) continue;
+        for (const d of sg.devices) out.push(d.id);
+      }
+    }
+    return out;
+  }, [all, hasAgents, pagedGroups]);
+  const sparkIds = useMemo(
+    () => sparkScopeIds.slice(0, SPARK_MAX_DEVICES).join(','),
+    [sparkScopeIds]
+  );
+  // Only built when the cap actually bites; `null` — the normal case — means
+  // every rendered device was requested and no row needs the over-cap
+  // treatment. Keyed off the request string, so its identity changes exactly
+  // when the request does and the row context stays stable across polls.
+  const sparkRequested = useMemo(
+    () => (sparkScopeIds.length > SPARK_MAX_DEVICES ? new Set(sparkIds.split(',').map(Number)) : null),
+    [sparkIds, sparkScopeIds.length]
+  );
+  const sparks = useApi<SparkMap>(
+    sparkIds ? `/api/devices/sparklines?metrics=ping&device_ids=${sparkIds}` : null,
+    300000
+  );
+
+  useRefreshKey(() => { devices.reload(); sites.reload(); sparks.reload(); });
+  // Memoised: a fresh object literal here would give every DeviceRow a new
+  // context value on each render of this page (it re-renders every 20s on the
+  // device poll), defeating the point of keeping the series out of props.
+  const rowCtxValue = useMemo<DeviceRowCtxT>(
+    () => ({ sparks: sparks.data ?? null, sparksLoading: sparks.loading, sizes, requested: sparkRequested }),
+    [sparks.data, sparks.loading, sizes, sparkRequested]
+  );
+
   // ── KPI strip ────────────────────────────────────────────────
   // Counted over `visible` (the filtered set) so the tiles always agree with the
   // "Showing N devices across M sites" line and the rows underneath — a strip
@@ -729,12 +914,15 @@ export default function DevicesPage() {
       degraded,
     };
   }, [visible]);
-  const kpiPct = (n: number) => (kpi.total ? Math.round((n / kpi.total) * 100) : 0);
-  // The health tile's left border reports the estate's own grade rather than
-  // sitting neutral — the average IS a status, and a colourless tile next to
-  // four coloured ones reads as "not applicable".
-  const healthVariant: 'up' | 'warning' | 'down' | 'unknown' =
-    kpi.avgHealth == null ? 'unknown' : kpi.avgHealth >= 80 ? 'up' : kpi.avgHealth >= 60 ? 'warning' : 'down';
+  // Which of DeviceKpiStrip's three states to render. `devices.error` is tested
+  // EXPLICITLY rather than inferred from `all.length === 0`: useApi keeps the
+  // last good `data` when a poll fails, so `error && data` is an errored poll
+  // AFTER a success and must keep the stale figures — only a first load that
+  // has never succeeded (`error && !data`) may fall back to em-dashes.
+  const kpiState: KpiState =
+    devices.loading && !devices.data ? 'loading'
+      : devices.error && !devices.data ? 'error'
+        : 'ready';
 
   const siteKeys = hasAgents
     ? agentGroups.flatMap((g) => groupBySite(g.devices).map((s) => `${g.key}::${s.key}`))
@@ -759,6 +947,12 @@ export default function DevicesPage() {
   // rewrites the manual state, so clearing the search restores whatever the user
   // had open themselves.
   const forceOpen = q.trim().length > 0;
+
+  // Where the page's single shared column header goes: immediately before the
+  // first group that is actually open, so it heads the rows it describes rather
+  // than a stack of collapsed site headers. -1 (nothing open) renders no header
+  // at all, which is the pre-existing rule.
+  const firstOpenIdx = pagedGroups.findIndex((g) => forceOpen || expandedSites.has(g.key));
 
   return (
     <div>
@@ -833,47 +1027,35 @@ export default function DevicesPage() {
       )}
 
       {/* KPI strip. Counted over the filtered set so it always agrees with the
-          "Showing N devices" line directly beneath it. */}
-      <div className="sv-cards" style={{ marginBottom: 12 }}>
-        <DeviceStatTile
-          variant="total" icon={<IconDevices width={20} height={20} />}
-          tint={{ bg: 'var(--surface-subtle)', fg: 'var(--text-secondary)' }}
-          value={kpi.total} label="DEVICES"
-          sub={kpi.avgAvail == null ? undefined : `${kpi.avgAvail.toFixed(2)}% avail (24h)`}
-        />
-        <DeviceStatTile
-          variant="up" icon={<IconArrowUp width={20} height={20} />}
-          tint={{ bg: 'var(--tint-success)', fg: 'var(--tint-success-fg)' }}
-          value={kpi.up} label="UP" sub={`${kpiPct(kpi.up)}% of devices`}
-        />
-        <DeviceStatTile
-          variant="down" icon={<IconArrowDown width={20} height={20} />}
-          tint={{ bg: 'var(--tint-danger)', fg: 'var(--tint-danger-fg)' }}
-          value={kpi.down} label="DOWN" sub={`${kpiPct(kpi.down)}% of devices`}
-        />
-        <DeviceStatTile
-          variant="warning" icon={<IconWarning width={20} height={20} />}
-          tint={{ bg: 'var(--tint-warn)', fg: 'var(--tint-warn-fg)' }}
-          value={kpi.warning} label="WARNING" sub={`${kpiPct(kpi.warning)}% of devices`}
-        />
-        <DeviceStatTile
-          variant={healthVariant} icon={<IconGauge width={20} height={20} />}
-          tint={{ bg: 'var(--tint-info)', fg: 'var(--tint-info-fg)' }}
-          value={kpi.avgHealth == null ? '—' : Math.round(kpi.avgHealth)}
-          label="AVG HEALTH"
-          sub={kpi.scored === 0 ? 'no scores yet' : `${kpi.degraded} graded D or F`}
-          title={kpi.scored === kpi.total
-            ? undefined
-            : `Averaged over the ${kpi.scored} of ${kpi.total} devices that have a health score.`}
-        />
-      </div>
+          "Showing N devices" line directly beneath it — and blank, never zero,
+          until there is a filtered set to count. */}
+      <DeviceKpiStrip kpi={kpi} state={kpiState} />
 
       {/* Result count + density + expand/collapse controls */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
+        {/* Same rule as the KPI strip above: "Showing 0 devices across 0 sites"
+            is a count, and there is nothing to count until the first load has
+            actually returned. */}
         <span className="sv-muted" style={{ fontSize: 'var(--text-sm)' }}>
-          Showing {visible.length.toLocaleString()} {visible.length === 1 ? 'device' : 'devices'} across{' '}
-          {siteCount.toLocaleString()} {siteCount === 1 ? 'site' : 'sites'}
+          {kpiState === 'loading' ? 'Loading devices…'
+            : kpiState === 'error' ? 'Device list unavailable'
+              : (
+                <>
+                  Showing {visible.length.toLocaleString()} {visible.length === 1 ? 'device' : 'devices'} across{' '}
+                  {siteCount.toLocaleString()} {siteCount === 1 ? 'site' : 'sites'}
+                </>
+              )}
         </span>
+        {/* Stated on the page, not left to a hover: an operator scrolling past
+            the cap sees the placeholder in the Latency column and needs the
+            reason in the same glance. Rendered only when the cap actually
+            bites, which needs more than SPARK_MAX_DEVICES devices on one page
+            of sites. */}
+        {sparkRequested && (
+          <span className="sv-muted" style={{ fontSize: 'var(--text-sm)' }}>
+            · {SPARK_CAP_NOTE}
+          </span>
+        )}
         <span style={{ flex: 1 }} />
         <DensityToggle density={density} onChange={changeDensity} />
         <button className="sv-btn ghost sm" onClick={expandAll}>Expand All</button>
@@ -884,8 +1066,14 @@ export default function DevicesPage() {
 
       <DeviceRowCtx.Provider value={rowCtxValue}>
       <div className="sv-dev-list" data-density={density}>
-      {devices.loading && !devices.data ? (
+      {kpiState === 'loading' ? (
         <div className="sv-panel" style={{ padding: 0 }}><TableSkeleton rows={6} cols={6} /></div>
+      ) : kpiState === 'error' ? (
+        // Nothing here: the ErrorBox directly above says what happened. The
+        // EmptyState below would otherwise claim "No monitored devices" and
+        // offer "+ Add Device" — the same invented all-clear the KPI strip used
+        // to publish, one element further down the page.
+        null
       ) : hasAgents ? (
         agentGroups.map((g) => (
           <AgentGroup
@@ -897,18 +1085,32 @@ export default function DevicesPage() {
         ))
       ) : pagedGroups.length ? (
         <>
-          {/* One column header for the whole page — only while a group is
+          {/* ONE column header for the whole page — never one per group (that
+              was the bug this design replaced: 7 sites repeated the full
+              9-column header 7 times). It is rendered only while a group is
               actually open, so a fully collapsed list isn't headed by columns
-              with nothing under them. */}
-          {pagedGroups.some((g) => forceOpen || expandedSites.has(g.key)) && (
-            <DeviceTableHeader showOs={showOs} sort={sort} onSort={onSort} />
-          )}
-          {pagedGroups.map((g) => (
-            <SiteAccordion
-              key={g.key} group={g}
-              open={forceOpen || expandedSites.has(g.key)}
-              onToggle={() => toggleSite(g.key)} showOs={showOs} sort={sort}
-            />
+              with nothing under them...
+              ...and it is emitted immediately BEFORE THE FIRST OPEN GROUP
+              rather than before the whole list. Sitting at the top of the list
+              it labelled whichever accordion happened to be first, open or not:
+              with only the last of 7 sites expanded the header sat at y=381 and
+              the first row it described at y=797 — 373px of six unrelated
+              collapsed site headers in between. Moving it next to the rows
+              costs nothing else: it is still a direct child of `.sv-dev-list`,
+              so its sticky containing block is still the whole list and it
+              still pins at the scrollport top for every group below it. Do NOT
+              move it inside the accordion to close the last ~49px (one site
+              header) — sticky would then unpin the moment that one group
+              scrolled past, leaving every group under it unheaded. */}
+          {pagedGroups.map((g, i) => (
+            <Fragment key={g.key}>
+              {i === firstOpenIdx && <DeviceTableHeader showOs={showOs} sort={sort} onSort={onSort} />}
+              <SiteAccordion
+                group={g}
+                open={forceOpen || expandedSites.has(g.key)}
+                onToggle={() => toggleSite(g.key)} showOs={showOs} sort={sort}
+              />
+            </Fragment>
           ))}
           {pageCount > 1 && (
             <SitePager
@@ -1001,6 +1203,10 @@ function AgentGroup({
   const offline = group.agentStatus === 'offline';
   const siteGroups = groupBySite(group.devices);
   const counts = countByStatus(group.devices);
+  // See the flat list's own `firstOpenIdx` — same rule, scoped to this agent.
+  const firstOpenIdx = siteGroups.findIndex(
+    (g) => forceOpen || expandedSites.has(`${group.key}::${g.key}`)
+  );
   return (
     <div className="sv-agent-group" style={{ marginBottom: 12 }}>
       <div
@@ -1042,18 +1248,22 @@ function AgentGroup({
         <div className="sv-agent-group-body" style={{ padding: 8 }}>
           {/* The shared column header lives inside the agent body so it lines up
               with this group's tables (the body is inset from the page). Still
-              one header for the whole group, never one per site. */}
-          {siteGroups.some((g) => forceOpen || expandedSites.has(`${group.key}::${g.key}`)) && (
-            <DeviceTableHeader showOs={showOs} sort={sort} onSort={onSort} />
-          )}
-          {siteGroups.map((g) => {
+              one header for the whole group, never one per site — and, exactly
+              as on the flat list, emitted immediately before the first OPEN
+              site rather than above the whole stack, so it never floats hundreds
+              of pixels above the rows it labels. It stays a direct child of the
+              agent body, so it still pins over every site under it. */}
+          {siteGroups.map((g, i) => {
             const k = `${group.key}::${g.key}`;
             return (
-              <SiteAccordion
-                key={k} group={g}
-                open={forceOpen || expandedSites.has(k)}
-                onToggle={() => onToggleSite(k)} showOs={showOs} sort={sort}
-              />
+              <Fragment key={k}>
+                {i === firstOpenIdx && <DeviceTableHeader showOs={showOs} sort={sort} onSort={onSort} />}
+                <SiteAccordion
+                  group={g}
+                  open={forceOpen || expandedSites.has(k)}
+                  onToggle={() => onToggleSite(k)} showOs={showOs} sort={sort}
+                />
+              </Fragment>
             );
           })}
         </div>
@@ -1233,6 +1443,7 @@ function DeviceRow({ device, showOs }: { device: Device; showOs: boolean }) {
           width={rowCtx.sizes.sparkW}
           height={rowCtx.sizes.sparkH}
           loading={rowCtx.sparksLoading && !rowCtx.sparks}
+          overCap={rowCtx.requested != null && !rowCtx.requested.has(device.id)}
         />
       </td>
       <td>

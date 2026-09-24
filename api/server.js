@@ -36,6 +36,22 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.114.2': [
+    'A site-restricted user could see other sites alerts on the dashboard trend chart. One query allowed any alert with no device attached, which covers every wireless, service and agent alert in the estate - so the chart returned 8,554 rows where 8,536 belonged to them.',
+    'The same user previously saw a dashboard that disagreed with itself: the headline said 0 active alerts while the panel beside it listed 20 critical ones, and acknowledging or resolving any of them did nothing. Four different rules decided which alerts belonged to a site; there is now one, and it covers access points and controllers, not just devices. That user now sees 24 active alerts consistently everywhere and can act on all of them.',
+    'The alert volume chart was quietly dropping its own oldest hour - up to four hours on the 7-day view - while the caption claimed to count the whole period. It also filed every non-critical alert as a warning, so the two charts of the same data disagreed.',
+    'The topology Force layout drew the network at a scale where nothing was legible: 52 devices spread over a canvas so large they occupied a third of one percent of it, and zooming all the way in did not help. It now fits the panel. The Tiered layout no longer runs off in one endless row.',
+    'The topology map only zooms when you hold Ctrl (or Cmd). Scrolling over it used to zoom instead of scrolling the page, which made the buttons underneath unreachable by the obvious gesture.',
+    'Run Discovery now actually refreshes the map when it finishes, and says what it found. It previously promised results "shortly" and then never updated anything until you reloaded the page.',
+    'Alerts can now be worked entirely from the keyboard. Pressing Space on a row checkbox used to navigate away instead of ticking it, and correlated groups could only be opened with a mouse, which put their contents out of reach entirely.',
+    'A correlated group saying "5 alerts" now says how many of those are still unresolved, because that is what its checkbox and its Ack button act on. Selecting a collapsed group also opens it, so the count in the action bar always matches rows you can see.',
+    'Clicking an hour on the alerts chart said "203" above a table showing 22 rows. It now states both, and what each one counts.',
+    'The devices summary row no longer reports 0 devices / 0 up / 0 down while the page is still loading, or permanently after the list fails to load.',
+    'The latency trend column now loads for the devices actually on screen. It used to pick the 400 lowest-numbered devices, so on a large estate whole pages of the list had no trend at all.',
+    'The devices column header sits with the rows it labels instead of up to 373 pixels above them.',
+    'The alert volume chart tooltip now uses the same 24-hour clock as the axis directly beneath it.',
+    'The "Public" badge on a map thumbnail was unreadable in dark mode - pale green on white, about a quarter of the contrast needed. Map thumbnails stay light by design because they show the map own background, so anything drawn over them now uses colours chosen for a light surface.',
+  ],
   '1.114.1': [
     'The row menu on the Services page was opening as a horizontal strip of plain grey browser buttons. It was missing the class that makes a dropdown a dropdown.',
     'Restored the sticky column header on the Alerts table. The horizontal-scroll wrapper added for the clipped-column fix quietly turned that wrapper into the thing the header sticks to - and it never scrolls vertically, so the header stopped sticking to anything.',
@@ -2292,30 +2308,26 @@ app.get('/api/dashboard/summary', wrap(async (req, res) => {
     `SELECT COUNT(*)::int AS c FROM monitored_devices WHERE active = TRUE AND current_status = 'agent_offline'${sc2 ? ` AND ${sc2}` : ''}`, p2);
   const total = counts.up + counts.down + counts.warning + counts.unknown;
   // Admin/viewer: count every active alert (original behavior). Site-scoped:
-  // only alerts on devices in the user's sites.
+  // every active alert OWNED by one of the user's sites — device, AP, service
+  // check or controller — via the one shared predicate (alertSiteScope). This
+  // used to be an INNER JOIN monitored_devices, i.e. device alerts only, which
+  // is why this card rendered a green "Nothing needs attention" (0 active / 0
+  // critical) directly beside a Noisiest panel listing 20 critical AP alerts
+  // for the same user: 26 of 27 active alerts hang off wireless_ap_id.
   // The severity split ships alongside the total because the dashboard Overview
   // needs it: wireless/AP alerts have no row in /api/dashboard/problems (they
   // aren't devices) and no correlated /api/dashboard/incidents entry, so the
   // total here is the only place the Overview can learn that anything is
-  // outstanding at all. Same predicates as the total — one query, no extra
-  // round trip, and the site-scoped branch stays scoped exactly as before.
-  let active;
-  if (siteFilter) {
-    const p3 = [siteFilter];
-    active = await sv.query(
-      `SELECT COUNT(*)::int AS c,
-              COUNT(*) FILTER (WHERE a.severity = 'critical')::int AS crit,
-              COUNT(*) FILTER (WHERE a.severity = 'warning')::int  AS warn
-         FROM alerts a
-         JOIN monitored_devices d ON d.id = a.device_id
-        WHERE a.status = 'active' AND d.site_id = ANY($1::int[])`, p3);
-  } else {
-    active = await sv.query(
-      `SELECT COUNT(*)::int AS c,
-              COUNT(*) FILTER (WHERE severity = 'critical')::int AS crit,
-              COUNT(*) FILTER (WHERE severity = 'warning')::int  AS warn
-         FROM alerts WHERE status = 'active'`);
-  }
+  // outstanding at all. One query serves both roles — the scoped fragments are
+  // empty strings for an admin.
+  const p3 = [];
+  const scope3 = alertSiteScope(siteFilter, p3);
+  const active = await sv.query(`
+    SELECT COUNT(*)::int AS c,
+           COUNT(*) FILTER (WHERE a.severity = 'critical')::int AS crit,
+           COUNT(*) FILTER (WHERE a.severity = 'warning')::int  AS warn
+      FROM alerts a${scope3.joins}
+     WHERE a.status = 'active'${scope3.where}`, p3);
   const agents = await sv.query(`
     SELECT COUNT(*)::int AS total,
            COUNT(*) FILTER (WHERE status = 'online')::int AS online
@@ -2424,7 +2436,13 @@ app.get('/api/dashboard/network-trend', wrap(async (req, res) => {
 app.get('/api/dashboard/alert-trend', wrap(async (req, res) => {
   const days = Math.min(90, Math.max(1, safeInt(req.query.days, 14)));
   const params = [days];
-  const sc = siteFilterClause(getSiteFilter(req), params, 'd.site_id');
+  // Site scoping is the shared alert predicate (see alertSiteScope). It used to
+  // be `d.site_id = ANY(...) OR a.device_id IS NULL`, which was not a scope at
+  // all for the 99% of rows that have no device_id: every OTHER site's
+  // wireless, service-check and agent alerts fell through the IS NULL branch
+  // into a site_admin's chart (measured: 8,554 rows returned for sites {31,35}
+  // against 8,536 genuinely theirs, out of 8,630 estate-wide).
+  const scope = alertSiteScope(getSiteFilter(req), params);
   const r = await sv.query(`
     -- Alias is "bucket", not "day": DAY is reserved in Postgres and a bare
     -- AS day is a syntax error.
@@ -2433,9 +2451,8 @@ app.get('/api/dashboard/alert-trend', wrap(async (req, res) => {
            COUNT(*) FILTER (WHERE a.severity = 'critical')::int AS critical,
            COUNT(*) FILTER (WHERE a.severity = 'warning')::int  AS warning,
            COUNT(*) FILTER (WHERE a.severity NOT IN ('critical','warning'))::int AS other
-      FROM alerts a
-      ${sc ? 'LEFT JOIN monitored_devices d ON d.id = a.device_id' : ''}
-     WHERE a.triggered_at >= NOW() - make_interval(days => $1)${sc ? ` AND (${sc} OR a.device_id IS NULL)` : ''}
+      FROM alerts a${scope.joins}
+     WHERE a.triggered_at >= NOW() - make_interval(days => $1)${scope.where}
      GROUP BY 1
      ORDER BY 1
   `, params);
@@ -2443,30 +2460,97 @@ app.get('/api/dashboard/alert-trend', wrap(async (req, res) => {
 }));
 
 // ── Site-scoping for the polymorphic `alerts` table ────────────────────────
-// `alerts` hangs off ONE of six nullable owner columns (device_id, agent_id,
-// service_check_id, wireless_ap_id, wireless_controller_id,
+// ONE definition of "an alert belongs to site X", used by every read AND every
+// write. `alerts` hangs off ONE of six nullable owner columns (device_id,
+// agent_id, service_check_id, wireless_ap_id, wireless_controller_id,
 // wireless_client_mac — see .ai-codex/schema.md), so a filter that joins only
-// `monitored_devices` scopes device alerts and lets every wireless/service
-// alert through UNSCOPED. That is not a corner case on a real estate: of the
-// last 7 days' alerts on the production box, 4,240 of 4,292 hang off an AP and
-// only 46 off a device. Resolve the row's site through whichever owner it
-// actually has and filter the COALESCE. An alert with no site at all (an
-// agent-scoped one) resolves to NULL and is therefore excluded — the
-// fail-closed direction for a site_admin.
-const ALERT_OWNER_JOINS = `
-      LEFT JOIN monitored_devices    d  ON d.id  = a.device_id
-      LEFT JOIN wireless_aps         wa ON wa.id = a.wireless_ap_id
-      LEFT JOIN service_checks       sc ON sc.id = a.service_check_id
-      LEFT JOIN wireless_controllers wc ON wc.id = a.wireless_controller_id
-      LEFT JOIN agents               ag ON ag.id = a.agent_id`;
+// `monitored_devices` scopes device alerts and either DROPS or LEAKS every
+// wireless/service alert. That is not a corner case on a real estate: of the
+// last 7 days' alerts on the production box, 4,213 of 4,249 hang off an AP and
+// only a handful off a device.
+//
+// THE RULE: an alert belongs to the site of its owner, resolved through the
+// chain below IN ORDER — device, AP, service check, controller (the four owner
+// tables that carry a site_id at all). The same expression decides what a
+// site_admin can SEE and what they can ACKNOWLEDGE/RESOLVE, so the dashboard,
+// the Alerts page and the write routes can no longer disagree.
+//
+// This replaced FOUR mutually inconsistent predicates (1.114.1 and earlier):
+// an INNER JOIN monitored_devices on /api/dashboard/summary, a LEFT JOIN
+// d.site_id on /api/dashboard/ops-summary, this COALESCE on the
+// histogram/noisiest/kpi-trends panels, and a device-OR-service pair on GET
+// /api/alerts + the ack/resolve writes. Measured for a site_admin holding
+// sites {31,35}: the summary card said 0 active / 0 critical while the
+// Noisiest panel beside it listed 20 critical AP alerts, and neither the
+// Alerts page nor ack/resolve could touch any of them (26 of 27 active alerts
+// hang off wireless_ap_id). All four now report 28 active / 20 critical.
+//
+// An alert that resolves to NO site (agent-scoped, wireless_client_mac-only,
+// or an owner row that has since lost its site) is deliberately INVISIBLE to a
+// site-scoped caller and UNWRITABLE by them: `NULL = ANY(...)` evaluates to
+// NULL, never TRUE, so it fails CLOSED. It is emphatically NOT promoted to
+// "visible to everyone" — that is the other tempting reading, and the one
+// /api/dashboard/alert-trend used to take with `OR a.device_id IS NULL`, which
+// handed a site_admin every OTHER site's wireless and service alerts. Only an
+// unscoped caller (admin/super_admin — getSiteFilter() returns null) sees or
+// acts on a site-less alert. 80 of 41,139 production rows are site-less today,
+// none of them active.
+//
+// `agents` is NOT part of the chain (it has no site_id of its own); it is
+// still LEFT JOINed by ALERT_OWNER_JOINS because /api/dashboard/noisiest needs
+// the agent NAME, not for scoping.
+const ALERT_SITE_OWNERS = [
+  { key: 'device',     table: 'monitored_devices',    alias: 'd',  fk: 'a.device_id',              cap: null },
+  { key: 'ap',         table: 'wireless_aps',         alias: 'wa', fk: 'a.wireless_ap_id',         cap: 'has_wireless' },
+  { key: 'service',    table: 'service_checks',       alias: 'sc', fk: 'a.service_check_id',       cap: 'has_service_check_id' },
+  { key: 'controller', table: 'wireless_controllers', alias: 'wc', fk: 'a.wireless_controller_id', cap: 'has_wireless' },
+];
 
-function alertSiteScope(siteFilter, params) {
-  if (!siteFilter || !siteFilter.length) return { joins: '', where: '' };
+// The standard owner joins + the aliases they expose, both derived from the one
+// list above so a new owner can never be added to the predicate and forgotten
+// in the joins (or vice versa).
+const ALERT_OWNER_JOINS = `${ALERT_SITE_OWNERS
+  .map((o) => `      LEFT JOIN ${o.table} ${o.alias} ON ${o.alias}.id = ${o.fk}`)
+  .join('\n')}
+      LEFT JOIN agents               ag ON ag.id = a.agent_id`;
+const ALERT_OWNER_ALIASES = ALERT_SITE_OWNERS.reduce((m, o) => { m[o.key] = o.alias; return m; }, {});
+
+// The site an alert resolves to, as a SQL expression over `alerts a`.
+//   `aliases` — owner key -> an alias the CALLER'S query already LEFT JOINs.
+//               An owner with no alias is resolved by a correlated sub-select
+//               instead, so the identical predicate also works in a statement
+//               that has no joins to hang a filter on (i.e. an UPDATE).
+//   `caps`    — getAlertCaps(); an owner whose column doesn't exist yet on this
+//               DB is dropped from the chain. Omit it to assume the full schema
+//               (what the dashboard aggregates have always done).
+// The two renderings were verified equivalent against the production table:
+// both selected exactly 40,772 of 41,139 rows for sites {31,35}, with zero
+// row-level disagreements.
+function alertSiteExpr(caps, aliases) {
+  const parts = ALERT_SITE_OWNERS
+    .filter((o) => !o.cap || !caps || caps[o.cap])
+    .map((o) => ((aliases && aliases[o.key])
+      ? `${aliases[o.key]}.site_id`
+      : `(SELECT ${o.alias}_s.site_id FROM ${o.table} ${o.alias}_s WHERE ${o.alias}_s.id = ${o.fk})`));
+  return parts.length === 1 ? parts[0] : `COALESCE(${parts.join(', ')})`;
+}
+
+// Bare WHERE fragment (no leading AND, no outer parens) for a site-scoped
+// caller; null when the caller is unscoped, in which case NO clause is added.
+function alertSiteWhere(siteFilter, params, opts) {
+  if (!siteFilter || !siteFilter.length) return null;
   params.push(siteFilter);
-  return {
-    joins: ALERT_OWNER_JOINS,
-    where: ` AND COALESCE(d.site_id, wa.site_id, sc.site_id, wc.site_id) = ANY($${params.length}::int[])`,
-  };
+  const o = opts || {};
+  return `${alertSiteExpr(o.caps, o.aliases)} = ANY($${params.length}::int[])`;
+}
+
+// Read form for a query that can take the standard owner joins: returns the
+// joins to splice in after `alerts a`, plus a ` AND <predicate>` fragment.
+// Both are empty strings for an unscoped caller, so the query is byte-identical
+// to the pre-RBAC one for an admin.
+function alertSiteScope(siteFilter, params) {
+  const where = alertSiteWhere(siteFilter, params, { aliases: ALERT_OWNER_ALIASES });
+  return where ? { joins: ALERT_OWNER_JOINS, where: ` AND ${where}` } : { joins: '', where: '' };
 }
 
 // ── Alert-volume histogram: 24h in 1h buckets, or 7d in 4h buckets ─────────
@@ -2491,13 +2575,25 @@ app.get('/api/dashboard/alert-histogram', wrap(async (req, res) => {
   // documented in .ai-codex/gotchas.md for the heartbeat UPDATE.
   const params = [bucketHours, hours];
   const scope = alertSiteScope(getSiteFilter(req), params);
+  // The window is BUCKET-ALIGNED, and the row filter uses the SAME lower bound
+  // the buckets are generated from (`bnd.lo`) — exactly what /api/alerts/volume
+  // does with its `bounds` CTE. It previously filtered `triggered_at >= NOW() -
+  // hours` while generating buckets from `date_bin(NOW()) - (hours -
+  // bucketHours)`: every row in the leading PARTIAL bucket binned BELOW the
+  // first generated bucket and was silently swallowed by the LEFT JOIN, so the
+  // chart (and the "N alerts in the last 24 hours" caption derived from it)
+  // undercounted its own window. Measured before the fix: 24h = 648 rows in the
+  // WHERE window but 637 charted; 7d = 4,249 in window, 4,207 charted — up to
+  // one whole bucket (4 hours) of history lost. Now charted == in-window by
+  // construction: 24 buckets covering 24h, 42 buckets covering 168h.
   const r = await sv.query(`
-    WITH b AS (
-      SELECT generate_series(
-               date_bin(make_interval(hours => $1::int), NOW(), TIMESTAMPTZ '2000-01-01')
-                 - make_interval(hours => ($2::int - $1::int)),
-               date_bin(make_interval(hours => $1::int), NOW(), TIMESTAMPTZ '2000-01-01'),
-               make_interval(hours => $1::int)) AS bucket
+    WITH bnd AS (
+      SELECT date_bin(make_interval(hours => $1::int), NOW(), TIMESTAMPTZ '2000-01-01') AS hi,
+             date_bin(make_interval(hours => $1::int), NOW(), TIMESTAMPTZ '2000-01-01')
+               - make_interval(hours => ($2::int - $1::int)) AS lo
+    ),
+    b AS (
+      SELECT generate_series(bnd.lo, bnd.hi, make_interval(hours => $1::int)) AS bucket FROM bnd
     )
     SELECT b.bucket,
            COUNT(x.id)::int AS total,
@@ -2508,8 +2604,8 @@ app.get('/api/dashboard/alert-histogram', wrap(async (req, res) => {
       LEFT JOIN (
         SELECT a.id, a.severity,
                date_bin(make_interval(hours => $1::int), a.triggered_at, TIMESTAMPTZ '2000-01-01') AS bucket
-          FROM alerts a${scope.joins}
-         WHERE a.triggered_at >= NOW() - make_interval(hours => $2::int)${scope.where}
+          FROM alerts a${scope.joins}, bnd
+         WHERE a.triggered_at >= bnd.lo${scope.where}
       ) x ON x.bucket = b.bucket
      GROUP BY 1
      ORDER BY 1
@@ -2761,20 +2857,17 @@ app.get('/api/dashboard/events', wrap(async (req, res) => {
     ? 'LEFT JOIN wireless_aps wap ON wap.id = a.wireless_ap_id LEFT JOIN wireless_controllers wctl ON wctl.id = a.wireless_controller_id'
     : '';
 
-  // RBAC: same device-or-service OR pattern as /api/alerts (Fix 6) — a
-  // service-check event has device_id = NULL so it must also be matched via
-  // the service check's own site (sc2.site_id) or a site_admin's dashboard
-  // silently drops every service-check event.
+  // RBAC: the shared alert-ownership predicate (see alertSiteScope), rendered
+  // against THIS query's own aliases — it already LEFT JOINs all four
+  // site-bearing owner tables, so no extra joins are needed. It used to be the
+  // narrower device-OR-service pair, which left a site_admin's feed showing 1
+  // of their 674 events in the last 24h because AP alerts matched neither leg.
   const params = [];
   const where = [`(a.triggered_at >= NOW() - INTERVAL '24 hours' OR a.resolved_at >= NOW() - INTERVAL '24 hours')`];
-  const siteFilter = getSiteFilter(req);
-  if (siteFilter && siteFilter.length) {
-    params.push(siteFilter);
-    const idx = params.length;
-    where.push(caps.has_service_check_id
-      ? `(d.site_id = ANY($${idx}::int[]) OR sc2.site_id = ANY($${idx}::int[]))`
-      : `d.site_id = ANY($${idx}::int[])`);
-  }
+  const eventScope = alertSiteWhere(getSiteFilter(req), params, {
+    caps, aliases: { device: 'd', ap: 'wap', service: 'sc2', controller: 'wctl' },
+  });
+  if (eventScope) where.push(eventScope);
 
   const r = await sv.query(`
     SELECT a.id, a.device_id, d.name AS device_name, d.site_id, d.site_name,
@@ -2802,19 +2895,22 @@ app.get('/api/dashboard/events', wrap(async (req, res) => {
 // MTTR/MTTA are averaged over the last 30 days. unacked_count = active alerts
 // never acknowledged. open_incidents guarded for DBs predating the incidents table.
 //
-// LEFT JOIN monitored_devices (not JOIN): alerts raised by the wireless
-// collector (AP down, rogue AP) or service checks have device_id = NULL — an
-// INNER JOIN here silently dropped every one of them from MTTR/MTTA and the
-// unacknowledged count, which is why the Dashboard's Unack'd tile could read
-// far lower than the Alerts page's own count (the Alerts list query already
-// uses LEFT JOIN). Site-filtering still applies via d.site_id when a filter is
-// active, so a device-less alert only drops out of a SITE-scoped view (it has
-// no device to attribute a site to) — the all-sites view now matches exactly.
+// Both queries scope with the shared alert predicate (see alertSiteScope), so
+// a site_admin's MTTR/MTTA/Unack'd tiles cover exactly the alerts their Alerts
+// page lists. They used to LEFT JOIN monitored_devices and filter on
+// `d.site_id`, which is a device-only scope: every AP/controller/service alert
+// has device_id = NULL, `NULL = ANY(...)` never matches, and the tiles read 0
+// for a site_admin (measured: unacked 0 vs 28 genuinely theirs, and an MTTR of
+// 5.2 min computed from a single device alert instead of 125.9 min across
+// their real alert set). The all-sites (admin) view is unaffected — the
+// predicate is omitted entirely for an unscoped caller.
 app.get('/api/dashboard/ops-summary', wrap(async (req, res) => {
   const siteFilter = getSiteFilter(req);
 
   const p1 = [];
-  const sc1 = siteFilterClause(siteFilter, p1, 'd.site_id');
+  const scope1 = alertSiteScope(siteFilter, p1);
+  // `WHERE TRUE` so the shared ` AND <predicate>` fragment can be appended
+  // unchanged; the fragment is an empty string for an unscoped caller.
   const agg = await sv.query(`
     SELECT
       ROUND(AVG(EXTRACT(EPOCH FROM (a.resolved_at - a.triggered_at)) / 60.0)
@@ -2823,18 +2919,16 @@ app.get('/api/dashboard/ops-summary', wrap(async (req, res) => {
       ROUND(AVG(EXTRACT(EPOCH FROM (a.acknowledged_at - a.triggered_at)) / 60.0)
             FILTER (WHERE a.acknowledged_at IS NOT NULL
                       AND a.acknowledged_at >= NOW() - INTERVAL '30 days')::numeric, 1) AS mtta_minutes
-    FROM alerts a
-    LEFT JOIN monitored_devices d ON d.id = a.device_id
-    ${sc1 ? `WHERE ${sc1}` : ''}
+    FROM alerts a${scope1.joins}
+    WHERE TRUE${scope1.where}
   `, p1);
 
   const p2 = [];
-  const sc2 = siteFilterClause(siteFilter, p2, 'd.site_id');
+  const scope2 = alertSiteScope(siteFilter, p2);
   const unack = await sv.query(`
     SELECT COUNT(*)::int AS c
-    FROM alerts a
-    LEFT JOIN monitored_devices d ON d.id = a.device_id
-    WHERE a.status = 'active' AND a.acknowledged_at IS NULL${sc2 ? ` AND ${sc2}` : ''}
+    FROM alerts a${scope2.joins}
+    WHERE a.status = 'active' AND a.acknowledged_at IS NULL${scope2.where}
   `, p2);
 
   let openIncidents = 0;
@@ -4831,18 +4925,19 @@ app.get('/api/alerts', wrap(async (req, res) => {
     ? 'LEFT JOIN wireless_aps wap ON wap.id = a.wireless_ap_id LEFT JOIN wireless_controllers wctl ON wctl.id = a.wireless_controller_id'
     : '';
 
-  // RBAC: a service-check alert has device_id = NULL (so d.site_id is NULL and
-  // `NULL = ANY(...)` never matches) — scope via the service check's own site
-  // too (sc2.site_id, only joined when caps.has_service_check_id) and OR the
-  // two paths so device alerts AND service alerts both pass for a site_admin.
+  // RBAC: the shared alert-ownership predicate (see alertSiteScope), rendered
+  // against the aliases this query already LEFT JOINs. It used to be a
+  // device-OR-service pair, so every AP/controller alert matched neither leg
+  // and a site_admin's Alerts page listed 0 rows while the dashboard's Noisiest
+  // panel showed 20 critical AP alerts at their own sites. An owner table whose
+  // column doesn't exist yet on this DB is dropped from the chain by `caps`,
+  // which is also why the alias map can safely name joins that are themselves
+  // caps-conditional (`sc2`, `wap`, `wctl`).
   const siteFilter = getSiteFilter(req);
-  if (siteFilter && siteFilter.length) {
-    params.push(siteFilter);
-    const idx = params.length;
-    where.push(caps.has_service_check_id
-      ? `(d.site_id = ANY($${idx}::int[]) OR sc2.site_id = ANY($${idx}::int[]))`
-      : `d.site_id = ANY($${idx}::int[])`);
-  }
+  const scopeWhere = alertSiteWhere(siteFilter, params, {
+    caps, aliases: { device: 'd', ap: 'wap', service: 'sc2', controller: 'wctl' },
+  });
+  if (scopeWhere) where.push(scopeWhere);
 
   const rows = await sv.query(`
     SELECT a.id, a.device_id, d.name AS device_name, d.ip_address,
@@ -4868,24 +4963,26 @@ app.get('/api/alerts', wrap(async (req, res) => {
 }));
 
 // Site-scope predicate for a WRITE against `alerts` (aliased `a`). The read
-// endpoint above scopes through its own LEFT JOINs; an UPDATE has no joins to
-// hang the filter on, so the same two paths (device site OR service-check
-// site) are expressed as EXISTS sub-selects instead. Returns null for an
-// unscoped caller (admin/super_admin — getSiteFilter already decided that),
-// in which case the caller adds no clause at all.
-// Deliberately mirrors GET /api/alerts exactly, INCLUDING the consequence that
-// an alert with neither a device nor a service check (wireless AP/controller/
-// client, agent) matches nothing for a site_admin: those rows are already
-// invisible to them on the read side, so allowing the write would let them act
-// on something they cannot see.
+// endpoints scope through the LEFT JOINs they already have; an UPDATE has no
+// joins to hang a filter on, so the SAME predicate is rendered with correlated
+// sub-selects instead (alertSiteExpr with no alias map). Returns null for an
+// unscoped caller (admin/super_admin — getSiteFilter already decided that), in
+// which case the caller adds no clause at all.
+//
+// Read and write are now the same rule by construction: what a site_admin can
+// SEE on their Alerts page is exactly what they can acknowledge/resolve. This
+// used to be a narrower device-OR-service-check pair, justified by a comment
+// arguing that AP/controller/agent alerts "are already invisible to them on the
+// read side". That premise stopped being true when the dashboard's Noisiest and
+// histogram panels started surfacing them (they scope through the wide
+// predicate), leaving a site_admin looking at 20 critical AP alerts at their own
+// sites with no row for them on the Alerts page and an ack/resolve that matched
+// 0 rows. Widening the write is deliberate and is EXACTLY scoped: a site-less
+// alert (agent-scoped, client-mac-only) still resolves to NULL and is still
+// unwritable by any site-scoped caller.
 function alertWriteSiteClause(siteFilter, params, caps) {
-  if (!siteFilter || !siteFilter.length) return null;
-  params.push(siteFilter);
-  const i = params.length;
-  const svc = caps.has_service_check_id
-    ? ` OR EXISTS (SELECT 1 FROM service_checks sc WHERE sc.id = a.service_check_id AND sc.site_id = ANY($${i}::int[]))`
-    : '';
-  return `(EXISTS (SELECT 1 FROM monitored_devices d WHERE d.id = a.device_id AND d.site_id = ANY($${i}::int[]))${svc})`;
+  const where = alertSiteWhere(siteFilter, params, { caps });
+  return where ? `(${where})` : null;
 }
 
 app.post('/api/alerts/:id/acknowledge', wrap(async (req, res) => {
@@ -5033,7 +5130,17 @@ app.post('/api/alerts/bulk-resolve', wrap(async (req, res) => {
 // status=active. Every bucket in the window is emitted (generate_series LEFT
 // JOIN), so a quiet hour renders as a real zero rather than a missing bar and
 // the x-axis is evenly spaced.
-// Site-scoped with the same predicate as the write routes above.
+// Site-scoped with the same predicate as every other alert surface.
+//
+// Severity buckets match /api/dashboard/alert-histogram exactly:
+// critical / warning / other, plus a `total` so a caller never has to re-derive
+// it by summing (and silently lose a severity it doesn't know about). `warning`
+// used to be `severity <> 'critical'`, i.e. EVERYTHING non-critical, so the 4
+// `info` rows in production were drawn as warnings here while the dashboard's
+// histogram of the same data put them in `other` — two charts, one dataset,
+// different answers. NOTE: a consumer that computes its own total as
+// `critical + warning` now undercounts by the `other` count; the Alerts page
+// strip does exactly that and needs a matching frontend change.
 app.get('/api/alerts/volume', wrap(async (req, res) => {
   const hours = safeInt(req.query.hours, 24, 168);
   const caps = await getAlertCaps();
@@ -5048,14 +5155,18 @@ app.get('/api/alerts/volume', wrap(async (req, res) => {
     hits AS (
       SELECT date_trunc('hour', a.triggered_at) AS h,
              COUNT(*) FILTER (WHERE a.severity = 'critical') AS critical,
-             COUNT(*) FILTER (WHERE a.severity <> 'critical') AS warning
+             COUNT(*) FILTER (WHERE a.severity = 'warning')  AS warning,
+             COUNT(*) FILTER (WHERE a.severity NOT IN ('critical','warning')) AS other,
+             COUNT(*) AS total
         FROM alerts a, bounds b
        WHERE a.triggered_at >= b.lo${scope ? ' AND ' + scope : ''}
        GROUP BY 1
     )
     SELECT s.h AS hour,
            COALESCE(x.critical, 0)::int AS critical,
-           COALESCE(x.warning, 0)::int  AS warning
+           COALESCE(x.warning, 0)::int  AS warning,
+           COALESCE(x.other, 0)::int    AS other,
+           COALESCE(x.total, 0)::int    AS total
       FROM slots s LEFT JOIN hits x ON x.h = s.h
      ORDER BY s.h
   `, params);

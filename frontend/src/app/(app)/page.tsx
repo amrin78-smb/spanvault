@@ -249,6 +249,20 @@ function hhmm(ts: string): string {
   if (isNaN(d.getTime())) return '';
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
+// Date + 24-HOUR clock, for a chart whose own axis labels are built by hand as
+// `getHours()`-padded 24-hour strings (the alert histogram). `fmtTime` renders
+// `toLocaleString()`, which on an en-US locale is 12-hour — so a tooltip using
+// it read "9/24/2026, 5:00:00 PM" directly above an axis tick reading "17:00"
+// and a caption reading "peak 203 at 17:00". Same construction as those axis
+// labels (`getHours()` + padStart), so the three can never disagree again.
+// Not `hour12: false` on toLocaleTimeString: that is still locale-dependent and
+// can yield a 24:00 hour cycle on some locales, which the axis never prints.
+function stamp24(ts: string): string {
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return '';
+  const hm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  return `${d.toLocaleDateString()}, ${hm}`;
+}
 // Availability now vs ~1h ago (two 30-min buckets back) → trend signal.
 function availTrend(points: TrendPoint[] | null | undefined): 'up' | 'down' | 'flat' | null {
   if (!points) return null;
@@ -1453,7 +1467,9 @@ function AlertHistogramCard({ api, win, onWin, height }: {
   const peak = points.reduce((m, p) => (p.total > m.total ? p : m), { total: -1, bucket: '' } as HistogramPoint);
   // Deliberately NOT hhmm() — that renders locale 12-hour ("05:00 PM") while
   // this chart's own axis is 24-hour, and a summary line disagreeing with the
-  // axis right beneath it is worse than no summary line.
+  // axis right beneath it is worse than no summary line. The card's THIRD clock
+  // — the hover tooltip — was missed when this was written and read 12-hour
+  // until it was moved onto stamp24; all three are 24-hour now.
   const peakLabel = peak.total > 0
     ? data.find((d) => d.full === peak.bucket)?.label || ''
     : '';
@@ -1481,7 +1497,10 @@ function AlertHistogramCard({ api, win, onWin, height }: {
                 <XAxis dataKey="label" tick={{ fontSize: 11 }} interval="preserveStartEnd" minTickGap={18}
                   tickLine={false} axisLine={false} />
                 <YAxis tick={{ fontSize: 11 }} allowDecimals={false} tickLine={false} axisLine={false} />
-                <Tooltip {...CHART_TOOLTIP} labelFormatter={(_l, p: any) => (p && p[0] ? fmtTime(String(p[0].payload.full)) : '')} />
+                {/* stamp24, never fmtTime: this chart's axis and its caption
+                    are both 24-hour, and a 12-hour tooltip over them was three
+                    clocks on one card. See stamp24's own note. */}
+                <Tooltip {...CHART_TOOLTIP} labelFormatter={(_l, p: any) => (p && p[0] ? stamp24(String(p[0].payload.full)) : '')} />
                 <Legend wrapperStyle={{ fontSize: 11 }} />
                 {/* Critical sits at the BOTTOM of the stack so it always starts
                     from the same baseline and stays comparable bar to bar. */}

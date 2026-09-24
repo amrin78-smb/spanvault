@@ -232,6 +232,15 @@ function MapStatTile({ icon, value, label, sub, variant, tint }: {
 // on its own stored `bg_color`, which is user data and does not flip with the
 // theme, so the ink on top of it must not flip either. Node fills come from the
 // shared statusFill() helper rather than being spelled out.
+//
+// The no-bg_color fallback is `var(--canvas-light)` — the same token the card's
+// .thumb container falls back to, so a map without a stored colour gets ONE
+// background, not two different ones in dark mode. --canvas-light has no dark
+// override on purpose. Because that makes the thumbnail a LIGHT island inside a
+// possibly-dark page, the container also carries `.sv-canvas-light`, which pins
+// the --tint-*/--text-* tokens to their light values for everything layered on
+// top (the Public and "N down" badges, the empty-map glyph) — without it those
+// badges resolve dark-mode tints over near-white and read at 1.2:1.
 function thumbFill(s: string): string {
   // An unlinked (label-only) node has real geometry but no live status — draw
   // it in the same muted grey statusFill uses for a suppressed node.
@@ -270,7 +279,7 @@ function MapThumb({ map }: { map: MapSummary }) {
       role="img"
       aria-label={`${map.name} preview — ${nodes.length} node${nodes.length === 1 ? '' : 's'}`}
     >
-      <rect x={0} y={0} width={w} height={h} fill={map.bg_color || '#f8fafc'} />
+      <rect x={0} y={0} width={w} height={h} style={{ fill: map.bg_color || 'var(--canvas-light)' }} />
       {shapes.map((s, i) => (
         <rect key={`s${i}`} x={s.x} y={s.y} width={s.w} height={s.h} rx={u * 2}
           fill="none" stroke="#94a3b8" strokeOpacity={0.55} strokeWidth={u}
@@ -331,8 +340,8 @@ function MapCard({
     <div className="sv-map-card">
       <a
         href={`/maps/${map.id}`}
-        className="thumb"
-        style={{ background: map.bg_color || 'var(--bg-primary)', height: 150, padding: 6, textDecoration: 'none' }}
+        className="thumb sv-canvas-light"
+        style={{ background: map.bg_color || 'var(--canvas-light)', height: 150, padding: 6, textDecoration: 'none' }}
         title={`Open ${map.name}`}
       >
         <MapThumb map={map} />

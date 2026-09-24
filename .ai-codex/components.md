@@ -134,3 +134,6 @@ Currently used by `(app)/services/page.tsx` (9 cols) and `(app)/alerts/page.tsx`
   OPAQUE equivalent of `.sv-table`'s th / row-hover surface (`rgba(255,255,255,0.03)`
   over `--bg-card` in dark). Use it for any sticky cell that would otherwise inherit
   that translucent tint.
+
+## Always-light canvas (shared CSS, globals.css) — `--canvas-light` + `.sv-canvas-light`
+A map canvas paints the map's own stored `bg_color` (user data that must NOT flip with the theme) and draws dark ink into it, so it is a LIGHT island inside a possibly-dark page: use the token `--canvas-light` (`:root` only, deliberately no `[data-theme="dark"]` override) for that surface instead of a bare `#f8fafc`/`--surface-subtle`, and put `.sv-canvas-light` on the element so the `--tint-*`/`--text-*` tokens are re-pinned to their light values for everything layered on top — overlay badges then keep using the NORMAL tokens (`.sv-map-public` reads 4.79:1 over the /maps thumbnail and still 10.9:1 where the same class sits on page chrome in `/maps/[id]`; before the island it was 1.20:1). Used by `(app)/maps/page.tsx` (thumbnail container + the `<rect>` fallback, which must match it); `(app)/topology/page.tsx`'s hardcoded `'#f8fafc'` canvas should adopt `var(--canvas-light)` too.
