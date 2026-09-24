@@ -662,10 +662,28 @@ export default function AlertsPage() {
   const allPageSelected = selectableOnPage.length > 0 && selectableOnPage.every((id) => selected.has(id));
   // Selection survives the 15s poll (ids are stable), but an alert that has
   // since been resolved elsewhere must not stay counted in the bulk bar.
+  //
+  // Derived from `filtered`, NOT from the raw `all` fetch. Selecting rows and
+  // then narrowing the filters used to leave the bar offering to resolve alerts
+  // the table was no longer showing — at the extreme, "Resolve 27" over an
+  // empty "All clear" table. Acting only on what the current filters match
+  // means the count beside the buttons is always something on screen (or one
+  // page away), never a ghost.
+  const filteredIds = useMemo(() => new Set(filtered.map((a) => a.id)), [filtered]);
   const selectedAlerts = useMemo(
-    () => all.filter((a) => selected.has(a.id) && a.status !== 'resolved'),
-    [all, selected],
+    () => filtered.filter((a) => selected.has(a.id) && a.status !== 'resolved'),
+    [filtered, selected],
   );
+  // Drop ids that the current filters exclude, so the checkbox state and the
+  // bulk count cannot drift apart across a filter change.
+  useEffect(() => {
+    setSelected((prev) => {
+      if (prev.size === 0) return prev;
+      const next = new Set<number>();
+      prev.forEach((id) => { if (filteredIds.has(id)) next.add(id); });
+      return next.size === prev.size ? prev : next;
+    });
+  }, [filteredIds]);
   const selAckable = selectedAlerts.filter((a) => a.status === 'active').length;
   const selResolvable = selectedAlerts.filter((a) => a.status !== 'resolved' && a.status !== 'suppressed').length;
 

@@ -356,16 +356,6 @@ const DEVICE_SORT: Record<string, (d: Device) => unknown> = {
 // untouched, so compact mode cannot pull a group table out of line with the
 // shared sticky header — the widths are the same in both densities, only the row
 // HEIGHT differs.
-const DENSITY_CSS = `
-.sv-dev-list[data-density="compact"] .sv-table td { padding: 5px 10px; }
-.sv-dev-list[data-density="compact"] .sv-table th { padding: 7px 10px; }
-.sv-dev-list[data-density="compact"] .sv-dev-sub { display: none; }
-.sv-dev-list[data-density="compact"] .sv-acc { margin-bottom: 8px !important; }
-`;
-
-function DeviceDensityStyles() {
-  return <style>{DENSITY_CSS}</style>;
-}
 
 // ── Density toggle ─────────────────────────────────────────────
 // Uses the suite's existing `.segmented` control so it reads as the same family
@@ -439,9 +429,11 @@ function LatencySpark({ series, currentMs, width, height, loading }: {
   // Positive readings only drive the scale: a 0 means "down", not "0 ms", and
   // flattening the scale onto it would squash every real reading against the top.
   const vals = (series || []).filter((v): v is number => v != null && v > 0);
-  const hasLine = vals.length >= 2;
+  const hasLine = vals.length >= 2;   // enough readings to form a line at all
 
   let path: string[] = [];
+  const pts: { x: number; y: number }[] = [];
+  let drawn = false;
   let downX: number[] = [];
   let lastPt: { x: number; y: number } | null = null;
   let min = 0; let max = 0; let avg = 0;
@@ -465,17 +457,36 @@ function LatencySpark({ series, currentMs, width, height, loading }: {
       if (v == null) { open = false; continue; }
       const y = yOf(v);
       path.push(`${open ? 'L' : 'M'}${x.toFixed(1)} ${y.toFixed(1)}`);
+      if (open) drawn = true;      // an L means a real segment exists
+      pts.push({ x, y });
       open = true;
       lastPt = { x, y };
     }
   }
+  // A series whose samples never land in two ADJACENT hours produces a path of
+  // nothing but moveto commands — SVG draws none of it, and `hasLine` being
+  // true also suppressed the "no history" placeholder, so an intermittently
+  // polled device rendered a completely empty cell. When there are points but
+  // no joined segment, connect them directly: the gaps are already reported in
+  // the tooltip, and a sparse line is honest where a blank cell is not.
+  if (!drawn && pts.length >= 2) {
+    path = pts.map((pt, i) => `${i ? 'L' : 'M'}${pt.x.toFixed(1)} ${pt.y.toFixed(1)}`);
+  }
+  // A single sample is a real reading, not "no data" — mark it so the dashed
+  // placeholder does not claim the device has no history at all.
+  const singlePoint = pts.length === 1;
 
   const downHours = (series || []).filter((v) => v === 0).length;
   const gapHours = (series || []).filter((v) => v == null).length;
   const tip = !series
     ? 'No response-time history for this device'
     : [
-        `Response time, last 24h — min ${min.toFixed(1)} ms, avg ${avg.toFixed(1)} ms, max ${max.toFixed(1)} ms`,
+        // Only state figures when there is something to compute them from.
+        // min/max/avg initialise to 0, so an all-null or all-down series used to
+        // report a confident "min 0.0 ms, avg 0.0 ms, max 0.0 ms".
+        vals.length
+          ? `Response time, last 24h — min ${min.toFixed(1)} ms, avg ${avg.toFixed(1)} ms, max ${max.toFixed(1)} ms`
+          : 'Response time, last 24h — no successful samples',
         downHours ? `${downHours} hour${downHours === 1 ? '' : 's'} down` : null,
         gapHours ? `${gapHours} hour${gapHours === 1 ? '' : 's'} with no samples` : null,
       ].filter(Boolean).join(' · ');
@@ -488,7 +499,7 @@ function LatencySpark({ series, currentMs, width, height, loading }: {
         role="img" aria-label={tip}
       >
         <title>{tip}</title>
-        {hasLine && (
+        {hasLine && path.length > 1 && (
           <path
             d={path.join(' ')} fill="none" stroke="var(--tint-info-fg)"
             strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"
@@ -498,7 +509,7 @@ function LatencySpark({ series, currentMs, width, height, loading }: {
           <rect key={i} x={x - 0.75} y={height - 3} width="1.5" height="3" fill="var(--sv-down)" />
         ))}
         {lastPt && <circle cx={lastPt.x} cy={lastPt.y} r="1.8" fill="var(--tint-info-fg)" />}
-        {!hasLine && !downX.length && !loading && (
+        {!hasLine && !downX.length && !singlePoint && !loading && (
           <line
             x1="1" y1={height / 2} x2={width - 1} y2={height / 2}
             stroke="var(--border)" strokeWidth="1" strokeDasharray="2 2"
@@ -872,6 +883,7 @@ export default function DevicesPage() {
       {devices.error && <ErrorBox message={devices.error} />}
 
       <DeviceRowCtx.Provider value={rowCtxValue}>
+      <div className="sv-dev-list" data-density={density}>
       {devices.loading && !devices.data ? (
         <div className="sv-panel" style={{ padding: 0 }}><TableSkeleton rows={6} cols={6} /></div>
       ) : hasAgents ? (
@@ -919,6 +931,7 @@ export default function DevicesPage() {
           />
         </div>
       )}
+      </div>
       </DeviceRowCtx.Provider>
 
       {showForm && (
@@ -1199,7 +1212,7 @@ function DeviceRow({ device, showOs }: { device: Device; showOs: boolean }) {
           <>
             <div>{vendor}</div>
             {device.nv_model && (
-              <div className="sv-muted" style={{ fontSize: 'var(--text-xs)' }}>{device.nv_model}</div>
+              <div className="sv-muted sv-dev-sub" style={{ fontSize: 'var(--text-xs)' }}>{device.nv_model}</div>
             )}
           </>
         ) : <span className="sv-muted">—</span>}
@@ -1226,7 +1239,7 @@ function DeviceRow({ device, showOs }: { device: Device; showOs: boolean }) {
         {device.last_alert_at ? (
           <>
             <div style={{ color: 'var(--tint-warn-fg)' }}>{alertLabel(device.last_alert_type)}</div>
-            <div className="sv-muted" style={{ fontSize: 'var(--text-xs)' }}>{fmtRel(device.last_alert_at)}</div>
+            <div className="sv-muted sv-dev-sub" style={{ fontSize: 'var(--text-xs)' }}>{fmtRel(device.last_alert_at)}</div>
           </>
         ) : <span className="sv-muted">—</span>}
       </td>

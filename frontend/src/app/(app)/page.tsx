@@ -546,6 +546,13 @@ export default function DashboardPage() {
         {(() => {
           // Still loading any of the three feeds → decide nothing yet.
           if (problems.data == null || incidents.data == null || agentOffline.data == null || !s) return null;
+          // An ERRORED feed is not an empty one. useApi keeps the last good
+          // `data` on failure, so after one success a later 500 leaves `[]`
+          // sitting there — and this card would then announce "nothing needs
+          // attention" directly beneath a red error box, from a feed it could
+          // not read. Saying nothing is the honest outcome: the ErrorBox above
+          // is already telling the operator what failed.
+          if (problems.error || incidents.error || agentOffline.error || summary.error) return null;
           // A self-hiding card above is already showing real content.
           if (problems.data.length > 0 || incidents.data.length > 0 || agentOffline.data.length > 0) return null;
           if (s.active_alerts > 0) {

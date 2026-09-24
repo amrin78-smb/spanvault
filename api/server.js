@@ -36,6 +36,19 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.114.0': [
+    'A six-way review of everything built this week found ten serious defects. All ten are fixed here.',
+    'SECURITY: the wireless controller list was still handing out a device SNMP community string in plain text, to any signed-in user including read-only ones. Last release stripped those credentials from the device endpoints, but this one reached around that by joining the device table from a different direction. It is now masked the same way, and saving a controller without retyping the credential keeps the stored one.',
+    'SECURITY: a site-restricted user could create a scheduled report covering the whole estate and have it emailed to themselves, and could repoint an existing estate-wide report at their own address. Reading such a report stays allowed, as designed; creating or editing one no longer is.',
+    'Testing SNMP from the device edit dialog always failed, on healthy devices. The dialog now hydrates credentials as a mask, and the mask itself was what got probed. It now resolves back to the stored credential for any field the user has not retyped.',
+    'Acknowledging or resolving more than 500 alerts at once silently discarded everything past the 500th while reporting complete success. The overflow is now reported back as skipped.',
+    'The alerts bulk bar could act on alerts the table was no longer showing - select some, narrow the filters, and it would still offer to resolve them. The selection now follows what the filters actually match.',
+    'The dashboard could show the green all-clear card directly beneath a red error box: a failed request leaves the last good data in place, and the card read that as "no problems". It now stays silent when any of its inputs failed.',
+    'The devices density switch only changed two icon sizes - the rules that make rows shorter were written against a wrapper that was never put on the page.',
+    'A device polled intermittently drew a completely blank latency graph, and a device with no successful samples claimed "min 0.0 ms, avg 0.0 ms" in its tooltip.',
+    'Reports stated "13 devices across 51 sites currently monitored". Only 7 sites have a monitored device; the count came from the full site list.',
+    'Applying topology to a map deletes that map existing connections first. Whether that was safe was decided only by a disabled button in the browser, so a direct or replayed request could empty a map and put nothing back. The server now refuses when there is nothing to apply.',
+  ],
   '1.113.7': [
     'Dropdowns and text boxes were cutting off the bottom of their own text. Any control that asked for a specific height got it, but kept the 9 pixels of padding above and below meant for an unsized one - which left 12 pixels of room for 13-pixel text. The size of these controls is now set as a height rather than as padding, so a shorter control still has room for its text. Unsized controls are unchanged, down to the pixel.',
     'This affected about a dozen controls across the app, not only the Alerts filters where it was reported.',
@@ -3227,6 +3240,33 @@ app.use('/api/devices', wrap(async (req, res, next) => {
 // default, and silently overwrite a real community string on the next save.
 const DEVICE_SECRET_COLUMNS = ['snmp_community', 'snmp_v3_auth_pass', 'snmp_v3_priv_pass'];
 const CRED_MASK = '********';
+// Masks the SNMP secret columns on any row that carries them, for rows that are
+// NOT a monitored_devices row (the wireless controller list joins them in).
+// Same contract as publicDevice(): CRED_MASK for a caller who may write, absent
+// for a read-only viewer, plus a has_* boolean either way.
+// A submitted secret equal to CRED_MASK is the placeholder we sent out, never a
+// real value — treat it as "not supplied" so it can never be written to the DB.
+function unmask(val) { return val === CRED_MASK ? null : val; }
+function hasMaskedSecret(body) {
+  return DEVICE_SECRET_COLUMNS.some((c) => body[c] === CRED_MASK);
+}
+
+function publicSnmpFields(row, req) {
+  if (!row) return row;
+  const out = {};
+  for (const key of Object.keys(row)) {
+    if (!DEVICE_SECRET_COLUMNS.includes(key)) out[key] = row[key];
+  }
+  const canWrite = userRank(req) > 0;
+  for (const col of DEVICE_SECRET_COLUMNS) {
+    if (!(col in row)) continue;
+    const isSet = row[col] != null && String(row[col]) !== '';
+    out[`has_${col}`] = isSet;
+    if (isSet && canWrite) out[col] = CRED_MASK;
+  }
+  return out;
+}
+
 function publicDevice(row, req) {
   if (!row) return row;
   const out = {};
@@ -3571,9 +3611,9 @@ app.post('/api/devices', wrap(async (req, res) => {
     RETURNING *
   `, [
     b.name, b.ip_address, b.device_type || null, b.site_id || null, b.site_name || null,
-    b.snmp_enabled || false, b.snmp_version || '2c', b.snmp_community || 'public',
-    safeInt(b.snmp_port, 161), b.snmp_v3_user || null, b.snmp_v3_auth_pass || null,
-    b.snmp_v3_priv_pass || null, safeInt(b.poll_interval_seconds, 300),
+    b.snmp_enabled || false, b.snmp_version || '2c', unmask(b.snmp_community) || 'public',
+    safeInt(b.snmp_port, 161), b.snmp_v3_user || null, unmask(b.snmp_v3_auth_pass) || null,
+    unmask(b.snmp_v3_priv_pass) || null, safeInt(b.poll_interval_seconds, 300),
     safeInt(b.ping_threshold_ms, 500), safeInt(b.ping_failures_before_down, 3),
   ]);
   if (!r.rows[0]) return res.status(409).json({ error: 'A device with this IP is already monitored' });
@@ -4174,14 +4214,32 @@ app.post('/api/devices/:id/snmp-test', wrap(async (req, res) => {
 app.post('/api/snmp-test-adhoc', wrap(async (req, res) => {
   const b = req.body || {};
   if (!b.ip_address) return res.status(400).json({ error: 'ip_address required' });
+  // The edit dialog hydrates its credential fields from a MASKED GET, and tests
+  // "whatever is currently in the form" — so an untouched field arrives here as
+  // CRED_MASK. Probing that literally made Test SNMP report "wrong community
+  // string" on every healthy device. When the caller names a device they are
+  // allowed to see, resolve any masked field back to the stored value; a field
+  // the user actually retyped is never a mask and is tested as given.
+  let stored = null;
+  const devId = parseInt(b.device_id, 10);
+  if (Number.isInteger(devId) && devId > 0 && hasMaskedSecret(b)) {
+    const params = [devId];
+    const sc = siteFilterClause(getSiteFilter(req), params, 'site_id');
+    const r = await sv.query(
+      `SELECT snmp_community, snmp_v3_auth_pass, snmp_v3_priv_pass
+         FROM monitored_devices WHERE id = $1${sc ? ` AND ${sc}` : ''}`, params);
+    stored = r.rows[0] || null;
+    if (!stored) return res.status(404).json({ error: 'Device not found' });
+  }
+  const resolve = (val, col) => (val === CRED_MASK && stored ? stored[col] : unmask(val));
   const dev = {
     ip_address: b.ip_address,
     snmp_version: b.snmp_version || '2c',
-    snmp_community: b.snmp_community || 'public',
+    snmp_community: resolve(b.snmp_community, 'snmp_community') || 'public',
     snmp_port: safeInt(b.snmp_port, 161),
     snmp_v3_user: b.snmp_v3_user || null,
-    snmp_v3_auth_pass: b.snmp_v3_auth_pass || null,
-    snmp_v3_priv_pass: b.snmp_v3_priv_pass || null,
+    snmp_v3_auth_pass: resolve(b.snmp_v3_auth_pass, 'snmp_v3_auth_pass') || null,
+    snmp_v3_priv_pass: resolve(b.snmp_v3_priv_pass, 'snmp_v3_priv_pass') || null,
   };
   res.json(await snmpTest(dev, 10000));
 }));
@@ -4878,20 +4936,32 @@ app.post('/api/alerts/:id/resolve', wrap(async (req, res) => {
 // nonexistent are all reported back as `skipped` rather than failing the
 // batch — a partial result the UI can state honestly.
 const BULK_ALERT_MAX = 500;
+// Returns { ids, overflow }. The cap used to `break` out of the loop and the
+// caller then derived `skipped` from the TRUNCATED array, so ids past the 500th
+// appeared in neither `updated` nor `skipped` — the UI saw an empty `skipped`,
+// took the success branch, reported "Resolved 500 alerts" and cleared the
+// selection while the rest stayed open with nothing to say so. The overflow is
+// now returned separately and reported back as skipped, so a partial batch can
+// never read as a complete one.
+// A malformed id is also rejected outright rather than silently coerced:
+// parseInt('999999991abc') is 999999991, a DIFFERENT but perfectly valid alert.
 function parseBulkIds(body) {
   const raw = body && Array.isArray(body.ids) ? body.ids : [];
   const ids = [];
+  const overflow = [];
   const seen = new Set();
   for (const v of raw) {
-    const n = parseInt(v, 10);
-    if (!isNaN(n) && n > 0 && !seen.has(n)) { seen.add(n); ids.push(n); }
-    if (ids.length >= BULK_ALERT_MAX) break;
+    const n = typeof v === 'number' ? v : (/^\s*\d+\s*$/.test(String(v)) ? parseInt(v, 10) : NaN);
+    if (isNaN(n) || n <= 0 || seen.has(n)) continue;
+    seen.add(n);
+    if (ids.length >= BULK_ALERT_MAX) overflow.push(n);
+    else ids.push(n);
   }
-  return ids;
+  return { ids, overflow };
 }
 
 app.post('/api/alerts/bulk-acknowledge', wrap(async (req, res) => {
-  const ids = parseBulkIds(req.body);
+  const { ids, overflow } = parseBulkIds(req.body);
   if (!ids.length) return res.status(400).json({ error: 'ids must be a non-empty array of alert ids' });
   const by = req.headers['x-user-email'] || (req.body && req.body.acknowledged_by) || 'unknown';
   const note = req.body && typeof req.body.note === 'string' && req.body.note.trim()
@@ -4909,15 +4979,19 @@ app.post('/api/alerts/bulk-acknowledge', wrap(async (req, res) => {
   const done = new Set(updated);
   res.json({
     action: 'acknowledge',
-    requested: ids.length,
+    // `requested` counts what the caller actually asked for, including anything
+    // over the cap — otherwise a truncated batch reports as a whole one.
+    requested: ids.length + overflow.length,
     updated: updated.length,
     ids: updated,
-    skipped: ids.filter((id) => !done.has(id)),
+    skipped: ids.filter((id) => !done.has(id)).concat(overflow),
+    over_limit: overflow.length,
+    limit: BULK_ALERT_MAX,
   });
 }));
 
 app.post('/api/alerts/bulk-resolve', wrap(async (req, res) => {
-  const ids = parseBulkIds(req.body);
+  const { ids, overflow } = parseBulkIds(req.body);
   if (!ids.length) return res.status(400).json({ error: 'ids must be a non-empty array of alert ids' });
   const caps = await getAlertCaps();
   const params = [ids];
@@ -4931,10 +5005,14 @@ app.post('/api/alerts/bulk-resolve', wrap(async (req, res) => {
   const done = new Set(updated);
   res.json({
     action: 'resolve',
-    requested: ids.length,
+    // `requested` counts what the caller actually asked for, including anything
+    // over the cap — otherwise a truncated batch reports as a whole one.
+    requested: ids.length + overflow.length,
     updated: updated.length,
     ids: updated,
-    skipped: ids.filter((id) => !done.has(id)),
+    skipped: ids.filter((id) => !done.has(id)).concat(overflow),
+    over_limit: overflow.length,
+    limit: BULK_ALERT_MAX,
   });
 }));
 
@@ -5859,6 +5937,7 @@ app.get('/api/topology/map', wrap(async (req, res) => {
 // its "Apply to Map" button when at least one edge joins two monitored devices.
 app.post('/api/topology/apply-to-map/:map_id', wrap(async (req, res) => {
   const mapId = parseInt(req.params.map_id, 10);
+  if (!Number.isInteger(mapId)) return res.status(400).json({ error: 'invalid map id' });
   const exists = await sv.query(`SELECT id FROM sv_maps WHERE id = $1`, [mapId]);
   if (!exists.rows[0]) return res.status(404).json({ error: 'Map not found' });
 
@@ -5866,6 +5945,22 @@ app.post('/api/topology/apply-to-map/:map_id', wrap(async (req, res) => {
     SELECT from_device_id, to_device_id, from_port, to_port, protocol
     FROM topology_links WHERE to_device_id IS NOT NULL`);
   const edges = dedupeEdges(e.rows);
+
+  // This handler DELETEs every connection on the map before re-inserting. Until
+  // now the only thing stopping that from running against an empty edge set was
+  // a `disabled` attribute on the button — so a direct POST, a replayed request,
+  // or a tab opened before discovery changed would wipe the map's connections
+  // and restore none of them. There is no undo. On an estate where no LLDP/CDP
+  // neighbour resolves to a monitored device (the normal case here: 0 of 69),
+  // `edges` is empty and this is pure destruction, so refuse it server-side and
+  // say why. The client's disabled state now has a real counterpart.
+  if (!edges.length) {
+    return res.status(409).json({
+      error: 'no topology links join two monitored devices',
+      detail: 'Applying would remove the existing connections on this map and add none. '
+            + 'Add the neighbouring devices to monitoring, or re-run discovery, first.',
+    });
+  }
   const deviceIds = new Set();
   for (const row of edges) { deviceIds.add(row.from_device_id); deviceIds.add(row.to_device_id); }
 
@@ -5987,7 +6082,7 @@ function fmtUptime(seconds) {
 }
 
 // ── Controllers CRUD ──────────────────────────────────────────
-app.get('/api/wireless/controllers', wrap(async (_req, res) => {
+app.get('/api/wireless/controllers', wrap(async (req, res) => {
   const hp = (await wctlHasHaPeer())
     ? 'c.ha_peer_controller_id, c.ha_manual_role'
     : 'NULL::int AS ha_peer_controller_id, NULL::text AS ha_manual_role';
@@ -6007,13 +6102,22 @@ app.get('/api/wireless/controllers', wrap(async (_req, res) => {
            d.snmp_community AS snmp_community,
            d.snmp_version AS snmp_version,
            d.snmp_port AS snmp_port,
+           d.snmp_v3_auth_pass AS snmp_v3_auth_pass,
+           d.snmp_v3_priv_pass AS snmp_v3_priv_pass,
            (SELECT COUNT(*)::int FROM wireless_aps a WHERE a.controller_id = c.id) AS ap_count,
            (SELECT COALESCE(SUM(a.clients_total), 0)::int FROM wireless_aps a WHERE a.controller_id = c.id) AS client_count
     FROM wireless_controllers c
     LEFT JOIN monitored_devices d ON d.id = c.snmp_device_id
     ORDER BY c.name
   `);
-  res.json(r.rows);
+  // The SNMP credentials on this row belong to the linked `monitored_devices`
+  // row, so they are subject to exactly the same rule as `/api/devices/:id`:
+  // never hand the plaintext to the browser. `publicDevice()` only guards the
+  // /api/devices routes, and this one reached around it via the LEFT JOIN — a
+  // read-only viewer could read a live community string here (fixed 1.113.8).
+  // Same CRED_MASK round-trip so the controller edit dialog can save without
+  // retyping a credential it is not allowed to read.
+  res.json(r.rows.map((row) => publicSnmpFields(row, req)));
 }));
 
 // ── Aggregate overview across all controllers ─────────────────
@@ -6395,7 +6499,12 @@ app.put('/api/wireless/controllers/:id', wrap(async (req, res) => {
                       'snmp_v3_user', 'snmp_v3_auth_pass', 'snmp_v3_priv_pass'];
   const snmpSets = {};
   for (const k of snmpFields) {
-    if (b[k] !== undefined) snmpSets[k] = b[k];
+    if (b[k] === undefined) continue;
+    // A secret submitted as CRED_MASK is the value we sent the dialog, not a
+    // new one — drop it so saving without retyping keeps the stored credential
+    // instead of overwriting it with '********'. Same rule as PUT /api/devices/:id.
+    if (DEVICE_SECRET_COLUMNS.includes(k) && b[k] === CRED_MASK) continue;
+    snmpSets[k] = b[k];
   }
   const hasSnmp = Object.keys(snmpSets).length > 0;
 
@@ -8384,7 +8493,70 @@ async function savedReportInScope(req, row) {
       [row.scope_id, siteFilter]);
     return r.rowCount > 0;
   }
+  // Estate-wide rows ('all', 'controller') stay VISIBLE — deliberate, and it
+  // must keep matching savedReportSiteClause. Do not make this fail closed:
+  // creating one is the dangerous act, not seeing one, and that is gated
+  // separately by savedReportCreatable() below.
   return true;
+}
+
+// Write-side counterpart. Visibility and CREATION are different questions and
+// were previously answered by the same function, which is how an estate-wide
+// report became creatable by a site-scoped user: savedReportInScope() returns
+// true for scope_type 'all' (correctly, for reading), so the POST guard waved
+// it straight through. reportScheduler then runs it over loopback with NO RBAC
+// headers and emails the whole estate to whatever `recipients` says.
+// This one fails closed: a site-scoped caller may only create a report pinned
+// to a site or device they hold, and every id in scope_ids is checked, not just
+// scope_id. An unrecognised scope_type is refused rather than assumed safe.
+// Write rule for an EXISTING saved report (edit schedule/recipients, delete,
+// run-now). Visibility is deliberately wider than this — an estate-wide report
+// is READABLE by a site-scoped user (see savedReportInScope) — but writing to
+// one is not the same act: PUT can repoint `recipients` at the caller and
+// run-now then emails the whole estate there, which turns a read-only view into
+// an exfiltration path. So estate-wide rows are read-only below admin.
+async function savedReportWritable(req, row) {
+  const siteFilter = getSiteFilter(req);
+  if (!siteFilter || !siteFilter.length) return true;   // admin / unscoped
+  if (!row) return false;
+  if (row.scope_type === 'site') {
+    return row.scope_id != null && siteFilter.includes(Number(row.scope_id));
+  }
+  if (row.scope_type === 'device') {
+    if (row.scope_id == null) return false;
+    const r = await sv.query(
+      `SELECT 1 FROM monitored_devices WHERE id = $1 AND site_id = ANY($2::int[])`,
+      [row.scope_id, siteFilter]);
+    return r.rowCount > 0;
+  }
+  return false;
+}
+
+async function savedReportCreatable(req, body) {
+  const siteFilter = getSiteFilter(req);
+  if (!siteFilter || !siteFilter.length) return true;   // admin / unscoped
+  const type = body.scope_type || 'all';
+
+  const ids = Array.isArray(body.scope_ids)
+    ? body.scope_ids.map((n) => parseInt(n, 10)).filter((n) => !isNaN(n)) : [];
+  if (ids.length) {
+    const r = await sv.query(
+      `SELECT COUNT(*)::int AS n FROM monitored_devices
+        WHERE id = ANY($1::int[]) AND site_id = ANY($2::int[])`, [ids, siteFilter]);
+    if (r.rows[0].n !== ids.length) return false;
+  }
+
+  if (type === 'site') {
+    return body.scope_id != null && siteFilter.includes(Number(body.scope_id));
+  }
+  if (type === 'device') {
+    if (body.scope_id == null) return ids.length > 0;
+    const r = await sv.query(
+      `SELECT 1 FROM monitored_devices WHERE id = $1 AND site_id = ANY($2::int[])`,
+      [body.scope_id, siteFilter]);
+    return r.rowCount > 0;
+  }
+  return false;
 }
 
 // ── Saved report configs (per-user via created_by) ────────────
@@ -8468,7 +8640,7 @@ app.post('/api/reports/saved', wrap(async (req, res) => {
   // scheduler runs it over loopback with no RBAC headers (so unscoped) and emails
   // the result wherever `recipients` says — creating one would exfiltrate data the
   // caller can't read on screen.
-  if (!(await savedReportInScope(req, { scope_type: b.scope_type || 'all', scope_id: b.scope_id || null }))) {
+  if (!(await savedReportCreatable(req, b))) {
     return res.status(403).json({ error: 'forbidden: scope outside your assigned sites' });
   }
   const scopeIds = Array.isArray(b.scope_ids)
@@ -8496,7 +8668,7 @@ app.put('/api/reports/saved/:id', wrap(async (req, res) => {
   if (isNaN(id)) return res.status(400).json({ error: 'invalid id' });
   const cur = await sv.query(`SELECT scope_type, scope_id FROM saved_reports WHERE id = $1`, [id]);
   if (!cur.rows[0]) return res.status(404).json({ error: 'not found' });
-  if (!(await savedReportInScope(req, cur.rows[0]))) {
+  if (!(await savedReportWritable(req, cur.rows[0]))) {
     return res.status(403).json({ error: 'forbidden: saved report outside your assigned sites' });
   }
   const s = scheduleFields(req.body || {});
@@ -8517,7 +8689,7 @@ app.post('/api/reports/saved/:id/run-now', wrap(async (req, res) => {
   const r = await sv.query(`SELECT * FROM saved_reports WHERE id = $1`, [id]);
   const report = r.rows[0];
   if (!report) return res.status(404).json({ error: 'not found' });
-  if (!(await savedReportInScope(req, report))) {
+  if (!(await savedReportWritable(req, report))) {
     return res.status(403).json({ error: 'forbidden: saved report outside your assigned sites' });
   }
   if (!report.recipients) return res.status(400).json({ error: 'no recipients configured' });
@@ -8553,7 +8725,7 @@ app.get('/api/reports/saved/:id/history', wrap(async (req, res) => {
 app.delete('/api/reports/saved/:id', wrap(async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const owner = await sv.query(`SELECT scope_type, scope_id FROM saved_reports WHERE id = $1`, [id]);
-  if (owner.rows[0] && !(await savedReportInScope(req, owner.rows[0]))) {
+  if (owner.rows[0] && !(await savedReportWritable(req, owner.rows[0]))) {
     return res.status(403).json({ error: 'forbidden: saved report outside your assigned sites' });
   }
   await sv.query(`DELETE FROM saved_reports WHERE id = $1`, [id]);

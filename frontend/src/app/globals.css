@@ -923,6 +923,17 @@ a { color: inherit; text-decoration: none; }
    themselves come from a <colgroup> the header and every group both render. */
 .sv-dev-table { table-layout: fixed; }
 
+/* Compact row density for the devices list. Only paddings and the secondary
+   sub-lines change — the colgroup percentages are identical in both densities,
+   so compact can never pull a group table out of line with the shared sticky
+   header. Lives here rather than in an injected <style> tag: the rules were
+   originally written into the page as a string, targeting a wrapper that was
+   never rendered, so the toggle changed nothing but the sparkline/ring sizes. */
+.sv-dev-list[data-density="compact"] .sv-table td { padding: 5px 10px; }
+.sv-dev-list[data-density="compact"] .sv-table th { padding: 7px 10px; }
+.sv-dev-list[data-density="compact"] .sv-dev-sub { display: none; }
+.sv-dev-list[data-density="compact"] .sv-acc { margin-bottom: 8px; }
+
 /* Text button that reads as a link — "show all", "View all N clients →".
    A real <button> (so it is keyboard- and screen-reader-correct) with the
    chrome removed. `.sm` is the caption-sized variant. */

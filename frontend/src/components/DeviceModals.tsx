@@ -195,7 +195,7 @@ export function DeviceForm({
                 </>
               )}
             </div>
-            <SnmpTest form={form} />
+            <SnmpTest form={form} deviceId={device?.id ?? null} />
           </>
         )}
 
@@ -215,7 +215,7 @@ type SnmpTestResult = {
   success: boolean; vendor?: string; sysDescr?: string; sysName?: string; message: string;
 };
 
-function SnmpTest({ form }: { form: any }) {
+function SnmpTest({ form, deviceId }: { form: any; deviceId: number | null }) {
   const [testing, setTesting] = useState(false);
   const [result, setResult] = useState<SnmpTestResult | null>(null);
 
@@ -224,8 +224,13 @@ function SnmpTest({ form }: { form: any }) {
     setResult(null);
     try {
       // Always test the current in-form values — not the last-saved credentials —
-      // so the result reflects exactly what the user has typed.
+      // so the result reflects exactly what the user has typed. The one
+      // exception is a credential the user has NOT touched: it was hydrated
+      // from a masked GET, so it is literally '********'. `device_id` lets the
+      // API swap that back for the stored secret; a field the user retyped is
+      // never a mask and is sent as-is.
       const r = await apiSend<SnmpTestResult>('/api/snmp-test-adhoc', 'POST', {
+        device_id: deviceId,
         ip_address: form.ip_address,
         snmp_version: form.snmp_version,
         snmp_community: form.snmp_community,

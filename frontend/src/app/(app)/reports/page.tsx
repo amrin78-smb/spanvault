@@ -1316,7 +1316,16 @@ export default function ReportsPage() {
                   <ReportBriefing
                     tpl={tpl}
                     coverage={coverageLine(template, {
-                      sites: sites.data?.length || 0,
+                      // Distinct sites that actually HAVE a monitored device —
+                      // not sites.data, which is every Active NetVault site
+                      // whether SpanVault watches anything there or not. The
+                      // sentence ends "currently monitored", so it has to be
+                      // the monitored set or it is simply false.
+                      sites: new Set(
+                        (devices.data || [])
+                          .map((d: any) => d.site_id)
+                          .filter((id: any) => id != null)
+                      ).size,
                       devices: devices.data?.length || 0,
                       aps: aps.data?.length || 0,
                       services: services.data?.length || 0,
