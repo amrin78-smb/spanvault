@@ -878,7 +878,14 @@ a { color: inherit; text-decoration: none; }
    A row that paints its own tint (e.g. an incident header) must also set
    `--sv-row-tint` to that same token so the pinned cell keeps the tint over an
    opaque base. */
-.sv-table-scroll { width: 100%; overflow-x: auto; }
+/* overflow-y is `clip`, not the `auto` that `overflow-x: auto` alone would
+   compute. `auto` makes this element a scroll container, which silently broke
+   every `position: sticky` thead inside it: the header then resolves `top: 0`
+   against THIS box, which never scrolls vertically, so it sat inert while the
+   page scrolled the rows away. `clip` gives the same horizontal scrolling
+   without establishing a scrollport, so a sticky header keeps resolving against
+   .sv-content and works as it did before this wrapper existed. */
+.sv-table-scroll { width: 100%; overflow-x: auto; overflow-y: clip; }
 .sv-table-scroll > .sv-table { min-width: 100%; }
 
 .sv-table-pin-actions > thead > tr > th:last-child,
@@ -897,6 +904,14 @@ a { color: inherit; text-decoration: none; }
 }
 .sv-table-pin-actions > tbody > tr:hover > td:last-child:not([colspan]) {
   background-color: var(--table-tint-solid);
+}
+/* A row that paints its own tint keeps it on hover. The generic
+   `.sv-table tbody tr:hover td` shorthand otherwise repaints the plain cells
+   grey while the pinned cell re-applies the tint through background-image,
+   leaving a coloured block at the end of a grey row (light mode only — the
+   dark values happen to composite within 1/255). */
+.sv-table tbody tr[style*="--sv-row-tint"]:hover > td {
+  background-image: linear-gradient(var(--sv-row-tint), var(--sv-row-tint));
 }
 
 /* ── Shared column header for a list of grouped tables ──────────────────────
@@ -964,6 +979,11 @@ a { color: inherit; text-decoration: none; }
   box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.10);
   color: var(--text-primary);
 }
+/* .sv-content has 24px of bottom padding, so a bottom-pinned bar stops 24px
+   short of the scrollport edge and rows show through underneath it — the
+   mirror image of what .sv-sticky-top fixes at the top. */
+.sv-content:has(.sv-bulkbar) { padding-bottom: 0; }
+.sv-content:has(.sv-bulkbar) > :last-child { padding-bottom: 24px; }
 
 /* Alerts device cell. The column is nowrap with no cap, so auto table layout
    handed it every spare pixel (307px for ~150px of text) and pushed the

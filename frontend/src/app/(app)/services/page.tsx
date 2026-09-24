@@ -575,8 +575,8 @@ function ServiceRowMenu({ items }: { items: { label: string; onClick: () => void
             <button
               key={it.label}
               role="menuitem"
+              className={`sv-dropdown-item${it.danger ? ' danger' : ''}`}
               onClick={(e) => { e.stopPropagation(); setOpen(false); it.onClick(); }}
-              style={it.danger ? { color: 'var(--sv-down)' } : undefined}
             >
               {it.label}
             </button>

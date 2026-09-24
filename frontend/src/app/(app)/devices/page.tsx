@@ -255,11 +255,11 @@ type DeviceCol = {
 const DEVICE_COLUMNS: DeviceCol[] = [
   { key: 'name',      label: 'Device',         w: 15, wOs: 14 },
   { key: 'type',      label: 'Type',           w: 7,  wOs: 6 },
-  { key: 'vendor',    label: 'Vendor / Model', w: 12, wOs: 11 },
+  { key: 'vendor',    label: 'Vendor',         w: 12, wOs: 11 },
   { key: 'ip',        label: 'IP Address',     w: 11, wOs: 10 },
   { key: 'os',        label: 'Version / OS',   w: 0,  wOs: 9, osOnly: true },
   { key: 'status',    label: 'Status',         w: 8,  wOs: 7 },
-  { key: 'health',    label: 'Health Score',   w: 11, wOs: 10 },
+  { key: 'health',    label: 'Health',         w: 11, wOs: 10 },
   { key: 'latency',   label: 'Latency',        w: 10, wOs: 9 },
   { key: 'lastalert', label: 'Last Alert',     w: 10, wOs: 9 },
   { key: 'lastseen',  label: 'Last Seen',      w: 9,  wOs: 8 },

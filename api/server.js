@@ -36,6 +36,13 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.114.1': [
+    'The row menu on the Services page was opening as a horizontal strip of plain grey browser buttons. It was missing the class that makes a dropdown a dropdown.',
+    'Restored the sticky column header on the Alerts table. The horizontal-scroll wrapper added for the clipped-column fix quietly turned that wrapper into the thing the header sticks to - and it never scrolls vertically, so the header stopped sticking to anything.',
+    'The Devices column headings were being cut off, and were already slightly cut at full width. Shortened "Vendor / Model" and "Health Score" rather than continuing to shuffle column widths around.',
+    'A tinted alert row no longer goes grey on hover while its right-hand buttons stay coloured.',
+    'The bulk action bar no longer leaves a strip at the bottom of the page where rows slide past underneath it.',
+  ],
   '1.114.0': [
     'A six-way review of everything built this week found ten serious defects. All ten are fixed here.',
     'SECURITY: the wireless controller list was still handing out a device SNMP community string in plain text, to any signed-in user including read-only ones. Last release stripped those credentials from the device endpoints, but this one reached around that by joining the device table from a different direction. It is now masked the same way, and saving a controller without retyping the credential keeps the stored one.',
