@@ -36,6 +36,15 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.114.3': [
+    'A second review of the fixes shipped on Thursday found that three of them had introduced new faults. All three are corrected here.',
+    'SECURITY: testing SNMP from the device dialog could be used to send a stored community string, in the clear, to any address typed into the form. Thursday hid those credentials from the browser, and the change that kept the Test button working went too far. A hidden credential is now only ever used to test the address it belongs to.',
+    'Selecting alerts and then narrowing the filters, clicking the volume chart, or simply waiting through a slow refresh could silently discard part of the selection, permanently. The bulk bar already refused to act on rows the filters excluded, so nothing was at risk of being acknowledged unseen - but work was being lost.',
+    'The topology map refreshed its shape after discovery but not the state of the devices on it, so a device that had just gone down could keep showing as up until you changed the layout.',
+    'The Alerts table column header still scrolls away. Thursday recorded this as fixed; it was not - the CSS rule used cannot do what it was expected to do, and the header has not been sticky since the horizontal-scroll wrapper was introduced. Reverted to the honest behaviour and written up properly rather than guessed at a third time.',
+    'Alert Analysis disagreed with every other alert figure in the app - it counted only device and service alerts while the rest of the app had learned to count access point and controller alerts too, so for a site-restricted user the report said 27 where the dashboard said 18,115. Screen and PDF now share one definition rather than each keeping a copy.',
+    'Fixed: the delete item in the Services row menu was hard to read in dark mode; the topology zoom buttons became invisible when hovered in dark mode; the compact density setting did not tighten the spacing between site groups or the header row; and a malformed id sent to a bulk action returned a database error instead of a refusal.',
+  ],
   '1.114.2': [
     'A site-restricted user could see other sites alerts on the dashboard trend chart. One query allowed any alert with no device attached, which covers every wireless, service and agent alert in the estate - so the chart returned 8,554 rows where 8,536 belonged to them.',
     'The same user previously saw a dashboard that disagreed with itself: the headline said 0 active alerts while the panel beside it listed 20 critical ones, and acknowledging or resolving any of them did nothing. Four different rules decided which alerts belonged to a site; there is now one, and it covers access points and controllers, not just devices. That user now sees 24 active alerts consistently everywhere and can act on all of them.',
@@ -2321,7 +2330,8 @@ app.get('/api/dashboard/summary', wrap(async (req, res) => {
   // outstanding at all. One query serves both roles — the scoped fragments are
   // empty strings for an admin.
   const p3 = [];
-  const scope3 = alertSiteScope(siteFilter, p3);
+  const caps = await getAlertCaps();
+  const scope3 = alertSiteScope(siteFilter, p3, caps);
   const active = await sv.query(`
     SELECT COUNT(*)::int AS c,
            COUNT(*) FILTER (WHERE a.severity = 'critical')::int AS crit,
@@ -2442,7 +2452,8 @@ app.get('/api/dashboard/alert-trend', wrap(async (req, res) => {
   // wireless, service-check and agent alerts fell through the IS NULL branch
   // into a site_admin's chart (measured: 8,554 rows returned for sites {31,35}
   // against 8,536 genuinely theirs, out of 8,630 estate-wide).
-  const scope = alertSiteScope(getSiteFilter(req), params);
+  const caps = await getAlertCaps();
+  const scope = alertSiteScope(getSiteFilter(req), params, caps);
   const r = await sv.query(`
     -- Alias is "bucket", not "day": DAY is reserved in Postgres and a bare
     -- AS day is a syntax error.
@@ -2459,99 +2470,13 @@ app.get('/api/dashboard/alert-trend', wrap(async (req, res) => {
   res.json({ days, points: r.rows });
 }));
 
-// ── Site-scoping for the polymorphic `alerts` table ────────────────────────
-// ONE definition of "an alert belongs to site X", used by every read AND every
-// write. `alerts` hangs off ONE of six nullable owner columns (device_id,
-// agent_id, service_check_id, wireless_ap_id, wireless_controller_id,
-// wireless_client_mac — see .ai-codex/schema.md), so a filter that joins only
-// `monitored_devices` scopes device alerts and either DROPS or LEAKS every
-// wireless/service alert. That is not a corner case on a real estate: of the
-// last 7 days' alerts on the production box, 4,213 of 4,249 hang off an AP and
-// only a handful off a device.
-//
-// THE RULE: an alert belongs to the site of its owner, resolved through the
-// chain below IN ORDER — device, AP, service check, controller (the four owner
-// tables that carry a site_id at all). The same expression decides what a
-// site_admin can SEE and what they can ACKNOWLEDGE/RESOLVE, so the dashboard,
-// the Alerts page and the write routes can no longer disagree.
-//
-// This replaced FOUR mutually inconsistent predicates (1.114.1 and earlier):
-// an INNER JOIN monitored_devices on /api/dashboard/summary, a LEFT JOIN
-// d.site_id on /api/dashboard/ops-summary, this COALESCE on the
-// histogram/noisiest/kpi-trends panels, and a device-OR-service pair on GET
-// /api/alerts + the ack/resolve writes. Measured for a site_admin holding
-// sites {31,35}: the summary card said 0 active / 0 critical while the
-// Noisiest panel beside it listed 20 critical AP alerts, and neither the
-// Alerts page nor ack/resolve could touch any of them (26 of 27 active alerts
-// hang off wireless_ap_id). All four now report 28 active / 20 critical.
-//
-// An alert that resolves to NO site (agent-scoped, wireless_client_mac-only,
-// or an owner row that has since lost its site) is deliberately INVISIBLE to a
-// site-scoped caller and UNWRITABLE by them: `NULL = ANY(...)` evaluates to
-// NULL, never TRUE, so it fails CLOSED. It is emphatically NOT promoted to
-// "visible to everyone" — that is the other tempting reading, and the one
-// /api/dashboard/alert-trend used to take with `OR a.device_id IS NULL`, which
-// handed a site_admin every OTHER site's wireless and service alerts. Only an
-// unscoped caller (admin/super_admin — getSiteFilter() returns null) sees or
-// acts on a site-less alert. 80 of 41,139 production rows are site-less today,
-// none of them active.
-//
-// `agents` is NOT part of the chain (it has no site_id of its own); it is
-// still LEFT JOINed by ALERT_OWNER_JOINS because /api/dashboard/noisiest needs
-// the agent NAME, not for scoping.
-const ALERT_SITE_OWNERS = [
-  { key: 'device',     table: 'monitored_devices',    alias: 'd',  fk: 'a.device_id',              cap: null },
-  { key: 'ap',         table: 'wireless_aps',         alias: 'wa', fk: 'a.wireless_ap_id',         cap: 'has_wireless' },
-  { key: 'service',    table: 'service_checks',       alias: 'sc', fk: 'a.service_check_id',       cap: 'has_service_check_id' },
-  { key: 'controller', table: 'wireless_controllers', alias: 'wc', fk: 'a.wireless_controller_id', cap: 'has_wireless' },
-];
-
-// The standard owner joins + the aliases they expose, both derived from the one
-// list above so a new owner can never be added to the predicate and forgotten
-// in the joins (or vice versa).
-const ALERT_OWNER_JOINS = `${ALERT_SITE_OWNERS
-  .map((o) => `      LEFT JOIN ${o.table} ${o.alias} ON ${o.alias}.id = ${o.fk}`)
-  .join('\n')}
-      LEFT JOIN agents               ag ON ag.id = a.agent_id`;
-const ALERT_OWNER_ALIASES = ALERT_SITE_OWNERS.reduce((m, o) => { m[o.key] = o.alias; return m; }, {});
-
-// The site an alert resolves to, as a SQL expression over `alerts a`.
-//   `aliases` — owner key -> an alias the CALLER'S query already LEFT JOINs.
-//               An owner with no alias is resolved by a correlated sub-select
-//               instead, so the identical predicate also works in a statement
-//               that has no joins to hang a filter on (i.e. an UPDATE).
-//   `caps`    — getAlertCaps(); an owner whose column doesn't exist yet on this
-//               DB is dropped from the chain. Omit it to assume the full schema
-//               (what the dashboard aggregates have always done).
-// The two renderings were verified equivalent against the production table:
-// both selected exactly 40,772 of 41,139 rows for sites {31,35}, with zero
-// row-level disagreements.
-function alertSiteExpr(caps, aliases) {
-  const parts = ALERT_SITE_OWNERS
-    .filter((o) => !o.cap || !caps || caps[o.cap])
-    .map((o) => ((aliases && aliases[o.key])
-      ? `${aliases[o.key]}.site_id`
-      : `(SELECT ${o.alias}_s.site_id FROM ${o.table} ${o.alias}_s WHERE ${o.alias}_s.id = ${o.fk})`));
-  return parts.length === 1 ? parts[0] : `COALESCE(${parts.join(', ')})`;
-}
-
-// Bare WHERE fragment (no leading AND, no outer parens) for a site-scoped
-// caller; null when the caller is unscoped, in which case NO clause is added.
-function alertSiteWhere(siteFilter, params, opts) {
-  if (!siteFilter || !siteFilter.length) return null;
-  params.push(siteFilter);
-  const o = opts || {};
-  return `${alertSiteExpr(o.caps, o.aliases)} = ANY($${params.length}::int[])`;
-}
-
-// Read form for a query that can take the standard owner joins: returns the
-// joins to splice in after `alerts a`, plus a ` AND <predicate>` fragment.
-// Both are empty strings for an unscoped caller, so the query is byte-identical
-// to the pre-RBAC one for an admin.
-function alertSiteScope(siteFilter, params) {
-  const where = alertSiteWhere(siteFilter, params, { aliases: ALERT_OWNER_ALIASES });
-  return where ? { joins: ALERT_OWNER_JOINS, where: ` AND ${where}` } : { joins: '', where: '' };
-}
+// Alert site scoping lives in api/alertScope.js so api/reportsPdf.js can use
+// the SAME predicate — it cannot require server.js, and a private copy there
+// is precisely how the fifth rendering survived the unification.
+const {
+  ALERT_SITE_OWNERS, alertOwnersFor, alertOwnerJoins, alertOwnerAliases,
+  alertSiteExpr, alertSiteWhere, alertSiteScope,
+} = require('./alertScope');
 
 // ── Alert-volume histogram: 24h in 1h buckets, or 7d in 4h buckets ─────────
 // Distinct from /api/dashboard/alert-trend (14 DAILY buckets, Availability
@@ -2574,7 +2499,8 @@ app.get('/api/dashboard/alert-histogram', wrap(async (req, res) => {
   // context is exactly the "could not determine data type of parameter" trap
   // documented in .ai-codex/gotchas.md for the heartbeat UPDATE.
   const params = [bucketHours, hours];
-  const scope = alertSiteScope(getSiteFilter(req), params);
+  const caps = await getAlertCaps();
+  const scope = alertSiteScope(getSiteFilter(req), params, caps);
   // The window is BUCKET-ALIGNED, and the row filter uses the SAME lower bound
   // the buckets are generated from (`bnd.lo`) — exactly what /api/alerts/volume
   // does with its `bounds` CTE. It previously filtered `triggered_at >= NOW() -
@@ -2623,7 +2549,8 @@ app.get('/api/dashboard/noisiest', wrap(async (req, res) => {
   const hours = req.query.window === '7d' ? 168 : 24;
   const limit = Math.min(20, Math.max(1, safeInt(req.query.limit, 5)));
   const params = [hours, limit];
-  const scope = alertSiteScope(getSiteFilter(req), params);
+  const caps = await getAlertCaps();
+  const scope = alertSiteScope(getSiteFilter(req), params, caps);
   const r = await sv.query(`
     WITH scoped AS (
       SELECT a.severity, a.triggered_at, a.alert_type,
@@ -2637,7 +2564,7 @@ app.get('/api/dashboard/noisiest', wrap(async (req, res) => {
                       a.wireless_controller_id, a.agent_id) AS entity_id,
              COALESCE(d.name, wa.name, sc.name, wc.name, ag.name) AS name,
              COALESCE(d.site_name, wa.site_name, sc.site_name, wc.site_name) AS site_name
-        FROM alerts a${ALERT_OWNER_JOINS}
+        FROM alerts a${alertOwnerJoins(caps)}
        WHERE a.triggered_at >= NOW() - make_interval(hours => $1::int)${scope.where}
     )
     SELECT kind, entity_id, name, site_name,
@@ -2737,7 +2664,8 @@ app.get('/api/dashboard/kpi-trends', wrap(async (req, res) => {
   // resolved after the window opened) is not an approximation — a row resolved
   // BEFORE the first point cannot be open at any point in the series.
   const pU = [];
-  const scU = alertSiteScope(siteFilter, pU);
+  const caps = await getAlertCaps();
+  const scU = alertSiteScope(siteFilter, pU, caps);
   const unackQ = await sv.query(`
     WITH pts AS (
       SELECT generate_series(date_trunc('hour', NOW()) - INTERVAL '13 days',
@@ -2908,7 +2836,8 @@ app.get('/api/dashboard/ops-summary', wrap(async (req, res) => {
   const siteFilter = getSiteFilter(req);
 
   const p1 = [];
-  const scope1 = alertSiteScope(siteFilter, p1);
+  const caps = await getAlertCaps();
+  const scope1 = alertSiteScope(siteFilter, p1, caps);
   // `WHERE TRUE` so the shared ` AND <predicate>` fragment can be appended
   // unchanged; the fragment is an empty string for an unscoped caller.
   const agg = await sv.query(`
@@ -2924,7 +2853,7 @@ app.get('/api/dashboard/ops-summary', wrap(async (req, res) => {
   `, p1);
 
   const p2 = [];
-  const scope2 = alertSiteScope(siteFilter, p2);
+  const scope2 = alertSiteScope(siteFilter, p2, caps);
   const unack = await sv.query(`
     SELECT COUNT(*)::int AS c
     FROM alerts a${scope2.joins}
@@ -2932,7 +2861,6 @@ app.get('/api/dashboard/ops-summary', wrap(async (req, res) => {
   `, p2);
 
   let openIncidents = 0;
-  const caps = await getAlertCaps();
   if (caps.has_incidents) {
     try {
       const inc = await sv.query(`SELECT COUNT(*)::int AS c FROM incidents WHERE status = 'active'`);
@@ -4315,22 +4243,50 @@ app.post('/api/devices/:id/snmp-test', wrap(async (req, res) => {
 app.post('/api/snmp-test-adhoc', wrap(async (req, res) => {
   const b = req.body || {};
   if (!b.ip_address) return res.status(400).json({ error: 'ip_address required' });
-  // The edit dialog hydrates its credential fields from a MASKED GET, and tests
-  // "whatever is currently in the form" — so an untouched field arrives here as
+  // The edit dialog hydrates its credential fields from a MASKED GET and tests
+  // "whatever is currently in the form", so an untouched field arrives here as
   // CRED_MASK. Probing that literally made Test SNMP report "wrong community
-  // string" on every healthy device. When the caller names a device they are
-  // allowed to see, resolve any masked field back to the stored value; a field
-  // the user actually retyped is never a mask and is tested as given.
+  // string" on every healthy device, which is why the resolve below exists.
+  //
+  // ⛔ THE RESOLVE IS BOUND TO THE DEVICE'S OWN ADDRESS, DELIBERATELY.
+  // `ip_address` and `device_id` arrive as independent inputs. Resolving a
+  // stored secret and then probing an address the caller chose turns this
+  // endpoint into a credential-exfiltration primitive: point it at a host you
+  // control, run tcpdump, and SNMPv2c hands you the community in cleartext —
+  // and even without a capture the pass/fail result is an oracle. That is
+  // strictly worse than the masking this endpoint was fixed to support, since
+  // `publicDevice()` deliberately hides the plaintext from EVERY role. So a
+  // masked field only resolves when the probe targets the address already
+  // stored for that device; retargeting requires retyping the credential,
+  // which is a value the caller already knows. Do not "simplify" this check
+  // away — it is the only thing making the resolve safe.
   let stored = null;
   const devId = parseInt(b.device_id, 10);
   if (Number.isInteger(devId) && devId > 0 && hasMaskedSecret(b)) {
     const params = [devId];
     const sc = siteFilterClause(getSiteFilter(req), params, 'site_id');
     const r = await sv.query(
-      `SELECT snmp_community, snmp_v3_auth_pass, snmp_v3_priv_pass
+      `SELECT ip_address, snmp_community, snmp_v3_auth_pass, snmp_v3_priv_pass
          FROM monitored_devices WHERE id = $1${sc ? ` AND ${sc}` : ''}`, params);
     stored = r.rows[0] || null;
     if (!stored) return res.status(404).json({ error: 'Device not found' });
+    if (String(stored.ip_address).trim() !== String(b.ip_address).trim()) {
+      return res.status(400).json({
+        error: 'address changed — retype the credential to test it',
+        detail: 'A stored credential is only used to test the address it belongs to. '
+              + 'Enter the community or v3 password to test a different address.',
+      });
+    }
+  }
+  // A mask that could not be resolved is NOT a value. Falling through to the
+  // 'public' default reported a green "SNMP connection successful" for a
+  // credential the user never supplied — a false pass on a security control.
+  const unresolvedMask = !stored && hasMaskedSecret(b);
+  if (unresolvedMask) {
+    return res.status(400).json({
+      error: 'no credential supplied',
+      detail: 'The stored credential is hidden. Enter it to run a test.',
+    });
   }
   const resolve = (val, col) => (val === CRED_MASK && stored ? stored[col] : unmask(val));
   const dev = {
@@ -5055,8 +5011,12 @@ function parseBulkIds(body) {
   const overflow = [];
   const seen = new Set();
   for (const v of raw) {
-    const n = typeof v === 'number' ? v : (/^\s*\d+\s*$/.test(String(v)) ? parseInt(v, 10) : NaN);
-    if (isNaN(n) || n <= 0 || seen.has(n)) continue;
+    // Validate the NUMBER too, not just the string form: a JSON 1.5 skipped the
+    // digit-string test entirely and reached `id = ANY($1::int[])`, which 500s
+    // with a raw Postgres type error. Bound to int4 for the same reason.
+    const raw = typeof v === 'number' ? v : (/^\s*\d+\s*$/.test(String(v)) ? Number(v) : NaN);
+    const n = Number.isInteger(raw) ? raw : NaN;
+    if (isNaN(n) || n <= 0 || n > 2147483647 || seen.has(n)) continue;
     seen.add(n);
     if (ids.length >= BULK_ALERT_MAX) overflow.push(n);
     else ids.push(n);
@@ -6527,8 +6487,8 @@ app.post('/api/wireless/controllers', wrap(async (req, res) => {
     `, [
       b.device_name || b.name, b.ip_address, b.device_type || 'Wireless Controller',
       b.site_id || null, b.site_name || null,
-      true, b.snmp_version || '2c', b.snmp_community || 'public', safeInt(b.snmp_port, 161),
-      b.snmp_v3_user || null, b.snmp_v3_auth_pass || null, b.snmp_v3_priv_pass || null,
+      true, b.snmp_version || '2c', unmask(b.snmp_community) || 'public', safeInt(b.snmp_port, 161),
+      b.snmp_v3_user || null, unmask(b.snmp_v3_auth_pass) || null, unmask(b.snmp_v3_priv_pass) || null,
       safeInt(b.poll_interval_seconds, 300), safeInt(b.ping_threshold_ms, 500),
       safeInt(b.ping_failures_before_down, 3),
     ]);
@@ -8842,6 +8802,7 @@ app.get('/api/reports/saved/:id/history', wrap(async (req, res) => {
 
 app.delete('/api/reports/saved/:id', wrap(async (req, res) => {
   const id = parseInt(req.params.id, 10);
+  if (isNaN(id)) return res.status(400).json({ error: 'invalid id' });
   const owner = await sv.query(`SELECT scope_type, scope_id FROM saved_reports WHERE id = $1`, [id]);
   if (owner.rows[0] && !(await savedReportWritable(req, owner.rows[0]))) {
     return res.status(403).json({ error: 'forbidden: saved report outside your assigned sites' });
@@ -9382,11 +9343,17 @@ app.get('/api/reports/alert-analysis', wrap(async (req, res) => {
   const win = getDateRange(req.query);
   const params = [win.start, win.end];
   const siteFilter = getSiteFilter(req);
-  let siteClause = '';
-  if (siteFilter && siteFilter.length) {
-    params.push(siteFilter);
-    siteClause = ` AND (d.site_id = ANY($${params.length}::int[]) OR sc2.site_id = ANY($${params.length}::int[]))`;
-  }
+  // Uses the SHARED alert-owner predicate, not a local device-OR-service copy.
+  // The local copy was the fifth rendering of this rule and it survived the
+  // unification: once the other four learned about AP and controller alerts,
+  // this report still counted only device+service, so for one site_admin the
+  // dashboard read 18,115 and Alert Analysis read 27 over the same window —
+  // screen AND pdf, including the By Site breakdown. Rendered as correlated
+  // sub-selects because this query joins only `d` and `sc2`, so there is no
+  // alias to hang the AP/controller legs on.
+  const caps = await getAlertCaps();
+  const siteWhere = alertSiteWhere(siteFilter, params, { caps });
+  let siteClause = siteWhere ? ` AND ${siteWhere}` : '';
   // Same omission as /api/reports/top-worst: the page sends site_id when the
   // user scopes to a Site and labels the report with that site, but this
   // endpoint ranked/aggregated the whole estate. The PDF applied it, so every
@@ -9396,7 +9363,10 @@ app.get('/api/reports/alert-analysis', wrap(async (req, res) => {
   const aSiteId = parseInt(req.query.site_id, 10);
   if (!isNaN(aSiteId)) {
     params.push(aSiteId);
-    siteClause += ` AND (d.site_id = $${params.length} OR sc2.site_id = $${params.length})`;
+    // Same owner chain as the RBAC predicate: picking a site must also bring in
+    // that site's AP and controller alerts, or the report silently shows fewer
+    // than the dashboard does for the same site.
+    siteClause += ` AND ${alertSiteExpr(caps, null)} = $${params.length}`;
   }
   const base = `FROM alerts a
     LEFT JOIN monitored_devices d ON d.id = a.device_id

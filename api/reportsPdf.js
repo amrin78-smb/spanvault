@@ -1,4 +1,5 @@
 'use strict';
+const { alertSiteExpr, alertSiteWhere } = require('./alertScope');
 
 /**
  * reportsPdf.js — server-side PDF generation engine for SpanVault reports.
@@ -2732,13 +2733,19 @@ async function gatherAlertAnalysis(db, params) {
   // GET /api/reports/alert-analysis endpoint (LEFT JOIN both sources, never
   // INNER JOIN either alone).
   const p = [win.start, win.end];
+  // Shares the alert-owner predicate with the on-screen endpoint via
+  // ./alertScope. This file previously carried its OWN device-OR-service copy —
+  // the twin of the fifth rendering — so when the rest of the API learned about
+  // AP and controller alerts, screen and PDF both stayed wrong here together,
+  // which is worse than disagreeing: nothing flagged it.
+  // `caps` is not probed on the PDF path (no pool plumbing for it), so the full
+  // owner chain is assumed; a pre-migration DB does not run scheduled PDFs.
+  const pdfCaps = { has_wireless: true, has_service_check_id: true };
   let extra = '';
-  if (siteFilter && siteFilter.length) {
-    p.push(siteFilter);
-    extra += ` AND (d.site_id = ANY($${p.length}::int[]) OR sc2.site_id = ANY($${p.length}::int[]))`;
-  }
+  const siteWhere = alertSiteWhere(siteFilter, p, { caps: pdfCaps });
+  if (siteWhere) extra += ` AND ${siteWhere}`;
   const siteId = parseInt(q.site_id, 10);
-  if (!isNaN(siteId)) { p.push(siteId); extra += ` AND (d.site_id = $${p.length} OR sc2.site_id = $${p.length})`; }
+  if (!isNaN(siteId)) { p.push(siteId); extra += ` AND ${alertSiteExpr(pdfCaps, null)} = $${p.length}`; }
   const base = `FROM alerts a
     LEFT JOIN monitored_devices d ON d.id = a.device_id
     LEFT JOIN service_checks sc2 ON sc2.id = a.service_check_id

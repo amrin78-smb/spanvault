@@ -579,9 +579,19 @@ export default function AlertsPage() {
       // Attribution is re-derived server-side from the verified session header;
       // this is only the legacy fallback the single-id route already accepts.
       if (kind === 'acknowledge') body.acknowledged_by = session?.user?.name || session?.user?.email || 'unknown';
-      const r = await apiSend<{ updated: number; requested: number; skipped: number[] }>(path, 'POST', body);
+      const r = await apiSend<{
+        updated: number; requested: number; skipped: number[];
+        over_limit?: number; limit?: number;
+      }>(path, 'POST', body);
       const verb = kind === 'acknowledge' ? 'Acknowledged' : 'Resolved';
-      if (r.skipped && r.skipped.length) {
+      // Truncation is its own outcome. Reporting it as "already acknowledged or
+      // outside your sites" — the generic skipped reason — describes the one
+      // case the server cap actually created, wrongly.
+      if (r.over_limit) {
+        toast(
+          `${verb} ${r.updated} of ${r.requested}. Only ${r.limit} alerts can be actioned at once — `
+          + `${r.over_limit} were not attempted. Select fewer and repeat.`, 'err');
+      } else if (r.skipped && r.skipped.length) {
         toast(`${verb} ${r.updated} of ${r.requested} — ${r.skipped.length} skipped (already ${kind === 'acknowledge' ? 'acknowledged/resolved' : 'resolved'}, or outside your sites).`, 'err');
       } else {
         toast(`${verb} ${r.updated} alert${r.updated === 1 ? '' : 's'}.`, 'ok');
@@ -721,21 +731,22 @@ export default function AlertsPage() {
   // empty "All clear" table. Acting only on what the current filters match
   // means the count beside the buttons is always something on screen (or one
   // page away), never a ghost.
-  const filteredIds = useMemo(() => new Set(filtered.map((a) => a.id)), [filtered]);
   const selectedAlerts = useMemo(
     () => filtered.filter((a) => selected.has(a.id) && a.status !== 'resolved'),
     [filtered, selected],
   );
-  // Drop ids that the current filters exclude, so the checkbox state and the
-  // bulk count cannot drift apart across a filter change.
-  useEffect(() => {
-    setSelected((prev) => {
-      if (prev.size === 0) return prev;
-      const next = new Set<number>();
-      prev.forEach((id) => { if (filteredIds.has(id)) next.add(id); });
-      return next.size === prev.size ? prev : next;
-    });
-  }, [filteredIds]);
+  // NO pruning effect here, deliberately. An earlier version rewrote `selected`
+  // to `selected ∩ filteredIds` on every change of the filtered set — which
+  // DESTROYED the selection rather than merely not counting it, and `filtered`
+  // is transient while `selected` is durable. Measured consequences: one short
+  // /api/alerts poll silently halved a 28-row selection and never restored it;
+  // clicking a bar on the volume strip (a read-only "what happened at 09:00"
+  // action) dropped 8 selected to 2; toggling a quick-filter chip on and then
+  // off again zeroed it. None of that was recoverable.
+  // It was also unnecessary: `selectedAlerts` above is derived from `filtered`,
+  // so the bulk bar already cannot offer a row the current filters exclude.
+  // That is the whole of the bug this was meant to fix. An id for a row that is
+  // filtered out simply sits inert in the Set until it matches again.
   const selAckable = selectedAlerts.filter((a) => a.status === 'active').length;
   const selResolvable = selectedAlerts.filter((a) => a.status !== 'resolved' && a.status !== 'suppressed').length;
 
@@ -998,7 +1009,13 @@ export default function AlertsPage() {
               aria-label={`${open ? 'Collapse' : 'Expand'} ${g.title} — ${g.alerts.length} alert${plural(g.alerts.length)}, worst ${sev === 'critical' ? 'critical' : 'warning'}`}
               style={{
                 display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
-                width: '100%', padding: '12px 16px', textAlign: 'left', cursor: 'pointer',
+                // height 100% matters: the ROW's height is set by the actions
+                // cell (the taller `Ack N` button), not by this one, so without
+                // it the toggle left a ~3px dead strip along the top and bottom
+                // of its own cell that still showed a pointer cursor and did
+                // nothing when clicked.
+                width: '100%', height: '100%', minHeight: 0,
+                padding: '12px 16px', textAlign: 'left', cursor: 'pointer',
                 background: 'none', border: 'none', borderRadius: 'var(--radius-sm)',
                 color: 'inherit', fontFamily: 'inherit', fontSize: 'inherit',
                 fontWeight: 'inherit', outlineOffset: -2,

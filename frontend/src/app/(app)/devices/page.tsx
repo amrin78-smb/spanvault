@@ -312,7 +312,9 @@ function DeviceTableHeader({ showOs, sort, onSort }: {
           <tr>
             {deviceCols(showOs).map((c) => (
               c.sortable === false ? (
-                <th key={c.key} style={{ textAlign: 'right', padding: '12px 10px' }}>{c.label}</th>
+                // No inline padding: it would beat the compact-density rule and
+                // leave this one cell (and so the whole header row) full height.
+                <th key={c.key} className="sv-dev-actions-th" style={{ textAlign: 'right' }}>{c.label}</th>
               ) : (
                 <SortTh
                   key={c.key} label={c.label} col={c.key} sort={sort} onSort={onSort}
@@ -1294,7 +1296,7 @@ function SiteAccordion({
   const rows = useMemo(() => sortRows(group.devices, sort, DEVICE_SORT), [group.devices, sort]);
 
   return (
-    <div className="sv-acc" style={{ marginBottom: 12 }}>
+    <div className="sv-acc">
       <div
         className={`sv-acc-head ${headStatus}`}
         onClick={onToggle}

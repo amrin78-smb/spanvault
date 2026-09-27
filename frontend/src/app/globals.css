@@ -820,6 +820,10 @@ a { color: inherit; text-decoration: none; }
 }
 .sv-dropdown-item:hover { background: var(--bg-primary); }
 .sv-dropdown-item.danger { color: var(--primary); font-weight: 600; }
+/* --primary (#C8102E) has no dark override, so a danger menu item measured
+   2.70:1 on a dark dropdown (3.17:1 on hover) — below AA, and worse than the
+   #dc2626 it replaced. Lift it to the red that IS theme-aware. */
+[data-theme="dark"] .sv-dropdown-item.danger { color: var(--tint-danger-fg); }
 .sv-dropdown-item .spacer { flex: 1; }
 
 .sv-content { padding: 24px 28px; background: var(--bg-primary); flex: 1; min-width: 0; overflow: auto; }
@@ -887,14 +891,22 @@ a { color: inherit; text-decoration: none; }
    A row that paints its own tint (e.g. an incident header) must also set
    `--sv-row-tint` to that same token so the pinned cell keeps the tint over an
    opaque base. */
-/* overflow-y is `clip`, not the `auto` that `overflow-x: auto` alone would
-   compute. `auto` makes this element a scroll container, which silently broke
-   every `position: sticky` thead inside it: the header then resolves `top: 0`
-   against THIS box, which never scrolls vertically, so it sat inert while the
-   page scrolled the rows away. `clip` gives the same horizontal scrolling
-   without establishing a scrollport, so a sticky header keeps resolving against
-   .sv-content and works as it did before this wrapper existed. */
-.sv-table-scroll { width: 100%; overflow-x: auto; overflow-y: clip; }
+/* ⚠️ THIS WRAPPER IS A SCROLL CONTAINER, AND THAT CANNOT BE AVOIDED HERE.
+   `overflow-x: auto` alone computes overflow-y to `auto`. An attempt to keep the
+   horizontal scrolling while giving up the scrollport — `overflow-y: clip` —
+   does NOT work: per CSS Overflow 3 `clip` cannot coexist with a scrolling
+   value on the other axis, so the used value is `hidden`, which is still a
+   scroll container. Measured in Chromium: `auto + clip` -> `auto/hidden`,
+   identical to `auto + auto` for this purpose.
+   CONSEQUENCE: a `position: sticky` <thead> INSIDE this wrapper resolves
+   `top: 0` against the wrapper, which has no max-height and so never scrolls
+   vertically — the header is inert and scrolls away with the rows. The Alerts
+   table is in exactly that state today. The fix is NOT a different overflow
+   value; it is the pattern /devices already uses — a separate `.sv-sticky-thead`
+   element OUTSIDE the scroller, with a shared fixed colgroup keeping the two
+   tables in column alignment. Don't re-attempt this with another overflow
+   keyword; two have been tried. */
+.sv-table-scroll { width: 100%; overflow-x: auto; }
 .sv-table-scroll > .sv-table { min-width: 100%; }
 
 .sv-table-pin-actions > thead > tr > th:last-child,
@@ -957,6 +969,13 @@ a { color: inherit; text-decoration: none; }
 .sv-dev-list[data-density="compact"] .sv-table th { padding: 7px 10px; }
 .sv-dev-list[data-density="compact"] .sv-dev-sub { display: none; }
 .sv-dev-list[data-density="compact"] .sv-acc { margin-bottom: 8px; }
+/* The accordion's default gap now lives here rather than inline, so the compact
+   rule above can actually win — an inline `marginBottom: 12` beat it and the
+   rule was dead on arrival. Same reason the Actions <th> lost its inline
+   padding: it was the one header cell that never compacted. */
+.sv-acc { margin-bottom: 12px; }
+.sv-dev-actions-th { padding: 12px 10px; }
+.sv-dev-list[data-density="compact"] .sv-dev-actions-th { padding: 7px 10px; }
 
 /* Text button that reads as a link — "show all", "View all N clients →".
    A real <button> (so it is keyboard- and screen-reader-correct) with the
@@ -1389,7 +1408,10 @@ body.sv-noc .sv-status-dot { transform: scale(1.5); }
 }
 
 /* ── Alerts: incident group header row ────────────────────────── */
-.sv-incident-head { cursor: pointer; background: var(--bg-primary); }
+/* No row-wide `cursor: pointer` — the group toggle is a real <button> in one
+   cell, so the checkbox cell and the actions cell were advertising a click that
+   does nothing. The button carries its own cursor. */
+.sv-incident-head { background: var(--bg-primary); }
 .sv-incident-head:hover { background: var(--bg-primary-hover, var(--surface-subtle)); }
 .sv-incident-toggle { display: flex; align-items: center; gap: 8px; }
 .sv-incident-title { font-weight: 700; color: var(--text-primary); }
@@ -2015,6 +2037,14 @@ body.sv-noc .sv-content:has(.sv-sticky-top) > :first-child { padding-top: 28px; 
   background: rgba(255,255,255,0.92); border: 1px solid var(--border); border-radius: var(--radius);
   padding: 3px 4px; box-shadow: var(--shadow-sm); backdrop-filter: blur(2px); z-index: 2;
 }
+/* The zoom control floats over an always-light canvas, so its text must be
+   chosen for a light surface in BOTH themes. Measured in dark before this:
+   the readout at 2.50:1 and the buttons at 1.26:1 on hover (--bg-primary is
+   near-black), i.e. the glyphs disappeared under the cursor. Same trap as the
+   maps "Public" badge; see --canvas-light in CLAUDE.md. */
+[data-theme="dark"] .sv-map-zoomctl .lvl { color: #475569; }
+[data-theme="dark"] .sv-map-zoomctl button { color: #1a2744; }
+[data-theme="dark"] .sv-map-zoomctl button:hover { background: rgba(15, 23, 42, 0.10); color: #0f172a; }
 .sv-map-zoomctl button {
   width: 26px; height: 26px; border: none; background: transparent; border-radius: var(--radius-sm);
   font-size: var(--text-lg); line-height: 1; cursor: pointer; color: #1a2744; display: flex; align-items: center; justify-content: center;

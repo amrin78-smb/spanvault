@@ -1085,6 +1085,11 @@ export default function TopologyMapView({
 
   // ── Zoom / pan (SVG-space transform on a wrapping <g>) ──────────────────
   const svgRef = useRef<SVGSVGElement | null>(null);
+  // The wheel listener binds HERE, not on the <svg>: the zoom control and the
+  // hint chip are SIBLINGS of the svg, so Ctrl+wheel with the pointer over the
+  // +/-/fit buttons — exactly where it sits after clicking minus — missed the
+  // handler entirely and fell through to the browser.
+  const wrapRef = useRef<HTMLDivElement | null>(null);
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const panning = useRef<{ sx: number; sy: number; ox: number; oy: number; moved: boolean } | null>(null);
@@ -1116,8 +1121,9 @@ export default function TopologyMapView({
   // map-zoom gesture and is also what a trackpad PINCH sends, so pinch-to-zoom
   // keeps working and no longer zooms the whole browser page.
   useEffect(() => {
-    const el = svgRef.current;
-    if (!el) return;
+    const el = wrapRef.current;
+    const svgEl = svgRef.current;
+    if (!el || !svgEl) return;
     function onWheel(e: WheelEvent) {
       if (!e.ctrlKey && !e.metaKey) {
         // Not ours — let the page scroll, and say so.
@@ -1127,7 +1133,7 @@ export default function TopologyMapView({
         return;
       }
       e.preventDefault();
-      const u = clientToUser(el!, e.clientX, e.clientY);
+      const u = clientToUser(svgEl!, e.clientX, e.clientY);
       setZoom((z: number) => {
         const nz = clampZoom(z * (e.deltaY < 0 ? 1.1 : 1 / 1.1));
         const k = nz / z;
@@ -1224,19 +1230,44 @@ export default function TopologyMapView({
   //    recomputed for renders that could not move a single node. The signature
   //    below covers everything the three layouts actually read: which nodes are
   //    present, the fields they sort/group by, and the edge list.
-  const layoutKey = useMemo(() => {
-    const ns = included.map((n: TopoNode) =>
-      n.device_id + ':' + (n.name || '') + ':' + (n.site_name || '') +
-      ':' + (n.managed === false ? '0' : '1') + (n.is_gateway ? '1' : '0'),
-    ).join('|');
-    const es = edges.map((e: TopoEdge) => e.from_device_id + '>' + e.to_device_id).join('|');
-    return layout + '#' + ns + '#' + es;
-  }, [included, edges, layout]);
+  // JSON.stringify, not a delimiter join: names are free text (SNMP sysName, or
+  // an LLDP/CDP neighbour-supplied name for a ghost node), so a node literally
+  // called `sw-a:HQ:10|2:sw-b` produced the same key as a two-node graph and
+  // silently reused the wrong layout.
+  const layoutKey = useMemo(() => JSON.stringify([
+    layout,
+    included.map((n: TopoNode) => [
+      n.device_id, n.name || '', n.site_name || '',
+      n.managed === false ? 0 : 1, n.is_gateway ? 1 : 0,
+    ]),
+    edges.map((e: TopoEdge) => [e.from_device_id, e.to_device_id]),
+  ]), [included, edges, layout]);
 
   const layoutCache = useRef<{ key: string; value: LayoutResult } | null>(null);
   const lay = useMemo<LayoutResult>(() => {
     const cached = layoutCache.current;
-    if (cached && cached.key === layoutKey) return cached.value;
+    // ⛔ A CACHE HIT MUST STILL TAKE THE FRESH NODE OBJECTS.
+    // The signature deliberately covers only what MOVES a node (which nodes
+    // exist, what they sort/group by, the edges) — status, ip and hidden_links
+    // are excluded so a status flap doesn't re-run the embedding. But the
+    // cached LayoutResult holds the node objects captured when it was computed,
+    // and the renderer reads `node.status` for the fill, `node.ip` for the
+    // tooltip and `node.hidden_links` for the "+N" badge. Returning the cached
+    // value verbatim therefore froze exactly the state an operator watches:
+    // measured, /api/topology/map returned all 8 managed devices as `down` and
+    // the canvas kept painting them green until the layout mode was changed.
+    // Re-point the placements at the current objects instead — O(n), embedding
+    // preserved, state live.
+    if (cached && cached.key === layoutKey) {
+      const byId = new Map(included.map((n: TopoNode) => [n.device_id, n]));
+      return {
+        ...cached.value,
+        placed: cached.value.placed.map((pl) => {
+          const fresh = byId.get(pl.node.device_id);
+          return fresh && fresh !== pl.node ? { ...pl, node: fresh } : pl;
+        }),
+      };
+    }
     const value: LayoutResult = included.length === 0
       ? { placed: [], posMap: new Map(), clusters: [], bands: [], width: 100, height: 100 }
       : layout === 'tiered'
@@ -1321,7 +1352,7 @@ export default function TopologyMapView({
   );
 
   return (
-    <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+    <div ref={wrapRef} style={{ position: 'relative', width: '100%', height: '100%' }}>
       <svg
         ref={svgRef}
         viewBox={`0 0 ${lay.width} ${lay.height}`}
