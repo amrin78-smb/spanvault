@@ -36,6 +36,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.114.4': [
+    'Refreshed the app logos across the suite. The marks are redrawn as solid shapes instead of thin outlines - the old ones were 1.5-2.5px strokes that thinned out and lost definition at the size the header actually renders them. Colours are unchanged, and every place a mark appears (header, launcher tiles, suite-health pills, login screen) now uses the same drawing.',
+  ],
   '1.114.3': [
     'A second review of the fixes shipped on Thursday found that three of them had introduced new faults. All three are corrected here.',
     'SECURITY: testing SNMP from the device dialog could be used to send a stored community string, in the clear, to any address typed into the form. Thursday hid those credentials from the browser, and the change that kept the Test button working went too far. A hidden credential is now only ever used to test the address it belongs to.',
