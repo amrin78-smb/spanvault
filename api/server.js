@@ -36,6 +36,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.114.5': [
+    'Second pass on the suite logos: the marks are now dimensional rather than flat - a lit sphere for NocVault, rack units with a scanning lens for NetVault, a layered data stack dissolving into pixels for LogVault, a sculpted waveform for SpanVault, and an orbital globe for DDIVault. Brand colours are unchanged. The shading stays within each brand colour rather than fading to navy, so the marks stay legible on the dark header and on a white page or printed report.',
+  ],
   '1.114.4': [
     'Refreshed the app logos across the suite. The marks are redrawn as solid shapes instead of thin outlines - the old ones were 1.5-2.5px strokes that thinned out and lost definition at the size the header actually renders them. Colours are unchanged, and every place a mark appears (header, launcher tiles, suite-health pills, login screen) now uses the same drawing.',
   ],
