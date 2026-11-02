@@ -382,13 +382,24 @@ function MapTab({
   // ── Canvas scope (all four mirrored into the query string) ────────────
   const [layout, setLayout] = useState<TopoLayout>('sites');
   const [siteSel, setSiteSel] = useState<string[]>([]); // [] = every site
-  // Monitored-first is the DEFAULT. Discovery returns every LLDP/CDP
-  // neighbour, managed or not; on this estate that is 39 unmanaged nodes out
-  // of 104, and rendering them all by default produces a hairball in which
-  // the monitored estate — the part SpanVault can actually act on — is the
-  // minority. Unmanaged nodes are one click away, never hidden silently (the
-  // counts below always state how many are excluded).
+  // Monitored-first is the PREFERRED default, not an unconditional one.
+  //
+  // Discovery returns every LLDP/CDP neighbour, managed or not, and rendering
+  // them all produces a hairball in which the monitored estate — the part
+  // SpanVault can act on — is the minority. But on an estate where the
+  // monitored devices do not neighbour EACH OTHER, filtering to them removes
+  // every link and leaves a page of disconnected boxes: measured on
+  // production at 8 monitored nodes and 0 of 47 links. A topology with no
+  // topology is worse than a busy one.
+  //
+  // So the default is applied only once the data says it works (see the
+  // effect below), and an explicit ?managed= in the URL always wins.
   const [monitoredOnly, setMonitoredOnly] = useState(true);
+  // True once the user (or the URL) has made the choice themselves, after
+  // which nothing here overrides it.
+  const [monitoredChosen, setMonitoredChosen] = useState(false);
+  // Set when the default was dropped because it would have emptied the graph.
+  const [monitoredAutoOff, setMonitoredAutoOff] = useState(false);
   const [q, setQ] = useState('');
 
   useEffect(() => {
@@ -397,9 +408,10 @@ function MapTab({
     if (l === 'sites' || l === 'tiered' || l === 'force') setLayout(l);
     const s = sp.get('sites');
     if (s) setSiteSel(s.split(',').map((x: string) => x.trim()).filter(Boolean));
-    // ?managed=0 is the explicit opt-out from the monitored-first default.
-    if (sp.get('managed') === '0') setMonitoredOnly(false);
-    else if (sp.get('managed') === '1') setMonitoredOnly(true);
+    // ?managed=0 is the explicit opt-out from the monitored-first default;
+    // either value counts as the user having chosen.
+    if (sp.get('managed') === '0') { setMonitoredOnly(false); setMonitoredChosen(true); }
+    else if (sp.get('managed') === '1') { setMonitoredOnly(true); setMonitoredChosen(true); }
     const qq = sp.get('q');
     if (qq) setQ(qq);
   }, []);
@@ -421,6 +433,8 @@ function MapTab({
   }
   function toggleMonitoredOnly() {
     const next = !monitoredOnly;
+    setMonitoredChosen(true);
+    setMonitoredAutoOff(false);
     setMonitoredOnly(next);
     patchQuery({ managed: next ? null : '0' });
   }
@@ -452,6 +466,24 @@ function MapTab({
   //    would need three new query params on a route three other things read.
   const allNodes: TopologyMapNode[] = tmap.data ? tmap.data.nodes : [];
   const allEdges: TopologyMapEdge[] = tmap.data ? tmap.data.edges : [];
+
+  // Would monitored-first leave anything to look at? Computed from the data
+  // rather than assumed: a link counts only when BOTH ends are monitored.
+  const monitoredEdgeCount = useMemo(() => {
+    const ids = new Set(allNodes.filter((n) => n.managed !== false).map((n) => n.device_id));
+    return allEdges.filter((e) => ids.has(e.from_device_id) && ids.has(e.to_device_id)).length;
+  }, [allNodes, allEdges]);
+
+  // Drop the preferred default the moment the data shows it would empty the
+  // canvas. Runs once per load, never against an explicit choice, and says so
+  // in the UI rather than silently changing what the operator sees.
+  useEffect(() => {
+    if (monitoredChosen || !tmap.data) return;
+    if (monitoredOnly && monitoredEdgeCount === 0 && allEdges.length > 0) {
+      setMonitoredOnly(false);
+      setMonitoredAutoOff(true);
+    }
+  }, [tmap.data, monitoredChosen, monitoredOnly, monitoredEdgeCount, allEdges.length]);
 
   const siteRows = useMemo(() => {
     const total = new Map<string, number>();
@@ -565,6 +597,33 @@ function MapTab({
           totalSites={siteRows.length}
           matched={matched}
         />
+      )}
+
+      {/* Why the canvas looks the way it does. An operator who opens Topology
+          and sees eight disconnected boxes needs to be told that is the
+          estate's shape, not a broken page. */}
+      {monitoredAutoOff && (
+        <Notice tone="info">
+          <span>
+            Showing unmanaged neighbours as well: none of the {allEdges.length} discovered
+            link{allEdges.length === 1 ? '' : 's'} connects two monitored devices, so the
+            monitored-only view would have had no links at all. Use <b>Monitored only</b> to
+            see just the monitored estate.
+          </span>
+        </Notice>
+      )}
+      {monitoredOnly && view.edges.length === 0 && allEdges.length > 0 && (
+        <Notice tone="warn">
+          <span>
+            No links are drawn: none of the {allEdges.length} discovered link
+            {allEdges.length === 1 ? '' : 's'} has both ends among the monitored devices in
+            scope. Every neighbour discovered here is unmanaged.{' '}
+            <button type="button" className="sv-link-btn" onClick={toggleMonitoredOnly}>
+              Include unmanaged neighbours
+            </button>{' '}
+            to see how these devices actually connect.
+          </span>
+        </Notice>
       )}
 
       <div

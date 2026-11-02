@@ -36,6 +36,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.115.1': [
+    'Topology opened on a page of disconnected boxes. 1.115.0 made the map default to monitored devices only, which is the right starting point on most estates but not on this one: none of the discovered LLDP/CDP links joins two monitored devices, so the filter removed every link and left eight isolated nodes. The monitored-first default is now applied only when the data supports it, and when it would empty the canvas the page says so and shows the unmanaged neighbours instead - with the monitored-only view still one click away.',
+  ],
   '1.115.0': [
     'An operations console should never tell you to stand down while work is outstanding. The dashboard used to say "no devices down, so nothing above needs attention" beside thirty active critical alerts. That sentence is gone: the top of the dashboard now states what is actually outstanding, item by item, each one a link to the queue that holds it - and an all-clear is only shown when every clause is genuinely clear, with the scope it was checked over spelled out.',
     'The Alerts summary tiles counted the rows the page had fetched, not the alerts that exist. With the default 200-row fetch, "30 critical" meant "30 among the newest 200". They now come from a server-side count over the whole filtered, site-scoped set, so the tiles and the table can never describe different populations. Severity is shown as a word and a shape, not only a colour, and alert messages wrap instead of being cut off mid-sentence.',
