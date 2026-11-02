@@ -11,7 +11,8 @@ import { useApi } from '@/lib/api';
 import { StatusDot } from '@/components/StatusDot';
 import {
   StatusBadge, Loading, ErrorBox, Empty, fmtTime, fmtRel, CHART_TOOLTIP,
-  useTableSort, sortRows, SortTh,
+  useTableSort, sortRows, SortTh, SevTag, InfoTip, Freshness, Notice, LoadError,
+  Breadcrumb,
 } from '@/components/ui';
 
 // ── Types ──────────────────────────────────────────────────────
@@ -36,6 +37,15 @@ type ServiceDetail = {
   active: boolean;
 };
 
+/** The shape GET /api/service-checks returns — used to resolve this check's siblings. */
+type SiblingCheck = {
+  id: number; name: string; type: ServiceType; target: string;
+  group_id: string | null; current_status: string; last_checked_at: string | null;
+  cert_valid_to: string | null; cert_days_left: number | null;
+  site_id: number | null; site_name: string | null;
+};
+type ServiceAlert = { id: number; severity: string; message: string; status: string; triggered_at: string; service_check_id: number | null };
+
 type ResultRow = { ts: string; status: string; response_ms: number | null; detail: string | null };
 type ResultsResponse = { rows: ResultRow[]; uptime_pct: number | null; total: number };
 
@@ -46,6 +56,10 @@ const RANGES = [
 ];
 
 const HISTORY_LIMIT = 50;
+
+// Protocol order for the sibling switcher — the order an operator reads a
+// service in (what it serves, then how it connects, then its name/cert).
+const SIBLING_ORDER: ServiceType[] = ['http', 'tcp', 'ssl', 'dns'];
 
 function dotStatus(s: string): string {
   const v = (s || 'unknown').toLowerCase();
@@ -123,6 +137,12 @@ export default function ServiceDetailPage() {
   const [range, setRange] = useState('24h');
 
   const svc = useApi<ServiceDetail>(`/api/service-checks/${id}`, 20000);
+  // The logical service this check belongs to. A check is never the whole
+  // story: a TCP probe can be perfectly green while the SSL probe of the same
+  // endpoint is nine days from expiry, and before this there was no way to see
+  // that — or to reach the sibling — from here. Reuses the existing list
+  // endpoint (site-scoped server-side) rather than adding a route.
+  const allChecks = useApi<SiblingCheck[]>('/api/service-checks', 60000);
   const results = useApi<ResultsResponse>(
     `/api/service-checks/${id}/results?range=${range}&limit=${HISTORY_LIMIT}`, 20000
   );
@@ -153,10 +173,109 @@ export default function ServiceDetailPage() {
   const isSsl = s.type === 'ssl';
   const sslWarn = isSsl && (s.current_status === 'warning' || s.current_status === 'down');
 
+  // ── Logical-service context ────────────────────────────────
+  const siblings = (allChecks.data || []).filter((c) =>
+    s.group_id ? c.group_id === s.group_id : c.id === s.id);
+  const ordered = siblings.slice().sort((a, b) =>
+    SIBLING_ORDER.indexOf(a.type) - SIBLING_ORDER.indexOf(b.type));
+  // Overall service status = worst status among the checks (documented beside
+  // it, and the same rule the Services list uses).
+  const serviceStatus = ordered.length
+    ? (ordered.some((c) => dotStatus(c.current_status) === 'down') ? 'down'
+      : ordered.some((c) => dotStatus(c.current_status) === 'warning') ? 'warning'
+        : ordered.every((c) => dotStatus(c.current_status) === 'up') ? 'up' : 'unknown')
+    : dotStatus(s.current_status);
+  // Earliest certificate expiry across the WHOLE service, computed from the
+  // stored date (the stored day count is only true on the day it was written).
+  const certs = ordered
+    .map((c) => (c.cert_valid_to ? { check: c, days: Math.ceil((new Date(c.cert_valid_to).getTime() - Date.now()) / 86400000) } : null))
+    .filter((x): x is { check: SiblingCheck; days: number } => x !== null)
+    .sort((a, b) => a.days - b.days);
+  const earliestCert = certs[0] || null;
+
   return (
     <div>
-      <div style={{ marginBottom: 8 }}>
-        <Link href="/services" className="sv-btn ghost sm">← Back to Services</Link>
+      <Breadcrumb items={[
+        { label: 'Services', onClick: () => { window.location.href = '/services'; } },
+        { label: s.name },
+        { label: `${typeLabel(s.type)} check` },
+      ]} />
+
+      {/* ── The logical service this check belongs to. Keeps the parent
+           context, every sibling check (with its own status), the service's
+           site and the earliest certificate expiry in view, so a green TCP
+           check can no longer hide an expiring SSL sibling. ── */}
+      <div style={{ ...SECTION_CARD, marginBottom: 12, padding: '12px 16px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <span style={{ ...SECTION_HEADING, margin: 0 }}>Service</span>
+          <SevTag
+            sev={serviceStatus === 'up' ? 'ok' : serviceStatus === 'down' ? 'critical' : serviceStatus === 'warning' ? 'warning' : 'unknown'}
+            label={serviceStatus === 'up' ? 'All checks up' : serviceStatus === 'down' ? 'A check is down' : serviceStatus === 'warning' ? 'A check is warning' : 'Status unknown'}
+          />
+          <InfoTip label="Service status">
+            The worst status among this service&apos;s {ordered.length} check{ordered.length === 1 ? '' : 's'}:
+            down beats warning beats up. A service is &quot;up&quot; only when every one of its checks is up.
+          </InfoTip>
+          <span style={{ fontWeight: 700, color: 'var(--text-primary)' }}>{s.name}</span>
+          <span className="sv-muted">
+            {s.site_id != null && s.site_name
+              ? <>· <Link href={`/sites/${s.site_id}`} style={{ color: 'inherit' }}>{s.site_name}</Link></>
+              : <span title="This service is not assigned to a site: site-scoped operators cannot see it, and site-scoped notification routes will never match it.">· Unassigned (no site)</span>}
+          </span>
+          <span className="sv-muted">· {ordered.length} check{ordered.length === 1 ? '' : 's'}</span>
+        </div>
+
+        {/* Sibling switcher — every protocol check of this service, the current
+            one marked. This is the dead-end fix: you can now move between the
+            HTTP, TCP, SSL and DNS views of one endpoint. */}
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }} role="group" aria-label="Checks of this service">
+          {allChecks.loading && !allChecks.data && <span className="sv-muted" style={{ fontSize: 'var(--text-sm)' }}>Loading sibling checks…</span>}
+          {allChecks.error && (
+            <span className="sv-muted" style={{ fontSize: 'var(--text-sm)' }}>
+              Could not load this service&apos;s other checks ({allChecks.error}).
+            </span>
+          )}
+          {ordered.map((c) => {
+            const here = c.id === s.id;
+            const st = dotStatus(c.current_status);
+            return (
+              <Link
+                key={c.id}
+                href={`/services/${c.id}`}
+                aria-current={here ? 'page' : undefined}
+                className="sv-sibling"
+                data-current={here ? 'true' : undefined}
+                title={`${typeLabel(c.type)} check — ${c.current_status}${c.last_checked_at ? `, checked ${fmtRel(c.last_checked_at)}` : ''}`}
+              >
+                <StatusDot status={st} size={8} />
+                {typeLabel(c.type)}
+                {here && <span className="sv-muted" style={{ fontWeight: 400 }}>(viewing)</span>}
+              </Link>
+            );
+          })}
+        </div>
+
+        {/* Certificate state belongs to the SERVICE, not just the SSL check —
+            surfaced here so it is visible from every sibling. */}
+        {earliestCert && (
+          <div style={{ marginTop: 10 }}>
+            <Notice tone={earliestCert.days < 0 ? 'danger' : earliestCert.days <= 14 ? 'warn' : earliestCert.days <= 60 ? 'info' : 'ok'}>
+              <span>
+                Earliest certificate on this service{' '}
+                {earliestCert.days < 0
+                  ? `expired ${Math.abs(earliestCert.days)} day${Math.abs(earliestCert.days) === 1 ? '' : 's'} ago`
+                  : earliestCert.days === 0 ? 'expires today'
+                    : `expires in ${earliestCert.days} day${earliestCert.days === 1 ? '' : 's'}`}
+                {' '}({new Date(earliestCert.check.cert_valid_to as string).toISOString().slice(0, 10)}) —{' '}
+                {earliestCert.check.id === s.id
+                  ? 'this check.'
+                  : <Link href={`/services/${earliestCert.check.id}`} style={{ color: 'inherit', fontWeight: 600 }}>
+                      open the {typeLabel(earliestCert.check.type)} check
+                    </Link>}
+              </span>
+            </Notice>
+          </div>
+        )}
       </div>
 
       {/* Compact header: status dot + name + badges */}
@@ -172,7 +291,7 @@ export default function ServiceDetailPage() {
         {!s.active && <span className="sv-type-badge" style={{ fontSize: 'var(--text-xs)' }}>Paused</span>}
       </div>
       <p style={{ color: 'var(--text-muted)', fontSize: 'var(--text-base)', margin: '0 0 14px' }}>
-        {s.target} · {s.site_name || 'No site'} · Runs from {s.agent_name || 'Central collector'} · Poll every {s.interval_seconds}s
+        {s.target} · Runs from {s.agent_name || 'Central collector'} · Polls every {s.interval_seconds}s
       </p>
 
       {/* SSL expiry callout */}

@@ -8,7 +8,7 @@ import {
 } from 'recharts';
 import { useApi, apiSend, apiGet } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
-import { Loading, ErrorBox, Empty, fmtRel, fmtTime, UtilBar, pctColor, PageHeader, Pager, useClientPagination, CHART_TOOLTIP, useConfirm, useTableSort, SortTh } from '@/components/ui';
+import { Loading, ErrorBox, Empty, fmtRel, fmtTime, UtilBar, pctColor, PageHeader, Pager, useClientPagination, CHART_TOOLTIP, useConfirm, useTableSort, SortTh, Tabs, useUrlTab, SevTag, InfoTip, Freshness, MetricCard, Notice, StaleNotice, NoResults, LoadError, TableScroll, RowMenu, FilterBar, ActiveFilters, NoAccess, FirstUse } from '@/components/ui';
 import { StatusDot } from '@/components/StatusDot';
 import { IconCheck, IconWarning, IconRepeat, IconClose, IconTool, IconPin } from '@/components/icons';
 
@@ -435,19 +435,25 @@ interface RogueResponse {
 
 // Classification colour: malicious/rogue = red, interfering = yellow,
 // friendly/known = green, anything else (unclassified) = muted.
-function rogueClassColor(c: string): string {
-  switch ((c || '').toLowerCase()) {
-    case 'malicious':
-    case 'rogue':
-      return 'var(--red)';
-    case 'interfering':
-      return 'var(--yellow)';
-    case 'friendly':
-    case 'known':
-      return 'var(--green)';
-    default:
-      return 'var(--text-muted)';
+// Where a reported classification sits in the security triage order, and how
+// it reads to an operator. Keyed on the controller's own value — nothing here
+// infers a classification SpanVault was not told.
+const THREAT_SEV: Record<string, 'critical' | 'warning' | 'info' | 'ok' | 'unknown'> = {
+  malicious: 'critical', rogue: 'critical', interfering: 'warning',
+  unclassified: 'info', friendly: 'ok',
+};
+const THREAT_LABEL: Record<string, string> = {
+  malicious: '1 · Confirmed threat', rogue: '2 · Rogue', interfering: '3 · Interfering',
+  unclassified: '4 · Needs review', friendly: '5 · Known good',
+};
+
+/** A controller that has no address for a client reports 0.0.0.0. It is a
+ *  "not reported", not an address — show it as one. */
+function clientIp(ip: string | null): React.ReactNode {
+  if (!ip || ip === '0.0.0.0' || ip === '::') {
+    return <span className="sv-muted" title="The controller did not report an IP address for this client.">Not reported</span>;
   }
+  return ip;
 }
 
 // ── Wireless client contracts ─────────────────────────────────
@@ -743,10 +749,30 @@ const VENDOR_OPTIONS = [
   'hpe', 'grandstream', 'ubiquiti', 'omada', 'aruba_central',
 ];
 
-// Only aruba_central needs a display label distinct from its raw value —
-// every other option is already rendered as-is (lowercase vendor id).
+// Raw vendor enums (`aruba_central`, `hpe_imc`, …) are storage keys, not
+// operator-facing words. Every one gets a readable label; an unmapped value
+// still renders rather than disappearing, title-cased from its own key so a
+// newly added vendor degrades to "Some Vendor" instead of "some_vendor".
+const VENDOR_LABELS: Record<string, string> = {
+  aruba_central: 'Aruba Central',
+  aruba: 'Aruba',
+  cisco: 'Cisco',
+  cisco_wlc: 'Cisco WLC',
+  ruckus: 'Ruckus',
+  ruckus_smartzone: 'Ruckus SmartZone',
+  hpe: 'HPE',
+  hpe_imc: 'HPE IMC',
+  fortinet: 'FortiGate',
+  mikrotik: 'MikroTik',
+  grandstream: 'Grandstream',
+  ubiquiti: 'Ubiquiti',
+  meraki: 'Meraki',
+  unifi: 'UniFi',
+};
 function vendorLabel(v: string): string {
-  return v === 'aruba_central' ? 'Aruba Central' : v;
+  if (!v) return '—';
+  if (VENDOR_LABELS[v]) return VENDOR_LABELS[v];
+  return v.replace(/[_-]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 // Aruba Central's API never returns a per-band (2.4/5/6GHz) client split —
@@ -1271,7 +1297,12 @@ function GradeBadge({ grade }: { grade: string }) {
 }
 
 // Compact score card with grade + (neutral) trend arrow.
-function ScoreCard({ label, score, grade }: { label: string; score: number; grade?: string }) {
+function ScoreCard({ label, score, grade, definition, note }: {
+  label: string; score: number; grade?: string;
+  /** What goes into the score, over what window and scope. */
+  definition?: React.ReactNode;
+  note?: React.ReactNode;
+}) {
   const v = Math.round(score);
   return (
     <div style={{
@@ -1289,7 +1320,7 @@ function ScoreCard({ label, score, grade }: { label: string; score: number; grad
       <div style={{
         fontSize: 'var(--text-xs)', color: 'var(--text-muted)', textTransform: 'uppercase',
         letterSpacing: 0.4, marginTop: 4,
-      }}>{label}</div>
+      }}>{label}{definition ? <InfoTip label={label}>{definition}</InfoTip> : null}</div>
     </div>
   );
 }
@@ -1320,22 +1351,40 @@ function haCellLabel(ha_mode: string | null, ha_sync_status: string | null): { t
 // Page
 // ════════════════════════════════════════════════════════════
 
+const WIRELESS_TABS: readonly TabKey[] = ['overview', 'aps', 'ssids', 'intelligence', 'clients', 'rogues', 'controllers'] as const;
+
 export default function WirelessPage() {
-  const [tab, setTab] = useState<TabKey>('overview');
+  // URL-backed so refresh, sharing, Back and Forward all keep the tab. Not
+  // useSearchParams(): that would opt this prerendered client page out of
+  // static rendering.
+  const { tab, setTab, setTabState } = useUrlTab<TabKey>('tab', WIRELESS_TABS, 'overview');
   const [initialApId, setInitialApId] = useState<number | null>(null);
-  // Deep-link support: the dashboard's Wireless Health chips link here with ?tab=intelligence|clients,
-  // and the Alerts page links wireless alerts here with ?tab=aps&apId=<id> to open that AP's
-  // detail drawer directly (see AccessPointsTab's initialApId prop below).
+  // Exact-entity deep links. Every searchable wireless entity now has one:
+  //   ?tab=aps&apId=<id>                 -> that AP's detail drawer
+  //   ?tab=clients&mac=<mac>             -> that client's detail panel
+  //   ?tab=controllers&controllerId=<id> -> that controller's row, highlighted
+  // Before this, an AP, controller or client picked from search only landed on
+  // the parent tab, which reads as a broken result.
+  const [initialMac, setInitialMac] = useState<string | null>(null);
+  const [initialControllerId, setInitialControllerId] = useState<number | null>(null);
   useEffect(() => {
-    const search = new URLSearchParams(window.location.search);
-    const t = search.get('tab');
-    const valid: TabKey[] = ['overview', 'aps', 'ssids', 'intelligence', 'clients', 'rogues', 'controllers'];
-    if (t && (valid as string[]).includes(t)) setTab(t as TabKey);
-    const apIdParam = search.get('apId');
-    if (apIdParam) {
-      const parsed = parseInt(apIdParam, 10);
-      if (!isNaN(parsed)) setInitialApId(parsed);
-    }
+    const read = () => {
+      const search = new URLSearchParams(window.location.search);
+      const apIdParam = search.get('apId');
+      if (apIdParam) {
+        const parsed = parseInt(apIdParam, 10);
+        if (!isNaN(parsed)) setInitialApId(parsed);
+      }
+      setInitialMac(search.get('mac'));
+      const ctl = search.get('controllerId');
+      if (ctl) {
+        const parsed = parseInt(ctl, 10);
+        if (!isNaN(parsed)) setInitialControllerId(parsed);
+      }
+    };
+    read();
+    window.addEventListener('popstate', read);
+    return () => window.removeEventListener('popstate', read);
   }, []);
 
   // The effect above only runs on MOUNT, which is enough for a link arriving from
@@ -1349,14 +1398,15 @@ export default function WirelessPage() {
   // arriving while mounted does not (this listener).
   useEffect(() => {
     function onTab(e: Event) {
-      const detail = (e as CustomEvent<{ tab?: string; apId?: number }>).detail || {};
-      const valid: TabKey[] = ['overview', 'aps', 'ssids', 'intelligence', 'clients', 'rogues', 'controllers'];
-      if (detail.tab && (valid as string[]).includes(detail.tab)) setTab(detail.tab as TabKey);
+      const detail = (e as CustomEvent<{ tab?: string; apId?: number; mac?: string; controllerId?: number }>).detail || {};
+      if (detail.tab && (WIRELESS_TABS as readonly string[]).includes(detail.tab)) setTabState(detail.tab as TabKey);
       if (typeof detail.apId === 'number' && !isNaN(detail.apId)) setInitialApId(detail.apId);
+      if (detail.mac) setInitialMac(detail.mac);
+      if (typeof detail.controllerId === 'number' && !isNaN(detail.controllerId)) setInitialControllerId(detail.controllerId);
     }
     window.addEventListener('spanvault:wireless-tab', onTab);
     return () => window.removeEventListener('spanvault:wireless-tab', onTab);
-  }, []);
+  }, [setTabState]);
   const [siteFilter, setSiteFilter] = useState<number | null>(null);
   const [controllerFilter, setControllerFilter] = useState<number | null>(null);
   const [apStatusFilter, setApStatusFilter] = useState<string>('');
@@ -1417,36 +1467,24 @@ export default function WirelessPage() {
     <div>
       <PageHeader title="Wireless" subtitle="Access points and wireless controllers" />
 
-      <div className="sv-tabs sticky">
-        <button
-          className={`sv-tab ${tab === 'overview' ? 'active' : ''}`}
-          onClick={() => setTab('overview')}
-        >Wireless Insights</button>
-        <button
-          className={`sv-tab ${tab === 'aps' ? 'active' : ''}`}
-          onClick={() => setTab('aps')}
-        >Access Points</button>
-        <button
-          className={`sv-tab ${tab === 'ssids' ? 'active' : ''}`}
-          onClick={() => setTab('ssids')}
-        >SSIDs</button>
-        <button
-          className={`sv-tab ${tab === 'intelligence' ? 'active' : ''}`}
-          onClick={() => setTab('intelligence')}
-        >Intelligence</button>
-        <button
-          className={`sv-tab ${tab === 'clients' ? 'active' : ''}`}
-          onClick={() => setTab('clients')}
-        >Clients</button>
-        <button
-          className={`sv-tab ${tab === 'rogues' ? 'active' : ''}`}
-          onClick={() => setTab('rogues')}
-        >Rogue APs</button>
-        <button
-          className={`sv-tab ${tab === 'controllers' ? 'active' : ''}`}
-          onClick={() => setTab('controllers')}
-        >Controllers</button>
-      </div>
+      <Tabs
+        ariaLabel="Wireless sections"
+        sticky
+        active={tab}
+        onChange={(k) => setTab(k)}
+        tabs={[
+          // "Overview" not "Wireless Insights": the Intelligence tab is the
+          // insights view, and two names for analysis made the first tab read
+          // like a second analytics page rather than the landing summary.
+          { key: 'overview', label: 'Overview' },
+          { key: 'aps', label: 'Access Points' },
+          { key: 'ssids', label: 'SSIDs' },
+          { key: 'intelligence', label: 'Intelligence' },
+          { key: 'clients', label: 'Clients' },
+          { key: 'rogues', label: 'Rogue APs' },
+          { key: 'controllers', label: 'Controllers' },
+        ]}
+      />
 
       {tab === 'overview' && (
         <OverviewTab
@@ -1489,10 +1527,18 @@ export default function WirelessPage() {
           setApFilter={setClientApFilter}
           problemOnly={clientProblemOnly}
           setProblemOnly={setClientProblemOnly}
+          initialMac={initialMac}
+          onInitialMacConsumed={() => setInitialMac(null)}
         />
       )}
       {tab === 'rogues' && <RogueApsTab />}
-      {tab === 'controllers' && <ControllersTab onViewEvents={() => setTab('clients')} />}
+      {tab === 'controllers' && (
+        <ControllersTab
+          onViewEvents={() => setTab('clients')}
+          highlightControllerId={initialControllerId}
+          onHighlightConsumed={() => setInitialControllerId(null)}
+        />
+      )}
     </div>
   );
 }
@@ -1516,7 +1562,13 @@ function RogueApsTab() {
   // Zero-based server page. Any filter or sort change must reset it, or you can
   // sit on page 12 of a result set that now has three pages and see nothing.
   const [page, setPage] = useState(0);
-  const { sort, onSort } = useTableSort({ key: 'lastseen', dir: 'desc' });
+  // Security triage order by default. Newest-first is what the detections
+  // table used to open on, which on 12,500 rows buried every confirmed
+  // malicious BSSID under five minutes of unclassified noise.
+  const { sort, onSort } = useTableSort({ key: 'threat', dir: 'asc' });
+  // Two populations, not one list: what is being detected NOW, and the full
+  // detection history. A BSSID last seen in March is a record, not a threat.
+  const [queue, setQueue] = useState<'current' | 'all'>('current');
 
   const controllersApi = useApi<Controller[]>('/api/wireless/controllers', 60000);
 
@@ -1530,7 +1582,10 @@ function RogueApsTab() {
   if (band) qs.set('band', band);
   if (channel) qs.set('channel', channel);
   if (minRssi) qs.set('min_rssi', minRssi);
-  if (sinceHours) qs.set('since_hours', sinceHours);
+  // The "current" queue is bounded by last-seen; "all detections" is not.
+  // An explicit Last-seen filter always wins over the mode's default.
+  const effectiveSince = sinceHours || (queue === 'current' ? '24' : '');
+  if (effectiveSince) qs.set('since_hours', effectiveSince);
   if (namedOnly) qs.set('named', '1');
   if (controllerId) qs.set('controller_id', controllerId);
   if (detectingAp) qs.set('detecting_ap', detectingAp);
@@ -1560,7 +1615,7 @@ function RogueApsTab() {
   // pager insisting there is data. Reset to the first page on every such change.
   useEffect(() => {
     setPage(0);
-  }, [search, classFilter, band, channel, minRssi, sinceHours, namedOnly, controllerId, detectingAp, sort?.key, sort?.dir]);
+  }, [search, classFilter, band, channel, minRssi, sinceHours, namedOnly, controllerId, detectingAp, queue, sort?.key, sort?.dir]);
 
   const anyFilter = Boolean(search || classFilter || band || channel || minRssi || sinceHours || namedOnly || controllerId || detectingAp);
   function clearAll() {
@@ -1593,6 +1648,16 @@ function RogueApsTab() {
       </div>
 
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', margin: '14px 0' }}>
+        <div className="segmented" role="group" aria-label="Detection queue">
+          <button type="button" className={queue === 'current' ? 'active' : ''} aria-pressed={queue === 'current'}
+            onClick={() => setQueue('current')} title="Detections seen in the last 24 hours">
+            Current (24h)
+          </button>
+          <button type="button" className={queue === 'all' ? 'active' : ''} aria-pressed={queue === 'all'}
+            onClick={() => setQueue('all')} title="Every detection ever recorded, however old">
+            All detections
+          </button>
+        </div>
         <input
           className="sv-input"
           style={{ maxWidth: 300, flex: 1 }}
@@ -1669,8 +1734,13 @@ function RogueApsTab() {
             pager below says which slice is on screen. */}
         {roguesApi.data
           ? `${matched.toLocaleString()} matching detection${matched === 1 ? '' : 's'}`
-            + (anyFilter && summary ? ` · ${summary.total.toLocaleString()} detected in total` : '')
+            + (queue === 'current' && !sinceHours ? ' seen in the last 24 hours' : '')
+            + (summary ? ` · ${summary.total.toLocaleString()} detected in total` : '')
           : ''}
+      </div>
+      <div className="sv-defs">
+        <span><b>Classification</b> is the controller&apos;s own verdict. SpanVault never infers one — signal strength and interference are not evidence of intent.</span>
+        <span><b>Confidence</b> is not available: these controllers report a classification but no confidence score, so none is shown.</span>
       </div>
 
       {roguesApi.error && <ErrorBox message={roguesApi.error} />}
@@ -1679,12 +1749,16 @@ function RogueApsTab() {
         <div className="sv-panel"><Loading /></div>
       ) : shown.length ? (
         <div className="sv-panel" style={{ padding: 0 }}>
+          <TableScroll label="Rogue access point detections">
           <table className="sv-table">
             <thead>
               <tr>
                 <SortTh label="BSSID" col="bssid" sort={sort} onSort={onSort} style={STICKY_TH} />
                 <SortTh label="SSID" col="ssid" sort={sort} onSort={onSort} style={STICKY_TH} />
-                <SortTh label="Classification" col="classification" sort={sort} onSort={onSort} style={STICKY_TH} />
+                {/* One column: the triage tag names the classification, so a
+                    separate Classification column said the same thing twice
+                    and cost the width that pushed RSSI and SSID into wrapping. */}
+                <SortTh label="Classification" col="threat" sort={sort} onSort={onSort} style={STICKY_TH} />
                 <SortTh label="RSSI" col="rssi" sort={sort} onSort={onSort} style={STICKY_TH} />
                 <SortTh label="Channel" col="channel" sort={sort} onSort={onSort} style={STICKY_TH} />
                 <SortTh label="Band" col="band" sort={sort} onSort={onSort} style={STICKY_TH} />
@@ -1695,15 +1769,28 @@ function RogueApsTab() {
             </thead>
             <tbody>
               {shown.map((r) => {
-                const color = rogueClassColor(r.classification);
                 return (
                   <tr key={r.id}>
                     <td style={{ fontWeight: 600, fontFamily: 'var(--font-mono)' }}>{r.bssid}</td>
                     <td>{r.ssid || '—'}</td>
-                    <td>
-                      <span className="sv-badge" style={{ color, borderColor: color, textTransform: 'capitalize' }}>
-                        {r.classification || 'unclassified'}
-                      </span>
+                    {/* A NULL classification is not "unclassified": the
+                        controller reported nothing at all, which is a
+                        different (and weaker) statement than one that
+                        explicitly says "unclassified". */}
+                    <td style={{ whiteSpace: 'nowrap' }}>
+                      {r.classification ? (
+                        <SevTag
+                          sev={THREAT_SEV[r.classification.toLowerCase()] ?? 'unknown'}
+                          label={THREAT_LABEL[r.classification.toLowerCase()] ?? r.classification}
+                          title="The controller's own verdict, shown in security triage order. SpanVault never classifies a detection itself."
+                        />
+                      ) : (
+                        <SevTag
+                          sev="unknown"
+                          label="Not reported"
+                          title="This controller did not report a classification for this BSSID — which is not the same as it reporting 'unclassified'."
+                        />
+                      )}
                     </td>
                     <td style={{ color: signalColor(r.rssi_dbm), fontWeight: 600 }}>
                       {r.rssi_dbm != null ? `${r.rssi_dbm} dBm` : '—'}
@@ -1727,6 +1814,7 @@ function RogueApsTab() {
               })}
             </tbody>
           </table>
+          </TableScroll>
           <div style={{ padding: '0 12px 12px' }}>
             <Pager page={page} pageCount={pageCount} start={start} perPage={ROGUES_PER_PAGE} total={matched}
               onPrev={() => setPage((n) => Math.max(0, n - 1))}
@@ -2517,6 +2605,85 @@ function sortAps(aps: AccessPoint[], sort: ApSort | null): AccessPoint[] {
 // one also accepts a `style` prop, needed for the sticky headers on the Rogue
 // APs table, and its comparator handles nulls/numbers/dates consistently.
 
+
+// ════════════════════════════════════════════════════════════
+// AP lifecycle (1.115.0)
+// ════════════════════════════════════════════════════════════
+//
+// `wireless_aps` has no retirement or lifecycle column — the only authoritative
+// facts are `status` (what the controller last reported) and `last_seen_at`
+// (when we last had contact). So the three states below are derived from
+// last-seen against the polling expectation, and they are LABELLED as that
+// derivation rather than presented as a retirement decision:
+//
+//   online          — the controller currently reports it up
+//   recently-offline— down, last seen within the stale threshold
+//   stale           — down and not seen for over a week: probably decommissioned,
+//                     possibly a genuine long outage. We never decide which.
+//
+// Nothing here retires, deletes or suppresses a record; the exact last-seen
+// time is always shown so the operator can judge.
+const AP_STALE_AFTER_DAYS = 7;
+
+type ApLifecycle = 'online' | 'recently-offline' | 'stale' | 'unknown';
+
+function apDaysSinceSeen(ap: { last_seen_at: string | null }): number | null {
+  if (!ap.last_seen_at) return null;
+  const t = Date.parse(ap.last_seen_at);
+  if (Number.isNaN(t)) return null;
+  return (Date.now() - t) / 86400000;
+}
+
+function apLifecycle(ap: { status: string; last_seen_at: string | null }): ApLifecycle {
+  if (ap.status === 'online') return 'online';
+  const days = apDaysSinceSeen(ap);
+  if (days == null) return 'unknown';
+  return days >= AP_STALE_AFTER_DAYS ? 'stale' : 'recently-offline';
+}
+
+/**
+ * Is a reported "current" metric still credible for this AP?
+ *
+ * An AP last heard from 31 days ago was still carrying `uptime_seconds =
+ * 920,000,000` — rendered as "10648d 3h" in the Uptime column, beside a Last
+ * Seen of "31d ago". That is a stored value from the last successful poll,
+ * which for an offline AP is neither current nor, in that case, plausible.
+ * Point-in-time metrics are therefore shown only for an AP we are currently in
+ * contact with; otherwise the cell says so and the value moves into the title.
+ */
+function apMetricsAreCurrent(ap: { status: string; last_seen_at: string | null }): boolean {
+  return apLifecycle(ap) === 'online';
+}
+
+/** AP display name. The column is NOT NULL, so a vendor that reports no name
+ *  stores the MAC — show it as such rather than letting it read as a name. */
+function apDisplayName(ap: { name: string; mac_address: string | null }): { label: string; unnamed: boolean } {
+  const mac = (ap.mac_address || '').toLowerCase();
+  const isMac = !!ap.name && ap.name.toLowerCase().replace(/[-.]/g, ':') === mac;
+  return isMac || /^[0-9a-f]{2}([:-][0-9a-f]{2}){5}$/i.test(ap.name || '')
+    ? { label: ap.name, unnamed: true }
+    : { label: ap.name, unnamed: false };
+}
+
+function ApLifecycleTag({ ap }: { ap: AccessPoint }) {
+  const life = apLifecycle(ap);
+  const days = apDaysSinceSeen(ap);
+  if (life === 'online') return <SevTag sev="ok" label="Online" />;
+  if (life === 'recently-offline') {
+    return <SevTag sev="critical" label="Offline" title={`Down — last seen ${fmtRel(ap.last_seen_at)}`} />;
+  }
+  if (life === 'stale') {
+    return (
+      <SevTag
+        sev="stale"
+        label={days != null ? `Not seen ${Math.floor(days)}d` : 'Not seen'}
+        title={`Not seen since ${fmtTime(ap.last_seen_at)}. Over ${AP_STALE_AFTER_DAYS} days without contact — likely decommissioned, but SpanVault does not retire records automatically.`}
+      />
+    );
+  }
+  return <SevTag sev="unknown" label="Never seen" title="This access point has never reported in." />;
+}
+
 // ── One controller's collapsible AP group (own search + collapse state) ───────
 function ApControllerGroup({
   controller, aps, onSelectAp,
@@ -2543,8 +2710,20 @@ function ApControllerGroup({
       : { key: col, dir: 'asc' });
   }
 
-  const clients = aps.reduce((s, a) => s + (a.clients_total || 0), 0);
-  const summary = `${aps.length} AP${aps.length === 1 ? '' : 's'} · ${clients} client${clients === 1 ? '' : 's'}`;
+  // Only APs we are actually in contact with contribute a client count — an
+  // offline AP's stored figure is historical.
+  const clients = aps.reduce((s, a) => s + (apMetricsAreCurrent(a) ? (a.clients_total || 0) : 0), 0);
+  const life = aps.reduce((acc, a) => { acc[apLifecycle(a)] += 1; return acc; },
+    { online: 0, 'recently-offline': 0, stale: 0, unknown: 0 } as Record<ApLifecycle, number>);
+  // The three lifecycle states are named separately: "14 APs" over a group
+  // where four have not been seen in a month is a misleading fleet size.
+  const summary = [
+    `${aps.length} AP${aps.length === 1 ? '' : 's'}`,
+    `${life.online} online`,
+    life['recently-offline'] ? `${life['recently-offline']} offline` : null,
+    life.stale ? `${life.stale} not seen >${AP_STALE_AFTER_DAYS}d` : null,
+    `${clients} client${clients === 1 ? '' : 's'}`,
+  ].filter(Boolean).join(' · ');
 
   const shown = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -2552,6 +2731,9 @@ function ApControllerGroup({
       : aps.filter((a) => a.name.toLowerCase().includes(q) || (a.ip_address || '').toLowerCase().includes(q));
     return sortAps(filtered, sort);
   }, [aps, search, sort]);
+  // A controller with 227 APs rendered 227 rows under one header. Paged, so
+  // the page stays navigable at fleet scale.
+  const pg = useClientPagination(shown, 25, `${search}|${sort?.key ?? ''}:${sort?.dir ?? ''}`);
 
   return (
     <div style={{ marginBottom: 12 }}>
@@ -2587,35 +2769,64 @@ function ApControllerGroup({
                 </tr>
               </thead>
               <tbody>
-                {shown.map((ap: AccessPoint) => (
-                  <tr key={ap.id} style={{ cursor: 'pointer' }} onClick={() => onSelectAp(ap)}>
-                    <td style={{ fontWeight: 600 }}>{ap.name}</td>
-                    <td>{ap.site_name || '—'}</td>
-                    <td>
-                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                        <StatusDot status={statusToDot(ap.status)} />
-                        {ap.status}
-                      </span>
-                    </td>
-                    <td title={perBandUnavailable(ap.vendor) ? 'Per-band breakdown not available for this vendor' : `${ap.clients_2g} on 2.4GHz, ${ap.clients_5g} on 5GHz`}>{ap.clients_total}</td>
-                    <td>{ap.radio_2g_channel != null ? `Ch ${ap.radio_2g_channel}` : '—'}</td>
-                    <td>{ap.radio_5g_channel != null ? `Ch ${ap.radio_5g_channel}` : '—'}</td>
-                    <td style={{ minWidth: 140 }}>
-                      {apUtil(ap) == null ? (
-                        <span style={{ color: 'var(--text-muted)' }} title="Channel utilization not available yet">—</span>
-                      ) : (
-                        <UtilBar pct={apUtil(ap) as number} />
-                      )}
-                    </td>
-                    <td><CongestionPill level={ap.congestion_level} /></td>
-                    <td>{ap.uptime_formatted || '—'}</td>
-                    <td>{fmtRel(ap.last_seen_at)}</td>
-                  </tr>
-                ))}
+                {pg.pageRows.map((ap: AccessPoint) => {
+                  const current = apMetricsAreCurrent(ap);
+                  const nm = apDisplayName(ap);
+                  return (
+                    <tr key={ap.id} style={{ cursor: 'pointer' }} onClick={() => onSelectAp(ap)}>
+                      <td style={{ fontWeight: 600 }}>
+                        {nm.label}
+                        {nm.unnamed && (
+                          <span className="sv-muted" style={{ fontWeight: 400, fontSize: 'var(--text-xs)', display: 'block' }}>
+                            MAC only — no name reported
+                          </span>
+                        )}
+                      </td>
+                      <td>{ap.site_name || 'Unassigned'}</td>
+                      <td><ApLifecycleTag ap={ap} /></td>
+                      {/* Every point-in-time figure below is suppressed once we
+                          are no longer in contact: the stored value is the last
+                          successful poll's, not a current reading. */}
+                      <td title={!current ? `Last reported ${ap.clients_total} clients when last seen ${fmtRel(ap.last_seen_at)}`
+                        : perBandUnavailable(ap.vendor) ? 'Per-band breakdown not available for this vendor'
+                          : `${ap.clients_2g} on 2.4GHz, ${ap.clients_5g} on 5GHz`}>
+                        {current ? ap.clients_total : <span className="sv-muted">—</span>}
+                      </td>
+                      <td>{ap.radio_2g_channel != null ? `Ch ${ap.radio_2g_channel}` : '—'}</td>
+                      <td>{ap.radio_5g_channel != null ? `Ch ${ap.radio_5g_channel}` : '—'}</td>
+                      <td style={{ minWidth: 140 }}>
+                        {!current ? (
+                          <span className="sv-muted" title="Not currently in contact with this AP">—</span>
+                        ) : apUtil(ap) == null ? (
+                          <span style={{ color: 'var(--text-muted)' }} title="Channel utilization not available yet">—</span>
+                        ) : (
+                          <UtilBar pct={apUtil(ap) as number} />
+                        )}
+                      </td>
+                      <td>{current ? <CongestionPill level={ap.congestion_level} /> : <span className="sv-muted">—</span>}</td>
+                      <td title={!current && ap.uptime_formatted
+                        ? `Last reported uptime when we were last in contact: ${ap.uptime_formatted}`
+                        : undefined}>
+                        {current ? (ap.uptime_formatted || '—') : <span className="sv-muted">—</span>}
+                      </td>
+                      <td title={ap.last_seen_at ? fmtTime(ap.last_seen_at) : 'Never seen'} style={{ whiteSpace: 'nowrap' }}>
+                        {fmtRel(ap.last_seen_at)}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           ) : (
             <Empty message="No access points match this search." />
+          )}
+          {shown.length > 0 && (
+            <div style={{ padding: '0 12px 12px' }}>
+              <Pager
+                page={pg.page} pageCount={pg.pageCount} start={pg.start}
+                perPage={pg.perPage} total={pg.total} onPrev={pg.prev} onNext={pg.next}
+              />
+            </div>
           )}
         </div>
       )}
@@ -2720,15 +2931,58 @@ function AccessPointsTab({
     return Array.from(set).sort();
   }, [allAps]);
 
-  const groups = useMemo(() => {
-    const vendorFiltered = vendor ? allAps.filter((ap) => ap.vendor === vendor) : allAps;
-    return groupByController(vendorFiltered, controllers.data || []);
-  }, [allAps, vendor, controllers.data]);
+  // Lifecycle is derived client-side from last_seen_at (the API has no such
+  // column), so it filters the fetched set rather than the query.
+  const [lifeFilter, setLifeFilter] = useState<'' | ApLifecycle>('');
+  const fleet = useMemo(() => allAps.reduce((acc, a) => {
+    acc[apLifecycle(a)] += 1; return acc;
+  }, { online: 0, 'recently-offline': 0, stale: 0, unknown: 0 } as Record<ApLifecycle, number>), [allAps]);
 
-  const hasActiveLifted = siteFilter != null || controllerFilter != null || status !== '' || vendor !== '';
+  const groups = useMemo(() => {
+    let rows = vendor ? allAps.filter((ap) => ap.vendor === vendor) : allAps;
+    if (lifeFilter) rows = rows.filter((ap) => apLifecycle(ap) === lifeFilter);
+    return groupByController(rows, controllers.data || []);
+  }, [allAps, vendor, lifeFilter, controllers.data]);
+
+  const hasActiveLifted = siteFilter != null || controllerFilter != null || status !== '' || vendor !== '' || lifeFilter !== '';
 
   return (
     <div>
+      {/* Fleet size, current outages and probably-retired inventory are three
+          different numbers. Showing one "40 APs" figure let four-week-old
+          records inflate the fleet and hid the one outage that mattered. */}
+      {allAps.length > 0 && (
+        <div className="sv-metrics" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', marginBottom: 12 }}>
+          <MetricCard
+            value={allAps.length} label="Access points"
+            definition="Every AP record SpanVault holds, including ones that have not reported in for a long time. Records are never removed automatically."
+            onClick={() => setLifeFilter('')}
+          />
+          <MetricCard
+            tone="ok" value={fleet.online} label="Online now"
+            definition="The controller reported this AP as up at the last poll."
+            onClick={() => setLifeFilter('online')}
+          />
+          <MetricCard
+            tone="critical" value={fleet['recently-offline']} label="Currently offline"
+            definition={`Down, and last seen within the last ${AP_STALE_AFTER_DAYS} days — an outage to act on.`}
+            onClick={() => setLifeFilter('recently-offline')}
+          />
+          <MetricCard
+            tone="warning" value={fleet.stale} label={`Not seen >${AP_STALE_AFTER_DAYS}d`}
+            definition={`Down and not heard from for over ${AP_STALE_AFTER_DAYS} days. Usually decommissioned hardware still in the controller's list — but it could be a long outage, so SpanVault labels it and leaves the judgement to you. Nothing is retired or hidden automatically.`}
+            onClick={() => setLifeFilter('stale')}
+          />
+          {fleet.unknown > 0 && (
+            <MetricCard
+              value={fleet.unknown} label="Never seen"
+              definition="An AP record exists but it has never reported in."
+              onClick={() => setLifeFilter('unknown')}
+            />
+          )}
+        </div>
+      )}
+
       <div style={{
         display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 14,
       }}>
@@ -2756,6 +3010,19 @@ function AccessPointsTab({
         </select>
         <select
           className="sv-select"
+          style={{ maxWidth: 210 }}
+          value={lifeFilter}
+          aria-label="Lifecycle"
+          onChange={(e) => setLifeFilter(e.target.value as '' | ApLifecycle)}
+        >
+          <option value="">All lifecycle states</option>
+          <option value="online">Online now</option>
+          <option value="recently-offline">Currently offline</option>
+          <option value="stale">Not seen &gt;{AP_STALE_AFTER_DAYS}d</option>
+          <option value="unknown">Never seen</option>
+        </select>
+        <select
+          className="sv-select"
           style={{ maxWidth: 160 }}
           value={vendor}
           onChange={(e) => setVendor(e.target.value)}
@@ -2768,7 +3035,7 @@ function AccessPointsTab({
         {hasActiveLifted && (
           <button
             className="sv-btn ghost sm"
-            onClick={() => { setSiteFilter(null); setControllerFilter(null); setStatus(''); setVendor(''); }}
+            onClick={() => { setSiteFilter(null); setControllerFilter(null); setStatus(''); setVendor(''); setLifeFilter(''); }}
           >Clear filter</button>
         )}
       </div>
@@ -3576,6 +3843,121 @@ function EncryptionBadge({ type }: { type: string | null }) {
   );
 }
 
+
+// ── Aggregated SSID view (across controllers) ────────────────
+//
+// The tab only ever showed SSIDs grouped BY controller, so the operational
+// question — "what networks are we broadcasting, and who is on them?" — took
+// manual addition across every group, and the setup-only networks that exist
+// on each controller with zero clients took up as much room as the corporate
+// SSID carrying hundreds.
+//
+// Everything here is summed from the SAME rows the per-controller view shows.
+// There is deliberately NO access-point count: `wireless_ssids` has no AP
+// relationship, so any figure would be invented.
+type SsidAggregate = {
+  name: string;
+  controllers: number;
+  clients: number;
+  sites: string[];
+  security: string[];
+  anyDown: boolean;
+  updatedAt: string | null;
+};
+
+// Vendors spell the same scheme a dozen ways. Normalise for display only; the
+// raw value stays in the title and in the per-controller rows.
+function normalizeSecurity(raw: string | null): string {
+  if (!raw) return 'Not reported';
+  const t = raw.toLowerCase();
+  if (t.includes('wpa3')) return t.includes('psk') ? 'WPA3-Personal' : 'WPA3-Enterprise';
+  if (t.includes('wpa2')) return t.includes('psk') ? 'WPA2-Personal' : 'WPA2-Enterprise';
+  if (t.includes('wpa')) return t.includes('psk') ? 'WPA-Personal' : 'WPA-Enterprise';
+  if (t.includes('wep')) return 'WEP (insecure)';
+  if (t.includes('open') || t === 'none') return 'Open (no encryption)';
+  return raw;
+}
+
+function aggregateSsids(rows: Ssid[]): SsidAggregate[] {
+  const by = new Map<string, SsidAggregate>();
+  for (const r of rows) {
+    const key = r.ssid_name;
+    let a = by.get(key);
+    if (!a) {
+      a = { name: key, controllers: 0, clients: 0, sites: [], security: [], anyDown: false, updatedAt: null };
+      by.set(key, a);
+    }
+    a.controllers += 1;
+    a.clients += r.clients_total || 0;
+    if (r.site_name && !a.sites.includes(r.site_name)) a.sites.push(r.site_name);
+    const sec = normalizeSecurity(r.encryption_type);
+    if (!a.security.includes(sec)) a.security.push(sec);
+    if ((r.status || '').toLowerCase() === 'down') a.anyDown = true;
+    if (r.updated_at && (!a.updatedAt || r.updated_at > a.updatedAt)) a.updatedAt = r.updated_at;
+  }
+  // Busiest first; the zero-client setup networks fall to the bottom where
+  // they belong rather than competing with production SSIDs for attention.
+  return [...by.values()].sort((a, b) => b.clients - a.clients || a.name.localeCompare(b.name));
+}
+
+function SsidAggregateTable({ rows }: { rows: SsidAggregate[] }) {
+  const idle = rows.filter((r) => r.clients === 0);
+  const active = rows.filter((r) => r.clients > 0);
+  const [showIdle, setShowIdle] = useState(false);
+  return (
+    <div className="sv-panel" style={{ padding: 0 }}>
+      <TableScroll label="SSIDs across all controllers">
+        <table className="sv-table">
+          <thead>
+            <tr>
+              <th>SSID</th>
+              <th>Controllers</th>
+              <th>Sites</th>
+              <th>Security</th>
+              <th style={{ textAlign: 'right' }}>Clients</th>
+              <th>Last polled</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(showIdle ? [...active, ...idle] : active).map((r) => (
+              <tr key={r.name}>
+                <td style={{ fontWeight: 600 }}>
+                  {r.name}
+                  {r.anyDown && <span style={{ marginLeft: 8 }}><SevTag sev="critical" label="Down on a controller" /></span>}
+                </td>
+                <td>{r.controllers}</td>
+                <td className="sv-muted">{r.sites.length ? r.sites.join(', ') : 'Unassigned'}</td>
+                <td>
+                  <span style={{ display: 'inline-flex', gap: 4, flexWrap: 'wrap' }}>
+                    {r.security.map((sec) => <EncryptionBadge key={sec} type={sec} />)}
+                  </span>
+                </td>
+                <td style={{ textAlign: 'right', fontWeight: 600 }}>{r.clients.toLocaleString()}</td>
+                <td><Freshness at={r.updatedAt} staleAfterMs={10 * 60 * 1000} label="" prefixWhenStale="" /></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </TableScroll>
+      {idle.length > 0 && (
+        <div style={{ padding: '10px 14px', borderTop: '1px solid var(--border-light)' }}>
+          <button type="button" className="sv-link-btn" onClick={() => setShowIdle((v) => !v)}>
+            {showIdle ? 'Hide' : 'Show'} {idle.length} SSID{idle.length === 1 ? '' : 's'} with no clients
+          </button>
+          <span className="sv-muted" style={{ marginLeft: 8, fontSize: 'var(--text-sm)' }}>
+            (configured and broadcasting, but nothing is connected — usually setup or legacy networks)
+          </span>
+        </div>
+      )}
+      {!active.length && !showIdle && (
+        <div style={{ padding: 16 }}>
+          <Empty message="No SSID currently has any clients connected." />
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── One controller's collapsible SSID group (own search + collapse state) ─────
 function SsidControllerGroup({
   controller, ssids,
@@ -3682,12 +4064,26 @@ function SsidsTab({ controllerFilter, setControllerFilter }: {
     () => groupByController(allRows, controllers.data || []),
     [allRows, controllers.data],
   );
+  const aggregated = useMemo(() => aggregateSsids(allRows), [allRows]);
+  // Fleet-wide first: "which networks are we running" is the question; the
+  // per-controller breakdown is the drill-down, not the landing view.
+  const [mode, setMode] = useState<'fleet' | 'controller'>('fleet');
 
   return (
     <div>
       <div style={{
         display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 14,
       }}>
+        <div className="segmented" role="group" aria-label="SSID view">
+          <button type="button" className={mode === 'fleet' ? 'active' : ''} aria-pressed={mode === 'fleet'}
+            onClick={() => setMode('fleet')} title="One row per SSID, summed across every controller">
+            Across fleet
+          </button>
+          <button type="button" className={mode === 'controller' ? 'active' : ''} aria-pressed={mode === 'controller'}
+            onClick={() => setMode('controller')} title="SSIDs grouped by the controller broadcasting them">
+            By controller
+          </button>
+        </div>
         <select
           className="sv-select"
           style={{ maxWidth: 220 }}
@@ -3716,14 +4112,22 @@ function SsidsTab({ controllerFilter, setControllerFilter }: {
 
       {ssids.loading && !ssids.data ? (
         <div className="sv-panel"><Loading /></div>
-      ) : groups.length ? (
-        groups.map(({ controller, rows }) => (
-          <SsidControllerGroup key={controller.id} controller={controller} ssids={rows} />
-        ))
-      ) : (
+      ) : !allRows.length ? (
         <div className="sv-panel" style={{ padding: 0 }}>
           <Empty message="No SSID data yet — run wireless polling first" />
         </div>
+      ) : mode === 'fleet' ? (
+        <>
+          <div className="sv-defs">
+            <span><b>Clients</b> is the sum of each controller&apos;s reported client count for that SSID.</span>
+            <span><b>Controllers</b> is how many controllers broadcast it. There is no AP count: the SSID records carry no access-point relationship.</span>
+          </div>
+          <SsidAggregateTable rows={aggregated} />
+        </>
+      ) : (
+        groups.map(({ controller, rows }) => (
+          <SsidControllerGroup key={controller.id} controller={controller} ssids={rows} />
+        ))
       )}
     </div>
   );
@@ -3888,7 +4292,9 @@ function RecommendationsTable({
   if (!recs.length) {
     return (
       <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: 'var(--green)', fontWeight: 600, fontSize: 'var(--text-base)' }}>
-        <IconCheck width={14} height={14} /> No issues detected — wireless looks healthy.
+        {/* Scoped: this engine looks at RF quality, load balance, band steering
+            and capacity. It says nothing about AP outages, rogues or clients. */}
+        <IconCheck width={14} height={14} /> The RF analysis found nothing to recommend at the last pass.
       </div>
     );
   }
@@ -3924,22 +4330,44 @@ function RecommendationsTable({
             const affected = rec.affected_count ?? aps.length;
             return (
               <tr key={`${recKey(rec)}-${i}`}>
-                <td>
-                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: meta.color, fontWeight: 700 }}>
-                    <StatusDot status={meta.status} size={9} />{meta.label}
-                  </span>
+                <td style={{ whiteSpace: 'nowrap' }}>
+                  <SevTag sev={meta.status === 'down' ? 'critical' : meta.status === 'warning' ? 'warning' : 'info'} label={meta.label} />
                 </td>
-                <td style={{ color: 'var(--text-muted)' }}>{rec.category}</td>
-                <td style={{ fontWeight: 600 }}>
+                <td style={{ color: 'var(--text-muted)', textTransform: 'capitalize' }}>{rec.category}</td>
+                <td style={{ fontWeight: 600, minWidth: 220 }}>
                   {rec.issue}
                   {rec.controller_name && (
                     <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}> · {rec.controller_name}</span>
                   )}
+                  {/* Evidence: the metric the engine looked at, and which
+                      entities it looked at. A recommendation with neither is
+                      an assertion, not a finding. */}
+                  {(rec.metric || aps.length > 0) && (
+                    <div className="sv-muted" style={{ fontWeight: 400, fontSize: 'var(--text-sm)', marginTop: 2 }}>
+                      {rec.metric ? <>Based on <code style={{ fontFamily: 'var(--font-mono)' }}>{rec.metric}</code></> : null}
+                      {rec.metric && aps.length > 0 ? ' · ' : ''}
+                      {aps.length > 0 ? `Affected: ${aps.slice(0, 4).join(', ')}${aps.length > 4 ? ` +${aps.length - 4} more` : ''}` : ''}
+                    </div>
+                  )}
                 </td>
-                <td style={{ color: 'var(--text-secondary)' }}>{rec.action}</td>
-                <td>{affected > 0 ? affected : '—'}</td>
+                <td style={{ color: 'var(--text-secondary)', minWidth: 200 }}>{rec.action}</td>
+                {/* "1 AP(s)" → "1 access point". The parenthesised plural was
+                    in the engine's own strings and in this cell. */}
+                <td style={{ whiteSpace: 'nowrap' }}>
+                  {affected > 0 ? `${affected} access point${affected === 1 ? '' : 's'}` : '—'}
+                </td>
                 <td style={{ textAlign: 'right' }}>
-                  <button className="sv-btn ghost sm" onClick={() => onDismiss(rec)}>Dismiss</button>
+                  {/* Dismiss is a 24-hour, browser-local mute — there is no
+                      server-side dismissal API — so it says so rather than
+                      implying the recommendation was resolved or acknowledged
+                      for the team. */}
+                  <button
+                    className="sv-btn ghost sm"
+                    onClick={() => onDismiss(rec)}
+                    title="Hide this recommendation in this browser for 24 hours. It is not acknowledged or resolved for anyone else."
+                  >
+                    Mute 24h
+                  </button>
                 </td>
               </tr>
             );
@@ -3983,6 +4411,9 @@ function IntelligenceTab({ onViewApClients }: { onViewApClients?: (apId: number)
   const summaryApi = useApi<IntelSummary>('/api/wireless/intelligence/summary', 30000);
   const rowsApi = useApi<IntelRow[]>('/api/wireless/intelligence', 30000);
   const apsApi = useApi<AccessPoint[]>('/api/wireless/aps', 30000);
+  // Needed for the authoritative HA role — the intelligence rows carry scores,
+  // not the controller's reported role.
+  const controllersApi = useApi<Controller[]>('/api/wireless/controllers', 60000);
   const [dismissTick, setDismissTick] = useState(0);
   const [drawerApId, setDrawerApId] = useState<number | null>(null);
 
@@ -4070,16 +4501,53 @@ function IntelligenceTab({ onViewApClients }: { onViewApClients?: (apId: number)
     : 0;
   const criticalCount = recommendations.filter((r) => r.priority === 'critical').length;
   const highCount = recommendations.filter((r) => r.priority === 'high').length;
+  // Standby is read ONLY from the controller's own reported HA role (ha_mode)
+  // or an administrator's manual override (ha_manual_role). It is deliberately
+  // NOT inferred from "this controller has no APs": a production controller
+  // whose APs have all dropped looks identical by that test, and calling it
+  // standby would hide a total outage.
+  const standbyIds = new Set(
+    (controllersApi.data || [])
+      .filter((c) => c.ha_mode === 'Standby' || c.ha_manual_role === 'Standby')
+      .map((c) => c.id),
+  );
+  const standbyControllers = rows.filter((r) => standbyIds.has(r.controller_id));
 
   return (
     <div>
-      {/* Row 1 — 4 compact score cards */}
+      {/* Row 1 — 4 compact score cards. Every one now states what goes into
+           it and over what scope; four bare numbers out of 100 with no inputs
+           are not something an operator can act on or argue with. */}
       <StatRow>
-        <ScoreCard label="Overall Health" score={overall} grade={summary.overall_grade} />
-        <ScoreCard label="Load Balance" score={loadAvg} />
-        <ScoreCard label="Band Steering" score={bandSteer} />
-        <ScoreCard label="Capacity" score={capacityAvg} />
+        <ScoreCard
+          label="Overall Health" score={overall} grade={summary.overall_grade}
+          definition={<>A blend of the three scores beside it plus interference, computed per controller at the last analysis pass and averaged across {rows.length} controller{rows.length === 1 ? '' : 's'}. Grades: A ≥ 90, B ≥ 80, C ≥ 70, D ≥ 60, F below.</>}
+        />
+        <ScoreCard
+          label="Load Balance" score={loadAvg}
+          definition="How evenly clients are spread across the access points of a controller. 100 means every AP carries a similar share; a low score means a few APs are carrying the estate."
+        />
+        <ScoreCard
+          label="Band Steering" score={bandSteer}
+          definition="How successfully dual-band clients end up on 5GHz rather than 2.4GHz. A low score usually means band steering is off or 5GHz coverage is thin."
+        />
+        <ScoreCard
+          label="Capacity" score={capacityAvg}
+          definition={<>Headroom against observed airtime utilisation. Averaged over the {capacityRows.length} of {rows.length} controller{rows.length === 1 ? '' : 's'} that report utilisation at all — vendors that report none are excluded rather than counted as zero. A good score and open capacity recommendations are not a contradiction: the score is a fleet average, a recommendation is about one saturated AP.</>}
+        />
       </StatRow>
+      {standbyControllers.length > 0 && (
+        <Notice tone="info">
+          <span>
+            {standbyControllers.length === 1
+              ? <>{standbyControllers[0].controller_name} reports an HA role of </>
+              : <>{standbyControllers.length} controllers ({standbyControllers.map((r) => r.controller_name).join(', ')}) report an HA role of </>}
+            <b>Standby</b>. {standbyControllers.length === 1 ? 'It is' : 'They are'} scored like any
+            other controller below — a standby with no active APs will score poorly, which reflects
+            {standbyControllers.length === 1 ? ' its' : ' their'} role rather than a fault.
+          </span>
+        </Notice>
+      )}
 
       {/* Row 2 — Recommendations (single card, compact table) */}
       <SectionCard title="Recommendations">
@@ -4105,7 +4573,14 @@ function IntelligenceTab({ onViewApClients }: { onViewApClients?: (apId: number)
                   const sc = Math.round(Number(r.overall_score));
                   return (
                     <tr key={r.controller_id}>
-                      <td style={{ fontWeight: 600 }}>{r.controller_name}</td>
+                      <td style={{ fontWeight: 600 }}>
+                        {r.controller_name}
+                        {standbyIds.has(r.controller_id) && (
+                          <span className="sv-type-badge" style={{ marginLeft: 6 }} title="Reports an HA role of Standby — a low score here is expected.">
+                            Standby
+                          </span>
+                        )}
+                      </td>
                       <td style={{ color: scoreColor(sc), fontWeight: 700 }}>{sc}</td>
                       <td><ProgressBar pct={sc} width={70} /></td>
                       <td><GradeBadge grade={r.overall_grade} /></td>
@@ -4347,9 +4822,13 @@ function ClientControllerGroup({
                 <th onClick={() => onSort('bandwidth')} style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }} title="Click to sort">
                   Bandwidth{sortKey === 'bandwidth' ? (sortDir === 'asc' ? ' ▲' : ' ▼') : ''}
                 </th>
-                <th onClick={() => onSort('connected_since')} style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }} title="Click to sort">
-                  Connected{sortKey === 'connected_since' ? (sortDir === 'asc' ? ' ▲' : ' ▼') : ''}
+                <th onClick={() => onSort('connected_since')} style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }} title="When this association began — not proof the client is still here. See Last seen.">
+                  Connected since{sortKey === 'connected_since' ? (sortDir === 'asc' ? ' ▲' : ' ▼') : ''}
                 </th>
+                {/* "Connected 27d ago" is an association START time, and on its
+                    own it reads as "this client has been here for 27 days".
+                    Last seen is the figure that says whether it is still here. */}
+                <th style={{ whiteSpace: 'nowrap' }}>Last seen</th>
                 <th onClick={() => onSort('status')} style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }} title="Click to sort">
                   Status{sortKey === 'status' ? (sortDir === 'asc' ? ' ▲' : ' ▼') : ''}
                 </th>
@@ -4359,7 +4838,10 @@ function ClientControllerGroup({
               {pg.pageRows.map((c: WirelessClient) => (
                 <tr key={c.id} style={{ cursor: 'pointer' }} onClick={() => onSelectMac(c.mac_address)}>
                   <td style={{ fontWeight: 600 }}>{c.mac_address}</td>
-                  <td>{c.ip_address || '—'}</td>
+                  {/* 0.0.0.0 is the controller saying it has no address for
+                      this client, not an address. Rendering it as one invites
+                      someone to try to reach it. */}
+                  <td>{clientIp(c.ip_address)}</td>
                   <td>{c.ap_name || '—'}</td>
                   <td>{c.ssid_name || '—'}</td>
                   <td>
@@ -4374,7 +4856,12 @@ function ClientControllerGroup({
                   <td title={(c.rx_bps != null || c.tx_bps != null) ? `↓ ${fmtBps(c.rx_bps)} · ↑ ${fmtBps(c.tx_bps)}` : undefined}>
                     {fmtBps(bwTotal(c))}
                   </td>
-                  <td>{fmtRel(c.connected_since)}</td>
+                  <td title={c.connected_since ? fmtTime(c.connected_since) : undefined} style={{ whiteSpace: 'nowrap' }}>
+                    {fmtRel(c.connected_since)}
+                  </td>
+                  <td style={{ whiteSpace: 'nowrap' }}>
+                    <Freshness at={c.last_seen_at} staleAfterMs={30 * 60 * 1000} label="" prefixWhenStale="" />
+                  </td>
                   <td><ClientStatusBadge client={c} /></td>
                 </tr>
               ))}
@@ -4398,12 +4885,15 @@ function ClientControllerGroup({
 }
 
 function ClientsTab({
-  apFilter, setApFilter, problemOnly, setProblemOnly,
+  apFilter, setApFilter, problemOnly, setProblemOnly, initialMac, onInitialMacConsumed,
 }: {
   apFilter: number | null;
   setApFilter: (v: number | null) => void;
   problemOnly: boolean;
   setProblemOnly: (v: boolean) => void;
+  /** ?mac= deep link — opens that client's detail panel directly. */
+  initialMac?: string | null;
+  onInitialMacConsumed?: () => void;
 }) {
   const [search, setSearch] = useState('');
   // Debounced copy of `search` — only this feeds the fetch querystring, so the
@@ -4419,6 +4909,15 @@ function ClientsTab({
   const [bandFilter, setBandFilter] = useState('');
   const [stickyOnly, setStickyOnly] = useState(false);
   const [selectedMac, setSelectedMac] = useState<string | null>(null);
+  // A ?mac= deep link opens the panel AND seeds the search box, so the row is
+  // in the loaded set behind the panel rather than the panel hanging over an
+  // unrelated page of 500 clients.
+  useEffect(() => {
+    if (!initialMac) return;
+    setSelectedMac(initialMac);
+    setSearch(initialMac);
+    onInitialMacConsumed?.();
+  }, [initialMac, onInitialMacConsumed]);
   // null = no explicit sort — preserves the API's default problem-first /
   // weakest-signal ordering exactly as before, until a user clicks a header.
   const [sortKey, setSortKey] = useState<ClientSortKey | null>(null);
@@ -4554,38 +5053,44 @@ function ClientsTab({
         onChange={(e) => setSearch(e.target.value)}
       />
 
-      <div className="sv-cards">
-        <div className="sv-card">
-          <div className="num">{summary.data ? Number(summary.data.total_clients) : '—'}</div>
-          <div className="label">Total Clients</div>
-        </div>
-        <div className="sv-card" style={{ borderLeftColor: 'var(--red)' }}>
-          <div className="num" style={{ color: 'var(--red)' }}>
-            {summary.data ? Number(summary.data.problem_clients) : '—'}
-          </div>
-          <div className="label">Problem Clients</div>
-        </div>
-        <div className="sv-card" style={{ borderLeftColor: 'var(--yellow)' }}>
-          <div className="num" style={{ color: 'var(--yellow)' }}>
-            {summary.data ? Number(summary.data.low_signal_clients) : '—'}
-          </div>
-          <div className="label">Low Signal</div>
-        </div>
-        <div className="sv-card">
-          <div className="num">{summary.data ? Number(summary.data.frequent_roamers) : '—'}</div>
-          <div className="label">Frequent Roamers</div>
-        </div>
-        <div
-          className="sv-card"
-          style={{ borderLeftColor: 'var(--red)', cursor: 'pointer' }}
+      {/* These five numbers are NOT a partition. A single laptop on a distant
+          AP is simultaneously a problem client, a low-signal client and a
+          sticky client, so adding the last four together over-counts by a
+          wide margin. Saying so is the difference between a useful breakdown
+          and four numbers that look like they should sum to the first. */}
+      <div className="sv-metrics" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))' }}>
+        <MetricCard
+          value={summary.data ? Number(summary.data.total_clients).toLocaleString() : '—'}
+          label="Total clients"
+          definition="Distinct wireless clients the controllers currently report. This is the only figure here that counts every client exactly once."
+        />
+        <MetricCard
+          tone="critical"
+          value={summary.data ? Number(summary.data.problem_clients).toLocaleString() : '—'}
+          label="Problem clients"
+          definition="Flagged by the collector for poor RSSI or excessive roaming. Overlaps the three categories beside it — a client can be in several at once."
+        />
+        <MetricCard
+          tone="warning"
+          value={summary.data ? Number(summary.data.low_signal_clients).toLocaleString() : '—'}
+          label="Low signal"
+          definition="RSSI below the weak-signal threshold. Most of these are also counted under Problem clients."
+        />
+        <MetricCard
+          value={summary.data ? Number(summary.data.frequent_roamers).toLocaleString() : '—'}
+          label="Frequent roamers"
+          definition="Clients that have moved between access points unusually often. Overlaps Problem clients."
+        />
+        <MetricCard
+          tone="critical"
+          value={summary.data ? Number(summary.data.sticky_clients).toLocaleString() : '—'}
+          label="Sticky clients"
+          definition="Poor signal but NOT roaming — clinging to a distant AP instead of moving to a closer one. Overlaps Low signal."
           onClick={() => setStickyOnly(true)}
-          title="Poor signal but not roaming — clinging to a distant AP"
-        >
-          <div className="num" style={{ color: 'var(--red)' }}>
-            {summary.data ? Number(summary.data.sticky_clients) : '—'}
-          </div>
-          <div className="label">Sticky Clients</div>
-        </div>
+        />
+      </div>
+      <div className="sv-defs">
+        <span>The four category counts <b>overlap</b> and do not add up to the total — one client can be a problem, low-signal and sticky at the same time.</span>
       </div>
 
       <div style={{
@@ -5013,18 +5518,21 @@ function reportedCountMismatch(reported: number | null, local: number): boolean 
 }
 
 // ── Controller inventory table (top-level) ────────────────────
-function ControllerInventoryTable({ controllers, capsById, onShowPeers }: {
+function ControllerInventoryTable({ controllers, capsById, onShowPeers, highlighted }: {
   controllers: OverviewController[];
   capsById: Map<number, { probed: boolean; isSnmp: boolean }>;
   onShowPeers: (c: OverviewController) => void;
+  /** Row to mark after a ?controllerId= deep link. */
+  highlighted?: number | null;
 }) {
   return (
-    <div style={{ overflowX: 'auto' }}>
+    <TableScroll label="Controller inventory">
       <table className="sv-table">
         <thead><tr>
           <th style={STICKY_TH}>Name</th><th style={STICKY_TH}>Site</th><th style={STICKY_TH}>Model</th>
-          <th style={STICKY_TH}>APs</th><th style={STICKY_TH}>Cap%</th><th style={STICKY_TH}>Clients</th>
-          <th style={STICKY_TH}>CPU</th><th style={STICKY_TH}>Mem</th><th style={STICKY_TH}>HA</th><th style={STICKY_TH}>Uptime</th>
+          <th style={STICKY_TH}>APs</th><th style={STICKY_TH}>Capacity</th><th style={STICKY_TH}>Clients</th>
+          <th style={STICKY_TH}>CPU</th><th style={STICKY_TH}>Mem</th><th style={STICKY_TH}>HA role</th>
+          <th style={STICKY_TH}>Uptime</th><th style={STICKY_TH}>Last polled</th>
         </tr></thead>
         <tbody>
           {controllers.map((c) => {
@@ -5035,10 +5543,18 @@ function ControllerInventoryTable({ controllers, capsById, onShowPeers }: {
             const isSnmp = capsEntry?.isSnmp === true;
             const probed = capsEntry?.probed === true;
             return (
-              <tr key={c.id}>
+              <tr
+                key={c.id}
+                id={`controller-row-${c.id}`}
+                className={highlighted === c.id ? 'sv-row-highlight' : undefined}
+              >
                 <td style={{ fontWeight: 600 }}>
-                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                    <StatusDot status={c.status === 'ok' ? 'up' : c.status === 'error' ? 'down' : 'unknown'} />
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                    <SevTag
+                      sev={c.status === 'ok' ? 'ok' : c.status === 'error' ? 'critical' : 'unknown'}
+                      label={c.status === 'ok' ? 'Reachable' : c.status === 'error' ? 'Unreachable' : 'Unknown'}
+                      title={c.status === 'error' ? 'The last poll of this controller failed' : undefined}
+                    />
                     {c.name}
                     {/* SNMP-only concept (OID capability probing) — API-based
                         vendors like aruba_central have nothing to probe, so
@@ -5053,11 +5569,11 @@ function ControllerInventoryTable({ controllers, capsById, onShowPeers }: {
                   </span>
                 </td>
                 <td>{c.site_name || '—'}</td>
-                <td>
-                  {c.model || c.vendor}
-                  {c.firmware_version && (
-                    <span style={{ color: 'var(--text-muted)' }}> · {c.firmware_version}</span>
-                  )}
+                <td style={{ minWidth: 150 }}>
+                  <div style={{ fontWeight: 600 }}>{c.model || vendorLabel(c.vendor)}</div>
+                  <div className="sv-muted" style={{ fontSize: 'var(--text-sm)' }}>
+                    {[c.model ? vendorLabel(c.vendor) : null, c.firmware_version].filter(Boolean).join(' · ') || '—'}
+                  </div>
                 </td>
                 <td>{fmtInt(c.ap_count)}</td>
                 <td>
@@ -5099,12 +5615,17 @@ function ControllerInventoryTable({ controllers, capsById, onShowPeers }: {
                   )}
                 </td>
                 <td>{fmtUptimeShort(c.uptime_seconds)}</td>
+                {/* An unqualified ✓ next to a figure last collected days ago is
+                    the single most misleading thing this table can show, so the
+                    collection time is a column of its own and goes visibly
+                    stale past two poll intervals. */}
+                <td><Freshness at={c.last_polled_at} staleAfterMs={10 * 60 * 1000} label="Polled" prefixWhenStale="Polled" /></td>
               </tr>
             );
           })}
         </tbody>
       </table>
-    </div>
+    </TableScroll>
   );
 }
 
@@ -5559,7 +6080,7 @@ function CapabilitiesAccordion({
                   return (
                     <tr key={c.id}>
                       <td style={{ fontWeight: 600 }}>{c.name}</td>
-                      <td>{c.vendor}</td>
+                      <td>{vendorLabel(c.vendor)}</td>
                       <td>
                         {!isSnmp ? (
                           // OID capability probing is an SNMP-only concept — API
@@ -5576,21 +6097,25 @@ function CapabilitiesAccordion({
                         )}
                       </td>
                       <td style={{ textAlign: 'right' }}>
-                        <span style={{ display: 'inline-flex', gap: 6, justifyContent: 'flex-end' }}>
-                          {isSnmp && canProbe && (
-                            <button className="sv-btn ghost sm" disabled={busy} onClick={() => onProbe(c)}>
-                              {busy ? 'Detecting…' : 'Detect'}
-                            </button>
-                          )}
-                          {isSnmp && canEdit && (
-                            <button className="sv-btn ghost sm" onClick={() => onDiagnostics(c)} title="Show what OIDs this controller exposes">Diagnostics</button>
-                          )}
+                        {/* Four small buttons per row read as a wall of controls
+                            and pushed Delete up against Test. The non-destructive
+                            actions collapse into one menu; Delete stays apart and
+                            still confirms. */}
+                        <span style={{ display: 'inline-flex', gap: 6, justifyContent: 'flex-end', alignItems: 'center' }}>
+                          {busy && <span className="sv-muted" style={{ fontSize: 'var(--text-sm)' }}>Detecting…</span>}
+                          <RowMenu
+                            label={`Actions for ${c.name}`}
+                            items={[
+                              ...(isSnmp && canProbe ? [{ label: 'Detect capabilities', onClick: () => onProbe(c), disabled: busy }] : []),
+                              ...(isSnmp && canEdit ? [{ label: 'Diagnostics', onClick: () => onDiagnostics(c), title: 'Show what OIDs this controller exposes' }] : []),
+                              ...(canEdit ? [
+                                { label: 'Edit controller', onClick: () => onEdit(c) },
+                                { label: 'Test connection', onClick: () => onTest(c) },
+                              ] : []),
+                            ]}
+                          />
                           {canEdit && (
-                            <>
-                              <button className="sv-btn ghost sm" onClick={() => onEdit(c)}>Edit</button>
-                              <button className="sv-btn ghost sm" onClick={() => onTest(c)}>Test</button>
-                              <button className="sv-btn danger sm" onClick={() => onDelete(c)}>Delete</button>
-                            </>
+                            <button className="sv-btn danger sm" onClick={() => onDelete(c)}>Delete</button>
                           )}
                         </span>
                       </td>
@@ -5607,7 +6132,12 @@ function CapabilitiesAccordion({
 }
 
 // ── Controllers tab (top-level) ───────────────────────────────
-function ControllersTab({ onViewEvents }: { onViewEvents?: () => void }) {
+function ControllersTab({ onViewEvents, highlightControllerId, onHighlightConsumed }: {
+  onViewEvents?: () => void;
+  /** ?controllerId= deep link — scrolls to and highlights that controller's row. */
+  highlightControllerId?: number | null;
+  onHighlightConsumed?: () => void;
+}) {
   const { canEdit, role } = useRbac();
   const { confirm, ConfirmUI } = useConfirm();
   const controllers = useApi<Controller[]>('/api/wireless/controllers', 0);
@@ -5617,6 +6147,21 @@ function ControllersTab({ onViewEvents }: { onViewEvents?: () => void }) {
   const [editing, setEditing] = useState<Controller | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [rescanning, setRescanning] = useState(false);
+  // There is no per-controller detail route, so the honest "exact entity"
+  // destination is this row, scrolled into view and marked. The highlight
+  // fades after a few seconds so it does not read as a permanent state.
+  const [highlighted, setHighlighted] = useState<number | null>(null);
+  useEffect(() => {
+    if (highlightControllerId == null) return;
+    setHighlighted(highlightControllerId);
+    onHighlightConsumed?.();
+    const id = window.setTimeout(() => {
+      document.getElementById(`controller-row-${highlightControllerId}`)
+        ?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }, 350);
+    const clear = window.setTimeout(() => setHighlighted(null), 6000);
+    return () => { window.clearTimeout(id); window.clearTimeout(clear); };
+  }, [highlightControllerId, onHighlightConsumed]);
 
   async function handleTest(c: Controller) {
     try {
@@ -5752,7 +6297,7 @@ function ControllersTab({ onViewEvents }: { onViewEvents?: () => void }) {
               {/* Row 2 — Inventory (60%) | AP Capacity (40%) */}
               <EqualRow>
                 <SectionCard title="Controller Inventory" flex="1 1 60%" minWidth={360}>
-                  <ControllerInventoryTable controllers={ovCtls} capsById={capsById} onShowPeers={(c) => setPeersController(c)} />
+                  <ControllerInventoryTable controllers={ovCtls} capsById={capsById} onShowPeers={(c) => setPeersController(c)} highlighted={highlighted} />
                 </SectionCard>
                 <SectionCard title="AP Capacity" flex="1 1 36%" minWidth={260}>
                   <ApCapacityChart controllers={ovCtls} />

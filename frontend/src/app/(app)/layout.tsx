@@ -15,6 +15,9 @@ import { LicenseBanner } from '@/components/LicenseGuard';
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   return (
     <>
+      {/* First tab stop: a keyboard user should not have to tab through the
+          whole sidebar on every page to reach the content. */}
+      <a className="sv-skip" href="#sv-main">Skip to main content</a>
       {/* Full-height column: header spans the full page width (over the
           sidebar); below it a flex row holds the sidebar + scrolling content. */}
       <div className="sv-shell">
@@ -28,7 +31,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             <LicenseBanner />
             <UpdateFailureBanner />
             <UpdateNotifier />
-            <main className="sv-content">{children}</main>
+            <main className="sv-content" id="sv-main" tabIndex={-1}>{children}</main>
           </div>
         </div>
       </div>

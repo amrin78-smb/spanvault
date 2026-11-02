@@ -183,5 +183,20 @@ MapGlyph({kind,x,y,size,color,strokeWidth}) / GlyphSwatch({kind,size,color}) —
 
 (lib) frontend/src/lib/corners.ts — rounded/square corner switch. getCorners/applyCorners/toggleCorners/CORNERS_INIT_SCRIPT. Key sv-corners (matches theme.ts sv- prefix, NOT spanvault-), event sv:corners, attribute data-corners="square" on <html>; rounded = ABSENCE of the attribute (there is deliberately no [data-corners="rounded"] rule). Overrides --radius/--radius-sm/--radius-pill ONLY, so any hardcoded numeric borderRadius opts that component out SILENTLY — always use the token.
 
+### entityLinks.ts — where every searchable entity opens (added 1.115.0)
+```
+type EntityKind = 'device'|'ap'|'controller'|'service'|'client'|'site'
+entityHref(kind, id)        -> the route that opens THAT entity:
+                               device /devices/:id · service /services/:id · site /sites/:id
+                               ap /wireless?tab=aps&apId= · controller /wireless?tab=controllers&controllerId=
+                               client /wireless?tab=clients&mac=
+ENTITY_DESTINATION          -> what the destination is, in the user's words (result row titles)
+announceWirelessTarget(href)-> fires `spanvault:wireless-tab` so a /wireless?tab=… push that lands
+                               while /wireless is ALREADY open still applies (App Router does not
+                               remount on a query-string change — see gotchas.md)
+```
+Both searches (TopBarSearch, GlobalSearch) and `wirelessLinks.wirelessHref` resolve through this
+one module. Before it, an AP/controller/client result dropped the user on the bare parent tab.
+
 ### `lib/wirelessLinks.ts`
-wirelessHref(wirelessApId?, wirelessControllerId?) — canonical target for a wireless alert/event subject link. AP-scoped → `/wireless?tab=aps&apId=<id>` (deep-links into that AP's drawer); controller-scoped → `/wireless?tab=controllers`; neither → `/wireless`. Takes the two ids rather than a row type because callers' shapes differ (`Alert` vs `EventRow`). Used by `alerts/page.tsx` and the dashboard's Recent Events widget — added 1.98.4 after the two had diverged (the dashboard hardcoded a bare `/wireless`).
+wirelessHref(wirelessApId?, wirelessControllerId?) — canonical target for a wireless alert/event subject link. Now a thin wrapper over `entityLinks.entityHref`. AP-scoped → `/wireless?tab=aps&apId=<id>` (deep-links into that AP's drawer); controller-scoped → `/wireless?tab=controllers&controllerId=<id>` (scrolls to and highlights that row — there is still no per-controller detail route); neither → `/wireless`. Takes the two ids rather than a row type because callers' shapes differ (`Alert` vs `EventRow`). Used by `alerts/page.tsx` and the dashboard's Recent Events widget — added 1.98.4 after the two had diverged (the dashboard hardcoded a bare `/wireless`).

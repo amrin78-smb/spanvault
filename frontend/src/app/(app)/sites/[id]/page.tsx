@@ -6,9 +6,11 @@ import { useParams } from 'next/navigation';
 import { useApi } from '@/lib/api';
 import { StatusDot } from '@/components/StatusDot';
 import { DeviceForm, ImportModal } from '@/components/DeviceModals';
+import { useRbac } from '@/lib/rbac';
 import {
   StatusBadge, ErrorBox, Empty, fmtTime, fmtRel, PageHeader, TableSkeleton,
-  useTableSort, sortRows, SortTh,
+  useTableSort, sortRows, SortTh, Breadcrumb, SevTag, InfoTip, Notice,
+  FirstUse, LoadError, Freshness,
 } from '@/components/ui';
 
 type Site = { id: number; name: string; code: string | null; city: string | null };
@@ -89,6 +91,7 @@ const ALERT_SORT: Record<string, (a: Alert) => unknown> = {
 export default function SiteDetailPage() {
   const { id } = useParams<{ id: string }>();
   const siteIdNum = parseInt(id, 10);
+  const { canEdit } = useRbac();
   const [showForm, setShowForm] = useState(false);
   const [showImport, setShowImport] = useState(false);
 
@@ -130,14 +133,22 @@ export default function SiteDetailPage() {
   const gatewayDown = !!gateway && gateway.current_status === 'down';
   const suppressedCount = deviceList.filter((d) => d.alert_suppressed).length;
 
+  // "Nothing is configured here" and "everything here is healthy" are
+  // completely different facts and used to render identically: three zeros and
+  // three empty panels that read as a clean site.
+  const loadedAll = !!devices.data && !!services.data;
+  const nothingMonitored = loadedAll && deviceList.length === 0 && serviceList.length === 0;
+  const neverPolled = deviceList.length > 0 && deviceList.every((d) => !d.last_checked_at);
+
   return (
     <div>
-      <div style={{ marginBottom: 8 }}>
-        <Link href="/devices" className="sv-btn ghost sm">← Back to Devices</Link>
-      </div>
+      <Breadcrumb items={[
+        { label: 'Devices', onClick: () => { window.location.href = '/devices'; } },
+        { label: siteName },
+      ]} />
       <PageHeader title={siteName} subtitle={siteSubtitle}>
-        <button className="sv-btn ghost" onClick={() => setShowImport(true)}>Import from NetVault</button>
-        <button className="sv-btn" onClick={() => setShowForm(true)}>+ Add Device</button>
+        {canEdit && <button className="sv-btn ghost" onClick={() => setShowImport(true)}>Import from NetVault</button>}
+        {canEdit && <button className="sv-btn" onClick={() => setShowForm(true)}>+ Add Device</button>}
       </PageHeader>
       {deviceList.length > 0 && (
         <p className="sv-status-summary">{statusSummary(counts, deviceList.length)}</p>
@@ -162,13 +173,38 @@ export default function SiteDetailPage() {
         <ErrorBox message={sites.error || devices.error || services.error || ''} />
       )}
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 8, marginBottom: 16 }}>
-        <SiteStatCard num={deviceList.length} label="Total Devices" color="var(--text-primary)" />
-        <SiteStatCard num={counts.up} label="Up" color="var(--green)" />
-        <SiteStatCard num={counts.down} label="Down" color="var(--red)" />
-        {counts.warning > 0 && <SiteStatCard num={counts.warning} label="Warning" color="var(--yellow)" />}
-        {counts.unknown > 0 && <SiteStatCard num={counts.unknown} label="Unknown" color="var(--text-muted)" />}
-      </div>
+      {/* An unmonitored site gets onboarding guidance, not a wall of zeros.
+          The zeros are true but they answer a question nobody asked: the
+          operator needs to know this site has nothing set up, and how to
+          change that. */}
+      {nothingMonitored ? (
+        <FirstUse
+          title="Nothing is monitored at this site yet"
+          message={canEdit
+            ? 'This site has no monitored devices and no service checks, so there is nothing to report on it — this is not an all-clear. Import its devices from the NetVault inventory, or add one by hand.'
+            : 'This site has no monitored devices and no service checks, so there is nothing to report on it — this is not an all-clear. An administrator can add devices or import them from NetVault.'}
+          actionLabel={canEdit ? 'Import from NetVault' : undefined}
+          onAction={canEdit ? () => setShowImport(true) : undefined}
+        />
+      ) : (
+        <>
+          {neverPolled && (
+            <Notice tone="warn">
+              <span>
+                {deviceList.length} device{deviceList.length === 1 ? ' has' : 's have'} been added here but
+                none has been polled yet, so every status below is &quot;unknown&quot; rather than healthy.
+              </span>
+            </Notice>
+          )}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 8, marginBottom: 16 }}>
+            <SiteStatCard num={deviceList.length} label="Total Devices" color="var(--text-primary)" />
+            <SiteStatCard num={counts.up} label="Up" color="var(--green)" />
+            <SiteStatCard num={counts.down} label="Down" color="var(--red)" />
+            {counts.warning > 0 && <SiteStatCard num={counts.warning} label="Warning" color="var(--yellow)" />}
+            {counts.unknown > 0 && <SiteStatCard num={counts.unknown} label="Unknown" color="var(--text-muted)" />}
+          </div>
+        </>
+      )}
 
       <div className="sv-panel" style={{ padding: 0, marginBottom: 22 }}>
         <h2 style={{ padding: '14px 16px 0' }}>Devices</h2>
@@ -186,7 +222,20 @@ export default function SiteDetailPage() {
             {deviceList.map((d) => <SiteDeviceRow key={d.id} device={d} />)}
           </>
         ) : (
-          <Empty message="No devices monitored at this site." />
+          // The page-level onboarding card above already says this (with the
+          // action); repeating it per panel reads as unfinished.
+          nothingMonitored ? (
+            <Empty message="No devices monitored at this site." />
+          ) : (
+            <FirstUse
+              title="No devices monitored at this site"
+              message={canEdit
+                ? 'Devices from the NetVault inventory are not monitored until they are imported here.'
+                : 'Devices from the NetVault inventory are not monitored until an administrator imports them here.'}
+              actionLabel={canEdit ? 'Import from NetVault' : undefined}
+              onAction={canEdit ? () => setShowImport(true) : undefined}
+            />
+          )
         )}
       </div>
 
@@ -207,7 +256,16 @@ export default function SiteDetailPage() {
             {serviceList.map((s) => <SiteServiceRow key={s.id} service={s} />)}
           </>
         ) : (
-          <Empty message="No service checks configured at this site." />
+          nothingMonitored ? (
+            <Empty message="No service checks configured at this site." />
+          ) : (
+            <FirstUse
+              title="No service checks at this site"
+              message="Service checks probe an endpoint over HTTP, TCP, SSL or DNS. None is configured for this site, so nothing is being tested here."
+              actionLabel={canEdit ? 'Go to Services' : undefined}
+              href={canEdit ? '/services' : undefined}
+            />
+          )
         )}
       </div>
 
@@ -215,6 +273,8 @@ export default function SiteDetailPage() {
         <h2>Active Alerts</h2>
         {alerts.loading && !alerts.data ? (
           <TableSkeleton rows={4} cols={4} />
+        ) : alerts.error ? (
+          <LoadError message={alerts.error} what="this site's alerts" onRetry={alerts.reload} />
         ) : siteAlerts.length ? (
           <table className="sv-table">
             <thead>
@@ -228,7 +288,7 @@ export default function SiteDetailPage() {
             <tbody>
               {sortedAlerts.map((a) => (
                 <tr key={a.id}>
-                  <td><StatusBadge status={a.severity} /></td>
+                  <td><SevTag sev={a.severity} /></td>
                   <td>
                     {a.device_id == null && a.service_name ? (
                       <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
@@ -250,7 +310,11 @@ export default function SiteDetailPage() {
             </tbody>
           </table>
         ) : (
-          <Empty message="No active alerts for this site." />
+          // Scoped precisely: with nothing monitored, "no active alerts" is a
+          // statement about configuration, not about health.
+          <Empty message={nothingMonitored
+            ? 'No alerts — nothing is monitored at this site, so none can be raised.'
+            : `No active alerts for the ${deviceList.length} device${deviceList.length === 1 ? '' : 's'} and ${serviceList.length} service check${serviceList.length === 1 ? '' : 's'} monitored here.`} />
         )}
       </div>
 

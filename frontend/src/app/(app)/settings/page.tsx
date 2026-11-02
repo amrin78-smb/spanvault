@@ -1,10 +1,11 @@
 'use client';
 
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useApi, apiSend } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
-import { Loading, ErrorBox, Empty, EmptyState, fmtTime, PageHeader, TableSkeleton, Pager, useClientPagination, useConfirm, useToast, useTableSort, sortRows, SortTh } from '@/components/ui';
+import { Loading, ErrorBox, Empty, EmptyState, fmtTime, PageHeader, TableSkeleton, Pager, useClientPagination, useConfirm, useToast, useTableSort, sortRows, SortTh, Tabs, useUrlTab, InfoTip, Notice, SevTag, LoadError, TableScroll, NoResults } from '@/components/ui';
 import { useLicense } from '@/components/LicenseGuard';
 
 const TABS = [
@@ -55,6 +56,24 @@ export default function SettingsPage() {
   const hasNumErrors = Object.keys(numErrors).length > 0;
   // "Dirty" = the form differs from the last loaded/saved snapshot.
   const dirty = JSON.stringify(form) !== JSON.stringify(baseline);
+  // WHICH fields differ, in the words the form uses. One Save button persists
+  // every settings field across two tabs, so "Unsaved changes" alone leaves
+  // the operator to guess whether it is about to write something they edited
+  // on the other tab and forgot about.
+  const changedFields = useMemo(() => Object.keys(form)
+    .filter((k) => form[k] !== (baseline[k] ?? ''))
+    .map((k) => settingLabel(k)), [form, baseline]);
+
+  // Unsaved-change protection. A browser-level guard is all that is reliable
+  // here: App Router gives no cancellable in-app navigation hook, so an
+  // in-app link still navigates away — the beforeunload guard covers reloads,
+  // tab closes and external links, which are the destructive cases.
+  useEffect(() => {
+    if (!dirty) return;
+    const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ''; };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [dirty]);
 
   async function save() {
     if (hasNumErrors) return; // guarded by disabled Save, belt-and-braces
@@ -98,7 +117,7 @@ export default function SettingsPage() {
   }
 
   const formProps = {
-    settings, form, set, save, saving, saveErr, dirty, numErrors, hasNumErrors,
+    settings, form, set, save, saving, saveErr, dirty, numErrors, hasNumErrors, changedFields,
   };
 
   return (
@@ -195,6 +214,28 @@ const ABOUT_HELP = {
   ],
 };
 
+/**
+ * Human label for an app_settings key, for the "what is about to be saved"
+ * summary. NUM_FIELDS and WIRELESS_ALERT_FIELDS already carry labels for the
+ * numeric settings; anything else degrades to a title-cased key rather than
+ * being omitted (an unnamed pending change is worse than an ugly one).
+ */
+function settingLabel(key: string): string {
+  const num = NUM_FIELDS.find((f) => f.key === key);
+  if (num) return num.label.replace(/\s*\([^)]*\)$/, '');
+  const wl = WIRELESS_ALERT_FIELDS.find((f) => f.key === key);
+  if (wl) return wl.label.replace(/\s*\([^)]*\)$/, '');
+  const SPECIAL: Record<string, string> = {
+    smtp_host: 'SMTP host', smtp_port: 'SMTP port', smtp_user: 'SMTP username',
+    smtp_pass: 'SMTP password', smtp_from: 'From address', smtp_secure: 'SMTP TLS',
+    alert_email_to: 'Default alert recipients', sla_target_pct: 'SLA target',
+    retention_raw_days: 'Raw sample retention', retention_rollup_days: 'Daily rollup retention',
+    retention_audit_days: 'Audit log retention',
+  };
+  if (SPECIAL[key]) return SPECIAL[key];
+  return key.replace(/_/g, ' ').replace(/^\w/, (c) => c.toUpperCase());
+}
+
 // ── Shared settings form (lifted to parent) ────────────────────
 type SettingsFormProps = {
   settings: { loading: boolean; error: string | null; data: Record<string, string> | null };
@@ -206,14 +247,18 @@ type SettingsFormProps = {
   dirty: boolean;
   numErrors: Record<string, string>;
   hasNumErrors: boolean;
+  /** Human labels of the settings that differ from what is stored. */
+  changedFields: string[];
 };
 
 // Shared Save toolbar — a save from any settings tab persists ALL settings fields
 // (single shared form state in the parent). Success is surfaced via an
 // auto-dismissing toast in the parent; here we show a dirty hint and only enable
 // Save when there are unsaved edits and no invalid numeric fields.
-function SaveBar({ save, saving, dirty, disabled }: {
+function SaveBar({ save, saving, dirty, disabled, changed = [] }: {
   save: () => Promise<void>; saving: boolean; dirty: boolean; disabled?: boolean;
+  /** Human labels of the fields that differ from what is stored. */
+  changed?: string[];
 }) {
   return (
     // Sticks to the bottom of the viewport rather than sitting at the end of
@@ -235,8 +280,15 @@ function SaveBar({ save, saving, dirty, disabled }: {
       {disabled && !saving && (
         <span className="sv-err-inline" style={{ margin: 0 }}>Fix the highlighted fields to save</span>
       )}
+      {/* "Unsaved changes" on a shared save across two tabs does not say what
+          is about to be written — and this button saves fields the user may
+          have edited on a tab they are no longer looking at. */}
       {!disabled && dirty && !saving && (
-        <span className="sv-muted" style={{ fontWeight: 600 }}>Unsaved changes</span>
+        <span style={{ fontWeight: 600, color: 'var(--tint-warn-fg)' }}>
+          {changed.length
+            ? `${changed.length} unsaved change${changed.length === 1 ? '' : 's'}: ${changed.slice(0, 4).join(', ')}${changed.length > 4 ? `, and ${changed.length - 4} more` : ''}`
+            : 'Unsaved changes'}
+        </span>
       )}
       {!disabled && !dirty && !saving && (
         <span className="sv-muted">
@@ -324,6 +376,11 @@ function numFieldErrors(form: Record<string, string>): Record<string, string> {
   }
   return out;
 }
+// Mirrors SECRET_PLACEHOLDER / SECRET_CLEAR in api/server.js: the value
+// GET /api/settings substitutes for a stored secret, and the token that asks
+// the server to clear one. Must stay in step with the server.
+const SECRET_PLACEHOLDER = '__unchanged__';
+const SECRET_CLEAR = '__clear__';
 const SMTP_FIELDS = [
   { key: 'smtp_host', label: 'SMTP Host' },
   { key: 'smtp_port', label: 'SMTP Port', short: true },
@@ -333,7 +390,7 @@ const SMTP_FIELDS = [
   { key: 'alert_email_to', label: 'Alert Recipients' },
 ];
 
-function GeneralSettings({ settings, form, set, save, saving, saveErr, dirty, numErrors, hasNumErrors }: SettingsFormProps) {
+function GeneralSettings({ settings, form, set, save, saving, saveErr, dirty, numErrors, hasNumErrors, changedFields }: SettingsFormProps) {
   if (settings.loading && !settings.data) return <Loading />;
   if (settings.error) return <ErrorBox message={settings.error} />;
 
@@ -442,13 +499,13 @@ function GeneralSettings({ settings, form, set, save, saving, saveErr, dirty, nu
         </aside>
       </div>
 
-      <SaveBar save={save} saving={saving} dirty={dirty} disabled={hasNumErrors} />
+      <SaveBar save={save} saving={saving} dirty={dirty} disabled={hasNumErrors} changed={changedFields} />
     </div>
   );
 }
 
 // ── Notifications settings (email + notification routing) ──────
-function NotificationSettings({ settings, form, set, save, saving, saveErr, dirty, hasNumErrors }: SettingsFormProps) {
+function NotificationSettings({ settings, form, set, save, saving, saveErr, dirty, hasNumErrors, changedFields }: SettingsFormProps) {
   if (settings.loading && !settings.data) return <Loading />;
   if (settings.error) return <ErrorBox message={settings.error} />;
 
@@ -466,12 +523,48 @@ function NotificationSettings({ settings, form, set, save, saving, saveErr, dirt
               Enable email alerts
             </label>
             <div className="sv-form-grid-text">
-              {SMTP_FIELDS.map((f) => (
-                <label className="sv-field" key={f.key}>{f.label}
-                  <input className="sv-input" type={f.type || 'text'} value={form[f.key] ?? ''}
-                    onChange={(e) => set(f.key, e.target.value)} />
-                </label>
-              ))}
+              {SMTP_FIELDS.map((f) => {
+                // The server never sends a stored secret's value — it sends
+                // SECRET_PLACEHOLDER so the page can tell "set" from "empty"
+                // without the cleartext crossing the wire.
+                //
+                // That makes an empty field ambiguous ("never set" vs "I
+                // deleted what I typed"), so clearing is a separate, explicit
+                // action rather than "leave it blank": deleting what you typed
+                // returns to "unchanged", and only the Clear button removes a
+                // stored password.
+                const isSecret = f.type === 'password';
+                const stored = isSecret && form[f.key] === SECRET_PLACEHOLDER;
+                const clearing = isSecret && form[f.key] === SECRET_CLEAR;
+                return (
+                  <label className="sv-field" key={f.key}>{f.label}
+                    <input
+                      className="sv-input"
+                      type={f.type || 'text'}
+                      value={stored || clearing ? '' : (form[f.key] ?? '')}
+                      placeholder={stored ? 'Stored — type to replace' : clearing ? 'Will be cleared on save' : undefined}
+                      onChange={(e) => set(f.key, isSecret && e.target.value === '' ? SECRET_PLACEHOLDER : e.target.value)}
+                      autoComplete={isSecret ? 'new-password' : undefined}
+                    />
+                    {stored && (
+                      <span className="sv-muted" style={{ fontSize: 'var(--text-xs)' }}>
+                        A password is stored. It is never sent to the browser.{' '}
+                        <button type="button" className="sv-link-btn" onClick={() => set(f.key, SECRET_CLEAR)}>
+                          Clear it
+                        </button>
+                      </span>
+                    )}
+                    {clearing && (
+                      <span style={{ fontSize: 'var(--text-xs)', color: 'var(--tint-warn-fg)', fontWeight: 600 }}>
+                        The stored password will be removed when you save.{' '}
+                        <button type="button" className="sv-link-btn" onClick={() => set(f.key, SECRET_PLACEHOLDER)}>
+                          Keep it instead
+                        </button>
+                      </span>
+                    )}
+                  </label>
+                );
+              })}
             </div>
             <div style={{ marginTop: 14, display: 'flex', flexWrap: 'wrap', gap: 24, alignItems: 'flex-end' }}>
               <label className="sv-field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8, margin: 0 }}>
@@ -510,13 +603,13 @@ function NotificationSettings({ settings, form, set, save, saving, saveErr, dirt
         </aside>
       </div>
 
-      <SaveBar save={save} saving={saving} dirty={dirty} disabled={hasNumErrors} />
+      <SaveBar save={save} saving={saving} dirty={dirty} disabled={hasNumErrors} changed={changedFields} />
     </div>
   );
 }
 
 // ── Escalation & On-Call settings tab ──────────────────────────
-function EscalationSettings({ settings, form, set, save, saving, saveErr, dirty, hasNumErrors }: SettingsFormProps) {
+function EscalationSettings({ settings, form, set, save, saving, saveErr, dirty, hasNumErrors, changedFields }: SettingsFormProps) {
   if (settings.loading && !settings.data) return <Loading />;
   if (settings.error) return <ErrorBox message={settings.error} />;
 
@@ -537,7 +630,7 @@ function EscalationSettings({ settings, form, set, save, saving, saveErr, dirty,
           </dl>
         </aside>
       </div>
-      <SaveBar save={save} saving={saving} dirty={dirty} disabled={hasNumErrors} />
+      <SaveBar save={save} saving={saving} dirty={dirty} disabled={hasNumErrors} changed={changedFields} />
     </div>
   );
 }
@@ -559,6 +652,46 @@ function EscalationOnCall({ form, set }: { form: Record<string, any>; set: (k: s
   const [stepErr, setStepErr] = useState<string | null>(null);
   const [shiftBusy, setShiftBusy] = useState(false);
   const [shiftErr, setShiftErr] = useState<string | null>(null);
+
+  // Who is on call at this moment, and where the rota has holes over the next
+  // week. Both come from the shift rows themselves — nothing is assumed about
+  // a recurring pattern, because the schema stores none.
+  const shiftRows = useMemo(() => [...(shifts.data || [])]
+    .filter((x) => x.starts_at && x.ends_at)
+    .sort((a, b) => Date.parse(a.starts_at) - Date.parse(b.starts_at)), [shifts.data]);
+  const coveredNow = useMemo(() => {
+    const now = Date.now();
+    const hit = shiftRows.find((x) => Date.parse(x.starts_at) <= now && Date.parse(x.ends_at) > now);
+    return hit ? hit.contact_email : null;
+  }, [shiftRows]);
+  const coverageGaps = useMemo(() => {
+    const out: { from: string; to: string }[] = [];
+    const now = Date.now();
+    const horizon = now + 7 * 86400000;
+    let cursor = now;
+    for (const x of shiftRows) {
+      const st = Date.parse(x.starts_at);
+      const en = Date.parse(x.ends_at);
+      if (en <= cursor) continue;
+      if (st > cursor) out.push({ from: new Date(cursor).toISOString(), to: new Date(Math.min(st, horizon)).toISOString() });
+      cursor = Math.max(cursor, en);
+      if (cursor >= horizon) break;
+    }
+    if (cursor < horizon) out.push({ from: new Date(cursor).toISOString(), to: new Date(horizon).toISOString() });
+    // Ignore sub-minute slivers from adjacent shifts meeting exactly.
+    return out.filter((g) => Date.parse(g.to) - Date.parse(g.from) > 60000);
+  }, [shiftRows]);
+  const overlaps = useMemo(() => {
+    const out: [string, string][] = [];
+    for (let i = 0; i < shiftRows.length; i++) {
+      for (let j = i + 1; j < shiftRows.length; j++) {
+        if (Date.parse(shiftRows[j].starts_at) < Date.parse(shiftRows[i].ends_at)) {
+          out.push([shiftRows[i].contact_email, shiftRows[j].contact_email]);
+        }
+      }
+    }
+    return out;
+  }, [shiftRows]);
   const enabled = String(form.escalation_enabled ?? 'false').toLowerCase() === 'true';
 
   async function addStep() {
@@ -612,6 +745,43 @@ function EscalationOnCall({ form, set }: { form: Record<string, any>; set: (k: s
       <h2>Escalation Steps</h2>
       <p className="sv-panel-hint">Each step emails its recipients once, after the alert has gone unacknowledged for the given number of minutes.</p>
       {stepErr && <div className="sv-err-inline">{stepErr}</div>}
+      {/* The table says what each step is; the timeline says what the policy
+          DOES — how long an unacknowledged alert sits before each hand-off,
+          and where it stops. That is the question the page exists to answer
+          and a three-row table does not answer it at a glance. */}
+      {(steps.data || []).length > 0 && (
+        <ol className="sv-esc-timeline">
+          <li>
+            <span className="sv-esc-at">0 min</span>
+            <span className="sv-esc-what">Alert is raised</span>
+          </li>
+          {[...(steps.data || [])].sort((a, b) => a.after_minutes - b.after_minutes).map((st) => {
+            const unassigned = st.use_oncall && !coveredNow;
+            return (
+              <li key={st.id}>
+                <span className="sv-esc-at">+{st.after_minutes} min</span>
+                <span className="sv-esc-what">
+                  Email {st.use_oncall ? 'whoever is on call' : (st.email_to || '—')}
+                  {unassigned && (
+                    <span style={{ color: 'var(--tint-warn-fg)', fontWeight: 600 }}>
+                      {' '}— nobody is on call right now, so this step would reach no one
+                    </span>
+                  )}
+                  {!st.use_oncall && !st.email_to && (
+                    <span style={{ color: 'var(--tint-warn-fg)', fontWeight: 600 }}> — no recipient set</span>
+                  )}
+                </span>
+              </li>
+            );
+          })}
+          <li>
+            <span className="sv-esc-at">after</span>
+            <span className="sv-esc-what sv-muted">
+              No further escalation — the alert stays open until someone acknowledges or resolves it.
+            </span>
+          </li>
+        </ol>
+      )}
       {(steps.data || []).length > 0 && (
         <table className="sv-table" style={{ marginBottom: 12 }}>
           <thead><tr><th>Order</th><th>After (min)</th><th>Recipients</th><th></th></tr></thead>
@@ -652,7 +822,41 @@ function EscalationOnCall({ form, set }: { form: Record<string, any>; set: (k: s
 
       <div className="sv-panel">
       <h2>On-Call Shifts</h2>
-      <p className="sv-panel-hint">A step set to &ldquo;use on-call&rdquo; goes to whoever&apos;s shift covers the moment it fires.</p>
+      <p className="sv-panel-hint">
+        A step set to &ldquo;use on-call&rdquo; goes to whoever&apos;s shift covers the moment it fires.
+        {/* No shift carries a time zone, so naming one would be a guess. */}
+        {' '}Shift times are the SpanVault server&apos;s local time.
+      </p>
+      {/* Coverage is the whole point of a rota, and a list of rows does not
+          show a hole in it. Gaps and overlaps are derived from the same rows. */}
+      {(shifts.data || []).length > 0 && (
+        <div style={{ marginBottom: 12 }}>
+          <Notice tone={coveredNow ? 'ok' : 'warn'}>
+            <span>
+              {coveredNow
+                ? <>On call right now: <b>{coveredNow}</b>.</>
+                : <>Nobody is on call right now — any escalation step set to &ldquo;use on-call&rdquo; would reach no one.</>}
+            </span>
+          </Notice>
+          {coverageGaps.length > 0 && (
+            <Notice tone="warn">
+              <span>
+                {coverageGaps.length} gap{coverageGaps.length === 1 ? '' : 's'} in the next 7 days with
+                nobody on call: {coverageGaps.slice(0, 3).map((g) => `${fmtTime(g.from)} → ${fmtTime(g.to)}`).join('; ')}
+                {coverageGaps.length > 3 ? `, and ${coverageGaps.length - 3} more` : ''}.
+              </span>
+            </Notice>
+          )}
+          {overlaps.length > 0 && (
+            <Notice tone="info">
+              <span>
+                {overlaps.length} overlapping shift pair{overlaps.length === 1 ? '' : 's'}. Overlaps are
+                allowed; the earliest-starting covering shift is the one a step resolves to.
+              </span>
+            </Notice>
+          )}
+        </div>
+      )}
       {shiftErr && <div className="sv-err-inline">{shiftErr}</div>}
       {(shifts.data || []).length > 0 && (
         <table className="sv-table" style={{ marginBottom: 12 }}>
@@ -895,6 +1099,38 @@ const AUDIT_ROUTES: { re: RegExp; label: (m: RegExpMatchArray, verb: string) => 
   // /logs-export would be mislabelled as this one.
   { re: /^\/api\/agents\/(\d+)\/(restart|logs)(\/refresh)?$/, kind: 'Agents', label: (m) => `${m[2] === 'restart' ? 'Restarted' : 'Fetched logs from'} agent #${m[1]}` },
   { re: /^\/api\/sites\/?(\d+)?$/, kind: 'Sites', label: (m, v) => `${v} site${m[1] ? ` #${m[1]}` : ''}` },
+  // The gaps the production audit still showed as raw method+path.
+  { re: /^\/api\/alerts\/bulk-acknowledge$/, kind: 'Alerts', label: () => 'Acknowledged alerts in bulk' },
+  { re: /^\/api\/alerts\/bulk-resolve$/, kind: 'Alerts', label: () => 'Resolved alerts in bulk' },
+  { re: /^\/api\/maps\/(\d+)\/layout$/, kind: 'Maps', label: (m) => `Saved the layout of map #${m[1]}` },
+  { re: /^\/api\/maps\/(\d+)\/background$/, kind: 'Maps', label: (m) => `Changed the background of map #${m[1]}` },
+  { re: /^\/api\/maps\/(\d+)\/toggle-public$/, kind: 'Maps', label: (m) => `Changed public sharing on map #${m[1]}` },
+  { re: /^\/api\/maps\/?(\d+)?$/, kind: 'Maps', label: (m, v) => `${v} map${m[1] ? ` #${m[1]}` : ''}` },
+  { re: /^\/api\/wireless\/controllers\/(\d+)\/test$/, kind: 'Wireless', label: (m) => `Tested the connection to controller #${m[1]}` },
+  { re: /^\/api\/wireless\/controllers\/(\d+)\/probe$/, kind: 'Wireless', label: (m) => `Probed capabilities on controller #${m[1]}` },
+  { re: /^\/api\/wireless\/controllers\/(\d+)\/ha-peer$/, kind: 'Wireless', label: (m) => `Set the HA peer of controller #${m[1]}` },
+  { re: /^\/api\/wireless\/controllers\/rescan$/, kind: 'Wireless', label: () => 'Scanned for wireless controllers' },
+  { re: /^\/api\/wireless\/controllers\/?(\d+)?$/, kind: 'Wireless', label: (m, v) => `${v} wireless controller${m[1] ? ` #${m[1]}` : ''}` },
+  // Authentication, kept as its own area: these are high-volume and are not
+  // configuration changes, so an auditor usually wants them filtered apart.
+  { re: /^\/api\/sso$/, kind: 'Authentication', label: () => 'Signed in via the NocVault hub' },
+  { re: /^\/api\/auth\//, kind: 'Authentication', label: () => 'Authentication request' },
+  { re: /^\/api\/escalation-steps\/?(\d+)?$/, kind: 'Escalation', label: (m, v) => `${v} escalation step${m[1] ? ` #${m[1]}` : ''}` },
+  { re: /^\/api\/oncall-shifts\/?(\d+)?$/, kind: 'Escalation', label: (m, v) => `${v} on-call shift${m[1] ? ` #${m[1]}` : ''}` },
+  { re: /^\/api\/intelligence\/thresholds\/(\d+)\/apply$/, kind: 'Intelligence', label: (m) => `Applied a recommended threshold to device #${m[1]}` },
+  { re: /^\/api\/intelligence\/anomalies\/(\d+)(\/create-rule)?$/, kind: 'Intelligence', label: (m) => (m[2] ? `Created an alert rule from anomaly #${m[1]}` : `Reviewed anomaly #${m[1]}`) },
+  { re: /^\/api\/reports\/saved\/(\d+)\/run-now$/, kind: 'Reports', label: (m) => `Sent saved report #${m[1]} now` },
+  { re: /^\/api\/reports\/saved\/?(\d+)?$/, kind: 'Reports', label: (m, v) => `${v} saved report${m[1] ? ` #${m[1]}` : ''}` },
+  { re: /^\/api\/netvault\/import$/, kind: 'Devices', label: () => 'Imported devices from NetVault' },
+  { re: /^\/api\/topology\/discover$/, kind: 'Topology', label: () => 'Ran topology discovery' },
+  { re: /^\/api\/topology\/apply-to-map\/(\d+)$/, kind: 'Topology', label: (m) => `Applied the discovered topology to map #${m[1]}` },
+  { re: /^\/api\/topology\/apply-dependencies$/, kind: 'Topology', label: () => 'Applied topology-derived alert dependencies' },
+  { re: /^\/api\/agents\/(\d+)\/sites$/, kind: 'Agents', label: (m) => `Changed site assignments on agent #${m[1]}` },
+  { re: /^\/api\/agents\/(\d+)\/discovered\/adopt$/, kind: 'Agents', label: (m) => `Adopted devices discovered by agent #${m[1]}` },
+  { re: /^\/api\/agents\/(\d+)\/discover$/, kind: 'Agents', label: (m) => `Started a subnet sweep on agent #${m[1]}` },
+  { re: /^\/api\/agents\/(\d+)\/disabled$/, kind: 'Agents', label: (m) => `Enabled or disabled agent #${m[1]}` },
+  { re: /^\/api\/agents\/?(\d+)?$/, kind: 'Agents', label: (m, v) => `${v} agent${m[1] ? ` #${m[1]}` : ''}` },
+  { re: /^\/api\/system\/update$/, kind: 'System', label: () => 'Started an in-app update' },
 ];
 function auditAction(r: AuditRow): { label: string; kind: string; raw: string } {
   const verb = AUDIT_VERBS[r.method] || r.method;
@@ -921,6 +1157,11 @@ function AuditLog() {
   const [q, setQ] = useState('');
   const [who, setWho] = useState('');
   const [kind, setKind] = useState('');
+  const [expanded, setExpanded] = useState<Set<number>>(new Set());
+  // Sign-ins are by far the highest-volume rows and are not configuration
+  // changes. Hiding them is one click, is OFF by default (nothing disappears
+  // unasked), and the count of what is being hidden is always shown.
+  const [hideAuth, setHideAuth] = useState(false);
 
   // Filtering is over the entries already fetched, not server-side — the
   // endpoint takes only a limit. "Load older" widens that window, and the note
@@ -929,9 +1170,11 @@ function AuditLog() {
   const all = audit.data || [];
   const users = useMemo(() => Array.from(new Set(all.map((r) => r.user_email).filter(Boolean))).sort(), [all]);
   const kinds = useMemo(() => Array.from(new Set(all.map((r) => auditAction(r).kind))).sort(), [all]);
+  const authCount = useMemo(() => all.filter((r) => auditAction(r).kind === 'Authentication').length, [all]);
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
     return all.filter((r) => {
+      if (hideAuth && auditAction(r).kind === 'Authentication') return false;
       if (who && r.user_email !== who) return false;
       const a = auditAction(r);
       if (kind && a.kind !== kind) return false;
@@ -985,9 +1228,20 @@ function AuditLog() {
           {(kind && !kinds.includes(kind) ? [kind, ...kinds] : kinds)
             .map((k) => <option key={k} value={k}>{k}</option>)}
         </select>
-        {(q || who || kind) && (
+        {authCount > 0 && (
+          <button
+            type="button"
+            className={`sv-chip ${hideAuth ? 'active' : ''}`}
+            aria-pressed={hideAuth}
+            onClick={() => setHideAuth((v) => !v)}
+            title="Sign-in events are high-volume and are not configuration changes."
+          >
+            {hideAuth ? `Sign-ins hidden (${authCount})` : `Hide ${authCount} sign-in event${authCount === 1 ? '' : 's'}`}
+          </button>
+        )}
+        {(q || who || kind || hideAuth) && (
           <>
-            <button className="sv-btn ghost sm" onClick={() => { setQ(''); setWho(''); setKind(''); }}>Clear</button>
+            <button className="sv-btn ghost sm" onClick={() => { setQ(''); setWho(''); setKind(''); setHideAuth(false); }}>Clear</button>
             <span className="sv-muted">{rows.length} of {all.length} shown</span>
           </>
         )}
@@ -1016,6 +1270,10 @@ function AuditLog() {
         </>
       ) : (
         <>
+          {/* The panel is `overflow: visible`, so a table wider than it simply
+              spilled past the card edge (measured 855px in an 822px panel —
+              the technical-detail control was the part cut off). */}
+          <TableScroll label="Audit log entries">
           <table className="sv-table">
             <thead>
               <tr>
@@ -1024,23 +1282,76 @@ function AuditLog() {
                 <SortTh label="Role" col="role" sort={sort} onSort={onSort} />
                 <SortTh label="Action" col="action" sort={sort} onSort={onSort} />
                 <SortTh label="Detail" col="detail" sort={sort} onSort={onSort} />
+                <th style={{ textAlign: 'right' }}><span className="sv-sr-only">Technical detail</span></th>
               </tr>
             </thead>
             <tbody>
-              {pg.pageRows.map((r) => (
-                <tr key={r.id}>
-                  <td style={{ whiteSpace: 'nowrap' }}>{fmtTime(r.ts)}</td>
-                  <td>{r.user_email || '—'}</td>
-                  <td>{r.user_role || '—'}</td>
-                  <td title={auditAction(r).raw}>{auditAction(r).label}</td>
-                  <td className="sv-muted" style={{ maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-                      title={auditDetail(r.detail)}>
-                    {auditDetail(r.detail)}
-                  </td>
-                </tr>
-              ))}
+              {pg.pageRows.map((r) => {
+                const act = auditAction(r);
+                const open = expanded.has(r.id);
+                return (
+                  <Fragment key={r.id}>
+                    <tr>
+                      <td style={{ whiteSpace: 'nowrap' }}>{fmtTime(r.ts)}</td>
+                      <td>{r.user_email || '—'}</td>
+                      <td>{r.user_role || '—'}</td>
+                      <td>
+                        {act.label}
+                        <span className="sv-type-badge" style={{ marginLeft: 8 }}>{act.kind}</span>
+                      </td>
+                      <td className="sv-muted" style={{ maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                          title={auditDetail(r.detail)}>
+                        {auditDetail(r.detail)}
+                      </td>
+                      {/* The raw request is still the authoritative record and
+                          an auditor will eventually want it — behind a
+                          disclosure rather than as the headline. */}
+                      <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                        <button
+                          type="button"
+                          className="sv-link-btn"
+                          aria-expanded={open}
+                          onClick={() => setExpanded((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(r.id)) next.delete(r.id); else next.add(r.id);
+                            return next;
+                          })}
+                        >
+                          {open ? 'Hide request' : 'Request'}
+                        </button>
+                      </td>
+                    </tr>
+                    {open && (
+                      <tr>
+                        <td colSpan={6} style={{ background: 'var(--bg-primary)' }}>
+                          <dl style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '4px 14px', margin: 0, fontSize: 'var(--text-sm)' }}>
+                            <dt className="sv-muted">Request</dt>
+                            <dd style={{ margin: 0, fontFamily: 'var(--font-mono)' }}>{act.raw}</dd>
+                            <dt className="sv-muted">Response</dt>
+                            <dd style={{ margin: 0 }}>{r.status ?? '—'}</dd>
+                            <dt className="sv-muted">Source address</dt>
+                            <dd style={{ margin: 0, fontFamily: 'var(--font-mono)' }}>{r.ip || '—'}</dd>
+                            <dt className="sv-muted">Recorded</dt>
+                            <dd style={{ margin: 0 }}>{fmtTime(r.ts)}</dd>
+                            <dt className="sv-muted">Detail</dt>
+                            <dd style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{auditDetail(r.detail)}</dd>
+                          </dl>
+                          {/* Stated plainly rather than left for someone to
+                              assume: there is no stored before/after snapshot
+                              to diff. */}
+                          <div className="sv-muted" style={{ fontSize: 'var(--text-xs)', marginTop: 8 }}>
+                            The log records that a change was made, by whom and with what request body.
+                            It does not store a before/after snapshot, so no value-level diff is available.
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                );
+              })}
             </tbody>
           </table>
+          </TableScroll>
           <Pager
             page={pg.page}
             pageCount={pg.pageCount}
@@ -1502,7 +1813,11 @@ function DeviceRules() {
         {device ? (
           <>
             <p className="sv-panel-hint" style={{ marginTop: 4 }}>
-              Device rules for <strong>{device.name}</strong> override site and global rules.
+              {/* The scoped entity is a link: from a rule you can reach the
+                  thing it governs without searching for it again. */}
+              Device rules for{' '}
+              <Link href={`/devices/${device.id}`} style={{ fontWeight: 700 }}>{device.name}</Link>{' '}
+              override site and global rules.
             </p>
             <RulesTable rules={rules.data} onChange={() => { rules.reload(); effective.reload(); }} />
           </>
@@ -1533,7 +1848,8 @@ function DeviceRules() {
           <div style={{ padding: '12px 16px 0' }}>
             <h2 style={{ fontSize: 'var(--text-md)', margin: 0 }}>Effective Rules</h2>
             <p className="sv-muted" style={{ fontSize: 'var(--text-sm)', margin: '4px 0 0' }}>
-              Final merged ruleset actually evaluated for {device.name}.
+              Final merged ruleset actually evaluated for{' '}
+              <Link href={`/devices/${device.id}`}>{device.name}</Link>.
             </p>
           </div>
           {effective.data.rules.length ? (
@@ -1698,6 +2014,32 @@ function Maintenance() {
 
   async function add() {
     setErr(null);
+    // A global window silences EVERY alert for every device and service for
+    // its whole duration. It is the default scope in the picker and had no
+    // confirmation at all — one stray click muted the estate.
+    if (scope === 'global') {
+      const ok = await confirm({
+        title: 'Silence every alert during this window?',
+        message: (
+          <>
+            <p style={{ marginTop: 0 }}>
+              A <b>global</b> maintenance window suppresses alerting for <b>every device and every
+              service check</b> — not just the ones being worked on — from{' '}
+              <b>{form.starts_at ? new Date(form.starts_at).toLocaleString() : '—'}</b> until{' '}
+              <b>{form.ends_at ? new Date(form.ends_at).toLocaleString() : '—'}</b>.
+            </p>
+            <p style={{ marginBottom: 0 }}>
+              Polling and uptime collection continue, so graphs and availability stay unbroken;
+              nobody is paged for anything that breaks in the meantime. Scope it to a device or
+              service instead if the work only affects one.
+            </p>
+          </>
+        ),
+        confirmLabel: 'Suppress everything',
+        danger: true,
+      });
+      if (!ok) return;
+    }
     try {
       await apiSend('/api/maintenance', 'POST', {
         starts_at: form.starts_at,
@@ -1740,22 +2082,51 @@ function Maintenance() {
         ) : windows.loading && !windows.data ? (
           <TableSkeleton rows={4} cols={5} />
         ) : windows.data && windows.data.length ? (
-          <table className="sv-table">
-            <thead>
-              <tr><th>Scope</th><th>Starts</th><th>Ends</th><th>Reason</th><th></th></tr>
-            </thead>
-            <tbody>
-              {windows.data.map((w) => (
-                <tr key={w.id}>
-                  <td>{w.device_name || w.service_name || 'All devices/services'}</td>
-                  <td className="sv-muted">{fmtTime(w.starts_at)}</td>
-                  <td className="sv-muted">{fmtTime(w.ends_at)}</td>
-                  <td>{w.reason || '—'}</td>
-                  <td><button className="sv-btn danger sm" onClick={() => remove(w)}>Delete</button></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <>
+            {/* Active, upcoming and finished were one undifferentiated list,
+                so a window that ended three weeks ago sat beside one silencing
+                alerts right now. State is derived from the window's own times
+                — nothing new is stored. */}
+            <div className="sv-defs">
+              <span>Times are the SpanVault server&apos;s local time; a window carries no time zone of its own.</span>
+              <span>Polling and uptime collection continue during a window — only alerting is suppressed.</span>
+            </div>
+            <table className="sv-table">
+              <thead>
+                <tr><th>State</th><th>Scope</th><th>Starts</th><th>Ends</th><th>Reason</th><th></th></tr>
+              </thead>
+              <tbody>
+                {[...windows.data]
+                  .sort((a, b) => maintRank(a) - maintRank(b) || Date.parse(b.starts_at) - Date.parse(a.starts_at))
+                  .map((w) => {
+                    const st = maintState(w);
+                    const global = !w.device_name && !w.service_name;
+                    return (
+                      <tr key={w.id}>
+                        <td>
+                          <SevTag
+                            sev={st === 'active' ? 'warning' : st === 'upcoming' ? 'info' : 'unknown'}
+                            label={st === 'active' ? 'Active now' : st === 'upcoming' ? 'Upcoming' : 'Finished'}
+                          />
+                        </td>
+                        <td>
+                          {global ? (
+                            <span style={{ fontWeight: 600, color: 'var(--tint-warn-fg)' }}
+                              title="Every monitored device and every service check is covered by this window.">
+                              Everything (global)
+                            </span>
+                          ) : (w.device_name || w.service_name)}
+                        </td>
+                        <td className="sv-muted" style={{ whiteSpace: 'nowrap' }}>{fmtTime(w.starts_at)}</td>
+                        <td className="sv-muted" style={{ whiteSpace: 'nowrap' }}>{fmtTime(w.ends_at)}</td>
+                        <td>{w.reason || '—'}</td>
+                        <td><button className="sv-btn danger sm" onClick={() => remove(w)}>Delete</button></td>
+                      </tr>
+                    );
+                  })}
+              </tbody>
+            </table>
+          </>
         ) : (
           <EmptyState
             title="No maintenance windows scheduled"
@@ -1816,6 +2187,20 @@ function Maintenance() {
 
     </div>
   );
+}
+
+/** A window's state from its own start/end times — nothing extra is stored. */
+function maintState(w: { starts_at: string; ends_at: string }): 'active' | 'upcoming' | 'past' {
+  const now = Date.now();
+  const st = Date.parse(w.starts_at);
+  const en = Date.parse(w.ends_at);
+  if (Number.isFinite(st) && Number.isFinite(en) && st <= now && en > now) return 'active';
+  if (Number.isFinite(st) && st > now) return 'upcoming';
+  return 'past';
+}
+const MAINT_RANK: Record<string, number> = { active: 0, upcoming: 1, past: 2 };
+function maintRank(w: { starts_at: string; ends_at: string }): number {
+  return MAINT_RANK[maintState(w)];
 }
 
 // ── System Updates ─────────────────────────────────────────────

@@ -3,7 +3,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useApi, apiSend } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
-import { Loading, ErrorBox, Empty, EmptyState, fmtRel, fmtTime, useTableSort, sortRows, SortTh } from '@/components/ui';
+import { Loading, ErrorBox, Empty, EmptyState, fmtRel, fmtTime, useTableSort, sortRows, SortTh, InfoTip, Notice, SevTag, Freshness } from '@/components/ui';
 import { StatusDot } from '@/components/StatusDot';
 import TopologyMapView from '@/components/TopologyMapView';
 import type { TopoLayout } from '@/components/TopologyMapView';
@@ -300,9 +300,11 @@ export default function TopologyPage() {
           borderRadius: 'var(--radius-sm)',
         }}
       >
-        <span style={{ fontSize: 'var(--text-base)', fontWeight: 700, color: 'var(--text-primary)' }}>
+        {/* A real <h1>, styled to the same size as the status bar it sits in
+            — the page previously had no top-level heading at all. */}
+        <h1 style={{ margin: 0, fontSize: 'var(--text-base)', fontWeight: 700, color: 'var(--text-primary)' }}>
           Network Topology
-        </span>
+        </h1>
         <span style={{ color: 'var(--border)' }}>·</span>
         {last ? (
           <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>
@@ -380,7 +382,13 @@ function MapTab({
   // ── Canvas scope (all four mirrored into the query string) ────────────
   const [layout, setLayout] = useState<TopoLayout>('sites');
   const [siteSel, setSiteSel] = useState<string[]>([]); // [] = every site
-  const [monitoredOnly, setMonitoredOnly] = useState(false);
+  // Monitored-first is the DEFAULT. Discovery returns every LLDP/CDP
+  // neighbour, managed or not; on this estate that is 39 unmanaged nodes out
+  // of 104, and rendering them all by default produces a hairball in which
+  // the monitored estate — the part SpanVault can actually act on — is the
+  // minority. Unmanaged nodes are one click away, never hidden silently (the
+  // counts below always state how many are excluded).
+  const [monitoredOnly, setMonitoredOnly] = useState(true);
   const [q, setQ] = useState('');
 
   useEffect(() => {
@@ -389,7 +397,9 @@ function MapTab({
     if (l === 'sites' || l === 'tiered' || l === 'force') setLayout(l);
     const s = sp.get('sites');
     if (s) setSiteSel(s.split(',').map((x: string) => x.trim()).filter(Boolean));
-    if (sp.get('managed') === '1') setMonitoredOnly(true);
+    // ?managed=0 is the explicit opt-out from the monitored-first default.
+    if (sp.get('managed') === '0') setMonitoredOnly(false);
+    else if (sp.get('managed') === '1') setMonitoredOnly(true);
     const qq = sp.get('q');
     if (qq) setQ(qq);
   }, []);
@@ -412,7 +422,7 @@ function MapTab({
   function toggleMonitoredOnly() {
     const next = !monitoredOnly;
     setMonitoredOnly(next);
-    patchQuery({ managed: next ? '1' : null });
+    patchQuery({ managed: next ? null : '0' });
   }
   function changeQ(v: string) {
     setQ(v);
@@ -663,8 +673,16 @@ function MapTab({
             </>
           )}
           <div style={{ flex: 1 }} />
+          {/* A disabled control with the reason only on hover is a dead end for
+              anyone who does not hover — and on a touch screen, for everyone.
+              The reason is rendered beside the buttons. */}
           {canEdit && hasGraph && (
-            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+              {!hasManagedEdges && (
+                <span className="sv-muted" style={{ fontSize: 'var(--text-sm)', maxWidth: 420, lineHeight: 1.35 }}>
+                  {MANAGED_ONLY_HINT}
+                </span>
+              )}
               <button
                 className="sv-btn ghost sm"
                 style={{ height: 32 }}
@@ -684,6 +702,11 @@ function MapTab({
                 {applyingDeps ? 'Analyzing…' : 'Apply Dependencies'}
               </button>
             </div>
+          )}
+          {!canEdit && hasGraph && (
+            <span className="sv-muted" style={{ fontSize: 'var(--text-sm)' }}>
+              Applying this topology to a map or to alert dependencies needs an administrator role.
+            </span>
           )}
         </div>
       )}
@@ -838,14 +861,25 @@ function MapControls({
           ))}
         </div>
         <div style={{ flex: 1 }} />
+        {/* Five different numbers, each named. "104 of 104 nodes" alone does
+            not say what was discovered, what the filters kept, what is drawn,
+            or how much of it SpanVault can actually act on. */}
         <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>
-          <strong style={{ color: 'var(--text-primary)' }}>{shownNodes}</strong> of {totalNodes} node
-          {totalNodes === 1 ? '' : 's'}
-          {' '}({monitoredShown} monitored · {shownNodes - monitoredShown} unmanaged) ·{' '}
-          <strong style={{ color: 'var(--text-primary)' }}>{shownEdges}</strong> of {totalEdges} link
-          {totalEdges === 1 ? '' : 's'} · {sitesShown} of {totalSites} site{totalSites === 1 ? '' : 's'}
-          {hiddenNodes > 0 ? ` · ${hiddenNodes} hidden` : ''}
-          {q.trim() ? ` · ${matched} match${matched === 1 ? '' : 'es'}` : ''}
+          Discovered <strong style={{ color: 'var(--text-primary)' }}>{totalNodes}</strong> node
+          {totalNodes === 1 ? '' : 's'} over {totalEdges} link{totalEdges === 1 ? '' : 's'}
+          {' · '}rendering <strong style={{ color: 'var(--text-primary)' }}>{shownNodes}</strong> node
+          {shownNodes === 1 ? '' : 's'} / {shownEdges} link{shownEdges === 1 ? '' : 's'}
+          {' · '}<strong style={{ color: 'var(--text-primary)' }}>{monitoredShown}</strong> monitored
+          {' · '}{shownNodes - monitoredShown} unmanaged
+          {' · '}{sitesShown} of {totalSites} site{totalSites === 1 ? '' : 's'}
+          {hiddenNodes > 0 ? ` · ${hiddenNodes} excluded by the current filters` : ''}
+          {q.trim() ? ` · ${matched} match${matched === 1 ? '' : 'es'} highlighted` : ''}
+          <InfoTip label="Topology counts">
+            <b>Discovered</b> is everything LLDP/CDP found. <b>Rendering</b> is what the current
+            layout, site and monitored-only filters leave. <b>Monitored</b> are devices SpanVault
+            polls — the rest are neighbours that reported themselves to a monitored device and have
+            no record of their own, so they cannot be opened, mapped or depended on.
+          </InfoTip>
         </span>
         {filtersActive && (
           <button className="sv-btn ghost sm" style={{ height: 28 }} onClick={onClear}>

@@ -1,3 +1,5 @@
+import { entityHref } from './entityLinks';
+
 /**
  * Canonical "where does a wireless entity link to" rule.
  *
@@ -12,6 +14,9 @@
  *
  * Takes the two ids rather than a row type because the callers' row shapes
  * differ (`Alert` vs `EventRow`) while the rule does not.
+ *
+ * The destinations themselves now live in `entityLinks.ts`, shared with both
+ * searches — one definition for every caller, not two that agree today.
  */
 export function wirelessHref(
   wirelessApId?: number | null,
@@ -19,9 +24,10 @@ export function wirelessHref(
 ): string {
   // AP-scoped → deep-link straight into that AP's drawer on the Access Points
   // tab (the page reads ?tab= and ?apId= on mount).
-  if (wirelessApId != null) return `/wireless?tab=aps&apId=${wirelessApId}`;
-  // Controller-scoped → the Controllers tab. There is no per-controller drawer
-  // deep-link today, so the tab is as specific as this can get.
-  if (wirelessControllerId != null) return '/wireless?tab=controllers';
+  if (wirelessApId != null) return entityHref('ap', wirelessApId);
+  // Controller-scoped → the Controllers tab with that controller's row scrolled
+  // into view and highlighted (?controllerId=). There is still no per-controller
+  // detail route, so the marked row is the most specific honest destination.
+  if (wirelessControllerId != null) return entityHref('controller', wirelessControllerId);
   return '/wireless';
 }

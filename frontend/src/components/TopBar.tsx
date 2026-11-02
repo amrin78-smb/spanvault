@@ -100,26 +100,37 @@ export default function TopBar() {
       </div>
 
       <div className="sv-topbar-right">
+        {/* This is a shortcut to the active-alert queue, NOT a read/unread
+            message inbox — so it says so. Labelling it "Notifications" with a
+            count implied unread items that do not exist and that clearing it
+            was possible. */}
         <Link
           className="sv-icon-btn"
           href="/alerts?status=active"
-          title={alertCount > 0 ? `${alertCount} active alert${alertCount === 1 ? '' : 's'}` : 'No active alerts'}
-          aria-label="Notifications"
+          title={alertCount > 0 ? `${alertCount} active alert${alertCount === 1 ? '' : 's'} — open the alert queue` : 'No active alerts'}
+          aria-label={alertCount > 0
+            ? `${alertCount} active alert${alertCount === 1 ? '' : 's'}. Open the alert queue.`
+            : 'No active alerts. Open the alert queue.'}
         >
-          <IconBell width={18} height={18} />
+          <IconBell width={18} height={18} aria-hidden="true" />
           {alertCount > 0 && (
-            <span className="sv-icon-badge">{alertCount > 99 ? '99+' : alertCount}</span>
+            <span className="sv-icon-badge" aria-hidden="true">{alertCount > 99 ? '99+' : alertCount}</span>
           )}
         </Link>
 
         <ThemeToggle />
 
+        {/* Colour alone cannot carry "the thing that produces all this data is
+            not running" — the word changes too. */}
         <span
           className={`sv-collector-pill ${collectorRunning ? 'running' : 'stopped'}`}
-          title={collectorRunning ? 'Collector is running' : 'Collector is not running'}
+          title={collectorRunning
+            ? 'The collector is running — polling and alert evaluation are live'
+            : 'The collector is NOT running — nothing on this page is being refreshed'}
+          role="status"
         >
-          <span className="dot" />
-          COLLECTOR
+          <span className="dot" aria-hidden="true" />
+          {collectorRunning ? 'COLLECTOR' : 'COLLECTOR OFF'}
         </span>
 
         <div className="sv-user" ref={ref}>

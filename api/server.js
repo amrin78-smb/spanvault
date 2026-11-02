@@ -36,6 +36,19 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.115.0': [
+    'An operations console should never tell you to stand down while work is outstanding. The dashboard used to say "no devices down, so nothing above needs attention" beside thirty active critical alerts. That sentence is gone: the top of the dashboard now states what is actually outstanding, item by item, each one a link to the queue that holds it - and an all-clear is only shown when every clause is genuinely clear, with the scope it was checked over spelled out.',
+    'The Alerts summary tiles counted the rows the page had fetched, not the alerts that exist. With the default 200-row fetch, "30 critical" meant "30 among the newest 200". They now come from a server-side count over the whole filtered, site-scoped set, so the tiles and the table can never describe different populations. Severity is shown as a word and a shape, not only a colour, and alert messages wrap instead of being cut off mid-sentence.',
+    'Wireless: access points are now separated into online, currently offline, and not seen for over a week - the last being inventory that is probably decommissioned, labelled as such rather than quietly retired. Readings from an AP we are no longer in contact with are suppressed rather than shown as current: one AP was reporting an uptime of 10,648 days beside a last-seen of 31 days ago. SSIDs have a fleet-wide view, the rogue queue is ordered by threat rather than by whichever detection landed last, and overlapping client categories now say that they overlap.',
+    'SECURITY: the SMTP password was being sent to the browser in full on every Settings page load. The field looked masked, but the value was in the response. The server no longer sends it; the page can still tell that a password is set, replace it, or clear it explicitly.',
+    'Capacity forecasting no longer calls anything "capacity utilisation". SpanVault does not know these interfaces link speeds, so every figure is measured against the busiest day recorded and now says so - a projection at 95% of observed peak does not mean a link is nearly full. Inbound and outbound growth are shown separately, and no exhaustion date is implied.',
+    'Search results open the exact thing you picked. An access point, a controller or a wireless client used to drop you on the parent tab with hundreds of rows and no sign of your selection; each now opens its own detail view. Both searches share one definition of where an entity lives, and both are keyboard-operable.',
+    'A service and its checks are now two different things everywhere. A TCP check that is perfectly green can no longer hide an SSL check on the same endpoint that expires in nine days: every check detail page shows the service it belongs to, its sibling checks, and the earliest certificate expiry across all of them.',
+    'Navigation is grouped into Operate, Inventory, Analyze and System. Every page section, dashboard tab and wireless tab is addressable in the URL, so a view can be refreshed, shared, and reached with Back and Forward.',
+    'A site with nothing monitored now says so and offers the import, instead of showing three zeros and three empty panels that read like a clean site. Maps gained a searchable node list with real detail links, public maps say "anyone with the link can view" rather than wearing a green badge, and topology opens on the monitored estate with every total named.',
+    'Scores and counts across Intelligence and Wireless now state what goes into them, over what window and what scope. Threshold recommendations show their full reasoning and real units (a CPU threshold no longer reads "69ms"), and Apply All shows exactly what it is about to change before it changes it.',
+    'The audit log reads as what people did rather than which endpoint they hit, with the raw request kept behind a disclosure, sign-in noise separable from configuration changes, and an explicit statement that no before/after snapshot is stored.',
+  ],
   '1.114.5': [
     'Second pass on the suite logos: the marks are now dimensional rather than flat - a lit sphere for NocVault, rack units with a scanning lens for NetVault, a layered data stack dissolving into pixels for LogVault, a sculpted waveform for SpanVault, and an orbital globe for DDIVault. Brand colours are unchanged. The shading stays within each brand colour rather than fading to navy, so the marks stay legible on the dark header and on a white page or printed report.',
   ],
@@ -2321,7 +2334,12 @@ app.get('/api/dashboard/summary', wrap(async (req, res) => {
   const sc2 = siteFilterClause(siteFilter, p2, 'site_id');
   const offline = await sv.query(
     `SELECT COUNT(*)::int AS c FROM monitored_devices WHERE active = TRUE AND current_status = 'agent_offline'${sc2 ? ` AND ${sc2}` : ''}`, p2);
-  const total = counts.up + counts.down + counts.warning + counts.unknown;
+  // `total` must mean every active monitored device, or the Total tile
+  // disagrees with the device list for no reason the operator can see.
+  // agent_offline is a fifth status (a device we cannot currently reach
+  // because its polling agent is down, deliberately not counted as down) —
+  // leaving it out made Total read 63 on a 69-device estate.
+  const total = counts.up + counts.down + counts.warning + counts.unknown + offline.rows[0].c;
   // Admin/viewer: count every active alert (original behavior). Site-scoped:
   // every active alert OWNED by one of the user's sites — device, AP, service
   // check or controller — via the one shared predicate (alertSiteScope). This
@@ -2796,8 +2814,13 @@ app.get('/api/dashboard/events', wrap(async (req, res) => {
   // site-bearing owner tables, so no extra joins are needed. It used to be the
   // narrower device-OR-service pair, which left a site_admin's feed showing 1
   // of their 674 events in the last 24h because AP alerts matched neither leg.
-  const params = [];
-  const where = [`(a.triggered_at >= NOW() - INTERVAL '24 hours' OR a.resolved_at >= NOW() - INTERVAL '24 hours')`];
+  // `hours` and `limit` let the Activity feed be an actual feed rather than a
+  // fixed 20 rows over a fixed day — both clamped, both defaulting to the
+  // previous behaviour so every existing caller is unaffected.
+  const hours = Math.min(168, Math.max(1, parseInt(req.query.hours, 10) || 24));
+  const limit = Math.min(500, Math.max(1, parseInt(req.query.limit, 10) || 20));
+  const params = [hours];
+  const where = [`(a.triggered_at >= NOW() - ($1 || ' hours')::interval OR a.resolved_at >= NOW() - ($1 || ' hours')::interval)`];
   const eventScope = alertSiteWhere(getSiteFilter(req), params, {
     caps, aliases: { device: 'd', ap: 'wap', service: 'sc2', controller: 'wctl' },
   });
@@ -2815,8 +2838,8 @@ app.get('/api/dashboard/events', wrap(async (req, res) => {
     ${wlJoin}
     WHERE ${where.join(' AND ')}
     ORDER BY event_at DESC
-    LIMIT 20
-  `, params);
+    LIMIT $${params.length + 1}
+  `, [...params, limit]);
   res.json(r.rows);
 }));
 
@@ -4922,6 +4945,60 @@ app.get('/api/alerts', wrap(async (req, res) => {
     LIMIT ${limit}
   `, params);
   res.json(rows.rows);
+}));
+
+// Authoritative alert totals for the Alerts page's summary tiles.
+//
+// Those four numbers used to be `all.filter(...).length` over whatever the
+// page had fetched — a LIMIT 200 slice by default. On an estate with more
+// active alerts than that, the "Critical" tile silently reported the critical
+// count of the newest 200 rows and presented it as the critical count. This
+// route answers the same question with a COUNT over the whole set, using the
+// SAME filters and the SAME RBAC/site-scope predicate as GET /api/alerts
+// directly above, so the tiles and the table can never describe different
+// populations.
+//
+// `unacknowledged` is status='active' (active and nobody has taken it);
+// 'acknowledged' is its own status in this schema, so the two never overlap.
+app.get('/api/alerts/summary', wrap(async (req, res) => {
+  const { status, severity, device_id, service_check_id } = req.query;
+  const where = [];
+  const params = [];
+  if (status)    { params.push(status);    where.push(`a.status = $${params.length}`); }
+  if (severity)  { params.push(severity);  where.push(`a.severity = $${params.length}`); }
+  if (device_id) { params.push(parseInt(device_id, 10)); where.push(`a.device_id = $${params.length}`); }
+  if (service_check_id) {
+    params.push(parseInt(service_check_id, 10));
+    where.push(`a.service_check_id = $${params.length}`);
+  }
+
+  const caps = await getAlertCaps();
+  const svcJoin = caps.has_service_check_id ? 'LEFT JOIN service_checks sc2 ON sc2.id = a.service_check_id' : '';
+  const wlJoin = caps.has_wireless
+    ? 'LEFT JOIN wireless_aps wap ON wap.id = a.wireless_ap_id LEFT JOIN wireless_controllers wctl ON wctl.id = a.wireless_controller_id'
+    : '';
+  const scopeWhere = alertSiteWhere(getSiteFilter(req), params, {
+    caps, aliases: { device: 'd', ap: 'wap', service: 'sc2', controller: 'wctl' },
+  });
+  if (scopeWhere) where.push(scopeWhere);
+
+  const r = await sv.query(`
+    SELECT COUNT(*)::int AS matched,
+           COUNT(*) FILTER (WHERE a.status <> 'resolved')::int                             AS open_total,
+           COUNT(*) FILTER (WHERE a.status <> 'resolved' AND a.severity = 'critical')::int AS critical,
+           COUNT(*) FILTER (WHERE a.status <> 'resolved' AND a.severity = 'warning')::int  AS warning,
+           COUNT(*) FILTER (WHERE a.status = 'active')::int                                AS unacknowledged,
+           COUNT(*) FILTER (WHERE a.status = 'acknowledged')::int                          AS acknowledged,
+           COUNT(*) FILTER (WHERE a.status = 'suppressed')::int                            AS suppressed,
+           COUNT(*) FILTER (WHERE a.status = 'resolved')::int                              AS resolved,
+           MIN(a.triggered_at) FILTER (WHERE a.status <> 'resolved')                       AS oldest_open_at
+    FROM alerts a
+    LEFT JOIN monitored_devices d ON d.id = a.device_id
+    ${svcJoin}
+    ${wlJoin}
+    ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+  `, params);
+  res.json(r.rows[0]);
 }));
 
 // Site-scope predicate for a WRITE against `alerts` (aliased `a`). The read
@@ -7919,17 +7996,38 @@ app.get('/api/wireless/rogues', wrap(async (req, res) => {
     // and call it "sorted by RSSI" — true of the page, false of the data.
     // Whitelisted: the value is interpolated into ORDER BY, so it must never come
     // straight from the query string.
+    // `threat` is the security-triage order and is the page's DEFAULT: a
+    // rogue queue sorted newest-first answers "what did we see last", which on
+    // a page of 12,500 detections buries every confirmed malicious BSSID under
+    // unclassified noise from the last five minutes. Within the same
+    // classification it still falls back to most-recent, so nothing loses its
+    // recency ordering.
+    const THREAT_RANK = `CASE LOWER(COALESCE(r.classification, ''))
+        WHEN 'malicious' THEN 0
+        WHEN 'rogue' THEN 1
+        WHEN 'interfering' THEN 2
+        WHEN 'unclassified' THEN 3
+        WHEN '' THEN 4
+        WHEN 'friendly' THEN 5
+        ELSE 4 END`;
     const SORTABLE = {
       bssid: 'r.bssid', ssid: 'r.ssid', classification: 'r.classification',
       rssi: 'r.rssi_dbm', channel: 'r.channel', band: ROGUE_BAND,
       detecting: DETECTING_AP_NAME, controller: 'c.name', lastseen: 'r.last_seen_at',
+      threat: THREAT_RANK,
     };
-    const sortCol = SORTABLE[String(req.query.sort || '')] || 'r.last_seen_at';
+    const sortKey = String(req.query.sort || '');
+    const sortCol = SORTABLE[sortKey] || 'r.last_seen_at';
     const sortDir = String(req.query.dir || '').toLowerCase() === 'asc' ? 'ASC' : 'DESC';
     // NULLS LAST in both directions (a rogue with no reading shouldn't head the
     // list), and r.id as a tiebreak so equal values can't shuffle between pages —
     // without it, paging a column with many ties can repeat or skip rows.
-    const orderSql = `ORDER BY ${sortCol} ${sortDir} NULLS LAST, r.id ASC`;
+    // Threat order is ASCENDING by rank (malicious first) whichever direction
+    // the header asks for, with recency as the secondary key — a "descending"
+    // threat sort that put friendly APs first would be useless.
+    const orderSql = sortKey === 'threat'
+      ? `ORDER BY ${THREAT_RANK} ASC, r.last_seen_at DESC NULLS LAST, r.id ASC`
+      : `ORDER BY ${sortCol} ${sortDir} NULLS LAST, r.id ASC`;
 
     const whereSql = where.length ? 'WHERE ' + where.join(' AND ') : '';
     const scopeSql = scopeWhere.length ? 'WHERE ' + scopeWhere.join(' AND ') : '';
@@ -10608,11 +10706,37 @@ app.get('/api/reports/service-detail', wrap(async (req, res) => {
 // being admin-gated protects the page, not the endpoint. Same shape as the
 // page-gated-but-API-open bug fixed across the suite in 1.71.x; GET /api/audit
 // immediately below already had the check.
+// Settings keys whose VALUE is a secret and must never leave the server.
+//
+// `app_settings` stores the SMTP password in plaintext (it has to — nodemailer
+// needs it), and this route used to hand it to the browser on every Settings
+// page load. The field renders as a password input, so it looked masked, but
+// the cleartext was in the JSON response, in devtools, and in anything that
+// logged the response body. Admin-only access is not the same as "safe to
+// transmit": the operator reading the page does not need the value, only the
+// ability to change it.
+//
+// A set secret is returned as SECRET_PLACEHOLDER. PUT treats that exact value
+// as "leave this one alone", so a round-trip save cannot wipe the stored
+// password — which is the failure mode a naive mask would introduce.
+const SECRET_SETTING_KEYS = new Set(['smtp_pass']);
+const SECRET_PLACEHOLDER = '__unchanged__';
+// The UI cannot express "clear this secret" by sending an empty string: an
+// empty field is indistinguishable from an untouched one once the real value
+// is no longer in the browser. So clearing is an explicit, separate token.
+const SECRET_CLEAR = '__clear__';
+
 app.get('/api/settings', wrap(async (req, res) => {
   if (userRank(req) < 2) return res.status(403).json({ error: 'Admin only' });
   const r = await sv.query(`SELECT key, value FROM app_settings`);
   const out = {};
-  for (const row of r.rows) out[row.key] = row.value;
+  for (const row of r.rows) {
+    if (SECRET_SETTING_KEYS.has(row.key)) {
+      out[row.key] = row.value ? SECRET_PLACEHOLDER : '';
+      continue;
+    }
+    out[row.key] = row.value;
+  }
   res.json(out);
 }));
 
@@ -10631,12 +10755,21 @@ app.get('/api/audit', wrap(async (req, res) => {
 
 app.put('/api/settings', wrap(async (req, res) => {
   const b = req.body || {};
-  const keys = Object.keys(b);
+  // A secret echoed back unchanged (the placeholder GET sent) is skipped, so
+  // saving any other setting cannot clear a stored password the operator was
+  // never shown. Sending a real value still replaces it; sending '' clears it.
+  const keys = Object.keys(b).filter(
+    (k) => !(SECRET_SETTING_KEYS.has(k) && String(b[k]) === SECRET_PLACEHOLDER),
+  );
   for (const k of keys) {
+    const raw = b[k];
+    const value = SECRET_SETTING_KEYS.has(k) && String(raw) === SECRET_CLEAR
+      ? ''
+      : (raw === null ? null : String(raw));
     await sv.query(`
       INSERT INTO app_settings (key, value) VALUES ($1, $2)
       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
-    `, [k, b[k] === null ? null : String(b[k])]);
+    `, [k, value]);
   }
   res.json({ ok: true, updated: keys.length });
 }));

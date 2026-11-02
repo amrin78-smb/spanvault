@@ -126,13 +126,34 @@ export function TrendArrow({ trend }: { trend: string | null | undefined }) {
   );
 }
 
-// ── Confidence stars (0-1 → 5 stars) ───────────────────────────
-export function ConfidenceStars({ confidence }: { confidence: number | string | null | undefined }) {
-  const c = n(confidence) ?? 0;
+// ── Confidence (0-1) ───────────────────────────────────────────
+//
+// Five stars is a five-point scale over a continuous 0–1 value: 0.62 and 0.78
+// both render as four stars, and an operator deciding whether to act on a
+// threshold recommendation cannot see the difference. The number leads; the
+// stars stay as a glanceable secondary cue (and the number means colour is
+// not the only signal).
+export function ConfidenceStars({ confidence, denominator }: {
+  confidence: number | string | null | undefined;
+  /** What the ratio is OVER, when the caller knows (e.g. "of 14 observed days"). */
+  denominator?: string;
+}) {
+  const raw = n(confidence);
+  if (raw == null) {
+    return <span style={{ color: 'var(--text-muted)', fontSize: 'var(--text-sm)' }} title="No confidence was recorded for this item.">Not reported</span>;
+  }
+  const c = raw;
   const filled = Math.round(c * 5);
+  const pct = Math.round(c * 100);
   return (
-    <span title={`${Math.round(c * 100)}% confidence`} style={{ color: 'var(--primary)', fontSize: 'var(--text-base)', letterSpacing: 1 }}>
-      {'★'.repeat(filled)}<span style={{ color: 'var(--border)' }}>{'★'.repeat(5 - filled)}</span>
+    <span
+      title={denominator ? `${pct}% confidence — ${denominator}` : `${pct}% confidence`}
+      style={{ display: 'inline-flex', alignItems: 'baseline', gap: 6, whiteSpace: 'nowrap' }}
+    >
+      <span style={{ fontWeight: 700, fontSize: 'var(--text-base)' }}>{pct}%</span>
+      <span aria-hidden="true" style={{ color: 'var(--primary)', fontSize: 'var(--text-sm)', letterSpacing: 1 }}>
+        {'★'.repeat(filled)}<span style={{ color: 'var(--border)' }}>{'★'.repeat(5 - filled)}</span>
+      </span>
     </span>
   );
 }
@@ -169,4 +190,62 @@ export function deviationTooltip(a: { value: number | string; baseline_mean: num
   const base = n(a.baseline_mean);
   const dir = val != null && base != null ? (val >= base ? 'above' : 'below') : '';
   return `${z.toFixed(1)}σ (standard deviations) ${dir} normal`.trim();
+}
+
+// ── Metric names and units ─────────────────────────────────────
+//
+// `device_baselines.metric`, `device_anomalies.metric` and
+// `threshold_recommendations.metric` all store the collector's raw metric key
+// (`cpu_usage`, `if_in_octets`, `response_ms`). Those keys were rendered
+// straight into operator-facing tables, and the threshold table additionally
+// hardcoded "ms" as the unit for every one of them — so a CPU recommendation
+// read "69ms → 85ms". Name and unit now both come from the key.
+const METRIC_META: Record<string, { label: string; unit: string }> = {
+  cpu_usage: { label: 'CPU usage', unit: '%' },
+  memory_usage: { label: 'Memory usage', unit: '%' },
+  response_ms: { label: 'Response time', unit: 'ms' },
+  latency_ms: { label: 'Response time', unit: 'ms' },
+  packet_loss_pct: { label: 'Packet loss', unit: '%' },
+  if_in_octets: { label: 'Interface traffic in', unit: 'bps' },
+  if_out_octets: { label: 'Interface traffic out', unit: 'bps' },
+  if_oper_status: { label: 'Interface state', unit: '' },
+  temperature_c: { label: 'Temperature', unit: '°C' },
+  uptime_seconds: { label: 'Uptime', unit: 's' },
+};
+
+/** Human name for a raw metric key; unknown keys degrade to a title-cased form. */
+export function metricLabel(metric: string | null | undefined): string {
+  if (!metric) return '—';
+  const m = METRIC_META[metric];
+  if (m) return m.label;
+  return metric.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+/** Unit for a raw metric key, or '' when the unit is unknown — never a guess. */
+export function metricUnit(metric: string | null | undefined): string {
+  if (!metric) return '';
+  return METRIC_META[metric]?.unit ?? '';
+}
+
+/** Value + unit, with the raw key available for anyone who needs it. */
+export function formatMetricValue(metric: string | null | undefined, value: number | string | null | undefined): string {
+  const v = n(value);
+  if (v == null) return '—';
+  const unit = metricUnit(metric);
+  const rounded = Math.abs(v) >= 100 ? Math.round(v).toLocaleString() : v.toFixed(1).replace(/\.0$/, '');
+  return unit ? `${rounded}${unit === '%' || unit === '°C' ? unit : ` ${unit}`}` : rounded;
+}
+
+/** The friendly name with the raw key beneath it, for a table cell. */
+export function MetricName({ metric }: { metric: string | null | undefined }) {
+  if (!metric) return <span style={{ color: 'var(--text-muted)' }}>—</span>;
+  const friendly = metricLabel(metric);
+  return (
+    <span style={{ display: 'inline-flex', flexDirection: 'column', lineHeight: 1.25 }}>
+      <span>{friendly}</span>
+      {friendly.toLowerCase() !== metric.toLowerCase() && (
+        <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>{metric}</span>
+      )}
+    </span>
+  );
 }

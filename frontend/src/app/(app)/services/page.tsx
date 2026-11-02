@@ -6,7 +6,9 @@ import { useApi, apiSend } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
 import {
   ErrorBox, fmtRel, fmtTime, PageHeader, TableSkeleton, EmptyState, useRefreshKey, useEscape, useConfirm,
-  useTableSort, sortRows, SortTh, StatusBadge, Pager, useClientPagination,
+  useTableSort, sortRows, SortTh, StatusBadge, Pager, useClientPagination, RowMenu,
+  MetricCard, InfoTip, SevTag, Freshness, Notice, NoResults, LoadError, TableScroll,
+  FilterBar, ActiveFilters, FirstUse,
 } from '@/components/ui';
 import { StatusDot } from '@/components/StatusDot';
 import {
@@ -417,6 +419,8 @@ type ServiceGroup = {
   ssl: ServiceCheck | null;
   paused: boolean;
   groupId: string | null;
+  siteId: number | null;
+  siteName: string | null;
 };
 
 // Days until a certificate expires, computed from the stored expiry at RENDER
@@ -470,6 +474,12 @@ function buildGroups(list: ServiceCheck[]): ServiceGroup[] {
       ssl,
       paused: checks.every((c) => !c.active),
       groupId: checks[0].group_id,
+      // A service's site comes from whichever of its checks has one; a service
+      // with none is UNASSIGNED, which is a real scope with real consequences
+      // (a site-scoped operator cannot see it, and site-scoped alert routes
+      // never match it) — not a blank cell.
+      siteId: checks.find((c) => c.site_id != null)?.site_id ?? null,
+      siteName: checks.find((c) => c.site_name)?.site_name ?? null,
     });
   }
   return out;
@@ -523,70 +533,6 @@ function StatTile({ icon, value, label, sub, variant, tint }: {
 // by that wrapper (worst on the last row, where the whole menu falls below the
 // table). Fixed escapes it; the trade-off is that the anchor has to be measured
 // on open and the menu closed on any scroll.
-function ServiceRowMenu({ items }: { items: { label: string; onClick: () => void; danger?: boolean }[] }) {
-  const [open, setOpen] = useState(false);
-  const [pos, setPos] = useState<{ top: number; right: number } | null>(null);
-  const ref = useRef<HTMLSpanElement>(null);
-  const btnRef = useRef<HTMLButtonElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    const away = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
-    const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
-    const close = () => setOpen(false);
-    document.addEventListener('mousedown', away);
-    document.addEventListener('keydown', esc);
-    // Capture phase: the wrapper / page scrollers don't bubble their scroll events.
-    document.addEventListener('scroll', close, true);
-    window.addEventListener('resize', close);
-    return () => {
-      document.removeEventListener('mousedown', away);
-      document.removeEventListener('keydown', esc);
-      document.removeEventListener('scroll', close, true);
-      window.removeEventListener('resize', close);
-    };
-  }, [open]);
-  function toggle() {
-    const r = btnRef.current?.getBoundingClientRect();
-    if (r) setPos({ top: r.bottom + 4, right: Math.max(8, window.innerWidth - r.right) });
-    setOpen((o) => !o);
-  }
-  if (!items.length) return null;
-  return (
-    <span ref={ref} style={{ position: 'relative', display: 'inline-flex' }}>
-      <button
-        ref={btnRef}
-        className="sv-btn ghost sm"
-        aria-label="More actions"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        onClick={(e) => { e.stopPropagation(); toggle(); }}
-        style={{ height: 26, padding: '0 8px' }}
-      >
-        ⋮
-      </button>
-      {open && pos && (
-        <span
-          className="sv-dropdown"
-          role="menu"
-          style={{ position: 'fixed', top: pos.top, right: pos.right, zIndex: 50, minWidth: 150 }}
-          onClick={(e) => e.stopPropagation()}
-        >
-          {items.map((it) => (
-            <button
-              key={it.label}
-              role="menuitem"
-              className={`sv-dropdown-item${it.danger ? ' danger' : ''}`}
-              onClick={(e) => { e.stopPropagation(); setOpen(false); it.onClick(); }}
-            >
-              {it.label}
-            </button>
-          ))}
-        </span>
-      )}
-    </span>
-  );
-}
-
 // ── Expanded row: one card per check ─────────────────────────
 function CheckCard({ check }: { check: ServiceCheck }) {
   const t = check.type;
@@ -831,14 +777,42 @@ function ServiceGroupRow({ group, colCount, canEdit, onEdit, onDelete, onToggleP
             <span className="sv-muted" style={{ display: 'block', fontSize: 'var(--text-sm)' }}>{group.target}</span>
           </span>
         </td>
-        <td className="sv-muted" style={{ minWidth: 0 }}>{group.target}</td>
+        <td style={{ minWidth: 0 }}>
+          {group.siteId != null && group.siteName ? (
+            <Link href={`/sites/${group.siteId}`} onClick={(e) => e.stopPropagation()} style={{ color: 'var(--text-primary)' }}>
+              {group.siteName}
+            </Link>
+          ) : (
+            <span className="sv-muted" title="This service is not assigned to a site. Site-scoped operators cannot see it and site-scoped notification routes will never match it.">
+              Unassigned
+            </span>
+          )}
+        </td>
+        {/* Every sibling check is a LINK to that check's own detail page, and
+            carries its own status. Before this they were inert badges, so from
+            a service you could only reach the first check — and a TCP check
+            whose SSL sibling was expiring had no way to show it. */}
         <td>
           <span style={{ display: 'inline-flex', gap: 4, flexWrap: 'wrap' }}>
-            {group.checks.map((c) => (
-              <span key={c.id} className="sv-type-badge" style={{ marginTop: 0 }} title={`${typeLabel(c.type)} — ${c.current_status}`}>
-                {typeLabel(c.type)}
-              </span>
-            ))}
+            {group.checks.map((c) => {
+              const st = dotStatus(c.current_status);
+              const tint = st === 'down' ? { bg: 'var(--tint-danger)', fg: 'var(--tint-danger-fg)' }
+                : st === 'warning' ? { bg: 'var(--tint-warn)', fg: 'var(--tint-warn-fg)' }
+                : st === 'up' ? { bg: 'var(--tint-success)', fg: 'var(--tint-success-fg)' }
+                : { bg: 'var(--surface-subtle)', fg: 'var(--text-muted)' };
+              return (
+                <Link
+                  key={c.id}
+                  href={`/services/${c.id}`}
+                  onClick={(e) => e.stopPropagation()}
+                  className="sv-type-badge"
+                  style={{ marginTop: 0, background: tint.bg, color: tint.fg, textDecoration: 'none' }}
+                  title={`${typeLabel(c.type)} check — ${c.current_status}. Open its detail page.`}
+                >
+                  {typeLabel(c.type)}
+                </Link>
+              );
+            })}
           </span>
         </td>
         <td className="sv-muted" style={{ whiteSpace: 'nowrap' }}>{group.collector}</td>
@@ -851,7 +825,9 @@ function ServiceGroupRow({ group, colCount, canEdit, onEdit, onDelete, onToggleP
               padding: '2px 8px', borderRadius: 'var(--radius-pill)', fontSize: 'var(--text-sm)', fontWeight: 600,
             }}>
               <IconClock width={13} height={13} />
-              {days < 0 ? 'Expired' : `Expires in ${days} days`}
+              {days < 0 ? `Expired ${Math.abs(days)} day${Math.abs(days) === 1 ? '' : 's'} ago`
+                : days === 0 ? 'Expires today'
+                : `Expires in ${days} day${days === 1 ? '' : 's'}`}
               {group.ssl?.cert_valid_to && (
                 <span style={{ opacity: 0.8, fontWeight: 400 }}>
                   ({new Date(group.ssl.cert_valid_to).toISOString().slice(0, 10)})
@@ -860,7 +836,12 @@ function ServiceGroupRow({ group, colCount, canEdit, onEdit, onDelete, onToggleP
             </span>
           )}
         </td>
-        <td style={{ whiteSpace: 'nowrap' }}>{fmtRel(group.lastCheckedAt)}</td>
+        {/* nowrap alone was not enough at 1366px: the column was narrower than
+            "4m ago" and clipped it to "4m a". minWidth guarantees the cell is
+            at least as wide as the longest value it renders. */}
+        <td style={{ whiteSpace: 'nowrap', minWidth: 86 }}>
+          <Freshness at={group.lastCheckedAt} staleAfterMs={10 * 60 * 1000} label="" prefixWhenStale="" />
+        </td>
         <td style={{ width: 1, textAlign: 'right', whiteSpace: 'nowrap' }}>
           <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
             <Link
@@ -872,7 +853,7 @@ function ServiceGroupRow({ group, colCount, canEdit, onEdit, onDelete, onToggleP
               View details
             </Link>
             {canEdit && (
-              <ServiceRowMenu
+              <RowMenu
                 items={[
                   { label: 'Edit service', onClick: () => onEdit(group) },
                   { label: group.paused ? 'Resume checks' : 'Pause checks', onClick: () => onTogglePause(group) },
@@ -922,6 +903,7 @@ const GROUP_SORT_ACCESSORS = {
   status: (g: ServiceGroup) => STATUS_SORT_ORDER[dotStatus(g.status)] ?? 9,
   name: (g: ServiceGroup) => g.name.toLowerCase(),
   target: (g: ServiceGroup) => g.target.toLowerCase(),
+  site: (g: ServiceGroup) => g.siteName || '',
   collector: (g: ServiceGroup) => g.collector.toLowerCase(),
   latency: (g: ServiceGroup) => g.latencyMs,
   cert: (g: ServiceGroup) => certDaysLeft(g.ssl),
@@ -989,6 +971,7 @@ export default function ServicesPage() {
   const downCount = groups.filter((g) => dotStatus(g.status) === 'down').length;
   const warnCount = groups.filter((g) => dotStatus(g.status) === 'warning').length;
   const pct = (n: number) => (groups.length ? Math.round((n / groups.length) * 100) : 0);
+  const checkTotal = groups.reduce((n, g) => n + g.checks.length, 0);
   // "Expiring" counts certificates due within 60 days, from the stored expiry.
   const expiring = groups.filter((g) => {
     const d = certDaysLeft(g.ssl);
@@ -1045,9 +1028,7 @@ export default function ServicesPage() {
   return (
     <div>
       <PageHeader title="Services" subtitle="Synthetic availability and certificate monitoring">
-        <span className="sv-muted" style={{ fontSize: 'var(--text-sm)' }}>
-          Updated {Math.max(0, Math.round((Date.now() - fetchedAt) / 1000))}s ago
-        </span>
+        <Freshness at={fetchedAt} staleAfterMs={5 * 60 * 1000} />
         <button
           className="sv-btn ghost sm"
           aria-label="Refresh services"
@@ -1063,15 +1044,20 @@ export default function ServicesPage() {
       {err && <ErrorBox message={err} />}
       {checks.error && <ErrorBox message={checks.error} />}
 
-      <div className="sv-cards" style={{ marginBottom: 16 }}>
+      {/* A logical SERVICE is one monitored endpoint; its HTTP/TCP/SSL/DNS
+          probes are its CHECKS. The tiles count services, the table rows are
+          services, and the check count is stated beside the service count so
+          "5" can never be read as "5 things being probed" when 11 probes are
+          running. */}
+      <div className="sv-cards" style={{ marginBottom: 6 }}>
         <StatTile
           icon={<IconServices width={19} height={19} />} variant="total"
-          value={groups.length} label="Services" sub="Total configured services"
+          value={groups.length} label="Services" sub={`${checkTotal} check${checkTotal === 1 ? '' : 's'} across them`}
           tint={{ bg: 'var(--surface-subtle)', fg: 'var(--text-secondary)' }}
         />
         <StatTile
           icon={<IconArrowUp width={19} height={19} />} variant="up"
-          value={upCount} label="Up" sub={`${pct(upCount)}% availability`}
+          value={upCount} label="Up" sub={`${pct(upCount)}% of services`}
           tint={{ bg: 'var(--tint-success)', fg: 'var(--tint-success-fg)' }}
         />
         <StatTile
@@ -1089,6 +1075,11 @@ export default function ServicesPage() {
           value={expiring} label="Expiring Certificates" sub="Within 60 days"
           tint={{ bg: 'var(--tint-info)', fg: 'var(--tint-info-fg)' }}
         />
+      </div>
+      {/* The aggregation rule, stated once, where the statuses are read. */}
+      <div className="sv-defs">
+        <span><b>Service status</b> is the worst status among its checks: down beats warning beats up.</span>
+        <span><b>Up %</b> is the share of services, not of time — availability over a period is on Reports.</span>
       </div>
 
       {checks.loading && !checks.data ? (
@@ -1147,13 +1138,16 @@ export default function ServicesPage() {
                 pinned to the right edge — before this the wrapper did not exist,
                 the table spilled out of the panel and the row kebab rendered off
                 the right of the viewport. */}
-            <div className="sv-table-scroll">
+            <TableScroll label="Services and their checks">
               <table className="sv-table sv-table-pin-actions">
                 <thead>
                   <tr>
                     <SortTh label="Status" col="status" sort={sort} onSort={onSort} />
                     <SortTh label="Service" col="name" sort={sort} onSort={onSort} />
-                    <SortTh label="Target" col="target" sort={sort} onSort={onSort} />
+                    {/* Was a second "Target" column rendering exactly what the
+                        Service cell already shows on its second line. Site is
+                        the fact that was missing. */}
+                    <SortTh label="Site" col="site" sort={sort} onSort={onSort} />
                     <th>Checks</th>
                     <SortTh label="Collector" col="collector" sort={sort} onSort={onSort} />
                     <SortTh label="Latency" col="latency" sort={sort} onSort={onSort} />
@@ -1176,13 +1170,11 @@ export default function ServicesPage() {
                   ))}
                 </tbody>
               </table>
-            </div>
+            </TableScroll>
             {!filtered.length && (
-              <EmptyState
-                title="No services match"
-                message="Nothing matches the current filters. Clear them to see every configured service."
-                actionLabel="Clear filters"
-                onAction={() => { setQ(''); setStatusFilter('all'); setTypeFilter('all'); setCollectorFilter('all'); }}
+              <NoResults
+                message={`Nothing matches the current filters. ${groups.length} service${groups.length === 1 ? ' is' : 's are'} configured in total.`}
+                onClear={() => { setQ(''); setStatusFilter('all'); setTypeFilter('all'); setCollectorFilter('all'); }}
               />
             )}
           </div>

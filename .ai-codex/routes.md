@@ -51,7 +51,7 @@ deliberately skip it).
 - `GET /api/dashboard/top-worst` [auth] [db] — top 10 by avg response time, last 1h
 - `GET /api/dashboard/network-trend` [auth] [db] — 24h availability trend in 30-min buckets
 - `GET /api/dashboard/site-health` [auth] [db] — per-site device counts + 24h uptime
-- `GET /api/dashboard/events` [auth] [db] — last 20 alerts triggered/resolved in 24h; LEFT JOINs device/service/wireless since alert rows can have device_id=NULL. Site-scoped by alert ownership (was device-OR-service, which showed a site_admin 1 of their 674 events)
+- `GET /api/dashboard/events` [auth] [db] — alerts triggered/resolved in a window. `?hours=` (1-168, default 24) and `?limit=` (1-500, default 20) added 1.115.0 so the dashboard's Activity feed can be an actual feed; both clamp and both default to the previous behaviour. Last 20 alerts triggered/resolved in 24h by default; LEFT JOINs device/service/wireless since alert rows can have device_id=NULL. Site-scoped by alert ownership (was device-OR-service, which showed a site_admin 1 of their 674 events)
 - `GET /api/dashboard/ops-summary` [auth] [db] — MTTR/MTTA (30d avg) + unacknowledged count + open incidents; site-scoped by alert ownership (was `d.site_id`, device-only, so a site_admin's tiles read 0/near-0)
 - `GET /api/dashboard/incidents` [auth] [db] — latest 10 open incidents with root-cause device
 - `GET /api/dashboard/sla` [auth] [db] — 30-day rolling SLA % + per-device breaches vs configurable target (default 99.5%)
@@ -119,6 +119,7 @@ deliberately skip it).
 - `POST /api/alerts/bulk-acknowledge` [auth+write:site_admin+] [db] — batch ack by id list; each id re-checked against the caller's sites via `alertWriteSiteClause`, out-of-scope ids are skipped not failed
 - `POST /api/alerts/bulk-resolve` [auth+write:site_admin+] [db] — batch resolve, same scoping rule as bulk-acknowledge
 - `GET /api/alerts/volume` [auth] [db] — hourly alert volume for the alerts-page strip; `?hours=` (default 24, max 168), gap-filled with `generate_series`, site-scoped by alert ownership. Buckets are `{hour, critical, warning, other, total}` — `warning` was `severity <> 'critical'` (every `info` row drawn as a warning, disagreeing with the histogram's `other` bucket); `other`/`total` added so a caller never re-derives a total as `critical + warning`
+- `GET /api/alerts/summary` [auth] [db] — **authoritative** totals for the Alerts page's tiles: `{matched, open_total, critical, warning, unacknowledged, acknowledged, suppressed, resolved, oldest_open_at}`. Takes the SAME filters (`status`/`severity`/`device_id`/`service_check_id`) and the SAME `alertSiteWhere` RBAC predicate as `GET /api/alerts` immediately above, so the tiles and the table can never describe different populations. Added 1.115.0 because the tiles counted the FETCHED rows (LIMIT 200 by default), i.e. "30 critical" meant "30 among the newest 200". Registered before any `/api/alerts/:id` route
 - `GET /api/alert-rules` [auth] [db]
 - `GET /api/alert-rules/effective/:device_id` [auth] [db] — effective ruleset after global->site->device inheritance
 - `GET /api/alert-rules/effective-service/:service_check_id` [auth] [db] — same, namespaced to SERVICE_METRICS
@@ -190,6 +191,10 @@ deliberately skip it).
   (bssid/ssid/detecting_ap), controller_id, channel, band (2.4|5 only — 6GHz channel
   numbers overlap 5GHz in these vendor tables, so it cannot be answered honestly),
   min_rssi, since_hours, named, limit (default 1000, max 5000), offset.
+  `sort=threat` (1.115.0) is the page's DEFAULT order: malicious → rogue → interfering →
+  unclassified → unreported → friendly, then most-recent within each. It always sorts ascending
+  by rank regardless of `dir` (a "descending" threat sort putting friendly APs first is useless).
+  Newest-first buried every confirmed malicious BSSID under unclassified noise.
 - `GET /api/wireless/clients/:mac` [auth] [db] — site-scoped (2026-07 security fix: previously readable cross-site by MAC)
 - `GET /api/wireless/clients/:mac/history` [auth] [db] — site-scoped (same fix)
 
@@ -227,9 +232,9 @@ deliberately skip it).
 - `GET /api/reports/service-detail` [auth] [db] — RBAC: site_admin restricted to a service check in an assigned site (this + `/api/service-checks/:id[/results]` were the isolated site-scoping-gap batch — see gotchas.md)
 
 ## Settings / audit / notification routing
-- `GET /api/settings` [auth:admin+] [db] — ADMIN ONLY (403 below rank 2). app_settings holds smtp_pass in plaintext; the RBAC middleware gates only writes, so this was returning it to every authenticated caller including viewers.
+- `GET /api/settings` [auth:admin+] [db] — ADMIN ONLY (403 below rank 2). **Secrets are masked**: any key in `SECRET_SETTING_KEYS` (currently `smtp_pass`) is returned as the literal `__unchanged__` when set, `''` when not. Admin-only is not the same as safe-to-transmit — the page only needs to know a password EXISTS. Added 1.115.0
+- `PUT /api/settings` [auth+write:admin+] [db] — a secret sent back as `__unchanged__` is SKIPPED (so saving any other field cannot wipe a password the operator was never shown); the literal `__clear__` stores `''` (the explicit "remove it" path, since an empty field is indistinguishable from an untouched one once the value is masked)
 - `GET /api/audit` [auth] [db] — admin-only in practice (UI-gated); recent successful mutations
-- `PUT /api/settings` [auth+write:admin+] [db]
 - `GET /api/notification-routes` [auth] [db]
 - `POST /api/notification-routes` [auth+write:admin+] [db]
 - `PUT /api/notification-routes/:id` [auth+write:admin+] [db]

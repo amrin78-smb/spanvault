@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, useId } from 'react';
 
 /** Small shared presentational helpers — all defined at top level (never nested). */
 
@@ -181,20 +181,39 @@ export function EmptyState({ icon, title, message, actionLabel, onAction }: {
   );
 }
 
-// ── Page header (title + subtitle + right-aligned actions) ─────
-export function PageHeader({ title, subtitle, children }: {
+// ── Page header ────────────────────────────────────────────────
+//
+// Title + description + contextual actions, plus two slots the pages kept
+// hand-rolling: `context` (breadcrumb / parent entity, so a drill-down never
+// loses where it came from) and `freshness` (when this page's data was last
+// collected, next to the data rather than buried in a corner).
+//
+// The title is a real <h1>. It was a styled <div>, which left most pages with
+// no top-level heading at all — a screen-reader user had no landmark to jump
+// to and the heading order started at <h2> or <h3>.
+export function PageHeader({ title, subtitle, context, freshness, children }: {
   title: string;
   subtitle?: string;
+  context?: React.ReactNode;
+  freshness?: React.ReactNode;
   children?: React.ReactNode;
 }) {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap', marginBottom: 10 }}>
-      <div className="page-head-row">
-        <div className="page-title">{title}</div>
-        {subtitle && <span className="page-head-sep">·</span>}
-        {subtitle && <div className="page-subtitle">{subtitle}</div>}
+    <div style={{ marginBottom: 10 }}>
+      {context}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
+        <div className="page-head-row">
+          <h1 className="page-title">{title}</h1>
+          {subtitle && <span className="page-head-sep" aria-hidden="true">·</span>}
+          {subtitle && <div className="page-subtitle">{subtitle}</div>}
+        </div>
+        {(children || freshness) && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+            {freshness}
+            {children}
+          </div>
+        )}
       </div>
-      {children && <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>{children}</div>}
     </div>
   );
 }
@@ -743,5 +762,499 @@ export function SortTh({ label, col, sort, onSort, align = 'left', style }: {
         {active ? (sort!.dir === 'asc' ? '▲' : '▼') : '↕'}
       </span>
     </th>
+  );
+}
+
+// ════════════════════════════════════════════════════════════
+// Operational-clarity primitives (1.115.0)
+//
+// These exist because the app had to answer four questions on every page —
+// what needs attention, how fresh/certain is it, what is affected, where do I
+// go next — and the pieces that answer them (a definition next to a count, a
+// freshness stamp, a severity that is readable without colour, an empty state
+// that says WHY it is empty) were being hand-rolled per page or omitted.
+// Everything below is defined at module scope; never nest a component.
+// ════════════════════════════════════════════════════════════
+
+// ── URL-backed tab state ──────────────────────────────────────
+//
+// Reads `?<key>=` on mount and on Back/Forward, writes it with
+// history.pushState. Deliberately NOT useSearchParams(): that opts a
+// statically-prerendered client page out of static rendering (the reason
+// wireless/page.tsx hand-rolled this), and the whole app is client pages.
+// pushState (not replaceState) is what makes Back return to the previous tab.
+export function useUrlTab<T extends string>(key: string, valid: readonly T[], fallback: T) {
+  const [tab, setTabState] = useState<T>(fallback);
+  // Mount + Back/Forward: adopt whatever the URL says.
+  useEffect(() => {
+    const read = () => {
+      const v = new URLSearchParams(window.location.search).get(key);
+      if (v && (valid as readonly string[]).includes(v)) setTabState(v as T);
+      else setTabState(fallback);
+    };
+    read();
+    window.addEventListener('popstate', read);
+    return () => window.removeEventListener('popstate', read);
+    // `valid` is a literal array at every call site; re-running on identity
+    // changes would reset the tab on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, fallback]);
+  const setTab = useCallback((v: T, extra?: Record<string, string | number | null>) => {
+    setTabState(v);
+    if (typeof window === 'undefined') return;
+    const sp = new URLSearchParams(window.location.search);
+    if (v === fallback) sp.delete(key); else sp.set(key, v);
+    if (extra) {
+      for (const [k, val] of Object.entries(extra)) {
+        if (val === null || val === '') sp.delete(k); else sp.set(k, String(val));
+      }
+    }
+    const qs = sp.toString();
+    window.history.pushState(null, '', `${window.location.pathname}${qs ? `?${qs}` : ''}`);
+  }, [key, fallback]);
+  return { tab, setTab, setTabState };
+}
+
+/** Read one query-string param on mount and on Back/Forward (no useSearchParams). */
+export function useUrlParam(key: string): string | null {
+  const [v, setV] = useState<string | null>(null);
+  useEffect(() => {
+    const read = () => setV(new URLSearchParams(window.location.search).get(key));
+    read();
+    window.addEventListener('popstate', read);
+    return () => window.removeEventListener('popstate', read);
+  }, [key]);
+  return v;
+}
+
+/** Merge params into the current URL without a navigation (used for filters). */
+export function setUrlParams(patch: Record<string, string | number | boolean | null | undefined>, push = false) {
+  if (typeof window === 'undefined') return;
+  const sp = new URLSearchParams(window.location.search);
+  for (const [k, val] of Object.entries(patch)) {
+    if (val === null || val === undefined || val === '' || val === false) sp.delete(k);
+    else sp.set(k, String(val));
+  }
+  const qs = sp.toString();
+  const url = `${window.location.pathname}${qs ? `?${qs}` : ''}`;
+  if (push) window.history.pushState(null, '', url);
+  else window.history.replaceState(null, '', url);
+}
+
+// ── Semantic tabs (role=tablist, arrow-key roving focus) ──────
+export interface TabDef<T extends string> { key: T; label: string; count?: number | null; title?: string }
+export function Tabs<T extends string>({ tabs, active, onChange, sticky = false, ariaLabel }: {
+  tabs: ReadonlyArray<TabDef<T>>;
+  active: T;
+  onChange: (k: T) => void;
+  sticky?: boolean;
+  ariaLabel: string;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  function onKeyDown(e: React.KeyboardEvent) {
+    const keys = ['ArrowLeft', 'ArrowRight', 'Home', 'End'];
+    if (!keys.includes(e.key)) return;
+    e.preventDefault();
+    const i = tabs.findIndex((t) => t.key === active);
+    let n = i;
+    if (e.key === 'ArrowLeft') n = (i - 1 + tabs.length) % tabs.length;
+    if (e.key === 'ArrowRight') n = (i + 1) % tabs.length;
+    if (e.key === 'Home') n = 0;
+    if (e.key === 'End') n = tabs.length - 1;
+    onChange(tabs[n].key);
+    // Move focus with the selection so the roving tabindex stays truthful.
+    requestAnimationFrame(() => {
+      ref.current?.querySelector<HTMLButtonElement>(`[data-tabkey="${tabs[n].key}"]`)?.focus();
+    });
+  }
+  return (
+    <div
+      ref={ref}
+      className={`sv-tabs${sticky ? ' sticky' : ''}`}
+      role="tablist"
+      aria-label={ariaLabel}
+      onKeyDown={onKeyDown}
+    >
+      {tabs.map((t) => {
+        const on = t.key === active;
+        return (
+          <button
+            key={t.key}
+            type="button"
+            role="tab"
+            id={`tab-${t.key}`}
+            data-tabkey={t.key}
+            aria-selected={on}
+            aria-controls={`tabpanel-${t.key}`}
+            tabIndex={on ? 0 : -1}
+            title={t.title}
+            className={`sv-tab${on ? ' active' : ''}`}
+            onClick={() => onChange(t.key)}
+          >
+            {t.label}
+            {t.count !== undefined && t.count !== null && (
+              <span className="sv-tab-count">{t.count.toLocaleString()}</span>
+            )}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/** The panel half of <Tabs>. One per tab key; render only the active one. */
+export function TabPanel({ tabKey, children }: { tabKey: string; children: React.ReactNode }) {
+  return (
+    <div role="tabpanel" id={`tabpanel-${tabKey}`} aria-labelledby={`tab-${tabKey}`} tabIndex={-1}>
+      {children}
+    </div>
+  );
+}
+
+// ── Severity / status, readable without colour ────────────────
+//
+// A bare coloured dot fails both colour-blind users and a greyscale print, and
+// it reads identically whether it means "critical" or "acknowledged". Every
+// severity now carries a glyph AND a word.
+export type SevKind = 'critical' | 'warning' | 'info' | 'ok' | 'unknown' | 'stale';
+const SEV_META: Record<SevKind, { glyph: string; label: string; tint: string; fg: string }> = {
+  critical: { glyph: '▲', label: 'Critical', tint: 'var(--tint-danger)',  fg: 'var(--tint-danger-fg)' },
+  warning:  { glyph: '◆', label: 'Warning',  tint: 'var(--tint-warn)',    fg: 'var(--tint-warn-fg)' },
+  info:     { glyph: '●', label: 'Info',     tint: 'var(--tint-info)',    fg: 'var(--tint-info-fg)' },
+  ok:       { glyph: '✓', label: 'OK',       tint: 'var(--tint-success)', fg: 'var(--tint-success-fg)' },
+  unknown:  { glyph: '?', label: 'Unknown',  tint: 'var(--surface-subtle)', fg: 'var(--text-muted)' },
+  stale:    { glyph: '◴', label: 'Stale',    tint: 'var(--surface-subtle)', fg: 'var(--text-muted)' },
+};
+export function sevKind(s: string | null | undefined): SevKind {
+  const v = (s || '').toLowerCase();
+  if (v === 'critical' || v === 'down' || v === 'offline' || v === 'error') return 'critical';
+  if (v === 'warning' || v === 'warn' || v === 'degraded') return 'warning';
+  if (v === 'up' || v === 'online' || v === 'ok' || v === 'resolved' || v === 'healthy') return 'ok';
+  if (v === 'info') return 'info';
+  if (v === 'stale') return 'stale';
+  return 'unknown';
+}
+/** Severity/status as glyph + word + colour. `label` overrides the default word. */
+export function SevTag({ sev, label, title }: { sev: SevKind | string; label?: string; title?: string }) {
+  const k = (SEV_META as any)[sev] ? (sev as SevKind) : sevKind(String(sev));
+  const m = SEV_META[k];
+  return (
+    <span className="sv-sevtag" style={{ background: m.tint, color: m.fg }} title={title || label || m.label}>
+      <span aria-hidden="true" className="sv-sevtag-glyph">{m.glyph}</span>
+      {label || m.label}
+    </span>
+  );
+}
+
+// ── Accessible info disclosure ────────────────────────────────
+//
+// A real button + popover, not a title=. Keyboard reachable, Escape closes,
+// and the text is in the accessibility tree rather than only on hover.
+export function InfoTip({ label, children }: { label: string; children: React.ReactNode }) {
+  const [open, setOpen] = useState(false);
+  const id = useId();
+  const ref = useRef<HTMLSpanElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    function onDoc(e: MouseEvent) { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); }
+    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') setOpen(false); }
+    document.addEventListener('mousedown', onDoc);
+    document.addEventListener('keydown', onKey);
+    return () => { document.removeEventListener('mousedown', onDoc); document.removeEventListener('keydown', onKey); };
+  }, [open]);
+  return (
+    <span className="sv-infotip" ref={ref}>
+      <button
+        type="button"
+        className="sv-infotip-btn"
+        aria-label={`What does “${label}” mean?`}
+        aria-expanded={open}
+        aria-controls={open ? id : undefined}
+        onClick={() => setOpen((o) => !o)}
+      >
+        i
+      </button>
+      {open && <span className="sv-infotip-pop" id={id} role="note">{children}</span>}
+    </span>
+  );
+}
+
+// ── Freshness ─────────────────────────────────────────────────
+//
+// "Updated 2s ago" is only useful next to what it describes and only honest if
+// it goes visibly stale. `staleAfterMs` marks the point past which the value
+// stops being presented as current.
+export function Freshness({ at, staleAfterMs = 15 * 60 * 1000, label = 'Updated', prefixWhenStale = 'Last updated' }: {
+  at: string | number | Date | null | undefined;
+  staleAfterMs?: number;
+  label?: string;
+  prefixWhenStale?: string;
+}) {
+  const [, force] = useState(0);
+  // Everything this renders is relative to the CURRENT time, and several
+  // callers pass a client-generated `Date.now()`. Rendering that during SSR
+  // produces a value one tick different from the client's, which React reports
+  // as a hydration mismatch (observed on /services: title "…5:46:52 PM" vs
+  // "…5:46:53 PM"). Nothing is shown until mounted, after which it is purely a
+  // client-side concern.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => { setMounted(true); }, []);
+  // Re-render on a slow tick so "2m ago" does not freeze at "2s ago".
+  useEffect(() => { const t = setInterval(() => force((n) => n + 1), 30000); return () => clearInterval(t); }, []);
+  if (!mounted) return <span className="sv-fresh" />;
+  if (!at) return <span className="sv-fresh unknown">Never updated</span>;
+  const ms = at instanceof Date ? at.getTime() : typeof at === 'number' ? at : Date.parse(at);
+  if (!Number.isFinite(ms)) return <span className="sv-fresh unknown">Never updated</span>;
+  const stale = Date.now() - ms > staleAfterMs;
+  return (
+    <span className={`sv-fresh${stale ? ' stale' : ''}`} title={new Date(ms).toLocaleString()}>
+      {stale && <span aria-hidden="true" className="sv-fresh-glyph">◴</span>}
+      {stale ? prefixWhenStale : label} {fmtRel(new Date(ms).toISOString())}
+    </span>
+  );
+}
+
+// ── Metric card ───────────────────────────────────────────────
+//
+// A number on an operations console is meaningless without its denominator,
+// its window and its scope. `definition` is the disclosure; `window` and
+// `scope` render inline so they are visible without interaction.
+export function MetricCard({ value, label, definition, window: win, scope, tone = 'neutral', sub, onClick, href }: {
+  value: React.ReactNode;
+  label: string;
+  definition?: React.ReactNode;
+  window?: string;
+  scope?: string;
+  tone?: 'neutral' | 'critical' | 'warning' | 'ok' | 'info';
+  sub?: React.ReactNode;
+  onClick?: () => void;
+  href?: string;
+}) {
+  // The card is ALWAYS a <div>, and only the value is the control.
+  //
+  // Making the whole card a <button>/<a> put the definition's own button
+  // inside it — invalid HTML ("<button> cannot be a descendant of <button>"),
+  // a hydration error, and one of the two controls unreachable. A stretched
+  // overlay link is not the answer either: that is the 1.88.1 bug in this
+  // codebase, where a stretched link swallowed two thirds of a header's
+  // clicks. So the number is the link and the disclosure sits beside it,
+  // each independently clickable and independently focusable.
+  const interactive = !!(href || onClick);
+  const valueEl = href
+    ? <a className="sv-metric-action" href={href}>{value}</a>
+    : onClick
+      ? <button type="button" className="sv-metric-action" onClick={onClick}>{value}</button>
+      : value;
+  return (
+    <div className={`sv-metric tone-${tone}${interactive ? ' interactive' : ''}`}>
+      <div className="sv-metric-value">{valueEl}</div>
+      <div className="sv-metric-label">
+        {label}
+        {definition && <InfoTip label={label}>{definition}</InfoTip>}
+      </div>
+      {(win || scope) && (
+        <div className="sv-metric-meta">{[win, scope].filter(Boolean).join(' · ')}</div>
+      )}
+      {sub && <div className="sv-metric-sub">{sub}</div>}
+    </div>
+  );
+}
+
+// ── Filter bar + active-filter summary ────────────────────────
+export function FilterBar({ children, right }: { children: React.ReactNode; right?: React.ReactNode }) {
+  return (
+    <div className="sv-filterbar">
+      <div className="sv-filterbar-controls">{children}</div>
+      {right && <div className="sv-filterbar-right">{right}</div>}
+    </div>
+  );
+}
+export interface ActiveFilter { key: string; label: string; onClear: () => void }
+export function ActiveFilters({ filters, onClearAll, resultLabel }: {
+  filters: ActiveFilter[];
+  onClearAll: () => void;
+  resultLabel?: React.ReactNode;
+}) {
+  if (!filters.length) return resultLabel ? <div className="sv-activefilters"><span className="sv-muted">{resultLabel}</span></div> : null;
+  return (
+    <div className="sv-activefilters">
+      <span className="sv-activefilters-lbl">Filtered by</span>
+      {filters.map((f) => (
+        <button key={f.key} type="button" className="sv-filterchip" onClick={f.onClear}
+          aria-label={`Remove filter ${f.label}`}>
+          {f.label}<span aria-hidden="true">×</span>
+        </button>
+      ))}
+      <button type="button" className="sv-link-btn" onClick={onClearAll}>Clear all</button>
+      {resultLabel && <span className="sv-muted" style={{ marginLeft: 'auto' }}>{resultLabel}</span>}
+    </div>
+  );
+}
+
+// ── State boxes ───────────────────────────────────────────────
+//
+// Four distinct reasons a panel can be empty. Collapsing them into one
+// "No data" is how a failed request reads as a clean network.
+export function NoResults({ message = 'No records match the current filters.', onClear }: { message?: string; onClear?: () => void }) {
+  return (
+    <div className="sv-state sv-state-empty" role="status">
+      <div className="sv-state-title">No matching results</div>
+      <div className="sv-state-msg">{message}</div>
+      {onClear && <button type="button" className="sv-btn ghost" style={{ marginTop: 12 }} onClick={onClear}>Clear filters</button>}
+    </div>
+  );
+}
+export function FirstUse({ title, message, actionLabel, onAction, href }: {
+  title: string; message: string; actionLabel?: string; onAction?: () => void; href?: string;
+}) {
+  return (
+    <div className="sv-state sv-state-firstuse">
+      <div className="sv-state-title">{title}</div>
+      <div className="sv-state-msg">{message}</div>
+      {actionLabel && href && <a className="sv-btn" style={{ marginTop: 14 }} href={href}>{actionLabel}</a>}
+      {actionLabel && !href && onAction && <button type="button" className="sv-btn" style={{ marginTop: 14 }} onClick={onAction}>{actionLabel}</button>}
+    </div>
+  );
+}
+export function LoadError({ message, onRetry, what = 'this data' }: { message?: string; onRetry?: () => void; what?: string }) {
+  return (
+    <div className="sv-state sv-state-error" role="alert">
+      <div className="sv-state-title">Could not load {what}</div>
+      <div className="sv-state-msg">
+        {message || 'The request failed.'} This is a failure to read the data, not a report that there is none.
+      </div>
+      {onRetry && <button type="button" className="sv-btn ghost" style={{ marginTop: 12 }} onClick={onRetry}>Try again</button>}
+    </div>
+  );
+}
+export function NoAccess({ what = 'this section' }: { what?: string }) {
+  return (
+    <div className="sv-state sv-state-noaccess" role="status">
+      <div className="sv-state-title">You do not have access to {what}</div>
+      <div className="sv-state-msg">Your role does not include this view. Access is managed in NetVault.</div>
+    </div>
+  );
+}
+
+/** Inline, non-blocking notice that the values shown are not current. */
+export function StaleNotice({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="sv-notice warn" role="status">
+      <span aria-hidden="true">◴</span>
+      <span>{children}</span>
+    </div>
+  );
+}
+/** Inline notice, neutral/info tone. */
+export function Notice({ tone = 'info', children }: { tone?: 'info' | 'warn' | 'danger' | 'ok'; children: React.ReactNode }) {
+  return <div className={`sv-notice ${tone}`} role="status">{children}</div>;
+}
+
+// ── Scrollable table wrapper that keeps its identity ──────────
+//
+// `.sv-table-scroll` on its own is an unlabelled scroll region: a keyboard user
+// lands in it with no idea what it is, and at narrow widths the entity column
+// scrolls out of sight. This adds the accessible name and keyboard focus the
+// bare class never had.
+export function TableScroll({ label, children, className = '' }: { label: string; children: React.ReactNode; className?: string }) {
+  return (
+    <div className={`sv-table-scroll ${className}`} role="region" aria-label={label} tabIndex={0}>
+      {children}
+    </div>
+  );
+}
+
+// ── Row action menu (kebab) ───────────────────────────────────
+//
+// Promoted out of services/page.tsx (where it was `ServiceRowMenu`) so the
+// wireless controller rows stop repeating four small buttons per row. Anchored
+// with position:fixed measured from the trigger because `.sv-table-scroll`
+// computes overflow-y to auto and would otherwise clip an absolute popup.
+// Destructive items stay visually separated and still go through their own
+// confirmation at the call site.
+export interface RowMenuItem { label: string; onClick: () => void; danger?: boolean; disabled?: boolean; title?: string }
+export function RowMenu({ items, label = 'More actions' }: { items: RowMenuItem[]; label?: string }) {
+  const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState<{ top: number; right: number } | null>(null);
+  const [cursor, setCursor] = useState(0);
+  const ref = useRef<HTMLSpanElement>(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLSpanElement>(null);
+  const usable = items.filter((i) => !i.disabled);
+  useEffect(() => {
+    if (!open) return;
+    const away = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node) && !menuRef.current?.contains(e.target as Node)) setOpen(false); };
+    const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') { setOpen(false); btnRef.current?.focus(); } };
+    const close = () => setOpen(false);
+    document.addEventListener('mousedown', away);
+    document.addEventListener('keydown', esc);
+    // Capture phase: the wrapper / page scrollers don't bubble their scroll events.
+    document.addEventListener('scroll', close, true);
+    window.addEventListener('resize', close);
+    return () => {
+      document.removeEventListener('mousedown', away);
+      document.removeEventListener('keydown', esc);
+      document.removeEventListener('scroll', close, true);
+      window.removeEventListener('resize', close);
+    };
+  }, [open]);
+  useEffect(() => {
+    if (!open) return;
+    menuRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')[cursor]?.focus();
+  }, [open, cursor]);
+  function toggle() {
+    const r = btnRef.current?.getBoundingClientRect();
+    if (r) setPos({ top: r.bottom + 4, right: Math.max(8, window.innerWidth - r.right) });
+    setCursor(0);
+    setOpen((o) => !o);
+  }
+  function onMenuKey(e: React.KeyboardEvent) {
+    if (!usable.length) return;
+    if (e.key === 'ArrowDown') { e.preventDefault(); setCursor((c) => (c + 1) % usable.length); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); setCursor((c) => (c - 1 + usable.length) % usable.length); }
+    else if (e.key === 'Home') { e.preventDefault(); setCursor(0); }
+    else if (e.key === 'End') { e.preventDefault(); setCursor(usable.length - 1); }
+  }
+  if (!items.length) return null;
+  return (
+    <span ref={ref} style={{ position: 'relative', display: 'inline-flex' }}>
+      <button
+        ref={btnRef}
+        type="button"
+        className="sv-btn ghost sm"
+        aria-label={label}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={(e) => { e.stopPropagation(); toggle(); }}
+        style={{ height: 26, padding: '0 8px' }}
+      >
+        ⋮
+      </button>
+      {open && pos && (
+        <span
+          ref={menuRef}
+          className="sv-dropdown"
+          role="menu"
+          aria-label={label}
+          onKeyDown={onMenuKey}
+          style={{ position: 'fixed', top: pos.top, right: pos.right, zIndex: 50, minWidth: 170 }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {items.map((it) => (
+            <button
+              key={it.label}
+              type="button"
+              role="menuitem"
+              title={it.title}
+              disabled={it.disabled}
+              className={`sv-dropdown-item${it.danger ? ' danger' : ''}`}
+              onClick={(e) => { e.stopPropagation(); setOpen(false); it.onClick(); }}
+            >
+              {it.label}
+            </button>
+          ))}
+        </span>
+      )}
+    </span>
   );
 }

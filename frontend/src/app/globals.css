@@ -30,7 +30,12 @@
   --border-light:   #f1f5f9;
   --text-primary:   #0f172a;
   --text-secondary: #334155;
-  --text-muted:     #64748b;
+  /* Darkened from #64748b (2026-11): measured 4.40:1 on --bg-card and 4.19:1
+     on --bg-primary, i.e. below the 4.5:1 AA floor — and this token carries
+     inactive tab labels, page subtitles and every freshness/qualifier line,
+     which are text people have to read, not decoration. #5a687d measures
+     5.66:1 on white and 5.13:1 on --bg-primary. Dark mode was already fine. */
+  --text-muted:     #5a687d;
   --shadow-sm:      0 1px 3px rgba(0,0,0,0.05), 0 1px 2px rgba(0,0,0,0.04);
   --shadow-md:      0 4px 16px rgba(0,0,0,0.08);
   --shadow-lg:      0 10px 40px rgba(0,0,0,0.12);
@@ -256,11 +261,15 @@ tbody tr:hover td { background: var(--bg-primary); }
   justify-content: space-between;
   margin-bottom: 20px;
 }
+/* h1 as of 1.115.0 — reset the UA margin so the heading change is purely
+   semantic and the layout is identical to the <div> it replaced. */
 .page-title {
   font-size: var(--text-xl);
   font-weight: 700;
   color: var(--text-primary);
   letter-spacing: -0.3px;
+  margin: 0;
+  line-height: 1.3;
 }
 .page-subtitle {
   font-size: var(--text-base);
@@ -575,14 +584,20 @@ a { color: inherit; text-decoration: none; }
   transition: width 0.18s ease;
 }
 .sv-nav-label {
-  padding: 22px 22px 12px;
+  padding: 16px 22px 6px;
   font-size: var(--text-xs);
   font-weight: 700;
   letter-spacing: 0.12em;
   text-transform: uppercase;
   color: rgba(255,255,255,0.38);
 }
+/* First group sits right under the header — keep the original breathing room. */
+.sv-nav-group:first-child .sv-nav-label { padding-top: 20px; }
 .sv-nav { display: flex; flex-direction: column; gap: 2px; flex: 1; padding-bottom: 10px; }
+/* Grouped nav (1.115.0). The heading carries the grouping when expanded; a
+   separator rule carries it when collapsed to icons, where the text is hidden. */
+.sv-nav-group + .sv-nav-group { margin-top: 4px; }
+.sv-nav-list { list-style: none; display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; }
 .sv-nav a {
   position: relative;
   display: flex;
@@ -639,6 +654,11 @@ a { color: inherit; text-decoration: none; }
 .sv-sidebar.collapsed .sv-collapse-btn span,
 .sv-sidebar.collapsed .sv-version { display: none; }
 .sv-sidebar.collapsed .sv-nav a { justify-content: center; padding: 11px 0; margin: 1px 10px; }
+/* Icon-only mode: the group headings are hidden, so a rule keeps the grouping
+   visible rather than collapsing into one undifferentiated column of icons. */
+.sv-sidebar.collapsed .sv-nav-group + .sv-nav-group {
+  margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(255,255,255,0.10);
+}
 .sv-sidebar.collapsed .sv-collapse-btn { justify-content: center; padding: 10px 0; }
 .sv-sidebar.collapsed .sv-collapse-btn svg { transform: rotate(180deg); }
 
@@ -670,6 +690,10 @@ a { color: inherit; text-decoration: none; }
   .sv-sidebar.collapsed .sv-collapse-btn span,
   .sv-sidebar.collapsed .sv-version { display: revert; }
   .sv-sidebar.collapsed .sv-nav a { justify-content: flex-start; padding: 11px 20px; }
+  /* Mobile drawer always shows the full grouping — drop the icon-only rule. */
+  .sv-sidebar.collapsed .sv-nav-group + .sv-nav-group { margin-top: 4px; padding-top: 0; border-top: none; }
+  /* Touch target: 44px min height for every nav row on a phone. */
+  .sv-nav a { min-height: 44px; }
   /* Hide the desktop collapse toggle on mobile (drawer closes via backdrop/nav). */
   .sv-collapse-btn { display: none; }
   .sv-sidebar-backdrop.mobile-open {
@@ -958,6 +982,20 @@ a { color: inherit; text-decoration: none; }
    three groups on one page can disagree by tens of pixels. The column widths
    themselves come from a <colgroup> the header and every group both render. */
 .sv-dev-table { table-layout: fixed; }
+/* Fixed layout means a heading can never widen its own column, so a nowrap
+   heading just gets cut — measured at 1366px: Status 84/89, Last Alert
+   105/115, Last Seen 95/108, all three silently clipped. Headings in this
+   table wrap instead, and the cells give back the few pixels that cost.
+   (`.sv-table-scroll` is not the answer here: the shared sticky header and
+   every group table are separate <table>s that must stay in column lockstep,
+   so they cannot each own a scroller.) */
+.sv-dev-table th {
+  white-space: normal;
+  padding-left: 10px; padding-right: 10px;
+  line-height: 1.25;
+  vertical-align: bottom;
+}
+.sv-dev-table td { padding-left: 10px; padding-right: 10px; }
 
 /* Compact row density for the devices list. Only paddings and the secondary
    sub-lines change — the colgroup percentages are identical in both densities,
@@ -1616,6 +1654,11 @@ body.sv-noc .sv-content:has(.sv-sticky-top) > :first-child { padding-top: 28px; 
 }
 .sv-tab:hover { color: var(--text-secondary); }
 .sv-tab.active { color: var(--primary); border-bottom-color: var(--primary); }
+/* Crimson text on the near-black dark canvas measures 3.17:1 — below AA for
+   body-sized text. The 2px underline still carries the selection (so the cue
+   is never colour alone), but the LABEL needs to be readable: a lighter tint
+   of the same brand red, used for the text only. */
+[data-theme="dark"] .sv-tab.active { color: #ff8095; }
 
 /* ── Ctrl+K global search ──────────────────────────────── */
 .sv-search-backdrop {
@@ -2046,11 +2089,14 @@ body.sv-noc .sv-content:has(.sv-sticky-top) > :first-child { padding-top: 28px; 
 [data-theme="dark"] .sv-map-zoomctl button { color: #1a2744; }
 [data-theme="dark"] .sv-map-zoomctl button:hover { background: rgba(15, 23, 42, 0.10); color: #0f172a; }
 .sv-map-zoomctl button {
-  width: 26px; height: 26px; border: none; background: transparent; border-radius: var(--radius-sm);
+  min-width: 26px; height: 26px; padding: 0 6px; border: none; background: transparent; border-radius: var(--radius-sm);
   font-size: var(--text-lg); line-height: 1; cursor: pointer; color: #1a2744; display: flex; align-items: center; justify-content: center;
 }
+/* "Fit" is a word, not a glyph — it needs body-text sizing, and it is
+   disabled (not hidden) once the map is already fitted. */
+.sv-map-zoomctl button:disabled { opacity: 0.45; cursor: default; }
 .sv-map-zoomctl button:hover { background: var(--bg-primary); }
-.sv-map-zoomctl .lvl { font-size: var(--text-xs); color: var(--text-muted); min-width: 34px; text-align: center; }
+.sv-map-zoomctl .lvl { font-size: var(--text-xs); color: var(--text-muted); min-width: 46px; text-align: center; }
 .sv-map-legend {
   position: absolute; left: 10px; bottom: 10px; display: flex; flex-wrap: wrap; gap: 10px;
   background: rgba(255,255,255,0.92); border: 1px solid var(--border); border-radius: var(--radius);
@@ -2275,3 +2321,331 @@ body.sv-noc .sv-content:has(.sv-sticky-top) > :first-child { padding-top: 28px; 
 }
 .sv-agent-offline-row .nm { font-weight: 700; }
 .sv-agent-offline-row .cnt { color: var(--text-muted); }
+
+/* ════════════════════════════════════════════════════════════
+   Operational-clarity primitives (1.115.0) — see components/ui.tsx.
+   Tokenised throughout; no hardcoded hex that duplicates a token.
+   ════════════════════════════════════════════════════════════ */
+
+/* ── Tabs: count pill on a tab ─────────────────────────────── */
+.sv-tab { display: inline-flex; align-items: center; gap: 7px; }
+.sv-tab-count {
+  font-size: var(--text-xs); font-weight: 700; line-height: 1;
+  padding: 2px 6px; border-radius: var(--radius-pill);
+  background: var(--surface-subtle); color: var(--text-muted);
+}
+.sv-tab.active .sv-tab-count { background: var(--tint-danger); color: var(--tint-danger-fg); }
+
+/* ── Severity/status tag: glyph + word, never colour alone ─── */
+.sv-sevtag {
+  display: inline-flex; align-items: center; gap: 5px; white-space: nowrap;
+  padding: 2px 9px; border-radius: var(--radius-pill);
+  font-size: var(--text-xs); font-weight: 700; letter-spacing: 0.02em;
+}
+.sv-sevtag-glyph { font-size: 9px; line-height: 1; }
+
+/* ── Accessible info disclosure ────────────────────────────── */
+.sv-infotip { position: relative; display: inline-flex; margin-left: 5px; vertical-align: middle; }
+.sv-infotip-btn {
+  width: 15px; height: 15px; padding: 0; cursor: pointer; flex: none;
+  border: 1px solid var(--border); background: var(--bg-card); color: var(--text-muted);
+  border-radius: 50%; /* intentional: true circle badge */
+  font-size: 10px; font-weight: 700; line-height: 1; font-family: inherit;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.sv-infotip-btn:hover { color: var(--text-primary); border-color: var(--text-muted); }
+.sv-infotip-pop {
+  position: absolute; top: calc(100% + 7px); left: 50%; transform: translateX(-50%);
+  z-index: 60; width: max-content; max-width: 280px;
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md); padding: 9px 11px;
+  font-size: var(--text-sm); font-weight: 400; line-height: 1.45;
+  color: var(--text-secondary); text-transform: none; letter-spacing: 0;
+  white-space: normal; text-align: left;
+}
+/* A tip anchored near the right edge would otherwise overflow the viewport. */
+.sv-infotip-pop.right { left: auto; right: 0; transform: none; }
+
+/* ── Freshness stamp ───────────────────────────────────────── */
+/* --text-secondary, not --text-muted: freshness is essential information
+   (the brief treats "how current is this" as a first-class question), and
+   measured in light mode --text-muted on --bg-card is 4.40:1 — just under the
+   4.5:1 AA floor for text this size. --text-secondary measures 10.4:1. */
+.sv-fresh {
+  display: inline-flex; align-items: center; gap: 5px; white-space: nowrap;
+  font-size: var(--text-sm); color: var(--text-secondary);
+}
+.sv-fresh.stale { color: var(--tint-warn-fg); font-weight: 600; }
+.sv-fresh.unknown { color: var(--text-muted); font-style: italic; }
+.sv-fresh-glyph { font-size: 11px; line-height: 1; }
+
+/* ── Metric card ───────────────────────────────────────────── */
+.sv-metrics {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 14px; margin-bottom: 18px;
+}
+.sv-metric {
+  display: block; width: 100%; text-align: left; font: inherit; color: inherit;
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-left: 3px solid var(--border);
+  border-radius: var(--radius); padding: 14px 16px; box-shadow: var(--shadow-sm);
+}
+/* Only the VALUE is the control (see MetricCard's comment) — the card itself
+   is never a button, so the definition disclosure inside it stays valid HTML
+   and independently clickable. */
+.sv-metric.interactive:hover { border-color: var(--text-muted); }
+.sv-metric-action {
+  display: inline-block; background: none; border: none; padding: 0; margin: 0;
+  font: inherit; color: inherit; cursor: pointer; text-decoration: none;
+}
+.sv-metric-action:hover { text-decoration: underline; text-underline-offset: 3px; }
+.sv-metric.tone-critical { border-left-color: var(--red); }
+.sv-metric.tone-warning  { border-left-color: var(--yellow); }
+.sv-metric.tone-ok       { border-left-color: var(--green); }
+.sv-metric.tone-info     { border-left-color: var(--blue); }
+.sv-metric-value {
+  font-size: var(--text-2xl); font-weight: 800; line-height: 1.1;
+  color: var(--text-primary); font-variant-numeric: tabular-nums;
+}
+.sv-metric.tone-critical .sv-metric-value { color: var(--red); }
+.sv-metric.tone-warning  .sv-metric-value { color: var(--yellow); }
+.sv-metric.tone-ok       .sv-metric-value { color: var(--green); }
+.sv-metric-label {
+  display: flex; align-items: center; margin-top: 5px;
+  font-size: var(--text-sm); font-weight: 700; letter-spacing: 0.04em;
+  text-transform: uppercase; color: var(--text-secondary);
+}
+.sv-metric-meta { margin-top: 3px; font-size: var(--text-sm); color: var(--text-muted); }
+.sv-metric-sub  { margin-top: 6px; font-size: var(--text-sm); color: var(--text-secondary); }
+
+/* ── Filter bar + active filters ───────────────────────────── */
+.sv-filterbar {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.sv-filterbar-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; flex: 1; min-width: 0; }
+.sv-filterbar-right { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; flex: none; }
+.sv-activefilters {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin: 0 0 12px; font-size: var(--text-sm);
+}
+.sv-activefilters-lbl { color: var(--text-muted); font-weight: 600; }
+.sv-filterchip {
+  display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+  padding: 3px 10px; border-radius: var(--radius-pill);
+  border: 1px solid var(--border); background: var(--surface-subtle);
+  color: var(--text-secondary); font-size: var(--text-sm); font-weight: 600;
+}
+.sv-filterchip:hover { border-color: var(--primary); color: var(--primary); }
+
+/* ── Deliberate state boxes (empty / no-results / error / no-access) ── */
+.sv-state {
+  border: 1px dashed var(--border); border-radius: var(--radius);
+  padding: 28px 24px; text-align: center; background: var(--bg-card);
+}
+.sv-state-title { font-size: var(--text-md); font-weight: 700; color: var(--text-primary); }
+.sv-state-msg {
+  margin: 6px auto 0; max-width: 480px;
+  font-size: var(--text-base); color: var(--text-muted); line-height: 1.5;
+}
+.sv-state-error { border-style: solid; border-color: var(--red); background: var(--tint-danger); }
+.sv-state-error .sv-state-title { color: var(--tint-danger-fg); }
+.sv-state-error .sv-state-msg { color: var(--tint-danger-fg); }
+.sv-state-noaccess { border-style: solid; }
+
+/* ── Inline notices ────────────────────────────────────────── */
+.sv-notice {
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 9px 12px; border-radius: var(--radius-sm);
+  font-size: var(--text-base); line-height: 1.45; margin-bottom: 12px;
+}
+.sv-notice.info   { background: var(--tint-info);    color: var(--tint-info-fg); }
+.sv-notice.warn   { background: var(--tint-warn);    color: var(--tint-warn-fg); }
+.sv-notice.danger { background: var(--tint-danger);  color: var(--tint-danger-fg); }
+.sv-notice.ok     { background: var(--tint-success); color: var(--tint-success-fg); }
+
+/* ── Labelled scroll region ────────────────────────────────── */
+.sv-table-scroll:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
+
+/* ── Definition row ("what this counts") under a metric strip ── */
+/* Same reason as .sv-fresh: a definition row exists to be read, so it sits at
+   --text-secondary (10.4:1) rather than --text-muted (4.40:1 in light). */
+.sv-defs {
+  display: flex; flex-wrap: wrap; gap: 6px 20px;
+  margin: -6px 0 16px; font-size: var(--text-sm); color: var(--text-secondary);
+}
+.sv-defs b { color: var(--text-primary); font-weight: 600; }
+
+/* Deep-link target highlight — a row reached via ?<entity>Id=. Fades out
+   after a few seconds (handled in JS) so it never reads as a stored state. */
+.sv-row-highlight > td { background: var(--tint-info) !important; }
+.sv-row-highlight > td:first-child { box-shadow: inset 3px 0 0 var(--blue); }
+
+/* Visually hidden but present for assistive tech (live regions, skip link,
+   accessible names that would be visual noise). Not display:none — that
+   removes it from the accessibility tree too. */
+.sv-sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; border: 0;
+}
+/* Skip link — first tab stop, visible only while focused. */
+.sv-skip {
+  position: absolute; left: 12px; top: -60px; z-index: 200;
+  background: var(--bg-card); color: var(--text-primary);
+  border: 1px solid var(--primary); border-radius: var(--radius-sm);
+  padding: 9px 14px; font-size: var(--text-base); font-weight: 600;
+  transition: top 0.12s ease;
+}
+.sv-skip:focus { top: 10px; }
+/* Keyboard-highlighted search result (combobox listbox option). */
+.sv-search-item.active { background: var(--surface-subtle); }
+
+/* Two-line clamp for an operational message cell. A single-line ellipsis on a
+   table whose whole purpose is to say WHAT happened forces a hover on every
+   row; two lines fits almost every real alert message in full. */
+.sv-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  line-height: 1.4;
+}
+
+/* Sibling-check switcher on a service detail page — every protocol check of
+   one logical service, the current one marked. */
+.sv-sibling {
+  display: inline-flex; align-items: center; gap: 6;
+  gap: 6px; padding: 4px 11px; border-radius: var(--radius-pill);
+  border: 1px solid var(--border); background: var(--bg-card);
+  font-size: var(--text-sm); font-weight: 600; color: var(--text-secondary);
+  text-decoration: none;
+}
+.sv-sibling:hover { border-color: var(--primary); color: var(--primary); }
+.sv-sibling[data-current="true"] {
+  border-color: var(--primary); background: var(--primary-light); color: var(--primary);
+}
+
+/* ── Map detail: canvas + semantic node list ───────────────── */
+.sv-map-layout { display: grid; grid-template-columns: minmax(0, 1fr) 290px; gap: 14px; align-items: start; }
+@media (max-width: 1100px) { .sv-map-layout { grid-template-columns: 1fr; } }
+.sv-map-nodes {
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: var(--shadow-sm); overflow: hidden;
+}
+.sv-map-nodelist { list-style: none; margin: 0; padding: 0; max-height: 420px; overflow-y: auto; }
+.sv-map-nodebtn {
+  display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+  padding: 7px 12px; background: none; border: none; cursor: pointer;
+  font: inherit; font-size: var(--text-base); color: var(--text-primary);
+  border-bottom: 1px solid var(--border-light);
+}
+.sv-map-nodebtn:hover { background: var(--surface-subtle); }
+.sv-map-nodebtn.selected { background: var(--tint-info); }
+.sv-map-nodebtn .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sv-map-nodedetail { padding: 12px; border-top: 1px solid var(--border); background: var(--surface-subtle); }
+.sv-map-nodedl {
+  display: grid; grid-template-columns: auto 1fr; gap: 4px 10px;
+  margin: 8px 0 10px; font-size: var(--text-sm);
+}
+.sv-map-nodedl dt { color: var(--text-muted); }
+.sv-map-nodedl dd { margin: 0; color: var(--text-primary); }
+
+/* A page with a bottom-sticky save bar must reserve room for it, or the last
+   field (and any error under it) scrolls underneath and cannot be reached. */
+.sv-settings { padding-bottom: 64px; }
+
+/* ── Escalation timeline (Settings → Escalation & On-Call) ───── */
+.sv-esc-timeline { list-style: none; margin: 0 0 14px; padding: 0 0 0 4px; }
+.sv-esc-timeline li {
+  display: flex; gap: 12px; align-items: flex-start;
+  padding: 0 0 12px 16px; position: relative;
+  border-left: 2px solid var(--border);
+  font-size: var(--text-base);
+}
+.sv-esc-timeline li:last-child { border-left-color: transparent; padding-bottom: 0; }
+.sv-esc-timeline li::before {
+  content: ''; position: absolute; left: -5px; top: 5px;
+  width: 8px; height: 8px; border-radius: 50%; /* intentional: timeline node */
+  background: var(--primary);
+}
+.sv-esc-timeline li:last-child::before { background: var(--border); }
+.sv-esc-at {
+  flex: none; min-width: 72px; font-weight: 700; font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+.sv-esc-what { color: var(--text-secondary); line-height: 1.45; }
+
+/* ════════════════════════════════════════════════════════════
+   Reduced motion (WCAG 2.2 — 2.3.3 Animation from Interactions)
+   ════════════════════════════════════════════════════════════
+   Only `.sv-link-flow` honoured this before, so an operator who asks their OS
+   to reduce motion still got pulsing status dots, pulsing KPI tiles, pulsing
+   map nodes and shimmering skeletons — the most attention-grabbing motion in
+   the app, running indefinitely. All of it is decorative emphasis on
+   information the UI already states in words and colour, so it stops.
+
+   Two deliberate exceptions, because both COMMUNICATE rather than decorate:
+   the loading spinner (a frozen spinner reads as a hung page) and the skeleton
+   shimmer — these are slowed rather than stopped, and neither flashes. */
+@media (prefers-reduced-motion: reduce) {
+  .sv-status-dot, .sv-stat, .sv-stat.pulse, .sv-mapnode-pulse,
+  .sv-collector-pill .dot, .sv-alert-banner .dot, .sv-icon-badge,
+  [class*="pulse"] {
+    animation: none !important;
+  }
+  .fade-in, .slide-in { animation: none !important; }
+  /* Transitions too: a 0.2s slide is still motion. Not zero — an instant
+     change with no transition can be harder to follow than a very quick one. */
+  *, *::before, *::after {
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .sv-spinner, .sv-spinner-sm { animation-duration: 2s !important; }
+  .skeleton { animation-duration: 3s !important; }
+}
+
+/* ── Devices list: stacked cards on a phone ──────────────────
+   The list uses ONE shared sticky header plus a fixed-layout table per site
+   group, which is what keeps every group's columns in line on a desktop. At
+   360px that same mechanism divides ~300px between ten columns: measured
+   ~25px each, with the device name, type, vendor and IP printed on top of one
+   another. Below 900px each row becomes a card instead: every cell on its own
+   line with its column name beside it, so nothing is clipped, nothing
+   overlaps, and there is no horizontal scrolling. */
+@media (max-width: 900px) {
+  /* The shared header has nothing to head once the rows are cards. */
+  .sv-sticky-thead { display: none; }
+  .sv-dev-table,
+  .sv-dev-table tbody,
+  .sv-dev-table tr,
+  .sv-dev-table td { display: block; width: auto; }
+  .sv-dev-table colgroup { display: none; }
+  .sv-dev-table { table-layout: auto; }
+  .sv-dev-table tr {
+    border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--bg-card); margin: 0 10px 10px; padding: 4px 0;
+  }
+  .sv-dev-table td {
+    display: flex; align-items: flex-start; gap: 12px;
+    border-bottom: 1px solid var(--border-light);
+    padding: 7px 12px; text-align: left !important;
+  }
+  .sv-dev-table tr td:last-child { border-bottom: none; }
+  .sv-dev-table td::before {
+    content: attr(data-label);
+    flex: none; width: 104px;
+    font-size: var(--text-xs); font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.04em; color: var(--text-muted); padding-top: 2px;
+  }
+  /* The device name leads the card rather than being one labelled row. */
+  .sv-dev-table td[data-label="Device"] { padding-top: 10px; }
+  .sv-dev-table td[data-label="Device"]::before { display: none; }
+  .sv-dev-table td[data-label="Device"] { font-size: var(--text-md); font-weight: 600; }
+  /* Compact density must not collapse the card rows into each other. */
+  .sv-dev-list[data-density="compact"] .sv-table td { padding: 6px 12px; }
+  .sv-dev-list[data-density="compact"] .sv-dev-sub { display: revert; }
+  /* The group header's status pills are the site's summary — they must wrap
+     onto a second line rather than run off the right edge of the card. */
+  .sv-acc-head { flex-wrap: wrap; row-gap: 6px; }
+  .sv-acc-summary { flex-wrap: wrap; }
+}

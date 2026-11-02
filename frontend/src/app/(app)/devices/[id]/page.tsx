@@ -13,7 +13,7 @@ import { vendorLabel } from '@/lib/vendor';
 import { StatusDot } from '@/components/StatusDot';
 import SensorManager from '@/components/SensorManager';
 import { DeviceForm } from '@/components/DeviceModals';
-import { StatusBadge, Loading, ErrorBox, Empty, fmtTime, fmtRel, fmtBps, Pager, useClientPagination, useConfirm, CHART_TOOLTIP, useTableSort, sortRows, SortTh, TableSkeleton, UtilBar } from '@/components/ui';
+import { StatusBadge, Loading, ErrorBox, Empty, fmtTime, fmtRel, fmtBps, Pager, useClientPagination, useConfirm, CHART_TOOLTIP, useTableSort, sortRows, SortTh, TableSkeleton, UtilBar, Tabs, TabPanel, useUrlTab, SevTag, InfoTip, Notice, LoadError, TableScroll, Freshness, Breadcrumb } from '@/components/ui';
 import { GradeBadge, ScoreBar, TrendArrow, n as intelNum } from '@/components/intel';
 
 type Device = {
@@ -111,9 +111,15 @@ const ALERT_SORT: Record<string, (a: Alert) => unknown> = {
 const TRAFFIC_IN_COLOR = '#3b82f6';
 const TRAFFIC_OUT_COLOR = '#f97316';
 
+type DeviceSection = 'overview' | 'performance' | 'interfaces' | 'alerts' | 'intelligence' | 'configuration';
+const DEVICE_SECTIONS: readonly DeviceSection[] = ['overview', 'performance', 'interfaces', 'alerts', 'intelligence', 'configuration'] as const;
+
 export default function DeviceDetailPage() {
   const { canEdit } = useRbac();
   const { id } = useParams<{ id: string }>();
+  // URL-backed sections (?tab=). The page was one ~1,500px scroll with no way
+  // to link to a part of it; every section is now addressable and Back works.
+  const { tab, setTab } = useUrlTab<DeviceSection>('tab', DEVICE_SECTIONS, 'overview');
   const router = useRouter();
   const { confirm, ConfirmUI } = useConfirm();
   const [range, setRange] = useState('24h');
@@ -221,123 +227,199 @@ export default function DeviceDetailPage() {
         </span>
       </p>
 
-      {/* Quick stats: 4 compact cards */}
-      <QuickStats deviceId={d.id} />
-
-      {/* 90-day availability calendar */}
-      <UptimeCalendar deviceId={d.id} />
-
-      {/* Graphs — 2-column grid; Row 1: Ping Latency | Packet Loss */}
-      <div style={GRAPH_GRID}>
-        <GraphCard title="Ping Latency (ms)" range={range} setRange={setRange}>
-          <LatencyChart
-            data={ping.data || []}
-            loading={ping.loading}
-            alertTimes={(alerts.data?.rows || []).map((a) => a.triggered_at)}
-          />
-        </GraphCard>
-        <GraphCard title="Packet Loss (%)" range={range} setRange={setRange}>
-          <SingleChart
-            data={(ping.data || []).map((p) => ({ bucket: p.bucket, value: p.max_loss }))}
-            loading={ping.loading} color="#C8102E" unit="%"
-          />
-        </GraphCard>
-        {/* Row 2+: CPU / Memory / interface graphs (2 per row) */}
-        {snmpOn && !sensorsLoading && standardSensors.length > 0 && (
-          <SensorGraphs deviceId={d.id} sensors={standardSensors} range={range} setRange={setRange} />
-        )}
+      {/* Context that stays visible in every section: what this device is,
+          how fresh the reading is, and whether anything is open against it —
+          so a drill-down into Interfaces never loses the operational picture. */}
+      <div className="sv-defs" style={{ marginBottom: 12 }}>
+        <span><b>Availability</b> below means ICMP reachability — whether the device answered a ping. A device at 100% can still have failing interfaces, alerts and anomalies.</span>
       </div>
 
-      {snmpOn && !sensorsLoading && customSensors.length > 0 && (
-        <>
-          <div style={SECTION_HEADING}>Custom Sensors</div>
-          <div style={GRAPH_GRID}>
-            {customSensors.map((s) => (
-              <CustomSensorChart key={s.id} deviceId={d.id} sensor={s} range={range} setRange={setRange} />
-            ))}
-          </div>
-        </>
-      )}
-
-      {snmpOn && sensorsLoading && <div style={SECTION_CARD}><Loading /></div>}
-      {snmpOn && !sensorsLoading && enabledSensors.length === 0 && (
-        <div style={{ ...SECTION_CARD, textAlign: 'center', padding: '24px 20px' }}>
-          <p className="sv-muted" style={{ marginTop: 0 }}>
-            No sensors configured. Run Discovery to choose what to monitor on this device.
-          </p>
-          {canEdit && <button className="sv-btn" onClick={() => setSensorsOpen(true)}>Manage Sensors</button>}
-        </div>
-      )}
-
-      {/* Per-port interface table — full width; it is the densest table on the
-          page and was previously squeezed into a quarter of the summary grid. */}
-      <InterfacesSection
-        deviceId={d.id}
-        snmpOn={snmpOn}
-        canEdit={canEdit}
-        onManageSensors={() => setSensorsOpen(true)}
+      <Tabs
+        ariaLabel="Device sections"
+        active={tab}
+        onChange={setTab}
+        tabs={[
+          { key: 'overview', label: 'Overview' },
+          { key: 'performance', label: 'Performance' },
+          { key: 'interfaces', label: 'Interfaces' },
+          { key: 'alerts', label: 'Alerts', count: alerts.data?.total ?? null },
+          { key: 'intelligence', label: 'Intelligence' },
+          // Configuration gathers everything that CHANGES the device, and is
+          // shown only to roles the server would let perform those writes.
+          ...(canEdit ? [{ key: 'configuration' as DeviceSection, label: 'Configuration' }] : []),
+        ]}
       />
 
-      {/* Compact summary grid (collapses to 1 column on narrow screens). */}
-      <div className="sv-device-summary-grid">
-        <ConnectedDevices deviceId={d.id} />
-        <DeviceIntelligence deviceId={d.id} />
-        <SiteGateway device={d} onChanged={() => device.reload()} />
-      </div>
+      {tab === 'overview' && (
+        <TabPanel tabKey="overview">
+          {/* Quick stats: 4 compact cards */}
+          <QuickStats deviceId={d.id} />
+          {/* 90-day availability calendar */}
+          <UptimeCalendar deviceId={d.id} />
+          <div className="sv-device-summary-grid">
+            <ConnectedDevices deviceId={d.id} />
+            <DeviceIntelligence deviceId={d.id} />
+            <SiteGateway device={d} onChanged={() => device.reload()} />
+          </div>
+        </TabPanel>
+      )}
 
-      <div style={SECTION_CARD}>
-        <div style={SECTION_HEADING}>Alert History</div>
-        {alerts.loading && !alerts.data ? (
-          <Loading />
-        ) : alerts.data && alerts.data.rows.length ? (
-          <>
-            <table className="sv-table">
-              <thead>
-                <tr>
-                  <SortTh label="Severity" col="severity" sort={alertSort} onSort={onAlertSort} />
-                  <SortTh label="Type" col="type" sort={alertSort} onSort={onAlertSort} />
-                  <SortTh label="Message" col="message" sort={alertSort} onSort={onAlertSort} />
-                  <SortTh label="Triggered" col="triggered" sort={alertSort} onSort={onAlertSort} />
-                  <SortTh label="Resolved" col="resolved" sort={alertSort} onSort={onAlertSort} />
-                  <SortTh label="Status" col="status" sort={alertSort} onSort={onAlertSort} />
-                </tr>
-              </thead>
-              <tbody>
-                {alertPg.pageRows.map((a) => (
-                  <tr key={a.id}>
-                    <td><StatusBadge status={a.severity} /></td>
-                    <td>{a.alert_type}</td>
-                    <td>{a.message}</td>
-                    <td className="sv-muted">{fmtTime(a.triggered_at)}</td>
-                    <td className="sv-muted">{a.resolved_at ? fmtTime(a.resolved_at) : '—'}</td>
-                    <td><StatusBadge status={a.status} /></td>
-                  </tr>
+      {tab === 'performance' && (
+        <TabPanel tabKey="performance">
+          {/* Graphs — 2-column grid; Row 1: Ping Latency | Packet Loss */}
+          <div style={GRAPH_GRID}>
+            <GraphCard title="Ping Latency (ms)" range={range} setRange={setRange}>
+              <LatencyChart
+                data={ping.data || []}
+                loading={ping.loading}
+                alertTimes={(alerts.data?.rows || []).map((a) => a.triggered_at)}
+              />
+            </GraphCard>
+            <GraphCard title="Packet Loss (%)" range={range} setRange={setRange}>
+              <SingleChart
+                data={(ping.data || []).map((p) => ({ bucket: p.bucket, value: p.max_loss }))}
+                loading={ping.loading} color="#C8102E" unit="%"
+              />
+            </GraphCard>
+            {/* Row 2+: CPU / Memory / interface graphs (2 per row) */}
+            {snmpOn && !sensorsLoading && standardSensors.length > 0 && (
+              <SensorGraphs deviceId={d.id} sensors={standardSensors} range={range} setRange={setRange} />
+            )}
+          </div>
+
+          {snmpOn && !sensorsLoading && customSensors.length > 0 && (
+            <>
+              <div style={SECTION_HEADING}>Custom Sensors</div>
+              <div style={GRAPH_GRID}>
+                {customSensors.map((sen) => (
+                  <CustomSensorChart key={sen.id} deviceId={d.id} sensor={sen} range={range} setRange={setRange} />
                 ))}
-              </tbody>
-            </table>
-            <Pager
-              page={alertPg.page}
-              pageCount={alertPg.pageCount}
-              start={alertPg.start}
-              perPage={ALERTS_PER_PAGE}
-              total={alertPg.total}
-              onPrev={alertPg.prev}
-              onNext={alertPg.next}
-              grandTotal={alerts.data.total}
-              canLoadOlder={alerts.data.rows.length < alerts.data.total && alertLimit < ALERT_LIMIT_MAX}
-              loadingOlder={alerts.loading && !!alerts.data}
-              onLoadOlder={() => setAlertLimit((l) => Math.min(ALERT_LIMIT_MAX, l + ALERT_LOAD_STEP))}
-              cappedNote={
-                alertLimit >= ALERT_LIMIT_MAX && alerts.data.total > alerts.data.rows.length
-                  ? `Showing the newest ${alerts.data.rows.length.toLocaleString()} of ${alerts.data.total.toLocaleString()} alerts. Use Reports for the full history.`
-                  : undefined
-              }
-            />
-          </>
-        ) : (
-          <Empty message="No alerts recorded for this device." />
-        )}
-      </div>
+              </div>
+            </>
+          )}
+
+          {snmpOn && sensorsLoading && <div style={SECTION_CARD}><Loading /></div>}
+          {snmpOn && !sensorsLoading && enabledSensors.length === 0 && (
+            <div style={{ ...SECTION_CARD, textAlign: 'center', padding: '24px 20px' }}>
+              <p className="sv-muted" style={{ marginTop: 0 }}>
+                No sensors configured. Run Discovery to choose what to monitor on this device.
+              </p>
+              {canEdit && <button className="sv-btn" onClick={() => setSensorsOpen(true)}>Manage Sensors</button>}
+            </div>
+          )}
+          {!snmpOn && (
+            <Notice tone="info">
+              SNMP polling is not enabled on this device, so only ICMP latency and packet loss are
+              collected — there are no CPU, memory or interface metrics to chart.
+            </Notice>
+          )}
+        </TabPanel>
+      )}
+
+      {tab === 'interfaces' && (
+        <TabPanel tabKey="interfaces">
+          {/* Per-port interface table — full width; it is the densest table on
+              the page and was previously squeezed into a quarter of the grid. */}
+          <InterfacesSection
+            deviceId={d.id}
+            snmpOn={snmpOn}
+            canEdit={canEdit}
+            onManageSensors={() => setSensorsOpen(true)}
+          />
+        </TabPanel>
+      )}
+
+      {tab === 'intelligence' && (
+        <TabPanel tabKey="intelligence">
+          <DeviceIntelligence deviceId={d.id} />
+        </TabPanel>
+      )}
+
+      {tab === 'configuration' && canEdit && (
+        <TabPanel tabKey="configuration">
+          <SiteGateway device={d} onChanged={() => device.reload()} />
+          <div style={SECTION_CARD}>
+            <div style={SECTION_HEADING}>Monitoring configuration</div>
+            <p className="sv-muted" style={{ marginTop: 0, fontSize: 'var(--text-base)' }}>
+              Polling interval {d.poll_interval_seconds}s · SNMP {snmpOn ? 'enabled' : 'disabled'}
+            </p>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
+              <button className="sv-btn ghost sm" onClick={() => setEditOpen(true)}>Edit device</button>
+              {snmpOn && <button className="sv-btn ghost sm" onClick={() => setSensorsOpen(true)}>Manage sensors</button>}
+              <button className="sv-btn danger sm" onClick={() => handleDelete(d)}>Stop monitoring</button>
+            </div>
+          </div>
+        </TabPanel>
+      )}
+
+      {tab === 'alerts' && (
+        <TabPanel tabKey="alerts">
+          <div style={SECTION_CARD}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+              <span style={SECTION_HEADING}>Alert History</span>
+              <InfoTip label="Alert History">
+                Every alert ever raised for this device, newest first — including ones long since
+                resolved. A device can show 100% ICMP availability and still have a history of
+                critical alerts: availability measures whether it answered a ping, nothing more.
+              </InfoTip>
+            </div>
+            {alerts.loading && !alerts.data ? (
+              <Loading />
+            ) : alerts.error ? (
+              <LoadError message={alerts.error} what="this device's alert history" onRetry={alerts.reload} />
+            ) : alerts.data && alerts.data.rows.length ? (
+              <>
+                <TableScroll label="Alert history">
+                  <table className="sv-table">
+                    <thead>
+                      <tr>
+                        <SortTh label="Severity" col="severity" sort={alertSort} onSort={onAlertSort} />
+                        <SortTh label="Type" col="type" sort={alertSort} onSort={onAlertSort} />
+                        <SortTh label="Message" col="message" sort={alertSort} onSort={onAlertSort} />
+                        <SortTh label="Triggered" col="triggered" sort={alertSort} onSort={onAlertSort} />
+                        <SortTh label="Resolved" col="resolved" sort={alertSort} onSort={onAlertSort} />
+                        <SortTh label="Status" col="status" sort={alertSort} onSort={onAlertSort} />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {alertPg.pageRows.map((a) => (
+                        <tr key={a.id}>
+                          <td><SevTag sev={a.severity} /></td>
+                          <td>{a.alert_type}</td>
+                          <td>{a.message}</td>
+                          <td className="sv-muted" style={{ whiteSpace: 'nowrap' }}>{fmtTime(a.triggered_at)}</td>
+                          <td className="sv-muted" style={{ whiteSpace: 'nowrap' }}>{a.resolved_at ? fmtTime(a.resolved_at) : '—'}</td>
+                          <td><StatusBadge status={a.status} /></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </TableScroll>
+                <Pager
+                  page={alertPg.page}
+                  pageCount={alertPg.pageCount}
+                  start={alertPg.start}
+                  perPage={ALERTS_PER_PAGE}
+                  total={alertPg.total}
+                  onPrev={alertPg.prev}
+                  onNext={alertPg.next}
+                  grandTotal={alerts.data.total}
+                  canLoadOlder={alerts.data.rows.length < alerts.data.total && alertLimit < ALERT_LIMIT_MAX}
+                  loadingOlder={alerts.loading && !!alerts.data}
+                  onLoadOlder={() => setAlertLimit((l) => Math.min(ALERT_LIMIT_MAX, l + ALERT_LOAD_STEP))}
+                  cappedNote={
+                    alertLimit >= ALERT_LIMIT_MAX && alerts.data.total > alerts.data.rows.length
+                      ? `Showing the newest ${alerts.data.rows.length.toLocaleString()} of ${alerts.data.total.toLocaleString()} alerts. Use Reports for the full history.`
+                      : undefined
+                  }
+                />
+              </>
+            ) : (
+              <Empty message="No alerts have ever been raised for this device." />
+            )}
+          </div>
+        </TabPanel>
+      )}
 
       {sensorsOpen && (
         <SensorManager

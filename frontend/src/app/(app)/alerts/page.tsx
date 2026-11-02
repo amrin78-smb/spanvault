@@ -13,6 +13,7 @@ import { wirelessHref as sharedWirelessHref } from '@/lib/wirelessLinks';
 import {
   StatusBadge, ErrorBox, fmtTime, fmtRel, PageHeader, TableSkeleton, EmptyState, useRefreshKey,
   Pager, useClientPagination, useTableSort, sortRows, SortTh, CHART_TOOLTIP, useConfirm, usePrompt, useToast,
+  MetricCard, InfoTip, SevTag, Notice, NoResults, LoadError, TableScroll, FirstUse,
 } from '@/components/ui';
 import { StatusDot } from '@/components/StatusDot';
 import SiteScopeBanner from '@/components/SiteScopeBanner';
@@ -31,6 +32,15 @@ type Alert = {
   wireless_client_mac?: string | null;
 };
 
+// Authoritative, identically-scoped totals from GET /api/alerts/summary.
+// The tiles used to count the FETCHED rows (a LIMIT 200 slice by default), so
+// on a busy estate "Critical 30" meant "30 criticals among the newest 200
+// alerts" while presenting itself as the critical count.
+type AlertSummary = {
+  matched: number; open_total: number; critical: number; warning: number;
+  unacknowledged: number; acknowledged: number; suppressed: number; resolved: number;
+  oldest_open_at: string | null;
+};
 type VolumeBucket = { hour: string; critical: number; warning: number; other: number; total: number };
 type VolumeResponse = { hours: number; buckets: VolumeBucket[] };
 
@@ -356,6 +366,12 @@ function persistViews(views: SavedView[]) {
 // Top-level presentational components (never nested — CLAUDE.md rule).
 // ════════════════════════════════════════════════════════════
 
+// Prefer the server aggregate; fall back to the loaded-rows tally only while
+// it is still in flight or if it failed (the banner beside the tiles says so).
+function sumVal(authoritative: number | undefined, loaded: number): string {
+  return (authoritative ?? loaded).toLocaleString();
+}
+
 function AlertStatCard({ num, label, color }: { num: number; label: string; color: string }) {
   return (
     <div style={{
@@ -544,6 +560,13 @@ export default function AlertsPage() {
   // moves by at most a handful of counts a minute, and it is one more scan of
   // a multi-million-row table — no reason to run it on the list's 15s poll.
   const volume = useApi<VolumeResponse>('/api/alerts/volume?hours=24', 60000);
+  // Same querystring as the table's own fetch minus the row limit, so the
+  // tiles and the table always describe the same population.
+  const summaryParams = new URLSearchParams();
+  if (status) summaryParams.set('status', status);
+  if (severity) summaryParams.set('severity', severity);
+  const summaryQs = summaryParams.toString();
+  const alertSummary = useApi<AlertSummary>(`/api/alerts/summary${summaryQs ? `?${summaryQs}` : ''}`, 30000);
 
   useRefreshKey(() => { alerts.reload(); volume.reload(); });
 
@@ -692,6 +715,19 @@ export default function AlertsPage() {
   const cWarning = all.filter((a) => a.severity === 'warning' && a.status !== 'resolved').length;
   const cUnack = all.filter((a) => a.status === 'active').length;
   const cSuppressed = all.filter((a) => a.status === 'suppressed').length;
+  // Says out loud which population the tiles describe, so a filtered view can
+  // never be mistaken for the whole estate.
+  const scopeLabel = [
+    status ? `status: ${status}` : 'all statuses',
+    severity ? `severity: ${severity}` : null,
+  ].filter(Boolean).join(' · ');
+  // Does the empty table mean "nothing is wrong" or "your filters exclude
+  // everything"? These two answer that, and drive the right empty state.
+  const hasAnyFilter = !!(status || severity || search.trim() || chips.size || hourFocus);
+  const clearAllFilters = useCallback(() => {
+    setStatus(''); setSeverity(''); setSearch(''); setChips(new Set());
+    setHourFocus(null); setActiveView('');
+  }, []);
 
   // ── Volume strip data ───────────────────────────────────────
   const volData = useMemo(() => (volume.data?.buckets || []).map((b) => {
@@ -865,16 +901,22 @@ export default function AlertsPage() {
               />
             )}
           </td>
-          {/* severity dot */}
-          <td style={{ paddingLeft: indent ? 28 : 12, width: 28 }}>
-            <StatusDot status={a.severity === 'critical' ? 'down' : 'warning'} size={9} />
+          {/* Severity as glyph + word, not a coloured dot. A dot alone is the
+              same mark for "critical" and "info" to a colour-blind operator,
+              in greyscale, and to a screen reader. */}
+          <td style={{ paddingLeft: indent ? 28 : 12, whiteSpace: 'nowrap' }}>
+            <SevTag sev={a.severity} />
           </td>
-          {/* alert-type badge */}
-          <td style={{ width: 1, whiteSpace: 'nowrap' }}>
-            <span className="sv-type-badge">{prettyType(a.alert_type)}</span>
+          {/* Alert-type badge. Allowed to wrap: nowrap made this the widest
+              column on the table ("HIGH CHANNEL UTIL" = 214px), which pushed
+              the Triggered heading off the right edge at 1366px. */}
+          <td style={{ maxWidth: 120 }}>
+            <span className="sv-type-badge" style={{ whiteSpace: 'normal', display: 'inline-block', lineHeight: 1.3 }}>
+              {prettyType(a.alert_type)}
+            </span>
           </td>
           {/* device, or agent for agent_down alerts */}
-          <td className="sv-alert-device" style={{ whiteSpace: 'nowrap' }}>
+          <td className="sv-alert-device">
             {a.device_id == null && a.service_name ? (
               <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                 <Link href="/services" onClick={(e) => e.stopPropagation()} style={{ color: 'var(--sv-crimson)', fontWeight: 600 }}>
@@ -909,11 +951,16 @@ export default function AlertsPage() {
               </Link>
             )}
           </td>
-          {/* message (truncate at 300px) + note + suppression reason */}
-          <td>
+          {/* Message: wraps to at most two lines rather than ellipsising at
+              300px. An alert message is the one field that says WHAT happened,
+              and "2.4GHz airtime averaged 88% over 15 min…" cut mid-sentence
+              forces a hover on every row. The full text stays in the title and
+              in the accessibility tree either way. */}
+          <td style={{ minWidth: 240 }}>
             <div
               title={a.message}
-              style={{ maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 'var(--text-sm)', color: 'var(--text-primary)' }}
+              className="sv-clamp-2"
+              style={{ fontSize: 'var(--text-sm)', color: 'var(--text-primary)' }}
             >{a.message}</div>
             {a.note && <div className="sv-alert-note" style={{ fontSize: 'var(--text-xs)', display: 'flex', alignItems: 'center', gap: 4 }}><IconNote width={12} height={12} /> {a.note}</div>}
             {suppressed && (
@@ -960,6 +1007,7 @@ export default function AlertsPage() {
     const sev = worstSeverity(g.alerts);
     const dur = fmtDuration(groupDurationSec(g.alerts));
     const newest = g.alerts.reduce((m, a) => (new Date(a.triggered_at) > new Date(m.triggered_at) ? a : m), g.alerts[0]);
+    const oldest = g.alerts.reduce((m, a) => (new Date(a.triggered_at) < new Date(m.triggered_at) ? a : m), g.alerts[0]);
     // Three counts live on this header and they are NOT interchangeable:
     // every alert in the group, the unresolved ones (all the checkbox can
     // select — a resolved alert has no action left) and the still-active ones
@@ -1021,7 +1069,7 @@ export default function AlertsPage() {
                 fontWeight: 'inherit', outlineOffset: -2,
               }}
             >
-              <StatusDot status={sev === 'critical' ? 'down' : 'warning'} size={10} />
+              <SevTag sev={sev} />
               <span style={{ fontWeight: 700, color: 'var(--text-primary)' }}>{g.title}</span>
               {g.kind === 'entity' && (
                 <span className="sv-type-badge" style={{ marginTop: 0 }}>{entityKindLabel(first)}</span>
@@ -1030,8 +1078,11 @@ export default function AlertsPage() {
                 {g.alerts.length} alert{plural(g.alerts.length)}
                 {ids.length !== g.alerts.length && ` · ${ids.length} unresolved`}
               </span>
-              <span style={MICRO}>· worst: {sev === 'critical' ? 'Critical' : 'Warning'}</span>
-              <span style={MICRO} title={fmtTime(newest.triggered_at)}>· {fmtRel(newest.triggered_at)}</span>
+              {/* First and last occurrence, not just "how long ago" — an alert
+                  open for three weeks and one raised two minutes ago are
+                  different situations and used to read identically. */}
+              <span style={MICRO} title={fmtTime(oldest.triggered_at)}>· first {fmtRel(oldest.triggered_at)}</span>
+              <span style={MICRO} title={fmtTime(newest.triggered_at)}>· last {fmtRel(newest.triggered_at)}</span>
               {dur !== '0s' && <span style={MICRO}>· spans {dur}</span>}
               <span style={{ ...MICRO, color: 'var(--text-secondary)' }}>· {typeSummary(g.alerts)}</span>
               <span aria-hidden="true" style={{ marginLeft: 'auto', fontSize: 'var(--text-xs)', fontWeight: 600, color: 'var(--primary)' }}>
@@ -1068,13 +1119,49 @@ export default function AlertsPage() {
 
       <SiteScopeBanner />
 
-      {/* ── Stat cards ───────────────────────────────────────── */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 12, marginBottom: 16 }}>
-        <AlertStatCard num={cCritical} label="Critical" color="var(--red)" />
-        <AlertStatCard num={cWarning} label="Warning" color="var(--yellow)" />
-        <AlertStatCard num={cUnack} label="Unacknowledged" color="var(--red)" />
-        <AlertStatCard num={cSuppressed} label="Suppressed" color="var(--text-muted)" />
+      {/* ── Summary tiles. Authoritative COUNTs over the whole filtered,
+             site-scoped set (GET /api/alerts/summary) — not a tally of the
+             rows this page happens to have fetched. Each states what it
+             counts; the open backlog is kept visibly distinct from the
+             24-hour trigger volume charted below it. ── */}
+      <div className="sv-metrics" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))' }}>
+        <MetricCard
+          tone="critical"
+          value={sumVal(alertSummary.data?.critical, cCritical)}
+          label="Critical"
+          scope={scopeLabel}
+          definition="Alerts with critical severity that are not resolved — active, acknowledged or suppressed. Counted over every alert matching the current filters, not just the rows loaded below."
+        />
+        <MetricCard
+          tone="warning"
+          value={sumVal(alertSummary.data?.warning, cWarning)}
+          label="Warning"
+          scope={scopeLabel}
+          definition="Unresolved alerts with warning severity, over every alert matching the current filters."
+        />
+        <MetricCard
+          tone={(alertSummary.data?.unacknowledged ?? cUnack) > 0 ? 'critical' : 'ok'}
+          value={sumVal(alertSummary.data?.unacknowledged, cUnack)}
+          label="Unacknowledged"
+          scope={scopeLabel}
+          sub={alertSummary.data?.oldest_open_at
+            ? <>Oldest open: <span title={fmtTime(alertSummary.data.oldest_open_at)}>{fmtRel(alertSummary.data.oldest_open_at)}</span></>
+            : undefined}
+          definition="Alerts still in the 'active' state — raised and not yet taken by anyone. Acknowledged alerts move to their own state and are not counted here."
+        />
+        <MetricCard
+          value={sumVal(alertSummary.data?.suppressed, cSuppressed)}
+          label="Suppressed"
+          scope={scopeLabel}
+          definition="Alerts withheld because a parent device (usually the site gateway) is down, or because a maintenance window is in force. They are real alerts; they are simply not being escalated."
+        />
       </div>
+      {alertSummary.error && (
+        <Notice tone="warn">
+          Could not load authoritative totals ({alertSummary.error}). The figures above
+          are counted from the {all.length.toLocaleString()} alert{plural(all.length)} loaded on this page only.
+        </Notice>
+      )}
 
       {/* ── 24h volume strip ─────────────────────────────────── */}
       <AlertVolumeStrip
@@ -1191,7 +1278,9 @@ export default function AlertsPage() {
           // which SILENTLY CUT OFF the actions cell — "Resolve" rendered as "Re" —
           // once the columns outgrew the ~1216px content area. The table now
           // scrolls inside this wrapper and the actions column is pinned right.
-          <div className="sv-table-scroll">
+          // Labelled + focusable: a bare overflow div is an unnamed scroll
+          // region a keyboard user lands in with no idea what it holds.
+          <TableScroll label="Alerts">
             <table className="sv-table sv-table-pin-actions">
               <thead>
                 <tr style={{ height: 34 }}>
@@ -1212,7 +1301,9 @@ export default function AlertsPage() {
                   </th>
                   <SortTh label="Severity" col="severity" sort={sort} onSort={onSort} style={ALERT_TH_STYLE} />
                   <SortTh label="Type" col="type" sort={sort} onSort={onSort} style={ALERT_TH_STYLE} />
-                  <SortTh label="Device" col="device" sort={sort} onSort={onSort} style={ALERT_TH_STYLE} />
+                  {/* Not "Device": this column holds whichever of six entity
+                      kinds the alert hangs off. */}
+                  <SortTh label="Entity" col="device" sort={sort} onSort={onSort} style={ALERT_TH_STYLE} />
                   <SortTh label="Message" col="message" sort={sort} onSort={onSort} style={ALERT_TH_STYLE} />
                   <SortTh label="Status" col="status" sort={sort} onSort={onSort} style={ALERT_TH_STYLE} />
                   <SortTh label="Triggered" col="triggered" sort={sort} onSort={onSort} align="right" style={{ ...ALERT_TH_STYLE, textAlign: 'right' }} />
@@ -1227,14 +1318,23 @@ export default function AlertsPage() {
                 ))}
               </tbody>
             </table>
-          </div>
+          </TableScroll>
         ) : (
           <div style={{ padding: '32px 24px' }}>
-            <EmptyState
-              icon={<IconCheck width={24} height={24} />}
-              title="All clear"
-              message="No alerts in this period."
-            />
+            {/* "All clear" claimed more than this list knows. Say exactly what
+                was looked for and offer the way back to everything. */}
+            {hasAnyFilter ? (
+              <NoResults
+                message={`No alerts match the current filters (${scopeLabel}).`}
+                onClear={clearAllFilters}
+              />
+            ) : (
+              <EmptyState
+                icon={<IconCheck width={24} height={24} />}
+                title="No alerts to show"
+                message="Nothing has been raised in the loaded window. Alerts appear here as the collector evaluates its rules."
+              />
+            )}
           </div>
         )}
       </div>

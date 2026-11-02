@@ -139,6 +139,55 @@ const TEMPLATE_BY_KEY: Record<string, Template> = Object.fromEntries(TEMPLATES.m
 // two stay in step — it is NOT computed and does not affect report generation.
 // `covers` picks which live estate count the header line quotes.
 type TemplateMeta = { includes: string[]; sources: string[]; covers: 'devices' | 'wireless' | 'services' | 'none' };
+
+// Operator-facing names for the spanvault tables a report reads. "What is this
+// report built from?" is a reasonable question; "ping_results,
+// device_health_scores" is an answer only someone who has read schema.sql can
+// use. The raw names stay available in a technical disclosure for admins.
+const SOURCE_LABELS: Record<string, string> = {
+  monitored_devices: 'Device inventory',
+  ping_results: 'ICMP reachability history',
+  snmp_results: 'SNMP metric history',
+  alerts: 'Alert history',
+  incidents: 'Correlated incidents',
+  service_checks: 'Service check configuration',
+  service_check_results: 'Service check history',
+  device_health_scores: 'Health scores',
+  device_sensors: 'Configured sensors',
+  device_anomalies: 'Detected anomalies',
+  device_baselines: 'Metric baselines',
+  topology_links: 'Discovered topology links',
+  availability_summary: 'Daily availability rollups',
+  wireless_aps: 'Access point inventory',
+  wireless_clients: 'Wireless client inventory',
+  wireless_history: 'Wireless metric history',
+  wireless_controllers: 'Wireless controller inventory',
+  wireless_ssids: 'SSID inventory',
+  wireless_rogue_aps: 'Rogue AP detections',
+  wireless_client_events: 'Wireless client events',
+  wireless_intelligence: 'Wireless RF analysis',
+  wireless_ap_intelligence: 'Per-AP RF analysis',
+  wireless_ap_bandwidth_topn: 'Access point bandwidth samples',
+  wireless_channel_changes: 'Channel change history',
+  maintenance_windows: 'Maintenance windows',
+  saved_reports: 'Saved report definitions',
+  report_history: 'Report delivery history',
+};
+function sourceLabel(table: string): string {
+  return SOURCE_LABELS[table]
+    || table.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
+/** De-duplicated friendly names, in the order the raw list gives them. */
+function friendlySources(tables: string[]): string[] {
+  const out: string[] = [];
+  for (const t of tables) {
+    const l = sourceLabel(t);
+    if (!out.includes(l)) out.push(l);
+  }
+  return out;
+}
+
+
 const TEMPLATE_META: Record<string, TemplateMeta> = {
   executive: {
     includes: ['Headline & reporting period', 'Uptime / incidents / downtime / service uptime KPIs', 'Network performance vs previous period', 'Sites summary with health grade', 'Recommendations'],
@@ -604,6 +653,9 @@ export default function ReportsPage() {
   // (ROLE_RANK in api/server.js) — only a viewer is read-only.
   const { role } = useRbac();
   const canWrite = role !== 'viewer';
+  // The raw-table disclosure under Data sources is for whoever would debug a
+  // report, which is an administrator — not everyone who may run one.
+  const isAdmin = role === 'admin' || role === 'super_admin';
   const email = session?.user?.email || '';
   const userName = session?.user?.name || email || 'Unknown user';
   const sites = useApi<Site[]>('/api/netvault/sites');
@@ -992,7 +1044,9 @@ export default function ReportsPage() {
 
       {/* Page heading */}
       <div className="sv-no-print">
-        <div className="page-title" style={{ marginBottom: 2 }}>Reports</div>
+        {/* A real <h1>: this page had no top-level heading at all, so a screen
+            reader had nothing to jump to and the outline started at <h2>. */}
+        <h1 className="page-title" style={{ marginBottom: 2 }}>Reports</h1>
         <div className="page-subtitle" style={{ marginBottom: 14 }}>
           Run reports across your network — printable for management.
         </div>
@@ -1314,6 +1368,7 @@ export default function ReportsPage() {
                 </div>
                 ) : (
                   <ReportBriefing
+                    canEdit={isAdmin}
                     tpl={tpl}
                     coverage={coverageLine(template, {
                       // Distinct sites that actually HAVE a monitored device —
@@ -1359,7 +1414,10 @@ export default function ReportsPage() {
                     <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', marginTop: 3 }}>
                       Saved reports the server runs on a cadence and emails as PDF. The scheduler
                       checks for due reports every 15 minutes, so a run can land a little after its
-                      scheduled time.
+                      scheduled time. {/* No per-schedule time zone is stored, so saying "07:00"
+                      without naming whose clock would be a guess. */}
+                      <strong> All times are the SpanVault server&apos;s local time</strong> — a schedule has
+                      no time zone of its own.
                     </div>
                   </div>
                   <button type="button" onClick={() => { schedules.reload(); saved.reload(); }}
@@ -1466,6 +1524,27 @@ export default function ReportsPage() {
             {/* ── SAVED TAB — the existing saved-reports UI ── */}
             {tab === 'saved' && (
               <div className="sv-no-print" style={{ padding: 18 }}>
+                {/* The Schedule tab explains itself when empty; this one said
+                    "none yet" and stopped, leaving the feature undiscoverable. */}
+                {(saved.data?.length || 0) === 0 && (
+                  <div style={{ ...panelBox, marginBottom: 14 }}>
+                    <div style={{ fontSize: 'var(--text-md)', fontWeight: 700, color: 'var(--text-primary)' }}>
+                      No saved reports yet
+                    </div>
+                    <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', marginTop: 6, lineHeight: 1.6, maxWidth: 620 }}>
+                      A saved report stores a template together with its scope and date range, so the
+                      same report can be re-run without setting it up again — and so it can be given an
+                      email cadence on the <strong>Schedule</strong> tab. To create one: pick a template
+                      on the <strong>View</strong> tab, set its range and scope, press <strong>Run Report</strong>,
+                      then <strong>+ Save this report</strong>.
+                    </div>
+                    {!canWrite && (
+                      <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', marginTop: 8 }}>
+                        Your role can run and export reports but not save them.
+                      </div>
+                    )}
+                  </div>
+                )}
                 <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6 }}>
                   <span style={{ fontSize: 'var(--text-xs)', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em', marginRight: 2 }}>
                     Saved:
@@ -1532,9 +1611,11 @@ export default function ReportsPage() {
 // right now, whether it is scheduled to anyone, and what has already been delivered.
 function ReportBriefing({
   tpl, coverage, schedules, recent, savedForTemplate, schedulesLoading, schedulesError,
-  config, onLoadSaved, onOpenSchedule,
+  config, onLoadSaved, onOpenSchedule, canEdit,
 }: {
   tpl: Template;
+  /** Administrators also get the raw table names behind the data sources. */
+  canEdit: boolean;
   coverage: string | null;
   schedules: ScheduleRow[];
   recent: HistoryRow[];
@@ -1569,8 +1650,22 @@ function ReportBriefing({
             <div style={{ marginTop: 12, paddingTop: 11, borderTop: '1px solid var(--border-light)' }}>
               <div style={{ ...panelHead, marginBottom: 7 }}><IconDatabase width={13} height={13} aria-hidden /> Data sources</div>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
-                {meta.sources.map((s) => <span key={s} style={srcChip}>{s}</span>)}
+                {friendlySources(meta.sources).map((s) => <span key={s} style={srcChip}>{s}</span>)}
               </div>
+              {/* The raw table names are still useful — to an administrator
+                  debugging a report, not to the person reading it. */}
+              {canEdit && (
+                <details style={{ marginTop: 8 }}>
+                  <summary style={{ cursor: 'pointer', fontSize: 'var(--text-xs)', color: 'var(--text-muted)' }}>
+                    Technical detail: database tables
+                  </summary>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginTop: 6 }}>
+                    {meta.sources.map((s) => (
+                      <code key={s} style={{ ...srcChip, fontFamily: 'var(--font-mono)' }}>{s}</code>
+                    ))}
+                  </div>
+                </details>
+              )}
             </div>
           )}
           {coverage && (

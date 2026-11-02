@@ -11,10 +11,12 @@ import { StatusDot } from '@/components/StatusDot';
 import {
   PageHeader, ErrorBox, Empty, Loading, TableSkeleton, CardSkeleton,
   StatusBadge, fmtRel, fmtTime, fmtBps, CHART_TOOLTIP,
-  useTableSort, sortRows, SortTh,
+  useTableSort, sortRows, SortTh, Tabs, useUrlTab, InfoTip, Notice, SevTag,
+  LoadError, TableScroll, Freshness, useConfirm,
 } from '@/components/ui';
 import {
   GradeBadge, TrendArrow, ConfidenceStars, fmtDuration, deviationLabel, deviationTooltip,
+  MetricName, metricUnit, formatMetricValue,
   scoreColor, n,
   Overview, HealthRow, AnomalyRow, IncidentRow, ThresholdRow, PatternRow,
 } from '@/components/intel';
@@ -46,8 +48,10 @@ const REFRESH_MS = 30000;
 
 // Compact stat card — ~75px tall, 24px value (weight 800), 11px uppercase label,
 // 3px coloured left border.
-function StatCardCompact({ label, value, accent, badge, hint }: {
+function StatCardCompact({ label, value, accent, badge, hint, definition }: {
   label: string; value: React.ReactNode; accent: string; badge?: React.ReactNode; hint?: string;
+  /** What the number measures, over what window and scope. */
+  definition?: React.ReactNode;
 }) {
   return (
     <div style={{
@@ -56,7 +60,10 @@ function StatCardCompact({ label, value, accent, badge, hint }: {
       padding: '12px 16px', minHeight: 75, display: 'flex', flexDirection: 'column',
       justifyContent: 'center', boxShadow: 'var(--shadow-sm)',
     }}>
-      <div style={{ fontSize: 'var(--text-xs)', textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-muted)', fontWeight: 600 }}>{label}</div>
+      <div style={{ display: 'flex', alignItems: 'center', fontSize: 'var(--text-xs)', textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-muted)', fontWeight: 600 }}>
+        {label}
+        {definition && <InfoTip label={label}>{definition}</InfoTip>}
+      </div>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginTop: 4 }}>
         <span style={{ fontSize: 'var(--text-2xl)', fontWeight: 800, lineHeight: 1, color: accent }}>{value}</span>
         {badge}
@@ -139,30 +146,30 @@ function ShowAllToggle({ total, preview, expanded, onToggle, noun }: {
 
 // ════════════════════════════════════════════════════════════════
 
-export default function IntelligencePage() {
-  const [tab, setTab] = useState('overview');
+const TAB_KEYS = TABS.map((t) => t.key) as readonly string[];
 
-  // Honour deep links like /intelligence#anomalies (used by dashboard banner).
+export default function IntelligencePage() {
+  // ?tab= is the addressable form; the historical #anchor deep link
+  // (/intelligence#anomalies, still used by the dashboard's anomaly banner and
+  // by bookmarks) is honoured on mount and must keep working.
+  const { tab, setTab, setTabState } = useUrlTab<string>('tab', TAB_KEYS, 'overview');
   useEffect(() => {
+    if (new URLSearchParams(window.location.search).get('tab')) return;
     const h = (window.location.hash || '').replace('#', '');
-    if (h && TABS.some((t) => t.key === h)) setTab(h);
-  }, []);
+    if (h && TABS.some((t) => t.key === h)) setTabState(h);
+  }, [setTabState]);
 
   return (
     <div>
       <PageHeader title="Network Intelligence" subtitle="Statistical analytics across your monitored network — baselines, anomalies, health, capacity, incidents." />
 
-      <div className="sv-tabs sticky">
-        {TABS.map((t) => (
-          <button
-            key={t.key}
-            className={`sv-tab ${tab === t.key ? 'active' : ''}`}
-            onClick={() => { setTab(t.key); try { history.replaceState(null, '', `#${t.key}`); } catch { /* ignore */ } }}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
+      <Tabs
+        ariaLabel="Intelligence sections"
+        sticky
+        active={tab}
+        onChange={setTab}
+        tabs={TABS.map((t) => ({ key: t.key, label: t.label }))}
+      />
 
       {tab === 'overview' && <OverviewTab />}
       {tab === 'anomalies' && <AnomaliesTab />}
@@ -241,20 +248,45 @@ function OverviewTab() {
           accent={scoreC}
           badge={<GradeBadge grade={d.overall_grade} />}
           hint={`${d.device_count} device${d.device_count === 1 ? '' : 's'} · ${coverage}d of data`}
+          definition={<>
+            A 0–100 score per monitored device, averaged across the fleet. Each device&apos;s score
+            blends four components: uptime, response time against that device&apos;s own rolling
+            baseline, anomaly count and alert volume. Grades: A ≥ 90, B ≥ 80, C ≥ 70, D ≥ 60,
+            F below. It is <b>not</b> availability — a device answering every ping can score a D.
+          </>}
         />
         <StatCardCompact
           label="Active Anomalies"
           value={d.active_anomalies}
           accent={d.active_anomalies > 0 ? 'var(--yellow)' : 'var(--green)'}
-          hint="Devices outside their baseline"
+          hint="Metrics outside their own baseline"
+          definition="A metric whose current value sits several standard deviations from that device's rolling baseline. An anomaly is a statistical deviation, not a fault — and not an alert: nothing is notified for one."
         />
         <StatCardCompact
           label="Active Incidents"
           value={d.active_incidents}
           accent={d.active_incidents > 0 ? 'var(--red)' : 'var(--green)'}
-          hint="Correlated outage events"
+          hint="Correlated multi-device outages"
+          definition="The narrow concept the correlation engine produces: several device-down alerts in the same window and blast radius, grouped into one event with a root cause. Most alerts never become an incident, so zero incidents does not mean zero problems."
         />
       </div>
+
+      {/* Zero incidents beside live anomalies or alerts is exactly where an
+          all-clear would be wrong — so the card points at the workbenches that
+          DO have something in them, instead of reading as "nothing is wrong". */}
+      {d.active_incidents === 0 && (d.active_anomalies > 0 || (d.sites || []).some((x) => (x.anomaly_count || 0) > 0)) && (
+        <Notice tone="info">
+          <span>
+            No correlated multi-device incidents are open. That is a narrow statement:{' '}
+            <Link href="/intelligence?tab=anomalies" style={{ color: 'inherit', fontWeight: 600 }}>
+              {d.active_anomalies} anomal{d.active_anomalies === 1 ? 'y is' : 'ies are'} active
+            </Link>{' '}
+            and the{' '}
+            <Link href="/alerts?status=active" style={{ color: 'inherit', fontWeight: 600 }}>alert queue</Link>{' '}
+            may still have outstanding work.
+          </span>
+        </Notice>
+      )}
 
       {/* ── Data coverage banner (slim, only if < 7 days) ── */}
       {coverage < 7 && (
@@ -362,7 +394,7 @@ function OverviewTab() {
                   {anomalyRows.map((a) => (
                     <tr key={a.id} style={ROW_STYLE}>
                       <IntelTD><Link href={`/devices/${a.device_id}`} style={{ fontWeight: 600 }}>{a.device_name}</Link></IntelTD>
-                      <IntelTD>{a.metric}</IntelTD>
+                      <IntelTD><MetricName metric={a.metric} /></IntelTD>
                       <IntelTD style={{ color: 'var(--text-muted)' }} title={deviationTooltip(a)}>{deviationLabel(a)}</IntelTD>
                       <IntelTD><StatusBadge status={a.severity} /></IntelTD>
                       <IntelTD style={{ color: 'var(--text-muted)' }} title={fmtTime(a.detected_at)}>{fmtRel(a.detected_at)}</IntelTD>
@@ -620,11 +652,14 @@ function AnomaliesTab() {
                     <tr key={a.id} style={ROW_STYLE}>
                       <IntelTD><Link href={`/devices/${a.device_id}`}>{a.device_name}</Link></IntelTD>
                       <IntelTD style={{ color: 'var(--text-muted)' }}>{a.site_name || '—'}</IntelTD>
-                      <IntelTD>{a.metric}</IntelTD>
-                      <IntelTD right style={{ fontWeight: 600 }}>{val != null ? val.toFixed(1) : '—'}</IntelTD>
-                      <IntelTD right style={{ color: 'var(--text-muted)' }}>{base != null ? base.toFixed(1) : '—'}</IntelTD>
+                      <IntelTD><MetricName metric={a.metric} /></IntelTD>
+                      {/* Value and baseline carry the metric's unit, so a CPU
+                          percentage and a response time are not both bare
+                          numbers in the same column. */}
+                      <IntelTD right style={{ fontWeight: 600 }}>{formatMetricValue(a.metric, val)}</IntelTD>
+                      <IntelTD right style={{ color: 'var(--text-muted)' }}>{formatMetricValue(a.metric, base)}</IntelTD>
                       <IntelTD><span className={`sv-badge ${a.severity === 'critical' ? 'down' : 'warning'}`} title={deviationTooltip(a)}>{deviationLabel(a)}</span></IntelTD>
-                      <IntelTD><StatusBadge status={a.severity} /></IntelTD>
+                      <IntelTD><SevTag sev={a.severity} /></IntelTD>
                       <IntelTD style={{ color: 'var(--text-muted)' }} title={fmtTime(a.detected_at)}>{fmtRel(a.detected_at)}</IntelTD>
                       <IntelTD><AnomalyStatusBadge status={a.status} /></IntelTD>
                       {canEdit && (
@@ -723,7 +758,15 @@ function PatternsTab() {
       }}>
         {/* Copy tracks retention_raw_days (default 14d), not an aspirational 30 —
             raw samples are purged at that window, so that is all the engine sees. */}
-        <span>Recurring time-of-day patterns in latency, CPU and memory, learned across the raw-history window (default 14 days). A metric qualifies only if it runs well above its own baseline <em>and</em> reaches a level worth acting on — a switch idling at 2% CPU rising to 6% is not a finding. Confidence is how often the pattern actually repeated: 8 of 14 days reads 0.57.</span>
+        <span>
+          Recurring time-of-day patterns in latency, CPU and memory, learned across the raw-history
+          window (default 14 days). A metric qualifies only if it runs well above its own baseline
+          <em> and</em> reaches a level worth acting on — a switch idling at 2% CPU rising to 6% is
+          not a finding. <b>Confidence</b> is the share of observed days on which the metric was
+          actually elevated in that hour: 8 of 14 days reads 57%. <b>Re-confirmed</b> is how many
+          analysis passes have re-observed the pattern since it was first detected — a measure of
+          how long it has persisted, not a count of occurrences.
+        </span>
         <input className="sv-input" placeholder="Filter by device or metric…" value={q} onChange={(e) => setQ(e.target.value)}
           style={{ marginLeft: 'auto', minWidth: 160, maxWidth: 280, height: 32, padding: '0 12px' }} />
       </div>
@@ -746,7 +789,14 @@ function PatternsTab() {
                   <SortTh label="Metric" col="metric" sort={sort} onSort={onSort} style={TH_STYLE} />
                   <SortTh label="When" col="when" sort={sort} onSort={onSort} style={TH_STYLE} />
                   <SortTh label="Avg vs Baseline" col="avg" sort={sort} onSort={onSort} align="right" style={{ ...TH_STYLE, textAlign: 'right' }} />
-                  <SortTh label="Seen" col="seen" sort={sort} onSort={onSort} align="right" style={{ ...TH_STYLE, textAlign: 'right' }} />
+                  {/* NOT "how many days this happened". `occurrence_count` is
+                      incremented once per detection pass that re-observed the
+                      pattern (upsertPattern in api/intelligence.js), so on a
+                      5-minute engine cycle "198" is a measure of how long the
+                      pattern has persisted, not of 198 occurrences. The column
+                      now says what the number is. Occurrence-per-day lives in
+                      Confidence, which IS elevated_days / observed_days. */}
+                  <SortTh label="Re-confirmed" col="seen" sort={sort} onSort={onSort} align="right" style={{ ...TH_STYLE, textAlign: 'right' }} />
                   <SortTh label="Confidence" col="confidence" sort={sort} onSort={onSort} style={TH_STYLE} />
                 </tr>
               </thead>
@@ -761,14 +811,19 @@ function PatternsTab() {
                       <IntelTD title={p.description}>
                         <span className="sv-badge" style={{ textTransform: 'capitalize' }}>{(p.pattern_type || '').replace(/_/g, ' ') || '—'}</span>
                       </IntelTD>
-                      <IntelTD>{p.metric}</IntelTD>
+                      <IntelTD><MetricName metric={p.metric} /></IntelTD>
                       <IntelTD style={{ color: 'var(--text-secondary)' }}>{patternWhen(p)}</IntelTD>
                       <IntelTD right>
                         <span style={{ fontWeight: 600 }}>{avg != null ? avg.toFixed(1) : '—'}</span>
                         <span style={{ color: 'var(--text-muted)' }}> / {base != null ? base.toFixed(1) : '—'}</span>
                       </IntelTD>
-                      <IntelTD right style={{ color: 'var(--text-muted)' }}>{p.occurrence_count}×</IntelTD>
-                      <IntelTD><ConfidenceStars confidence={p.confidence} /></IntelTD>
+                      <IntelTD right style={{ color: 'var(--text-muted)' }}
+                        title={`The detector has re-observed this pattern ${p.occurrence_count} time${p.occurrence_count === 1 ? '' : 's'} since it was first detected ${fmtRel(p.detected_at)}. It is not a count of occurrences or of days.`}>
+                        {p.occurrence_count.toLocaleString()}×
+                      </IntelTD>
+                      <IntelTD>
+                        <ConfidenceStars confidence={p.confidence} denominator="the share of observed days on which the metric was actually elevated in this hour" />
+                      </IntelTD>
                     </tr>
                   );
                 })}
@@ -925,12 +980,22 @@ function CapacityTab() {
   );
 }
 
+/**
+ * Status against the OBSERVED PEAK, not against link capacity.
+ *
+ * `monitored_devices` carries no interface speed, so nothing here knows what a
+ * link can actually carry. Every ratio on this tab is "projected traffic vs
+ * the busiest day we have recorded", which is a useful early warning and is
+ * NOT capacity utilisation — a 95%-of-peak projection on a link running at 2%
+ * of a 10G port means nothing is about to saturate. The labels say "of
+ * observed peak" so the two can never be confused.
+ */
 function capacityStatus(projMax: number, peak: number): { label: string; color: string } {
-  if (!peak || peak <= 0) return { label: 'OK', color: 'var(--green)' };
+  if (!peak || peak <= 0) return { label: 'No peak recorded', color: 'var(--text-muted)' };
   const ratio = projMax / peak;
-  if (ratio >= 0.85) return { label: '⚠ Plan upgrade', color: 'var(--red)' };
-  if (ratio >= 0.70) return { label: 'Monitor', color: 'var(--yellow)' };
-  return { label: 'OK', color: 'var(--green)' };
+  if (ratio >= 0.85) return { label: 'Above 85% of observed peak', color: 'var(--red)' };
+  if (ratio >= 0.70) return { label: 'Approaching observed peak', color: 'var(--yellow)' };
+  return { label: 'Below 70% of observed peak', color: 'var(--green)' };
 }
 
 function CapacityResult({ fc }: { fc: Forecast }) {
@@ -939,6 +1004,7 @@ function CapacityResult({ fc }: { fc: Forecast }) {
   const peakIn = fc.peak_in_bps || 0;
   const peakOut = fc.peak_out_bps || 0;
   const lastIn = history.length ? history[history.length - 1].in_bps : 0;
+  const lastOut = history.length ? history[history.length - 1].out_bps : 0;
 
   // Build chart series: solid actual, dashed projected (bridged at the last actual point).
   const inSeries = buildSeries(history.map((h) => ({ label: dayLabel(h.day), v: h.in_bps })), forecasts.map((f) => ({ label: `+${f.days}d`, v: f.proj_in_bps })));
@@ -957,10 +1023,13 @@ function CapacityResult({ fc }: { fc: Forecast }) {
             <thead>
               <tr>
                 <th style={TH_STYLE}>Timeframe</th>
-                <th style={{ ...TH_STYLE, textAlign: 'right' }}>Proj In</th>
-                <th style={{ ...TH_STYLE, textAlign: 'right' }}>Proj Out</th>
-                <th style={{ ...TH_STYLE, textAlign: 'right' }}>Growth</th>
-                <th style={TH_STYLE}>Status</th>
+                <th style={{ ...TH_STYLE, textAlign: 'right' }}>Projected inbound</th>
+                <th style={{ ...TH_STYLE, textAlign: 'right' }}>Projected outbound</th>
+                {/* One "Growth" column showed inbound only while sitting beside
+                    both projections — the two directions grow independently. */}
+                <th style={{ ...TH_STYLE, textAlign: 'right' }}>In growth</th>
+                <th style={{ ...TH_STYLE, textAlign: 'right' }}>Out growth</th>
+                <th style={TH_STYLE}>Against observed peak</th>
               </tr>
             </thead>
             <tbody>
@@ -968,14 +1037,20 @@ function CapacityResult({ fc }: { fc: Forecast }) {
                 const st = capacityStatus(Math.max(f.proj_in_bps / (peakIn || 1), f.proj_out_bps / (peakOut || 1)) * Math.max(peakIn, peakOut), Math.max(peakIn, peakOut));
                 // Per-horizon projected growth of inbound vs the latest actual, so
                 // each row reflects its own projection instead of repeating one rate.
-                const projGrowthPct = lastIn > 0 ? ((f.proj_in_bps - lastIn) / lastIn) * 100 : 0;
+                const inGrowth = lastIn > 0 ? ((f.proj_in_bps - lastIn) / lastIn) * 100 : null;
+                const outGrowth = lastOut > 0 ? ((f.proj_out_bps - lastOut) / lastOut) * 100 : null;
                 return (
                   <tr key={f.days} style={ROW_STYLE}>
                     <IntelTD>{f.days} days</IntelTD>
                     <IntelTD right>{fmtBps(f.proj_in_bps)}</IntelTD>
                     <IntelTD right>{fmtBps(f.proj_out_bps)}</IntelTD>
-                    <IntelTD right style={{ color: projGrowthPct > 0 ? 'var(--yellow)' : 'var(--green)' }}>
-                      {projGrowthPct >= 0 ? '+' : ''}{projGrowthPct.toFixed(1)}%
+                    <IntelTD right style={{ color: (inGrowth ?? 0) > 0 ? 'var(--yellow)' : 'var(--green)' }}
+                      title={inGrowth != null && inGrowth < 0 ? 'Inbound traffic is trending DOWN — the projection is below the most recent day.' : undefined}>
+                      {inGrowth == null ? '—' : `${inGrowth >= 0 ? '+' : ''}${inGrowth.toFixed(1)}%`}
+                    </IntelTD>
+                    <IntelTD right style={{ color: (outGrowth ?? 0) > 0 ? 'var(--yellow)' : 'var(--green)' }}
+                      title={outGrowth != null && outGrowth < 0 ? 'Outbound traffic is trending DOWN — the projection is below the most recent day.' : undefined}>
+                      {outGrowth == null ? '—' : `${outGrowth >= 0 ? '+' : ''}${outGrowth.toFixed(1)}%`}
                     </IntelTD>
                     <IntelTD style={{ color: st.color, fontWeight: 600 }}>{st.label}</IntelTD>
                   </tr>
@@ -984,10 +1059,22 @@ function CapacityResult({ fc }: { fc: Forecast }) {
             </tbody>
           </table>
         </div>
-        <p style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', margin: '8px 20px 12px' }}>
-          Based on {fc.days_collected} days of data. Peak observed: In {fmtBps(peakIn)} · Out {fmtBps(peakOut)}.
-          Reference lines mark 80% and 95% of peak.
-        </p>
+        <div style={{ margin: '8px 20px 14px' }}>
+          <div className="sv-defs" style={{ margin: 0 }}>
+            <span><b>Coverage:</b> {fc.days_collected} day{fc.days_collected === 1 ? '' : 's'} of daily SNMP interface totals.</span>
+            <span><b>Peak observed:</b> in {fmtBps(peakIn)} · out {fmtBps(peakOut)}.</span>
+            <span><b>Method:</b> a linear trend fitted to those daily totals and extended forward. No seasonality, and no confidence interval — the data behind it does not support one, so none is shown.</span>
+          </div>
+          {/* The one thing this tab must never imply. */}
+          <Notice tone="info">
+            <span>
+              Everything here is measured against the <b>busiest day recorded</b>, not against link
+              capacity: SpanVault does not know these interfaces&apos; configured speeds. A projection
+              at 95% of observed peak means traffic is returning to its own high-water mark — it does
+              not mean the link is nearly full, and no exhaustion date is implied.
+            </span>
+          </Notice>
+        </div>
       </SectionCard>
     </div>
   );
@@ -1024,8 +1111,10 @@ function ForecastChart({ title, data, peak }: { title: string; data: SeriesPoint
             <XAxis dataKey="label" fontSize={11} minTickGap={28} />
             <YAxis fontSize={11} width={64} tickFormatter={(v) => fmtBps(Number(v))} />
             <Tooltip {...CHART_TOOLTIP} formatter={(v: any, name: any) => [v == null ? '—' : fmtBps(Number(v)), name === 'actual' ? 'Actual' : 'Projected']} />
-            {peak > 0 && <ReferenceLine y={peak * 0.8} stroke="#e6a700" strokeDasharray="4 4" label={{ value: '80%', position: 'right', fontSize: 10, fill: '#e6a700' }} />}
-            {peak > 0 && <ReferenceLine y={peak * 0.95} stroke="#C8102E" strokeDasharray="4 4" label={{ value: '95%', position: 'right', fontSize: 10, fill: '#C8102E' }} />}
+            {/* Labelled "of peak" — an unlabelled 80%/95% line on a bandwidth
+                chart reads as 80%/95% of the LINK, which this is not. */}
+            {peak > 0 && <ReferenceLine y={peak * 0.8} stroke="#e6a700" strokeDasharray="4 4" label={{ value: '80% of peak', position: 'right', fontSize: 10, fill: '#e6a700' }} />}
+            {peak > 0 && <ReferenceLine y={peak * 0.95} stroke="#C8102E" strokeDasharray="4 4" label={{ value: '95% of peak', position: 'right', fontSize: 10, fill: '#C8102E' }} />}
             <Area type="monotone" dataKey="actual" stroke="#3b82f6" strokeWidth={2} fill={`url(#g-${title})`} connectNulls={false} isAnimationActive={false} />
             <Area type="monotone" dataKey="projected" stroke="#3b82f6" strokeWidth={2} strokeDasharray="6 4" fill="none" connectNulls isAnimationActive={false} />
           </AreaChart>
@@ -1168,7 +1257,9 @@ function ThresholdsTab() {
   const api = useApi<ThresholdRow[]>('/api/intelligence/thresholds', REFRESH_MS);
   const [busy, setBusy] = useState<number | null>(null);
   const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkProgress, setBulkProgress] = useState<{ done: number; total: number } | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const { confirm, ConfirmUI } = useConfirm();
   const { sort, onSort } = useTableSort();
   const rows = useMemo(() => sortRows(api.data || [], sort, {
     device: (r) => r.device_name,
@@ -1190,7 +1281,7 @@ function ThresholdsTab() {
     setBusy(r.device_id);
     try {
       await apiSend(`/api/intelligence/thresholds/${r.device_id}/apply`, 'POST', {});
-      setToast(`Updated threshold to ${Math.round(Number(r.recommended_threshold))}ms for ${r.device_name}`);
+      setToast(`Updated ${r.metric} threshold to ${formatMetricValue(r.metric, r.recommended_threshold)} for ${r.device_name}`);
       api.reload();
     } catch (e: any) {
       setToast(e?.message || 'Failed to apply');
@@ -1199,27 +1290,59 @@ function ThresholdsTab() {
     }
   }
 
+  // Apply All used to change every high-confidence threshold on the estate
+  // with one click and no statement of what it was about to do. It now shows
+  // the exact scope and the exact per-device change first, and reports partial
+  // failures instead of abandoning the batch on the first error.
   async function applyAll() {
     const high = rows.filter((r) => (n(r.confidence) ?? 0) >= 0.7);
     if (!high.length) return;
+    const preview = high.slice(0, 8)
+      .map((r) => `• ${r.device_name} — ${r.metric}: ${formatMetricValue(r.metric, r.current_threshold)} → ${formatMetricValue(r.metric, r.recommended_threshold)}`)
+      .join('\n');
+    const ok = await confirm({
+      title: `Apply ${high.length} threshold change${high.length === 1 ? '' : 's'}?`,
+      message: (
+        <>
+          <p style={{ marginTop: 0 }}>
+            This changes the alert threshold on <b>{high.length} device{high.length === 1 ? '' : 's'}</b>{' '}
+            — every recommendation at 70% confidence or above. Devices below that are not touched.
+            Each change is written to the audit log.
+          </p>
+          <pre style={{
+            margin: 0, maxHeight: 160, overflow: 'auto', fontSize: 'var(--text-sm)',
+            fontFamily: 'var(--font-mono)', whiteSpace: 'pre-wrap', color: 'var(--text-secondary)',
+          }}>{preview}{high.length > 8 ? `\n…and ${high.length - 8} more` : ''}</pre>
+        </>
+      ),
+      confirmLabel: `Apply ${high.length}`,
+    });
+    if (!ok) return;
     setBulkBusy(true);
-    try {
-      for (const r of high) {
+    let done = 0;
+    const failed: string[] = [];
+    for (const r of high) {
+      try {
         await apiSend(`/api/intelligence/thresholds/${r.device_id}/apply`, 'POST', {});
+        done += 1;
+        setBulkProgress({ done, total: high.length });
+      } catch {
+        failed.push(r.device_name);
       }
-      setToast(`Applied ${high.length} high-confidence recommendation${high.length === 1 ? '' : 's'}`);
-      api.reload();
-    } catch (e: any) {
-      setToast(e?.message || 'Bulk apply failed');
-    } finally {
-      setBulkBusy(false);
     }
+    setBulkProgress(null);
+    setToast(failed.length
+      ? `Applied ${done} of ${high.length}. Failed for ${failed.slice(0, 3).join(', ')}${failed.length > 3 ? ` and ${failed.length - 3} more` : ''}.`
+      : `Applied ${done} recommendation${done === 1 ? '' : 's'}.`);
+    api.reload();
+    setBulkBusy(false);
   }
 
   const highCount = rows.filter((r) => (n(r.confidence) ?? 0) >= 0.7).length;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      {ConfirmUI}
       {toast && <div className="sv-toast ok" onClick={() => setToast(null)}>{toast}</div>}
 
       <div style={{
@@ -1227,7 +1350,12 @@ function ThresholdsTab() {
         borderRadius: 'var(--radius-sm)', background: 'var(--bg-card)',
         border: '1px solid var(--border)', borderLeft: '3px solid var(--primary)',
       }}>
-        Recommendations based on each device&apos;s actual behavior over the last 30 days — current thresholds compared against statistical baselines (2× p99).
+        Recommendations compare each device&apos;s configured alert threshold against its own
+        statistical baseline over a rolling <b>30-day</b> window — the suggested value is twice the
+        observed 99th percentile. <b>Confidence</b> is how well that baseline is supported by the
+        samples behind it. There is no &quot;how many alerts would this have prevented&quot;
+        simulation: replaying historical alerts against a hypothetical threshold is not something
+        the stored data supports, so none is offered.
       </div>
 
       <SectionCard
@@ -1235,7 +1363,9 @@ function ThresholdsTab() {
         style={{ padding: rows.length ? 0 : '16px 20px' }}
         action={canEdit && highCount > 0 ? (
           <button className="sv-btn sm" onClick={applyAll} disabled={bulkBusy}>
-            {bulkBusy ? <><span className="sv-spinner-sm" /> Applying…</> : `Apply All High-Confidence (${highCount})`}
+            {bulkBusy
+              ? <><span className="sv-spinner-sm" /> Applying {bulkProgress ? `${bulkProgress.done} of ${bulkProgress.total}` : ''}…</>
+              : `Review and apply ${highCount} high-confidence…`}
           </button>
         ) : undefined}
       >
@@ -1255,7 +1385,7 @@ function ThresholdsTab() {
                   <SortTh label="Metric" col="metric" sort={sort} onSort={onSort} style={TH_STYLE} />
                   <SortTh label="Current" col="current" sort={sort} onSort={onSort} align="right" style={{ ...TH_STYLE, textAlign: 'right' }} />
                   <SortTh label="Recommended" col="recommended" sort={sort} onSort={onSort} align="right" style={{ ...TH_STYLE, textAlign: 'right' }} />
-                  <SortTh label="Reasoning" col="reasoning" sort={sort} onSort={onSort} style={TH_STYLE} />
+                  <SortTh label="Why" col="reasoning" sort={sort} onSort={onSort} style={TH_STYLE} />
                   <SortTh label="Confidence" col="confidence" sort={sort} onSort={onSort} style={TH_STYLE} />
                   <th style={TH_STYLE}>Apply</th>
                 </tr>
@@ -1265,16 +1395,22 @@ function ThresholdsTab() {
                   <tr key={r.id} style={ROW_STYLE}>
                     <IntelTD><Link href={`/devices/${r.device_id}`}>{r.device_name}</Link></IntelTD>
                     <IntelTD style={{ color: 'var(--text-muted)' }}>{r.site_name || '—'}</IntelTD>
-                    <IntelTD>{r.metric}</IntelTD>
-                    <IntelTD right>{n(r.current_threshold) ?? '—'}ms</IntelTD>
-                    <IntelTD right style={{ fontWeight: 700, color: 'var(--primary)' }}>{Math.round(Number(r.recommended_threshold))}ms</IntelTD>
-                    <IntelTD style={{ maxWidth: 280 }}>
-                      <span title={r.reasoning} style={{ cursor: 'help' }}>
-                        {r.reasoning.length > 60 ? `${r.reasoning.slice(0, 60)}… ` : r.reasoning}
-                        <span style={{ color: 'var(--primary)' }}>ⓘ</span>
-                      </span>
+                    <IntelTD><MetricName metric={r.metric} /></IntelTD>
+                    {/* The unit comes from the metric. It was hardcoded "ms",
+                        which rendered a CPU-percentage threshold as "69ms". */}
+                    <IntelTD right>{formatMetricValue(r.metric, r.current_threshold)}</IntelTD>
+                    <IntelTD right style={{ fontWeight: 700, color: 'var(--primary)' }}>
+                      {formatMetricValue(r.metric, r.recommended_threshold)}
                     </IntelTD>
-                    <IntelTD><ConfidenceStars confidence={r.confidence} /></IntelTD>
+                    {/* The reasoning IS the evidence — truncating it at 60
+                        characters behind a hover made the one column that
+                        justifies the change the least readable on the row. */}
+                    <IntelTD style={{ maxWidth: 420 }}>
+                      <span style={{ display: 'block', lineHeight: 1.45 }}>{r.reasoning}</span>
+                    </IntelTD>
+                    <IntelTD>
+                      <ConfidenceStars confidence={r.confidence} denominator="how well the 30-day baseline is supported by its samples" />
+                    </IntelTD>
                     <IntelTD>
                       {canEdit ? (
                         <button

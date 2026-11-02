@@ -8,7 +8,8 @@ import { vendorLabel } from '@/lib/vendor';
 import { copyText } from '@/lib/clipboard';
 import {
   ErrorBox, fmtRel, PageHeader, TableSkeleton, CardSkeleton, EmptyState, useRefreshKey,
-  useTableSort, sortRows, SortTh, SortState,
+  useTableSort, sortRows, SortTh, SortState, setUrlParams, ActiveFilters, NoResults,
+  LoadError, InfoTip, Freshness, SevTag, type ActiveFilter,
 } from '@/components/ui';
 import { StatusDot } from '@/components/StatusDot';
 import SiteScopeBanner from '@/components/SiteScopeBanner';
@@ -319,7 +320,10 @@ function DeviceTableHeader({ showOs, sort, onSort }: {
                 <SortTh
                   key={c.key} label={c.label} col={c.key} sort={sort} onSort={onSort}
                   align={c.right ? 'right' : 'left'}
-                  style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}
+                  // whiteSpace:'normal' overrides SortTh's own nowrap so a
+                  // two-word heading wraps rather than being cut off by the
+                  // fixed column width (see .sv-dev-table th in globals.css).
+                  style={{ whiteSpace: 'normal' }}
                 />
               )
             ))}
@@ -752,12 +756,39 @@ export default function DevicesPage() {
   };
   const sizes = DENSITY_SIZES[density];
 
-  // Pre-select the status filter from the URL (?status=up|down|warning|unknown)
-  // so dashboard stat-card links land on a filtered device list.
+  // Filters are URL-backed: a filtered device list can be refreshed, shared,
+  // bookmarked and reached with Back/Forward. Read on mount AND on popstate
+  // (so Back restores the previous filter set, not just the previous page),
+  // written with replaceState as the user types so no history entry is
+  // created per keystroke.
+  //
+  // Deliberately not useSearchParams(): that opts this prerendered client page
+  // out of static rendering — the same reason /wireless hand-rolls it.
   useEffect(() => {
-    const st = new URLSearchParams(window.location.search).get('status');
-    if (st && ['up', 'down', 'warning', 'unknown'].includes(st)) setStatus(st);
+    const read = () => {
+      const sp = new URLSearchParams(window.location.search);
+      const st = sp.get('status');
+      setStatus(st && ['up', 'down', 'warning', 'unknown', 'agent_offline'].includes(st) ? st : '');
+      setQ(sp.get('q') || '');
+      setSiteId(sp.get('site') || '');
+      setType(sp.get('type') || '');
+      setVendor(sp.get('vendor') || '');
+    };
+    read();
+    setFiltersHydrated(true);
+    window.addEventListener('popstate', read);
+    return () => window.removeEventListener('popstate', read);
   }, []);
+  // STATE, not a ref: the read effect's setStatus(...) and this flag are
+  // batched into the same render, so the write-back effect below first runs on
+  // a render that already has the URL's values. With a ref it ran in the SAME
+  // commit as the read, still holding the initial empty state, and promptly
+  // wrote those empties back over the incoming ?status=down.
+  const [filtersHydrated, setFiltersHydrated] = useState(false);
+  useEffect(() => {
+    if (!filtersHydrated) return;
+    setUrlParams({ status, q, site: siteId, type, vendor });
+  }, [filtersHydrated, status, q, siteId, type, vendor]);
 
   const params = new URLSearchParams();
   if (q) params.set('q', q);
@@ -1404,7 +1435,7 @@ function DeviceRow({ device, showOs }: { device: Device; showOs: boolean }) {
   const os = [device.os_type, device.os_version].filter(Boolean).join(' ');
   return (
     <tr>
-      <td>
+      <td data-label="Device">
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           <Link href={`/devices/${device.id}`} className="sv-dev-name-link"
             style={{ color: 'var(--text-primary)', fontWeight: 600 }}>
@@ -1418,8 +1449,8 @@ function DeviceRow({ device, showOs }: { device: Device; showOs: boolean }) {
           )}
         </div>
       </td>
-      <td>{device.device_type || <span className="sv-muted">—</span>}</td>
-      <td>
+      <td data-label="Type">{device.device_type || <span className="sv-muted">—</span>}</td>
+      <td data-label="Vendor">
         {vendor ? (
           <>
             <div>{vendor}</div>
@@ -1429,16 +1460,16 @@ function DeviceRow({ device, showOs }: { device: Device; showOs: boolean }) {
           </>
         ) : <span className="sv-muted">—</span>}
       </td>
-      <td style={{ fontFamily: 'var(--font-mono)' }}>{device.ip_address}</td>
-      {showOs && <td>{os || <span className="sv-muted">—</span>}</td>}
-      <td>
+      <td data-label="IP address" style={{ fontFamily: 'var(--font-mono)' }}>{device.ip_address}</td>
+      {showOs && <td data-label="Version / OS">{os || <span className="sv-muted">—</span>}</td>}
+      <td data-label="Status">
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
           <StatusDot status={device.current_status} size={8} title={statusTooltip(device)} />
           {statusLabel(device.current_status)}
         </span>
       </td>
-      <td><HealthRing score={device.health_score} grade={device.health_grade} size={rowCtx.sizes.ring} /></td>
-      <td>
+      <td data-label="Health"><HealthRing score={device.health_score} grade={device.health_grade} size={rowCtx.sizes.ring} /></td>
+      <td data-label="Latency">
         <LatencySpark
           series={rowCtx.sparks ? (rowCtx.sparks[String(device.id)]?.response_ms ?? null) : null}
           currentMs={intelNum(device.last_response_ms)}
@@ -1448,7 +1479,7 @@ function DeviceRow({ device, showOs }: { device: Device; showOs: boolean }) {
           overCap={rowCtx.requested != null && !rowCtx.requested.has(device.id)}
         />
       </td>
-      <td>
+      <td data-label="Last alert">
         {device.last_alert_at ? (
           <>
             <div style={{ color: 'var(--tint-warn-fg)' }}>{alertLabel(device.last_alert_type)}</div>
@@ -1456,8 +1487,8 @@ function DeviceRow({ device, showOs }: { device: Device; showOs: boolean }) {
           </>
         ) : <span className="sv-muted">—</span>}
       </td>
-      <td className="sv-muted">{fmtRel(device.last_seen_at)}</td>
-      <td style={{ textAlign: 'right' }}><RowMenu device={device} /></td>
+      <td data-label="Last seen" className="sv-muted">{fmtRel(device.last_seen_at)}</td>
+      <td data-label="Actions" style={{ textAlign: 'right' }}><RowMenu device={device} /></td>
     </tr>
   );
 }

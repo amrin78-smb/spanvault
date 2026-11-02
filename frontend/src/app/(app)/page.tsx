@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine, ResponsiveContainer,
@@ -14,6 +14,8 @@ import { useLicense, LicenseDisabledScreen } from '@/components/LicenseGuard';
 import {
   ErrorBox, Empty, fmtRel, fmtTime,
   PageHeader, TableSkeleton, Skeleton, useRefreshKey, CHART_TOOLTIP,
+  Tabs, useUrlTab, InfoTip, Freshness, SevTag, Notice, LoadError, TableScroll,
+  Pager, useClientPagination, FilterBar, ActiveFilters, NoResults, type ActiveFilter,
 } from '@/components/ui';
 import {
   GradeBadge, scoreColor, n as intelNum, Overview, HealthRow,
@@ -294,6 +296,22 @@ function NocViewButton() {
       document.body.classList.remove('sv-noc');
     };
   }, []);
+  // Escape exits. In the normal path that is the browser's own fullscreen
+  // Escape, which fires `fullscreenchange` and is handled above — but the
+  // FALLBACK path (requestFullscreen rejected: no user gesture, an embedded
+  // view, a locked-down kiosk) has no fullscreen to escape from, so the NOC
+  // theme stayed on with no way out but the button. The tooltip promises
+  // "Esc to exit"; this makes that true on both paths.
+  useEffect(() => {
+    if (!on || document.fullscreenElement) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key !== 'Escape') return;
+      document.body.classList.remove('sv-noc');
+      setOn(false);
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [on]);
   async function toggle() {
     if (document.fullscreenElement) {
       try { await document.exitFullscreen(); } catch (_e) { /* ignore */ }
@@ -323,6 +341,7 @@ function NocViewButton() {
 // section that is not open costs nothing and keeps costing nothing.
 type DashSection = 'overview' | 'performance' | 'availability' | 'predictive' | 'activity';
 
+const DASH_SECTION_IDS: readonly DashSection[] = ['overview', 'performance', 'availability', 'predictive', 'activity'] as const;
 const DASH_SECTIONS: { id: DashSection; label: string }[] = [
   { id: 'overview',     label: 'Overview' },
   { id: 'performance',  label: 'Performance' },
@@ -337,15 +356,23 @@ export default function DashboardPage() {
   // Section persists across reloads, same idiom as the sidebar-collapse state.
   // Hydrated in an effect rather than the useState initialiser so the server
   // render and the first client render agree.
-  const [section, setSection] = useState<DashSection>('overview');
+  // URL-backed (?tab=), so a dashboard section can be shared, refreshed and
+  // reached with Back/Forward. The remembered localStorage value is still
+  // honoured, but only when the URL does not name a section — an explicit link
+  // must always win over a stale preference.
+  const { tab: section, setTab: setSectionUrl, setTabState: setSection } =
+    useUrlTab<DashSection>('tab', DASH_SECTION_IDS, 'overview');
+  const urlHadTab = useRef(false);
   useEffect(() => {
+    urlHadTab.current = !!new URLSearchParams(window.location.search).get('tab');
+    if (urlHadTab.current) return;
     try {
       const saved = localStorage.getItem('spanvault-dash-section') as DashSection | null;
       if (saved && DASH_SECTIONS.some(d => d.id === saved)) setSection(saved);
     } catch { /* ignore */ }
-  }, []);
+  }, [setSection]);
   const selectSection = (id: DashSection) => {
-    setSection(id);
+    setSectionUrl(id);
     try { localStorage.setItem('spanvault-dash-section', id); } catch { /* ignore */ }
   };
   // Window shared by BOTH Overview alert panels (histogram + noisiest), so they
@@ -400,7 +427,10 @@ export default function DashboardPage() {
   const alertTrend = useApi<AlertTrendResp>(on('availability', '/api/dashboard/alert-trend?days=14'), 300000);
   const capacity = useApi<CapacityRow[]>(on('predictive', '/api/dashboard/capacity'), REFRESH_MS);
   const patterns = useApi<PatternRow[]>(on('predictive', '/api/dashboard/patterns'), REFRESH_MS);
-  const events = useApi<EventRow[]>(on('activity', '/api/dashboard/events'), REFRESH_MS);
+  const [eventHours, setEventHours] = useState(24);
+  const [eventLimit, setEventLimit] = useState(200);
+  const events = useApi<EventRow[]>(
+    on('activity', `/api/dashboard/events?hours=${eventHours}&limit=${eventLimit}`), REFRESH_MS);
 
   const updatedAt = useUpdatedAt(summary.data);
   const ago = useSecondsAgo(updatedAt);
@@ -475,11 +505,14 @@ export default function DashboardPage() {
                 drawing a plausible-looking line from a metric the schema never
                 stored is worse on an NOC wall than drawing nothing. */}
             <StatTile href="/devices" color="var(--text-primary)" value={s.total} label="Total"
-              noTrendReason={noTrend.total} />
+              noTrendReason={noTrend.total}
+              definition="Every active monitored device in your assigned sites, including those currently unreachable because their polling agent is down. Access points, wireless controllers and service checks are counted separately on their own pages." />
             <StatTile href="/devices?status=down" color="var(--red)" value={s.down} label="Down"
-              pulse={s.down > 0} trend={downTrend} arrow={downArrow} noTrendReason={noTrend.down} />
+              pulse={s.down > 0} trend={downTrend} arrow={downArrow} noTrendReason={noTrend.down}
+              definition="Devices that failed their configured consecutive ICMP checks at the last poll. Devices suppressed behind a down gateway are excluded." />
             <StatTile href="/devices?status=warning" color="var(--yellow)" value={s.warning} label="Warning"
-              pulse={s.warning > 0} noTrendReason={noTrend.warning} />
+              pulse={s.warning > 0} noTrendReason={noTrend.warning}
+              definition="Devices answering, but above their latency threshold or losing packets at the last poll." />
             <HealthScoreTile data={intel.data} noTrendReason={noTrend.health} />
             <SlaTile api={sla} series={slaSeries} />
             <OpsTile
@@ -488,6 +521,7 @@ export default function DashboardPage() {
               label="Unack'd"
               alert={!!(ops.data && ops.data.unacked_count > 0)}
               series={unackedSeries}
+              definition="Alerts that are still active and that nobody has acknowledged. This is the open backlog, not the number raised today — see Alert Activity below for volume over a window."
             />
             <AgentsTile canManageAgents={canManageAgents} agentsOnline={s.agents_online} agentsTotal={s.agents_total} />
             <ServicesTile checks={services.data || []} />
@@ -500,21 +534,40 @@ export default function DashboardPage() {
            picking the right tab. Same rule as the KPI strip. ── */}
       <AnomalyBanner data={intel.data} />
 
-      {/* ── Section tabs ── */}
-      <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid var(--border)', marginBottom: 12, flexWrap: 'wrap' }}>
-        {DASH_SECTIONS.map(sec => (
-          <button key={sec.id} onClick={() => selectSection(sec.id)}
-            style={{ background: 'none', border: 'none', padding: '8px 14px', fontSize: 'var(--text-base)',
-              borderBottom: '2px solid transparent', marginBottom: -1, cursor: 'pointer',
-              color: section === sec.id ? 'var(--primary)' : 'var(--text-muted)',
-              fontWeight: section === sec.id ? 600 : 500,
-              borderBottomColor: section === sec.id ? 'var(--primary)' : 'transparent' }}>
-            {sec.label}
-          </button>
-        ))}
-      </div>
+      {/* ── Section tabs — real tablist/tab/tabpanel, arrow-key navigable ── */}
+      <Tabs
+        ariaLabel="Dashboard sections"
+        active={section}
+        onChange={selectSection}
+        tabs={DASH_SECTIONS.map((sec) => ({ key: sec.id, label: sec.label }))}
+      />
 
       {section === 'overview' && (<>
+        {/* ── What needs attention, in one sentence, derived from the actual
+             state. Rendered FIRST and ALWAYS — not only when the cards below
+             happen to be empty, which is how the old pair ended up announcing
+             an all-clear over a live alert backlog. ── */}
+        {s && (
+          <OverviewStateCard
+            down={s.down}
+            warning={s.warning}
+            unknown={s.unknown}
+            total={s.total}
+            activeAlerts={s.active_alerts}
+            criticalAlerts={s.active_alerts_critical ?? 0}
+            unacked={ops.data?.unacked_count ?? 0}
+            openIncidents={incidents.data?.length ?? ops.data?.open_incidents ?? 0}
+            servicesDown={(services.data || []).filter((c) => c.current_status === 'down').length}
+            servicesWarning={(services.data || []).filter((c) => c.current_status === 'warning').length}
+            offlineAgents={agentOffline.data?.length ?? 0}
+            agentOfflineDevices={s.agent_offline}
+            siteCount={sites.data ? sites.data.length : null}
+            // Any failed feed means this summary is reading from an incomplete
+            // picture — say so rather than implying the list is exhaustive.
+            degraded={!!(problems.error || incidents.error || agentOffline.error || summary.error || services.error || ops.error)}
+          />
+        )}
+
         {/* ── Maintenance windows (planned — active now or within 7 days) ── */}
         <MaintenanceGroup api={maintenance} />
 
@@ -540,46 +593,6 @@ export default function DashboardPage() {
 
         {/* ── Agent-offline group (devices unreachable via an offline agent) ── */}
         <AgentOfflineGroup api={agentOffline} />
-
-        {/* Every card above self-hides when it has nothing to show, so say so
-            explicitly rather than leaving the default section blank.
-
-            "Nothing needs attention" must be judged against ACTIVE ALERTS too,
-            not just the two device-centric feeds. `problems` is monitored_devices
-            rows that are down/warning and `incidents` is correlated device
-            outages — a wireless/AP alert (AP DOWN, HIGH RETRY RATE, WEAK
-            CLIENTS…) appears in NEITHER, so the green all-clear card rendered
-            live on a network carrying 53 active alerts, 28 of them critical.
-            `summary.active_alerts` is the one already-fetched source that counts
-            every active alert regardless of what it hangs off.
-
-            The card still has to render SOMETHING in this slot — that is the
-            whole reason AllClearCard exists (see its comment) — so when alerts
-            are outstanding we swap in the alert summary rather than going
-            blank. */}
-        {(() => {
-          // Still loading any of the three feeds → decide nothing yet.
-          if (problems.data == null || incidents.data == null || agentOffline.data == null || !s) return null;
-          // An ERRORED feed is not an empty one. useApi keeps the last good
-          // `data` on failure, so after one success a later 500 leaves `[]`
-          // sitting there — and this card would then announce "nothing needs
-          // attention" directly beneath a red error box, from a feed it could
-          // not read. Saying nothing is the honest outcome: the ErrorBox above
-          // is already telling the operator what failed.
-          if (problems.error || incidents.error || agentOffline.error || summary.error) return null;
-          // A self-hiding card above is already showing real content.
-          if (problems.data.length > 0 || incidents.data.length > 0 || agentOffline.data.length > 0) return null;
-          if (s.active_alerts > 0) {
-            return (
-              <ActiveAlertsCard
-                total={s.active_alerts}
-                critical={s.active_alerts_critical ?? 0}
-                warning={s.active_alerts_warning ?? 0}
-              />
-            );
-          }
-          return <AllClearCard />;
-        })()}
 
         {/* ── Always-present content. Overview must never depend solely on cards
              that hide themselves — site health always has rows, and services and
@@ -609,11 +622,14 @@ export default function DashboardPage() {
         </div>
       </>)}
 
+      {/* ── Performance. Three tables side by side at ~380px each truncated
+             every device name to "tumitcss-f…" while two thirds of the page
+             sat empty below them. Full width each: the names are the point. ── */}
       {section === 'performance' && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, alignItems: 'stretch', marginBottom: 10 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 10 }}>
           <SlowestDevices api={worst} />
-          <TopTalkers api={topTalkers} />
           <LeastReliableDevices api={leastReliable} />
+          <TopTalkers api={topTalkers} />
         </div>
       )}
 
@@ -641,15 +657,24 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* ── Recent events + wireless health (wireless self-hides → events fills) ── */}
+      {/* ── Activity: a real event feed. Six rows in a 240px scrolling box
+             above half a page of whitespace answered nothing; it now fills the
+             page, filters by severity / entity type / text, and pages. ── */}
       {section === 'activity' && (
-        <div style={{ display: 'flex', gap: 10, alignItems: 'stretch', marginBottom: 16 }}>
-          <div style={{ ...CARD_STYLE, flex: 1, minWidth: 0, height: CARD_H }}>
-            <div style={SECTION_HEADING}>Recent Events</div>
-            <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', margin: '0 -4px' }}>
-              <RecentEvents api={events} />
-            </div>
+        <div style={{ ...CARD_STYLE, marginBottom: 16 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+            <span style={SECTION_HEADING}>Event feed</span>
+            <InfoTip label="Event feed">
+              Every alert <b>raised or resolved</b> in the selected window, newest first —
+              not the current open backlog. An alert that was raised and cleared within the
+              window appears here but is not outstanding.
+            </InfoTip>
+            <span style={{ flex: 1 }} />
+            <Link href="/alerts" style={{ fontSize: 'var(--text-sm)', fontWeight: 600, color: 'var(--primary)' }}>
+              Open alert queue →
+            </Link>
           </div>
+          <RecentEvents api={events} hours={eventHours} onHours={setEventHours} limit={eventLimit} onLimit={setEventLimit} />
         </div>
       )}
     </div>
@@ -659,72 +684,162 @@ export default function DashboardPage() {
 // ── Redirect notice (top-level component) ──────────────────────
 // Shows a dismissible banner when another page bounced the user here with a
 // ?notice=... message (e.g. a view-only role hitting Settings or Agents).
-// Shown on Overview when nothing needs attention. Overview is the DEFAULT
-// section and every other card on it self-hides when it has nothing to show
-// (maintenance windows, problems, incidents, offline agents) — so on a healthy
-// network the whole section rendered blank. A dashboard whose default view is an
-// empty page reads as broken, not as "all good". Say it explicitly instead.
-function AllClearCard() {
-  return (
-    // flexDirection MUST be stated: CARD_STYLE sets 'column', which stacked the
-    // icon above the text and let this card stretch to fill the section.
-    <div style={{ ...CARD_STYLE, padding: '14px 18px', flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 10 }}>
-      <div style={{ width: 34, height: 34, borderRadius: '50%', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
-        background: 'var(--tint-success)', color: 'var(--tint-success-fg)' }}>
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-          <polyline points="20 6 9 17 4 12" />
-        </svg>
+// ── Overview state headline (top-level component) ─────────────
+//
+// Replaces the former AllClearCard / ActiveAlertsCard pair.
+//
+// Those two split one question — "does anything need attention?" — across two
+// cards with two different answers, and the one that rendered most often said
+// "N active alerts … no devices down, so nothing above needs attention". That
+// sentence is false on its face: 30 critical alerts ARE something that needs
+// attention; what the code meant was "none of the three device-centric feeds
+// below has a row". An operations console must not tell an operator to stand
+// down while actionable work is outstanding.
+//
+// This card instead states what IS true, item by item, in the order an operator
+// would triage it, with a link to each workbench. An all-clear is only
+// rendered when every clause is genuinely clear, and it then says exactly what
+// was checked and over what scope rather than a bare green tick.
+type OverviewStateProps = {
+  down: number;
+  warning: number;
+  unknown: number;
+  total: number;
+  activeAlerts: number;
+  criticalAlerts: number;
+  unacked: number;
+  openIncidents: number;
+  servicesDown: number;
+  servicesWarning: number;
+  offlineAgents: number;
+  /** Devices we cannot currently reach because their polling agent is down. */
+  agentOfflineDevices: number;
+  siteCount: number | null;
+  /** True when any feed behind these numbers failed — see the caller. */
+  degraded: boolean;
+};
+
+function OverviewStateCard(p: OverviewStateProps) {
+  // Each clause is a real, separately-actionable condition with its own
+  // destination. Order = triage order.
+  const clauses: { text: string; href: string; tone: 'critical' | 'warning' }[] = [];
+  if (p.down > 0) {
+    clauses.push({
+      text: `${p.down} monitored device${p.down === 1 ? ' is' : 's are'} down`,
+      href: '/devices?status=down', tone: 'critical',
+    });
+  }
+  if (p.openIncidents > 0) {
+    clauses.push({
+      text: `${p.openIncidents} correlated incident${p.openIncidents === 1 ? '' : 's'} open`,
+      href: '/intelligence?tab=incidents', tone: 'critical',
+    });
+  }
+  if (p.criticalAlerts > 0) {
+    clauses.push({
+      text: `${p.criticalAlerts} critical alert${p.criticalAlerts === 1 ? '' : 's'} active`,
+      href: '/alerts?status=active&severity=critical', tone: 'critical',
+    });
+  }
+  if (p.servicesDown > 0) {
+    clauses.push({
+      text: `${p.servicesDown} service check${p.servicesDown === 1 ? '' : 's'} failing`,
+      href: '/services?status=down', tone: 'critical',
+    });
+  }
+  if (p.offlineAgents > 0) {
+    clauses.push({
+      text: p.agentOfflineDevices > 0
+        ? `${p.offlineAgents} polling agent${p.offlineAgents === 1 ? ' is' : 's are'} offline (${p.agentOfflineDevices} device${p.agentOfflineDevices === 1 ? '' : 's'} unreachable)`
+        : `${p.offlineAgents} polling agent${p.offlineAgents === 1 ? ' is' : 's are'} offline`,
+      href: '/agents', tone: 'critical',
+    });
+  }
+  if (p.warning > 0) {
+    clauses.push({
+      text: `${p.warning} device${p.warning === 1 ? '' : 's'} in a warning state`,
+      href: '/devices?status=warning', tone: 'warning',
+    });
+  }
+  if (p.servicesWarning > 0) {
+    clauses.push({
+      text: `${p.servicesWarning} service check${p.servicesWarning === 1 ? '' : 's'} warning`,
+      href: '/services?status=warning', tone: 'warning',
+    });
+  }
+  if (p.unacked > 0) {
+    clauses.push({
+      text: `${p.unacked} alert${p.unacked === 1 ? '' : 's'} unacknowledged`,
+      href: '/alerts?status=active&ack=unacked', tone: 'warning',
+    });
+  }
+  if (p.unknown > 0) {
+    clauses.push({
+      text: `${p.unknown} device${p.unknown === 1 ? ' has' : 's have'} no reading yet`,
+      href: '/devices?status=unknown', tone: 'warning',
+    });
+  }
+
+  const scope = p.siteCount != null
+    ? `${p.total.toLocaleString()} monitored device${p.total === 1 ? '' : 's'} across ${p.siteCount} site${p.siteCount === 1 ? '' : 's'}`
+    : `${p.total.toLocaleString()} monitored device${p.total === 1 ? '' : 's'}`;
+
+  if (clauses.length === 0) {
+    return (
+      <div style={{ ...CARD_STYLE, padding: '14px 18px', flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 10 }}>
+        <div style={{ width: 34, height: 34, borderRadius: '50%', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+          background: 'var(--tint-success)', color: 'var(--tint-success-fg)' }}>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <polyline points="20 6 9 17 4 12" />
+          </svg>
+        </div>
+        <div>
+          <div style={{ fontSize: 'var(--text-md)', fontWeight: 600, color: 'var(--text-primary)' }}>
+            Nothing is currently outstanding
+          </div>
+          {/* Say what was actually checked. "All clear" with no scope is the
+              same claim whether we checked everything or nothing. */}
+          <div className="sv-muted" style={{ fontSize: 'var(--text-base)', marginTop: 2 }}>
+            No devices down or in warning, no active alerts, no open incidents, no failing service checks,
+            no unreachable polling agents — across {scope}, as of the last poll.
+            {p.degraded && ' Some panels below could not be loaded, so this does not cover them.'}
+          </div>
+        </div>
       </div>
-      <div>
-        <div style={{ fontSize: 'var(--text-md)', fontWeight: 600, color: 'var(--text-primary)' }}>Nothing needs attention</div>
-        <div className="sv-muted" style={{ fontSize: 'var(--text-base)', marginTop: 2 }}>
-          No active problems, open incidents or offline agents.
+    );
+  }
+
+  const worst = clauses.some((c) => c.tone === 'critical') ? 'critical' : 'warning';
+  return (
+    <div style={{
+      ...CARD_STYLE, padding: '14px 18px', flexDirection: 'row', alignItems: 'flex-start', gap: 12, marginBottom: 10,
+      borderLeft: `3px solid ${worst === 'critical' ? 'var(--red)' : 'var(--yellow)'}`,
+    }}>
+      <div style={{ width: 34, height: 34, borderRadius: '50%', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+        background: worst === 'critical' ? 'var(--tint-danger)' : 'var(--tint-warn)',
+        color: worst === 'critical' ? 'var(--tint-danger-fg)' : 'var(--tint-warn-fg)' }}>
+        <IconWarning width={18} height={18} aria-hidden />
+      </div>
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontSize: 'var(--text-md)', fontWeight: 600, color: 'var(--text-primary)' }}>
+          Needs attention now
+        </div>
+        <div style={{ fontSize: 'var(--text-base)', marginTop: 4, lineHeight: 1.6, color: 'var(--text-secondary)' }}>
+          {clauses.map((c, i) => (
+            <span key={c.href}>
+              {i > 0 && <span className="sv-muted"> · </span>}
+              <Link href={c.href} style={{ color: c.tone === 'critical' ? 'var(--red)' : 'var(--text-primary)', fontWeight: 600 }}>
+                {c.text}
+              </Link>
+            </span>
+          ))}
+          <span className="sv-muted"> · across {scope}.</span>
+          {p.degraded && (
+            <span style={{ color: 'var(--tint-warn-fg)' }}> Some panels could not be loaded, so this list may be incomplete.</span>
+          )}
         </div>
       </div>
     </div>
-  );
-}
-
-// ── Active-alert summary (top-level component) ─────────────────
-// Renders in AllClearCard's slot when alerts ARE outstanding but every
-// self-hiding Overview card has nothing of its own to show. Overview must never
-// go blank (the reason AllClearCard exists), and it must never claim all-clear
-// while alerts are active — wireless/AP alerts are in neither the `problems`
-// nor the `incidents` feed, which is exactly how a 53-alert network used to get
-// the green card. Counts come from /api/dashboard/summary, already polled for
-// the KPI strip, so this costs no extra request.
-function ActiveAlertsCard({ total, critical, warning }: { total: number; critical: number; warning: number }) {
-  const danger = critical > 0;
-  const parts: string[] = [];
-  if (critical > 0) parts.push(`${critical} critical`);
-  if (warning > 0) parts.push(`${warning} warning`);
-  // Whatever is left is a severity the split doesn't name (or an API build that
-  // predates the split) — never let the parts add up to less than the total.
-  const other = total - critical - warning;
-  if (other > 0) parts.push(`${other} other`);
-  return (
-    <Link href="/alerts?status=active" style={{ textDecoration: 'none', display: 'block' }}>
-      <div style={{ ...CARD_STYLE, padding: '14px 18px', flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 10 }}>
-        <div style={{ width: 34, height: 34, borderRadius: '50%', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
-          background: danger ? 'var(--tint-danger)' : 'var(--tint-warn)',
-          color: danger ? 'var(--tint-danger-fg)' : 'var(--tint-warn-fg)' }}>
-          <IconWarning width={18} height={18} aria-hidden />
-        </div>
-        <div style={{ minWidth: 0 }}>
-          <div style={{ fontSize: 'var(--text-md)', fontWeight: 600, color: 'var(--text-primary)' }}>
-            {total} active alert{total === 1 ? '' : 's'}
-          </div>
-          <div className="sv-muted" style={{ fontSize: 'var(--text-base)', marginTop: 2 }}>
-            {parts.length > 0
-              ? `${parts.join(' · ')} — no devices down, so nothing above needs attention.`
-              : 'No devices down, so nothing above needs attention.'}
-          </div>
-        </div>
-        <span style={{ marginLeft: 'auto', flexShrink: 0, fontSize: 'var(--text-base)', fontWeight: 600, color: 'var(--primary)' }}>
-          View alerts →
-        </span>
-      </div>
-    </Link>
   );
 }
 
@@ -915,26 +1030,33 @@ function kpiValues(s: KpiSeries): number[] {
 }
 
 function StatTile({
-  href, value, label, color, pulse, trend, arrow, noTrendReason,
+  href, value, label, color, pulse, trend, arrow, noTrendReason, definition,
 }: {
   href: string; value: number | string; label: string; color: string;
   pulse?: boolean; trend?: 'good' | 'bad' | null; arrow?: string;
   noTrendReason?: string;
+  /** What the number counts and over what window — rendered as a disclosure. */
+  definition?: React.ReactNode;
 }) {
   const trendColor = trend === 'good' ? 'var(--green)' : trend === 'bad' ? 'var(--red)' : 'var(--text-muted)';
+  // The tile is a DIV and only the number links. Wrapping the whole tile in a
+  // <Link> put the definition's <button> inside an <a> — invalid HTML and a
+  // hydration error — and made one of the two controls unreachable.
   return (
-    <Link
-      href={href}
+    <div
       className={pulse ? 'sv-stat pulse' : undefined}
       title={noTrendReason}
       style={{ ...TILE_BASE, borderLeft: `3px solid ${color}` }}
     >
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-        <span style={TILE_VALUE}>{value}</span>
+        <Link href={href} style={{ ...TILE_VALUE, color: 'inherit', textDecoration: 'none' }}>{value}</Link>
         {trend && arrow ? <span style={{ fontSize: 'var(--text-base)', fontWeight: 700, color: trendColor }}>{arrow}</span> : null}
       </div>
-      <div style={TILE_LABEL}>{label}</div>
-    </Link>
+      <div style={TILE_LABEL}>
+        <Link href={href} style={{ color: 'inherit', textDecoration: 'none' }}>{label}</Link>
+        {definition && <InfoTip label={label}>{definition}</InfoTip>}
+      </div>
+    </div>
   );
 }
 
@@ -946,20 +1068,29 @@ function StatTile({
 function HealthScoreTile({ data, noTrendReason }: { data: Overview | null; noTrendReason?: string }) {
   const score = data ? data.overall_score : null;
   const c = scoreColor(score);
+  // Same structure as StatTile: the tile is a div, the number links, and the
+  // disclosure sits beside it rather than inside the anchor.
   return (
-    <Link
-      href="/intelligence"
+    <div
       title={noTrendReason}
       style={{ ...TILE_BASE, borderLeft: `3px solid ${c}` }}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-        <span style={{ ...TILE_VALUE, color: c }}>
+        <Link href="/intelligence" style={{ ...TILE_VALUE, color: c, textDecoration: 'none' }}>
           {score != null ? Math.round(score) : '—'}
-        </span>
+        </Link>
         {data && <GradeBadge grade={data.overall_grade} />}
       </div>
-      <div style={TILE_LABEL}>Health</div>
-    </Link>
+      <div style={TILE_LABEL}>
+        <Link href="/intelligence" style={{ color: 'inherit', textDecoration: 'none' }}>Health</Link>
+        <InfoTip label="Health">
+          A computed 0–100 score per device, averaged across the fleet — blended from
+          uptime, response time versus the device&apos;s own baseline, anomaly count and
+          alert volume. It is <b>not</b> a measure of reachability: a device that
+          answers every ping can still score poorly.
+        </InfoTip>
+      </div>
+    </div>
   );
 }
 
@@ -1035,36 +1166,64 @@ function ServicesOverview({ checks }: { checks: ServiceCheck[] }) {
     else if (st === 'down') down += 1;
     else if (st === 'warning') warning += 1;
   }
+  // A logical service is one monitored thing; its TCP/SSL/DNS probes are
+  // separate CHECKS of it. This card lists checks, so it must count checks and
+  // say how many services they belong to — "8 of 11 up" under a heading that
+  // says "Services" claimed eleven services where there are five.
+  const serviceCount = new Set(checks.map((c) => (c.group_id != null ? `g${c.group_id}` : `c${c.id}`))).size;
   const rows = [...checks].sort(
     (a, b) => statusRank((a.current_status || '').toLowerCase()) - statusRank((b.current_status || '').toLowerCase()),
   );
+  // Show the worst few in full rather than scrolling an inner pane that hides
+  // the rest behind a 5px scrollbar.
+  const LIMIT = 6;
+  const shown = rows.slice(0, LIMIT);
+  const hidden = rows.length - shown.length;
   const accent = down > 0 ? 'var(--red)' : warning > 0 ? 'var(--yellow)' : 'var(--green)';
   return (
-    <div style={{ ...CARD_STYLE, flex: 1, minWidth: 0, height: CARD_H, borderLeft: `3px solid ${accent}` }}>
+    <div style={{ ...CARD_STYLE, flex: 1, minWidth: 0, minHeight: CARD_H, borderLeft: `3px solid ${accent}` }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
         <StatusDot status={down > 0 ? 'down' : warning > 0 ? 'warning' : 'up'} size={11} />
-        <span style={SECTION_HEADING}>Services</span>
+        <span style={SECTION_HEADING}>Service checks</span>
+        <InfoTip label="Service checks">
+          A <b>service</b> is one monitored endpoint; each is probed by one or more
+          <b> checks</b> (HTTP, TCP, SSL, DNS). The counts here are checks, not services —
+          one failing SSL check does not mean the whole service is down.
+        </InfoTip>
         <Link href="/services" style={{ marginLeft: 'auto', fontSize: 'var(--text-sm)', color: 'var(--primary)', textDecoration: 'none', fontWeight: 600 }}>
           View →
         </Link>
       </div>
       <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', marginBottom: 6 }}>
-        {total === 0 ? 'No checks configured' : `${up} of ${total} up${down ? ` · ${down} down` : ''}${warning ? ` · ${warning} warning` : ''}`}
+        {total === 0
+          ? 'No checks configured'
+          : `${serviceCount} service${serviceCount === 1 ? '' : 's'} · ${total} check${total === 1 ? '' : 's'} — ${up} up${down ? ` · ${down} down` : ''}${warning ? ` · ${warning} warning` : ''}`}
       </div>
-      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', margin: '0 -4px', padding: '0 4px' }}>
+      <div>
         {total === 0 ? (
           <Empty message="Add a service check to monitor HTTP, TCP, SSL or DNS endpoints." />
-        ) : rows.map((c) => (
-          <div key={c.id} style={{ display: 'flex', alignItems: 'center', gap: 8, height: 32, fontSize: 'var(--text-sm)', borderBottom: '1px solid var(--border-light)', padding: '0 4px' }}>
+        ) : shown.map((c) => (
+          <Link
+            key={c.id}
+            href={`/services/${c.id}`}
+            style={{ display: 'flex', alignItems: 'center', gap: 8, minHeight: 32, fontSize: 'var(--text-sm)', borderBottom: '1px solid var(--border-light)', padding: '4px', color: 'inherit' }}
+          >
             <StatusDot status={(c.current_status || '').toLowerCase()} size={9} />
-            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text-primary)' }}>{c.name}</span>
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text-primary)' }} title={c.name}>{c.name}</span>
             <span style={{ color: 'var(--text-muted)', textTransform: 'uppercase', fontSize: 'var(--text-xs)', flexShrink: 0 }}>{c.type}</span>
             <span style={{ flex: 1 }} />
             {c.last_response_ms != null && (
               <span style={{ color: msColor(c.last_response_ms), whiteSpace: 'nowrap', flexShrink: 0 }}>{c.last_response_ms} ms</span>
             )}
-          </div>
+          </Link>
         ))}
+        {hidden > 0 && (
+          <div style={{ paddingTop: 6 }}>
+            <Link href="/services" style={{ fontSize: 'var(--text-sm)', fontWeight: 600, color: 'var(--primary)' }}>
+              {hidden} more check{hidden === 1 ? '' : 's'} →
+            </Link>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1152,16 +1311,27 @@ function ActiveProblems({ api }: { api: Api<Problem[]> }) {
     return ta - tb;
   });
   const hasProblems = sorted.length > 0;
+  // Worst first, capped, with a link to the rest — an inner scrollbar on a
+  // fixed-height card hides the very rows it is summarising.
+  const LIMIT = 6;
+  const shown = sorted.slice(0, LIMIT);
+  const hidden = sorted.length - shown.length;
 
   return (
-    <div style={{ ...CARD_STYLE, height: CARD_H }}>
+    <div style={{ ...CARD_STYLE, minHeight: CARD_H }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
         {hasProblems && <StatusDot status="down" size={11} />}
         <span style={SECTION_HEADING}>Active Problems</span>
+        <InfoTip label="Active Problems">
+          Monitored devices whose ICMP status is currently down or warning. Devices
+          suppressed behind a down gateway are folded into that gateway&apos;s entry.
+          Wireless, service-check and controller alerts are <b>not</b> here — they are
+          not devices; see Alerts.
+        </InfoTip>
         {hasProblems && <span style={{ marginLeft: 'auto', fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>{sorted.length}</span>}
       </div>
 
-      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', margin: '0 -4px', padding: '0 4px' }}>
+      <div style={{ flex: 1, minHeight: 0, margin: '0 -4px', padding: '0 4px' }}>
         {api.loading && !api.data ? (
           <TableSkeleton rows={5} cols={3} />
         ) : api.error ? (
@@ -1172,10 +1342,12 @@ function ActiveProblems({ api }: { api: Api<Problem[]> }) {
             alignItems: 'center', justifyContent: 'center', gap: 4, color: 'var(--green)',
           }}>
             <IconCheck width={28} height={28} aria-hidden />
-            <div style={{ fontSize: 'var(--text-base)', fontWeight: 600 }}>All systems operational</div>
+            {/* Scoped precisely. "All systems operational" claimed far more
+                than this card measures — it only looks at device ICMP status. */}
+            <div style={{ fontSize: 'var(--text-base)', fontWeight: 600 }}>No devices down or in warning</div>
           </div>
         ) : (
-          sorted.map((p) => {
+          shown.map((p) => {
             const down = p.current_status === 'down';
             const gwDown = p.is_gateway && down;
             const ms = num(p.last_response_ms);
@@ -1215,6 +1387,13 @@ function ActiveProblems({ api }: { api: Api<Problem[]> }) {
             );
           })
         )}
+        {hidden > 0 && (
+          <div style={{ paddingTop: 8 }}>
+            <Link href="/devices?status=down" style={{ fontSize: 'var(--text-sm)', fontWeight: 600, color: 'var(--primary)' }}>
+              {hidden} more device{hidden === 1 ? '' : 's'} with a problem →
+            </Link>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1224,11 +1403,18 @@ function ActiveProblems({ api }: { api: Api<Problem[]> }) {
 // Matches the Active Problems card height (240px). Compact 36px table rows;
 // clicking a row navigates to the device detail page.
 function SlowestDevices({ api }: { api: Api<Worst[]> }) {
-  const rows = (api.data || []).slice(0, 5);
+  const rows = (api.data || []).slice(0, 10);
   return (
-    <div style={{ ...CARD_STYLE, height: CARD_H }}>
-      <div style={SECTION_HEADING}>Slowest Devices (Last 1h)</div>
-      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', margin: '0 -4px' }}>
+    <div style={{ ...CARD_STYLE, minHeight: 0 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+        <span style={SECTION_HEADING}>Slowest Devices (Last 1h)</span>
+        <InfoTip label="Slowest Devices (Last 1h)">
+          Mean ICMP round-trip time per device over the last hour, slowest first,
+          with the packet loss measured over the same hour. Devices with no ping
+          result in the hour are not listed.
+        </InfoTip>
+      </div>
+      <div>
         {api.loading && !api.data ? (
           <TableSkeleton rows={5} cols={5} />
         ) : api.error ? (
@@ -1236,14 +1422,16 @@ function SlowestDevices({ api }: { api: Api<Worst[]> }) {
         ) : !rows.length ? (
           <Empty message="No ping data yet" />
         ) : (
-          <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
+          // Auto layout, not `fixed`: fixed meant content could never widen a
+          // column, so every device name ellipsised regardless of free space.
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
               <tr>
                 <Th style={{ width: 28, textAlign: 'left' }}>#</Th>
                 <Th style={{ textAlign: 'left' }}>Device</Th>
                 <Th style={{ textAlign: 'left' }}>Site</Th>
-                <Th style={{ width: 64, textAlign: 'right' }}>Avg ms</Th>
-                <Th style={{ width: 56, textAlign: 'right' }}>Loss%</Th>
+                <Th style={{ width: 90, textAlign: 'right' }}>Avg RTT</Th>
+                <Th style={{ width: 100, textAlign: 'right' }}>Packet loss</Th>
               </tr>
             </thead>
             <tbody>
@@ -1256,11 +1444,11 @@ function SlowestDevices({ api }: { api: Api<Worst[]> }) {
                     style={{ height: 36, cursor: 'pointer' }}
                   >
                     <Td style={{ color: 'var(--text-muted)' }}>{i + 1}</Td>
-                    <Td style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    <Td>
                       <Link href={`/devices/${d.id}`} style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{d.name}</Link>
                     </Td>
-                    <Td style={{ color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.site_name || '—'}</Td>
-                    <Td style={{ textAlign: 'right', color: msColor(avg), fontWeight: 600 }}>{avg != null ? avg.toFixed(0) : '—'}</Td>
+                    <Td style={{ color: 'var(--text-muted)' }}>{d.site_name || 'Unassigned'}</Td>
+                    <Td style={{ textAlign: 'right', color: msColor(avg), fontWeight: 600, whiteSpace: 'nowrap' }}>{avg != null ? `${avg.toFixed(0)} ms` : '—'}</Td>
                     <Td style={{ textAlign: 'right', color: loss && loss > 0 ? 'var(--red)' : 'var(--text-muted)' }}>
                       {loss != null ? `${loss.toFixed(0)}%` : '—'}
                     </Td>
@@ -1298,15 +1486,32 @@ function Td({ children, style }: { children: React.ReactNode; style?: React.CSSP
 // then scroll. Layout: "Site name | bar | % | X up · Y down".
 function SiteHealthCard({ api }: { api: Api<SiteHealth[]> }) {
   // Worst first: lowest uptime at the top (sites with no data sort last).
-  const rows = [...(api.data || [])].sort((a, b) => {
+  const all = [...(api.data || [])].sort((a, b) => {
     const ua = a.avg_uptime_pct == null ? 101 : Number(a.avg_uptime_pct);
     const ub = b.avg_uptime_pct == null ? 101 : Number(b.avg_uptime_pct);
     return ua - ub;
   });
+  // A fixed-height card with an inner scrollbar hides exactly the rows that
+  // scrolled out — on an operations summary that is the opposite of useful.
+  // Show the worst few in full and link to the rest.
+  const LIMIT = 6;
+  const rows = all.slice(0, LIMIT);
+  const hidden = all.length - rows.length;
   return (
-    <div style={{ ...CARD_STYLE, height: CARD_H }}>
-      <div style={SECTION_HEADING}>Site Health (24h)</div>
-      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', margin: '0 -4px', padding: '0 4px' }}>
+    <div style={{ ...CARD_STYLE, minHeight: CARD_H }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+        <span style={SECTION_HEADING}>Site Health (24h)</span>
+        <InfoTip label="Site Health (24h)">
+          Mean ICMP availability of each site&apos;s monitored devices over the last 24 hours,
+          worst first. Device counts are the current status at the last poll, so they
+          describe now while the percentage describes the day.
+        </InfoTip>
+        <span style={{ flex: 1 }} />
+        <Link href="/devices" style={{ fontSize: 'var(--text-sm)', fontWeight: 600, color: 'var(--primary)' }}>
+          All sites →
+        </Link>
+      </div>
+      <div>
         {api.loading && !api.data ? (
           <TableSkeleton rows={5} cols={3} />
         ) : api.error ? (
@@ -1316,30 +1521,55 @@ function SiteHealthCard({ api }: { api: Api<SiteHealth[]> }) {
         ) : (
           rows.map((st) => {
             const pct = num(st.avg_uptime_pct);
-            const pills = [`${st.up_count} up`, `${st.down_count} down`];
-            if (st.warning_count) pills.push(`${st.warning_count} warn`);
+            // A site whose devices have never been polled has no uptime AND no
+            // up/down split — "0 up · 0 down" reads as an empty site when it in
+            // fact has devices waiting for their first poll.
+            const noReadings = pct == null && st.up_count === 0 && st.down_count === 0 && st.warning_count === 0;
+            const pills: string[] = [];
+            if (noReadings) {
+              pills.push(`${st.total_devices} device${st.total_devices === 1 ? '' : 's'}, not yet polled`);
+            } else {
+              pills.push(`${st.up_count} up`);
+              if (st.down_count) pills.push(`${st.down_count} down`);
+              if (st.warning_count) pills.push(`${st.warning_count} warn`);
+              if (st.unknown_count) pills.push(`${st.unknown_count} unknown`);
+            }
             return (
-              <div key={st.site_id} style={{ display: 'flex', alignItems: 'center', gap: 10, height: 36, fontSize: 'var(--text-sm)' }}>
-                <span style={{ width: 130, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {st.site_id ? (
-                    <Link href={`/sites/${st.site_id}`} style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{st.site_name}</Link>
-                  ) : <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{st.site_name}</span>}
-                </span>
-                <span style={{ flex: 1, height: 4, borderRadius: 'var(--radius-pill)', background: 'var(--border)', overflow: 'hidden' }}>
-                  <span style={{
-                    display: 'block', height: '100%', borderRadius: 'var(--radius-pill)',
-                    width: `${pct != null ? Math.max(2, pct) : 0}%`, background: uptimeColor(pct),
-                  }} />
-                </span>
-                <span style={{ width: 50, textAlign: 'right', color: uptimeColor(pct), fontWeight: 600 }}>
-                  {pct != null ? `${pct.toFixed(1)}%` : '—'}
-                </span>
-                <span style={{ width: 110, textAlign: 'right', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+              // Two lines, not one. One line put a 120px name, a bar, a
+              // percentage and a device breakdown side by side in a ~310px
+              // card, so the breakdown was always the part that got cut —
+              // "9 up · 1 down · 2 wa…". The breakdown is the operational
+              // half of the row, so it gets its own line and never truncates.
+              <div key={st.site_id} style={{ padding: '6px 0', borderBottom: '1px solid var(--border-light)', fontSize: 'var(--text-sm)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {st.site_id ? (
+                      <Link href={`/sites/${st.site_id}`} style={{ color: 'var(--text-primary)', fontWeight: 600 }} title={st.site_name}>{st.site_name}</Link>
+                    ) : <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{st.site_name}</span>}
+                  </span>
+                  <span style={{ width: 70, flex: 'none', height: 4, borderRadius: 'var(--radius-pill)', background: 'var(--border)', overflow: 'hidden' }}>
+                    <span style={{
+                      display: 'block', height: '100%', borderRadius: 'var(--radius-pill)',
+                      width: `${pct != null ? Math.max(2, pct) : 0}%`, background: uptimeColor(pct),
+                    }} />
+                  </span>
+                  <span style={{ width: 48, flex: 'none', textAlign: 'right', color: uptimeColor(pct), fontWeight: 600 }}>
+                    {pct != null ? `${pct.toFixed(1)}%` : '—'}
+                  </span>
+                </div>
+                <div style={{ color: 'var(--text-muted)', marginTop: 1, lineHeight: 1.35 }}>
                   {pills.join(' · ')}
-                </span>
+                </div>
               </div>
             );
           })
+        )}
+        {hidden > 0 && (
+          <div style={{ paddingTop: 6 }}>
+            <Link href="/devices" style={{ fontSize: 'var(--text-sm)', fontWeight: 600, color: 'var(--primary)' }}>
+              {hidden} more site{hidden === 1 ? '' : 's'} →
+            </Link>
+          </div>
         )}
       </div>
     </div>
@@ -1536,14 +1766,22 @@ function NoisiestCard({ api, win, height }: { api: Api<Noisiest>; win: AlertWind
   const rows = api.data?.rows || [];
   const max = rows.length ? Math.max(...rows.map((r) => r.alert_count)) : 0;
   return (
-    <div style={{ ...CARD_STYLE, height }}>
+    // minHeight, not height: the card pairs with the histogram beside it but
+    // must be allowed to grow rather than hide its last row behind an inner
+    // scrollbar. Five rows is the API's own limit, so it never grows far.
+    <div style={{ ...CARD_STYLE, minHeight: height }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
         <span style={{ ...SECTION_HEADING, marginBottom: 0 }}>Noisiest ({win})</span>
+        <InfoTip label={`Noisiest (${win})`}>
+          Entities that raised the most alerts in the selected window — devices, access
+          points, service checks, controllers and agents. This is alert <b>volume over the
+          window</b>, not the current open backlog: an entity here may have nothing active now.
+        </InfoTip>
         <Link href="/alerts" style={{ marginLeft: 'auto', fontSize: 'var(--text-sm)', fontWeight: 600, color: 'var(--primary)', textDecoration: 'none' }}>
           All alerts →
         </Link>
       </div>
-      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', margin: '0 -4px' }}>
+      <div style={{ flex: 1, minHeight: 0, margin: '0 -4px' }}>
         {api.loading && !api.data ? <TableSkeleton rows={5} cols={2} />
           : api.error ? <ErrorBox message={api.error} />
           : !rows.length ? <Empty message="No alerts in this window." />
@@ -1570,10 +1808,13 @@ function NoisiestCard({ api, win, height }: { api: Api<Noisiest>; win: AlertWind
                     <div style={{ width: `${max > 0 ? Math.max(3, (r.alert_count / max) * 100) : 0}%`, height: '100%',
                       background: crit ? 'var(--red)' : 'var(--yellow)' }} />
                   </div>
-                  <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', whiteSpace: 'nowrap', flexShrink: 0 }}>
+                  {/* Allowed to wrap: nowrap clipped "… · 2 crit" at this
+                      card's width, hiding the one figure that said how much of
+                      the volume was critical. */}
+                  <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', flexShrink: 0, maxWidth: '62%', textAlign: 'right', lineHeight: 1.3 }}>
                     {NOISY_KIND_LABEL[r.kind] || r.kind}
                     {r.site_name ? ` · ${r.site_name}` : ''}
-                    {r.critical_count > 0 ? ` · ${r.critical_count} crit` : ''}
+                    {r.critical_count > 0 ? ` · ${r.critical_count} critical` : ''}
                   </span>
                 </div>
               </>
@@ -1725,31 +1966,135 @@ function EventSubject({ e }: { e: EventRow }) {
   );
 }
 
-function RecentEvents({ api }: { api: Api<EventRow[]> }) {
-  const rows = (api.data || []).slice(0, 20);
-  if (api.loading && !api.data) return <TableSkeleton rows={6} cols={2} />;
-  if (api.error) return <ErrorBox message={api.error} />;
-  if (!rows.length) return <Empty message="No events in the last 24 hours" />;
+const EVENT_KIND_LABEL: Record<string, string> = {
+  device: 'Device', ap: 'Access point', controller: 'Controller', service: 'Service check', other: 'Other',
+};
+function eventKind(e: EventRow): keyof typeof EVENT_KIND_LABEL {
+  if (e.device_id != null) return 'device';
+  if (e.wireless_ap_id != null) return 'ap';
+  if (e.wireless_controller_id != null) return 'controller';
+  if (e.service_check_id != null) return 'service';
+  return 'other';
+}
+
+function RecentEvents({ api, hours, onHours, limit, onLimit }: {
+  api: Api<EventRow[]>;
+  hours: number;
+  onHours: (h: number) => void;
+  limit: number;
+  onLimit: (n: number) => void;
+}) {
+  const all = api.data || [];
+  const [sev, setSev] = useState('');
+  const [kind, setKind] = useState('');
+  const [q, setQ] = useState('');
+  const filtered = useMemo(() => all.filter((e) => {
+    if (sev && (e.severity || '').toLowerCase() !== sev) return false;
+    if (kind && eventKind(e) !== kind) return false;
+    if (q.trim()) {
+      const t = q.trim().toLowerCase();
+      const hay = [e.device_name, e.service_name, e.wireless_name, e.site_name, e.alert_type, e.message]
+        .filter(Boolean).join(' ').toLowerCase();
+      if (!hay.includes(t)) return false;
+    }
+    return true;
+  }), [all, sev, kind, q]);
+  const pg = useClientPagination(filtered, 25, `${sev}|${kind}|${q}|${hours}|${limit}`);
+
+  const active: ActiveFilter[] = [];
+  if (sev) active.push({ key: 'sev', label: `Severity: ${sev}`, onClear: () => setSev('') });
+  if (kind) active.push({ key: 'kind', label: `Type: ${EVENT_KIND_LABEL[kind]}`, onClear: () => setKind('') });
+  if (q.trim()) active.push({ key: 'q', label: `“${q.trim()}”`, onClear: () => setQ('') });
+
   return (
     <div>
-      {rows.map((e) => {
-        const { icon, text } = describeEvent(e);
-        return (
-          <div key={e.id} style={{ display: 'flex', alignItems: 'center', gap: 8, height: 32, fontSize: 'var(--text-sm)', borderBottom: '1px solid var(--border-light)', padding: '0 4px' }}>
-            <span title={fmtTime(e.event_at)} style={{ width: 64, color: 'var(--text-muted)', whiteSpace: 'nowrap', flexShrink: 0 }}>{fmtRel(e.event_at)}</span>
-            <span style={{ flexShrink: 0 }}>{icon}</span>
-            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              <EventSubject e={e} />{' '}
-              <span style={{ color: 'var(--text-primary)' }}>{text}</span>
-            </span>
-            <span style={{ flex: 1 }} />
-            {e.wireless_client_mac && (
-              <span title={e.wireless_client_mac} style={{ color: 'var(--text-muted)', whiteSpace: 'nowrap', flexShrink: 0 }}>{e.wireless_client_mac}</span>
-            )}
-            {e.site_name && <span style={{ color: 'var(--text-muted)', whiteSpace: 'nowrap', flexShrink: 0 }}>{e.site_name}</span>}
-          </div>
-        );
-      })}
+      <FilterBar
+        right={
+          <>
+            <label className="sv-sr-only" htmlFor="ev-window">Time window</label>
+            <select id="ev-window" className="sv-select sv-input-sm" value={hours} onChange={(e) => onHours(Number(e.target.value))}>
+              <option value={6}>Last 6 hours</option>
+              <option value={24}>Last 24 hours</option>
+              <option value={72}>Last 3 days</option>
+              <option value={168}>Last 7 days</option>
+            </select>
+            <label className="sv-sr-only" htmlFor="ev-limit">Maximum events fetched</label>
+            <select id="ev-limit" className="sv-select sv-input-sm" value={limit} onChange={(e) => onLimit(Number(e.target.value))}>
+              <option value={50}>Up to 50</option>
+              <option value={200}>Up to 200</option>
+              <option value={500}>Up to 500</option>
+            </select>
+          </>
+        }
+      >
+        <input
+          className="sv-input"
+          style={{ maxWidth: 280 }}
+          placeholder="Search entity, site or message…"
+          aria-label="Search events"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+        />
+        <label className="sv-sr-only" htmlFor="ev-sev">Severity</label>
+        <select id="ev-sev" className="sv-select sv-input-sm" value={sev} onChange={(e) => setSev(e.target.value)}>
+          <option value="">All severities</option>
+          <option value="critical">Critical</option>
+          <option value="warning">Warning</option>
+          <option value="info">Info</option>
+        </select>
+        <label className="sv-sr-only" htmlFor="ev-kind">Entity type</label>
+        <select id="ev-kind" className="sv-select sv-input-sm" value={kind} onChange={(e) => setKind(e.target.value)}>
+          <option value="">All entity types</option>
+          <option value="device">Devices</option>
+          <option value="ap">Access points</option>
+          <option value="controller">Controllers</option>
+          <option value="service">Service checks</option>
+        </select>
+      </FilterBar>
+      <ActiveFilters
+        filters={active}
+        onClearAll={() => { setSev(''); setKind(''); setQ(''); }}
+        resultLabel={`${filtered.length.toLocaleString()} of ${all.length.toLocaleString()} loaded event${all.length === 1 ? '' : 's'}`}
+      />
+
+      {api.loading && !api.data ? <TableSkeleton rows={8} cols={3} />
+        : api.error ? <LoadError message={api.error} what="the event feed" onRetry={api.reload} />
+        : !all.length ? (
+          <Empty message={`No alerts were raised or resolved in the last ${hours} hours.`} />
+        ) : !filtered.length ? (
+          <NoResults onClear={() => { setSev(''); setKind(''); setQ(''); }} />
+        ) : (
+          <>
+            {pg.pageRows.map((e) => {
+              const { icon, text } = describeEvent(e);
+              return (
+                <div key={e.id} style={{ display: 'flex', alignItems: 'center', gap: 10, minHeight: 34, fontSize: 'var(--text-sm)', borderBottom: '1px solid var(--border-light)', padding: '4px' }}>
+                  <span title={fmtTime(e.event_at)} style={{ width: 70, color: 'var(--text-muted)', whiteSpace: 'nowrap', flexShrink: 0 }}>{fmtRel(e.event_at)}</span>
+                  <span style={{ flexShrink: 0 }}>{icon}</span>
+                  <SevTag sev={e.severity} />
+                  <span style={{ minWidth: 0 }}>
+                    <EventSubject e={e} />{' '}
+                    <span style={{ color: 'var(--text-primary)' }}>{text}</span>
+                  </span>
+                  <span style={{ flex: 1 }} />
+                  {e.wireless_client_mac && (
+                    <span title={e.wireless_client_mac} style={{ color: 'var(--text-muted)', whiteSpace: 'nowrap', flexShrink: 0 }}>{e.wireless_client_mac}</span>
+                  )}
+                  <span style={{ color: 'var(--text-muted)', whiteSpace: 'nowrap', flexShrink: 0 }}>
+                    {EVENT_KIND_LABEL[eventKind(e)]}{e.site_name ? ` · ${e.site_name}` : ''}
+                  </span>
+                </div>
+              );
+            })}
+            <Pager
+              page={pg.page} pageCount={pg.pageCount} start={pg.start} perPage={pg.perPage} total={pg.total}
+              onPrev={pg.prev} onNext={pg.next}
+              cappedNote={all.length >= limit
+                ? `Showing the ${limit} most recent events in this window — raise the limit or narrow the window to see further back.`
+                : undefined}
+            />
+          </>
+        )}
     </div>
   );
 }
@@ -1788,8 +2133,9 @@ function AgentOfflineGroup({ api }: { api: Api<AgentOfflineRow[]> }) {
 // (one point per day for 14 days, reconstructed from each alert's
 // triggered/acknowledged/resolved timestamps). Fewer unacknowledged alerts is
 // the improvement, hence better='lower'.
-function OpsTile({ value, label, color, alert, series }: {
+function OpsTile({ value, label, color, alert, series, definition }: {
   value: string | number; label: string; color: string; alert?: boolean; series?: KpiSeries | null;
+  definition?: React.ReactNode;
 }) {
   return (
     <div
@@ -1803,7 +2149,10 @@ function OpsTile({ value, label, color, alert, series }: {
             title={`${series.compare_label} (${series.previous ?? '—'} then, ${series.current ?? '—'} now)`} />
         )}
       </div>
-      <div style={TILE_LABEL}>{label}</div>
+      <div style={TILE_LABEL}>
+        {label}
+        {definition && <InfoTip label={label}>{definition}</InfoTip>}
+      </div>
       {series && <Sparkline points={kpiValues(series)} color="var(--red)" />}
     </div>
   );
@@ -1889,6 +2238,12 @@ function SlaTile({ api, series }: { api: Api<Sla>; series?: KpiSeries | null }) 
           anything. */}
       <div style={TILE_LABEL}>
         SLA 30d{target != null ? <span style={{ fontWeight: 500, textTransform: 'none' }}> · target {Number(target).toFixed(1)}%</span> : null}
+        <InfoTip label="SLA 30d">
+          Mean ICMP availability of all monitored devices over a rolling 30 days,
+          against the configured target{target != null ? ` of ${Number(target).toFixed(1)}%` : ''}.
+          It measures device reachability only — a reachable device with a failing
+          service check or a saturated interface still counts as available here.
+        </InfoTip>
       </div>
       {series && <Sparkline points={kpiValues(series)} color="var(--green)" />}
     </div>
@@ -2104,24 +2459,31 @@ function RecurringPatterns({ api }: { api: Api<PatternRow[]> }) {
 function LeastReliableDevices({ api }: { api: Api<LeastReliable[]> }) {
   const rows = (api.data || []).slice(0, 10);
   return (
-    <div style={{ ...CARD_STYLE, height: CARD_H }}>
-      <div style={SECTION_HEADING}>Least Reliable (30d)</div>
-      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', margin: '0 -4px' }}>
+    <div style={{ ...CARD_STYLE, minHeight: 0 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+        <span style={SECTION_HEADING}>Least Reliable (30d)</span>
+        <InfoTip label="Least Reliable (30d)">
+          Devices that raised the most alerts over the last 30 days. <b>Alerts</b> counts
+          every alert of any type; <b>Outages</b> counts only the device-down ones. A
+          device can be reachable right now and still top this list.
+        </InfoTip>
+      </div>
+      <div>
         {api.loading && !api.data ? (
           <TableSkeleton rows={5} cols={4} />
         ) : api.error ? (
           <ErrorBox message={api.error} />
         ) : !rows.length ? (
-          <Empty message="No alerts in the last 30 days ✓" />
+          <Empty message="No alerts were raised in the last 30 days." />
         ) : (
-          <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
               <tr>
                 <Th style={{ width: 28, textAlign: 'left' }}>#</Th>
                 <Th style={{ textAlign: 'left' }}>Device</Th>
                 <Th style={{ textAlign: 'left' }}>Site</Th>
-                <Th style={{ width: 56, textAlign: 'right' }}>Alerts</Th>
-                <Th style={{ width: 64, textAlign: 'right' }}>Outages</Th>
+                <Th style={{ width: 80, textAlign: 'right' }}>Alerts</Th>
+                <Th style={{ width: 90, textAlign: 'right' }}>Outages</Th>
               </tr>
             </thead>
             <tbody>
@@ -2129,12 +2491,12 @@ function LeastReliableDevices({ api }: { api: Api<LeastReliable[]> }) {
                 const alerts = num(d.alert_count);
                 const outages = num(d.outage_count);
                 return (
-                  <tr key={d.id} style={{ height: 36, cursor: 'pointer' }}>
+                  <tr key={d.id} style={{ height: 36 }}>
                     <Td style={{ color: 'var(--text-muted)' }}>{i + 1}</Td>
-                    <Td style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    <Td>
                       <Link href={`/devices/${d.id}`} style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{d.name}</Link>
                     </Td>
-                    <Td style={{ color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.site_name || '—'}</Td>
+                    <Td style={{ color: 'var(--text-muted)' }}>{d.site_name || 'Unassigned'}</Td>
                     <Td style={{ textAlign: 'right', color: 'var(--red)', fontWeight: 600 }}>{alerts != null ? alerts : '—'}</Td>
                     <Td style={{ textAlign: 'right', color: outages && outages > 0 ? 'var(--red)' : 'var(--text-muted)' }}>
                       {outages != null ? outages : '—'}
@@ -2162,20 +2524,25 @@ function fmtBps(n: number | null | undefined): string {
 function TopTalkers({ api }: { api: Api<TopTalker[]> }) {
   const rows = api.data || [];
   return (
-    <div style={{ ...CARD_STYLE, height: CARD_H }}>
+    <div style={{ ...CARD_STYLE, minHeight: 0 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
         <span style={SECTION_HEADING}>Top Talkers</span>
+        <InfoTip label="Top Talkers">
+          Busiest monitored interfaces by throughput over roughly the last 15 minutes,
+          from SNMP interface counters. Only devices with SNMP interface polling enabled
+          appear here — an absent device is not necessarily idle.
+        </InfoTip>
         {rows.length > 0 && (
           <span style={{ marginLeft: 'auto', fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>{rows.length}</span>
         )}
       </div>
-      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', margin: '0 -4px', padding: '0 4px' }}>
+      <div style={{ margin: '0 -4px', padding: '0 4px' }}>
         {api.loading && !api.data ? (
           <TableSkeleton rows={5} cols={3} />
         ) : api.error ? (
           <ErrorBox message={api.error} />
         ) : !rows.length ? (
-          <Empty message="No interface throughput data" />
+          <Empty message="No interface throughput recorded in the last 15 minutes. Interface traffic needs SNMP polling enabled on the device." />
         ) : (
           rows.map((t) => (
             <div
@@ -2184,7 +2551,7 @@ function TopTalkers({ api }: { api: Api<TopTalker[]> }) {
             >
               <Link
                 href={`/devices/${t.device_id}`}
-                style={{ fontWeight: 600, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 150 }}
+                style={{ fontWeight: 600, color: 'var(--text-primary)', whiteSpace: 'nowrap' }}
               >
                 {t.device_name}
               </Link>

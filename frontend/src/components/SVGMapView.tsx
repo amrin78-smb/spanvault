@@ -240,12 +240,27 @@ export default function SVGMapView({
     </svg>
     </div>
 
-      {/* Zoom controls */}
-      <div className="sv-map-zoomctl" onMouseDown={(e) => e.stopPropagation()}>
-        <button type="button" title="Zoom in" onClick={() => zoomByCenter(1.2)}>+</button>
-        <button type="button" title="Zoom out" onClick={() => zoomByCenter(1 / 1.2)}>−</button>
-        <button type="button" title="Fit / reset" onClick={resetView}>⤢</button>
-        <span className="lvl">{Math.round(zoom * 100)}%</span>
+      {/* Zoom controls.
+          The canvas already fits its frame at zoom 1 (preserveAspectRatio
+          "meet" on a width/height-100% svg), so "100%" was never a percentage
+          of natural size — it read as "this map is NOT fitted" when it was.
+          The scale is now expressed relative to fit, and Fit is its own
+          labelled control rather than an unlabelled ⤢ glyph. */}
+      <div className="sv-map-zoomctl" onMouseDown={(e) => e.stopPropagation()} role="group" aria-label="Map zoom">
+        <button type="button" title="Zoom in" aria-label="Zoom in" onClick={() => zoomByCenter(1.2)}>+</button>
+        <button type="button" title="Zoom out" aria-label="Zoom out" onClick={() => zoomByCenter(1 / 1.2)}>−</button>
+        <button
+          type="button"
+          title="Fit the whole map in view"
+          aria-label="Fit the whole map in view"
+          onClick={resetView}
+          disabled={zoom === 1 && pan.x === 0 && pan.y === 0}
+        >
+          Fit
+        </button>
+        <span className="lvl" aria-live="polite">
+          {zoom === 1 ? 'Fitted' : `${zoom.toFixed(1)}×`}
+        </span>
       </div>
 
       {/* Status legend (node colours) + weathermap link-utilization scale */}

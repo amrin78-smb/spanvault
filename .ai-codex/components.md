@@ -137,3 +137,50 @@ Currently used by `(app)/services/page.tsx` (9 cols) and `(app)/alerts/page.tsx`
 
 ## Always-light canvas (shared CSS, globals.css) — `--canvas-light` + `.sv-canvas-light`
 A map canvas paints the map's own stored `bg_color` (user data that must NOT flip with the theme) and draws dark ink into it, so it is a LIGHT island inside a possibly-dark page: use the token `--canvas-light` (`:root` only, deliberately no `[data-theme="dark"]` override) for that surface instead of a bare `#f8fafc`/`--surface-subtle`, and put `.sv-canvas-light` on the element so the `--tint-*`/`--text-*` tokens are re-pinned to their light values for everything layered on top — overlay badges then keep using the NORMAL tokens (`.sv-map-public` reads 4.79:1 over the /maps thumbnail and still 10.9:1 where the same class sits on page chrome in `/maps/[id]`; before the island it was 1.20:1). Used by `(app)/maps/page.tsx` (thumbnail container + the `<rect>` fallback, which must match it); `(app)/topology/page.tsx`'s hardcoded `'#f8fafc'` canvas should adopt `var(--canvas-light)` too.
+
+## Operational-clarity primitives (ui.tsx) — added 1.115.0
+One shared answer to the four questions every page has to answer: what needs
+attention, how fresh/certain is it, what is affected, where do I go next. Use
+these rather than hand-rolling per page — that is how two pages end up
+describing the same number differently.
+```
+useUrlTab(key, valid, fallback)  -> { tab, setTab, setTabState }. Reads ?key= on mount AND on
+                                    popstate; writes with history.pushState so Back returns to the
+                                    previous tab. Deliberately NOT useSearchParams() — that opts a
+                                    prerendered client page out of static rendering (gotchas.md).
+useUrlParam(key)                 -> one query param, same mount+popstate rule
+setUrlParams(patch, push=false)  -> merge params into the URL without navigating (filters)
+Tabs({tabs,active,onChange,ariaLabel,sticky})  role=tablist/tab, arrow/Home/End roving focus,
+                                    optional count pill per tab
+TabPanel({tabKey})               the role=tabpanel half; render only the active one
+SevTag({sev,label,title})        severity/status as GLYPH + WORD + colour (never colour alone).
+                                    sevKind(s) maps the app's status vocabularies onto it.
+InfoTip({label,children})        accessible disclosure — a real button + popover, Escape closes.
+                                    Use for "what does this number mean"; never a bare title=.
+Freshness({at,staleAfterMs,...}) "Updated 2m ago", goes visibly stale past the threshold. Renders
+                                    nothing until mounted (hydration — see gotchas.md)
+MetricCard({value,label,definition,window,scope,tone,sub,onClick,href})
+                                    a number WITH its definition, window and scope
+FilterBar({children,right}) / ActiveFilters({filters,onClearAll,resultLabel})
+NoResults / FirstUse / LoadError / NoAccess   the four distinct reasons a panel can be empty —
+                                    collapsing them into one "No data" is how a failed request
+                                    reads as a clean network
+StaleNotice / Notice({tone})     inline notices
+TableScroll({label,children})    labelled, focusable horizontal scroll region (role=region +
+                                    aria-label + tabIndex). Prefer over a bare .sv-table-scroll div.
+RowMenu({items,label})           kebab action menu, position:fixed anchored (a .sv-table-scroll
+                                    wrapper clips an absolute popup), arrow-key roving focus.
+                                    Promoted out of services/page.tsx's private ServiceRowMenu.
+PageHeader({title,subtitle,context,freshness,children})
+                                    title is now a real <h1>; `context` takes a Breadcrumb,
+                                    `freshness` a Freshness
+```
+
+## intel.tsx additions — 1.115.0
+```
+metricLabel(metric) / metricUnit(metric) / formatMetricValue(metric, value)
+MetricName({metric})             friendly name with the raw key beneath
+ConfidenceStars({confidence, denominator?})
+                                 now leads with the NUMBER (0.62 and 0.78 were both "four stars");
+                                 `denominator` names what the ratio is over
+```
