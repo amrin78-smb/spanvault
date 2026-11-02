@@ -8,6 +8,7 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts';
 import { useApi } from '@/lib/api';
+import { certDaysLeft } from '@/lib/certDays';
 import { StatusDot } from '@/components/StatusDot';
 import {
   StatusBadge, Loading, ErrorBox, Empty, fmtTime, fmtRel, CHART_TOOLTIP,
@@ -188,7 +189,7 @@ export default function ServiceDetailPage() {
   // Earliest certificate expiry across the WHOLE service, computed from the
   // stored date (the stored day count is only true on the day it was written).
   const certs = ordered
-    .map((c) => (c.cert_valid_to ? { check: c, days: Math.ceil((new Date(c.cert_valid_to).getTime() - Date.now()) / 86400000) } : null))
+    .map((c) => (c.cert_valid_to ? { check: c, days: certDaysLeft(c.cert_valid_to, c.cert_days_left) as number } : null))
     .filter((x): x is { check: SiblingCheck; days: number } => x !== null)
     .sort((a, b) => a.days - b.days);
   const earliestCert = certs[0] || null;

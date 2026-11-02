@@ -3,7 +3,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useApi, apiSend } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
-import { Loading, ErrorBox, Empty, EmptyState, fmtRel, fmtTime, useTableSort, sortRows, SortTh, InfoTip, Notice, SevTag, Freshness } from '@/components/ui';
+import { Tabs, Loading, ErrorBox, Empty, EmptyState, fmtRel, fmtTime, useTableSort, sortRows, SortTh, InfoTip, Notice, SevTag, Freshness } from '@/components/ui';
 import { StatusDot } from '@/components/StatusDot';
 import TopologyMapView from '@/components/TopologyMapView';
 import type { TopoLayout } from '@/components/TopologyMapView';
@@ -326,14 +326,13 @@ export default function TopologyPage() {
       {toast && <div className="sv-toast ok" onClick={() => setToast(null)}>{toast}</div>}
       {status.error && <ErrorBox message={status.error} />}
 
-      <div className="sv-tabs sticky" style={{ marginBottom: 0 }}>
-        <button className={`sv-tab ${tab === 'map' ? 'active' : ''}`} onClick={() => selectTab('map')}>
-          Visual Map
-        </button>
-        <button className={`sv-tab ${tab === 'links' ? 'active' : ''}`} onClick={() => selectTab('links')}>
-          Link Table
-        </button>
-      </div>
+      <Tabs
+        sticky
+        ariaLabel="Topology view"
+        active={tab}
+        onChange={(k) => selectTab(k)}
+        tabs={[{ key: 'map', label: 'Visual Map' }, { key: 'links', label: 'Link Table' }] as const}
+      />
 
       <div style={{ flex: 1, minHeight: 0 }}>
         {tab === 'map'

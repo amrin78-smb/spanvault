@@ -200,3 +200,10 @@ one module. Before it, an AP/controller/client result dropped the user on the ba
 
 ### `lib/wirelessLinks.ts`
 wirelessHref(wirelessApId?, wirelessControllerId?) — canonical target for a wireless alert/event subject link. Now a thin wrapper over `entityLinks.entityHref`. AP-scoped → `/wireless?tab=aps&apId=<id>` (deep-links into that AP's drawer); controller-scoped → `/wireless?tab=controllers&controllerId=<id>` (scrolls to and highlights that row — there is still no per-controller detail route); neither → `/wireless`. Takes the two ids rather than a row type because callers' shapes differ (`Alert` vs `EventRow`). Used by `alerts/page.tsx` and the dashboard's Recent Events widget — added 1.98.4 after the two had diverged (the dashboard hardcoded a bare `/wireless`).
+
+## lib/certDays.ts
+- `certDaysLeft(validTo: string | null | undefined, storedDaysLeft?: number | null): number | null`
+  — whole days until a certificate expires, floored, computed from the stored expiry at render
+  time (`cert_days_left` is only correct on the day it was written; the date stays correct) and
+  falling back to the stored count when there is no date. The single implementation: the Services
+  list and the service detail page previously had their own and disagreed by a day. See gotchas.

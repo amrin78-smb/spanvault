@@ -124,22 +124,31 @@ export default function SettingsPage() {
     <div className="sv-settings">
       {ToastUI}
       <PageHeader title="Settings" subtitle="Polling, thresholds, notifications, and alert rules." />
-      <div className="sv-tabs sticky">
-        {TABS.filter((t) => t.key !== 'audit' || canManageSettings).map((t) => (
-          <button key={t.key} className={`sv-tab ${tab === t.key ? 'active' : ''}`} onClick={() => setTab(t.key)}>
-            {t.label}
-            {t.key === 'about' && updateAvail && (
-              <span
-                title="Update available"
-                style={{
-                  display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
-                  background: '#dc2626', marginLeft: 6, verticalAlign: 'middle',
-                }}
-              />
-            )}
-          </button>
-        ))}
-      </div>
+      {/* The shared Tabs, not a hand-rolled strip: this is the app's main
+          settings navigation and it was the one place still rendering bare
+          buttons with no role=tablist, no aria-selected and no arrow keys. */}
+      <Tabs
+        sticky
+        ariaLabel="Settings sections"
+        active={tab}
+        onChange={(k) => setTab(k)}
+        tabs={TABS
+          .filter((t) => t.key !== 'audit' || canManageSettings)
+          .map((t) => (t.key === 'about' && updateAvail
+            ? {
+              ...t,
+              badge: (
+                <span
+                  title="Update available"
+                  style={{
+                    display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
+                    background: '#dc2626', marginLeft: 6, verticalAlign: 'middle',
+                  }}
+                />
+              ),
+            }
+            : t))}
+      />
       {tab === 'general' && <GeneralSettings {...formProps} />}
       {tab === 'notifications' && <NotificationSettings {...formProps} />}
       {tab === 'escalation' && <EscalationSettings {...formProps} />}
@@ -1455,13 +1464,7 @@ function AlertRules() {
   return (
     <div className="sv-settings-row">
       <div>
-        <div className="sv-tabs" style={{ marginTop: 0 }}>
-          {RULE_SUBTABS.map((t) => (
-            <button key={t.key} className={`sv-tab ${sub === t.key ? 'active' : ''}`} onClick={() => setSub(t.key)}>
-              {t.label}
-            </button>
-          ))}
-        </div>
+        <Tabs ariaLabel="Alert rule scope" active={sub} onChange={(k) => setSub(k)} tabs={RULE_SUBTABS} />
         {sub === 'global' && <GlobalRules />}
         {sub === 'site' && <SiteRules />}
         {sub === 'device' && <DeviceRules />}

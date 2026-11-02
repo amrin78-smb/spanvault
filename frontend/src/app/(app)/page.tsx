@@ -556,7 +556,12 @@ export default function DashboardPage() {
             activeAlerts={s.active_alerts}
             criticalAlerts={s.active_alerts_critical ?? 0}
             unacked={ops.data?.unacked_count ?? 0}
-            openIncidents={incidents.data?.length ?? ops.data?.open_incidents ?? 0}
+            // Authoritative count FIRST. /api/dashboard/incidents is LIMIT 10,
+            // so incidents.data.length is a page size: with 14 incidents open
+            // this card would have announced "10 open incidents" at exactly
+            // the moment the number matters. The list is the fallback only
+            // for a DB predating the ops aggregate.
+            openIncidents={ops.data?.open_incidents ?? incidents.data?.length ?? 0}
             servicesDown={(services.data || []).filter((c) => c.current_status === 'down').length}
             servicesWarning={(services.data || []).filter((c) => c.current_status === 'warning').length}
             offlineAgents={agentOffline.data?.length ?? 0}

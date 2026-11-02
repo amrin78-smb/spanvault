@@ -4,11 +4,12 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useApi, apiSend } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
+import { certDaysLeft as certDaysLeftOf } from '@/lib/certDays';
 import {
   ErrorBox, fmtRel, fmtTime, PageHeader, TableSkeleton, EmptyState, useRefreshKey, useEscape, useConfirm,
   useTableSort, sortRows, SortTh, StatusBadge, Pager, useClientPagination, RowMenu,
   MetricCard, InfoTip, SevTag, Freshness, Notice, NoResults, LoadError, TableScroll,
-  FilterBar, ActiveFilters, FirstUse,
+  FilterBar, ActiveFilters, FirstUse, Tabs,
 } from '@/components/ui';
 import { StatusDot } from '@/components/StatusDot';
 import {
@@ -423,16 +424,10 @@ type ServiceGroup = {
   siteName: string | null;
 };
 
-// Days until a certificate expires, computed from the stored expiry at RENDER
-// time rather than read from cert_days_left. The stored count is correct only
-// on the day it was written; the date is correct forever.
+// Thin wrapper over the shared helper in lib/certDays — see that file for why
+// this must not be reimplemented per page.
 function certDaysLeft(c: ServiceCheck | null): number | null {
-  if (!c) return null;
-  if (c.cert_valid_to) {
-    const t = new Date(c.cert_valid_to).getTime();
-    if (isFinite(t)) return Math.floor((t - Date.now()) / 86400000);
-  }
-  return c.cert_days_left ?? null;
+  return c ? certDaysLeftOf(c.cert_valid_to, c.cert_days_left) : null;
 }
 
 function certTone(days: number | null): { bg: string; fg: string } | null {
@@ -562,7 +557,7 @@ function CheckCard({ check }: { check: ServiceCheck }) {
     rows.push({
       k: 'Valid until',
       v: check.cert_valid_to
-        ? `${new Date(check.cert_valid_to).toISOString().slice(0, 10)}${days !== null ? ` (${days} days)` : ''}`
+        ? `${new Date(check.cert_valid_to).toISOString().slice(0, 10)}${days !== null ? ` (${days} day${days === 1 ? '' : 's'})` : ''}`
         : '—',
     });
     rows.push({ k: 'Issuer', v: check.cert_issuer || '—' });
@@ -615,7 +610,7 @@ function GroupCertificate({ group }: { group: ServiceGroup }) {
     { k: 'Host', v: ssl.target },
     { k: 'Issuer', v: ssl.cert_issuer || 'Not recorded yet' },
     { k: 'Valid until', v: ssl.cert_valid_to ? new Date(ssl.cert_valid_to).toISOString().slice(0, 10) : 'Not recorded yet' },
-    { k: 'Expires in', v: days !== null ? `${days} days` : '—' },
+    { k: 'Expires in', v: days !== null ? `${days} day${days === 1 ? '' : 's'}` : '—' },
     { k: 'Handshake', v: ssl.last_response_ms != null ? `${Math.round(ssl.last_response_ms)} ms` : '—' },
     { k: 'Last checked', v: fmtRel(ssl.last_checked_at) },
   ];
@@ -627,7 +622,7 @@ function GroupCertificate({ group }: { group: ServiceGroup }) {
           borderRadius: 'var(--radius-sm)', padding: '8px 12px', marginBottom: 10,
           fontSize: 'var(--text-base)', fontWeight: 600,
         }}>
-          {days < 0 ? 'This certificate has expired.' : `Certificate expires in ${days} days.`}
+          {days < 0 ? 'This certificate has expired.' : `Certificate expires in ${days} day${days === 1 ? '' : 's'}.`}
         </div>
       )}
       {!ssl.cert_issuer && !ssl.cert_valid_to && (
@@ -867,16 +862,11 @@ function ServiceGroupRow({ group, colCount, canEdit, onEdit, onDelete, onToggleP
       {open && (
         <tr>
           <td colSpan={colCount} style={{ padding: '0 16px 14px 44px', background: 'var(--bg-primary)' }}>
-            <div className="sv-tabs" style={{ marginTop: 0 }}>
-              {GROUP_TABS.map((t) => (
-                <button
-                  key={t.key}
-                  className={`sv-tab ${tab === t.key ? 'active' : ''}`}
-                  onClick={(e) => { e.stopPropagation(); setTab(t.key); }}
-                >
-                  {t.label}
-                </button>
-              ))}
+            {/* Wrapped so a tab click cannot bubble to the row, which would
+                collapse the group the user just opened. The strip itself is
+                the shared Tabs for role=tablist + arrow keys. */}
+            <div onClick={(e) => e.stopPropagation()}>
+              <Tabs ariaLabel="Service detail sections" active={tab} onChange={(k) => setTab(k)} tabs={GROUP_TABS} />
             </div>
             <div style={{ paddingTop: 12 }} onClick={(e) => e.stopPropagation()}>
               {tab === 'checks' && (

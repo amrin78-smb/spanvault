@@ -36,6 +36,11 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.115.3': [
+    'Fixed: the dashboard could understate an outage. "Needs attention now" counted open incidents from a list the API caps at 10, so with more than ten open it would have said "10 open incidents" at exactly the moment the real number mattered. It now uses the authoritative count.',
+    'Fixed: the same certificate read "64 days" on the Services list and "65 days" on the service detail page - the two pages rounded the remaining days differently. There is now one shared calculation, and a certificate with one day left no longer reads "1 days".',
+    'Accessibility: the Settings tab strip, the alert-rule scope switcher, the Topology view switcher and the per-service section tabs were still plain buttons. They are now proper tab strips - arrow keys, Home/End, and correct announcement to a screen reader - matching the rest of the app.',
+  ],
   '1.115.2': [
     'Topology: choosing "Monitored only" now survives a page refresh. While that view was the unconditional default, selecting it simply removed the URL parameter; now that the default depends on whether the estate has links between monitored devices (1.115.1), the choice has to be recorded explicitly or the page quietly reverts to the automatic view on reload.',
   ],

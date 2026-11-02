@@ -842,7 +842,15 @@ export function setUrlParams(patch: Record<string, string | number | boolean | n
 }
 
 // ── Semantic tabs (role=tablist, arrow-key roving focus) ──────
-export interface TabDef<T extends string> { key: T; label: string; count?: number | null; title?: string }
+export interface TabDef<T extends string> {
+  key: T;
+  label: string;
+  count?: number | null;
+  title?: string;
+  /** Extra marker after the label (e.g. the Settings "update available" dot).
+   *  `label` stays a plain string so it can be read as an accessible name. */
+  badge?: React.ReactNode;
+}
 export function Tabs<T extends string>({ tabs, active, onChange, sticky = false, ariaLabel }: {
   tabs: ReadonlyArray<TabDef<T>>;
   active: T;
@@ -895,6 +903,7 @@ export function Tabs<T extends string>({ tabs, active, onChange, sticky = false,
             {t.count !== undefined && t.count !== null && (
               <span className="sv-tab-count">{t.count.toLocaleString()}</span>
             )}
+            {t.badge}
           </button>
         );
       })}
