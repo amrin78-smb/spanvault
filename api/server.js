@@ -36,6 +36,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.115.2': [
+    'Topology: choosing "Monitored only" now survives a page refresh. While that view was the unconditional default, selecting it simply removed the URL parameter; now that the default depends on whether the estate has links between monitored devices (1.115.1), the choice has to be recorded explicitly or the page quietly reverts to the automatic view on reload.',
+  ],
   '1.115.1': [
     'Topology opened on a page of disconnected boxes. 1.115.0 made the map default to monitored devices only, which is the right starting point on most estates but not on this one: none of the discovered LLDP/CDP links joins two monitored devices, so the filter removed every link and left eight isolated nodes. The monitored-first default is now applied only when the data supports it, and when it would empty the canvas the page says so and shows the unmanaged neighbours instead - with the monitored-only view still one click away.',
   ],

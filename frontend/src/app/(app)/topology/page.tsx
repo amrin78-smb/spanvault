@@ -436,7 +436,12 @@ function MapTab({
     setMonitoredChosen(true);
     setMonitoredAutoOff(false);
     setMonitoredOnly(next);
-    patchQuery({ managed: next ? null : '0' });
+    // BOTH states are recorded now. While monitored-only was the
+    // unconditional default, "on" was the absence of the param — but the
+    // default is conditional as of 1.115.1, so dropping the param would lose
+    // the user's choice on the next refresh and silently re-apply the
+    // auto-selected view.
+    patchQuery({ managed: next ? '1' : '0' });
   }
   function changeQ(v: string) {
     setQ(v);
