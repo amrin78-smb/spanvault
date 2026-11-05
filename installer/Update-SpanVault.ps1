@@ -203,6 +203,38 @@ $Services = @(
 function Write-Step($msg)  { Write-Host "`n=== $msg ===" -ForegroundColor Cyan }
 function Write-Ok($msg)    { Write-Host "  [OK] $msg"   -ForegroundColor Green }
 function Write-Warn($msg)  { Write-Host "  [!]  $msg"   -ForegroundColor Yellow }
+# ======================================================================
+# NocVault-Tls: the suite's shared TLS terminator
+# ======================================================================
+# The suite installer can front all four consoles with ONE terminator
+# (installer\terminator\ in the netvault repo): each console moves to
+# 127.0.0.1:1300X and NocVault-Tls takes over the public port.
+#
+# ⛔ ITS DependOnService NAMES THIS APP'S SERVICE, SO IT MUST BE STOPPED FIRST.
+# Windows REFUSES `sc stop` on a service that has a RUNNING dependent (1051,
+# ERROR_DEPENDENT_SERVICES_RUNNING) and `sc.exe stop` does not stop dependents
+# for you. Without this, the stop below silently fails, the update rebuilds
+# node_modules and .next underneath a LIVE process, and the only sign is a
+# discarded exit code.
+#
+# Both functions no-op - silently and deliberately - when there is no terminator,
+# which is every install that never configured a certificate.
+function Stop-NocVaultTls {
+    if (-not (Get-Service -Name 'NocVault-Tls' -ErrorAction SilentlyContinue)) { return }
+    $ErrorActionPreference = 'Continue'
+    $null = & sc.exe stop NocVault-Tls 2>&1
+    Start-Sleep -Seconds 2
+}
+# And started again afterwards: with this app's console bound to 127.0.0.1, the
+# terminator is the ONLY route to it. Leaving it down ends the update with a
+# console nobody can reach.
+function Start-NocVaultTls {
+    if (-not (Get-Service -Name 'NocVault-Tls' -ErrorAction SilentlyContinue)) { return }
+    $ErrorActionPreference = 'Continue'
+    $null = & sc.exe start NocVault-Tls 2>&1
+    Start-Sleep -Seconds 3
+}
+
 
 function Get-ServiceStatus($name) {
     $svc = Get-Service -Name $name -ErrorAction SilentlyContinue
@@ -430,6 +462,7 @@ function Invoke-Rollback([string]$Reason) {
         # the safe order the main update flow already uses (STEP 1 stops services
         # before STEP 4/6 ever touch node_modules/.next).
         Write-Step "Stopping services before restoring last known-good version"
+        Stop-NocVaultTls
         foreach ($svc in $Services) {
             $null = & sc.exe query $svc.Name 2>&1
             if ($LASTEXITCODE -eq 0) { $null = & sc.exe stop $svc.Name 2>&1 }
@@ -486,6 +519,7 @@ function Invoke-Rollback([string]$Reason) {
             $null = & $nssm start $svc.Name 2>&1
         }
         Start-Sleep -Seconds 3
+        Start-NocVaultTls
 
         # Informational only - SCM's STARTPENDING -> RUNNING transition can lag
         # several seconds behind the process actually serving traffic (confirmed
@@ -587,6 +621,7 @@ try {
 
 # ── 1. Stop services ───────────────────────────────────────────
 Write-Step 'Stopping services'
+Stop-NocVaultTls
 # nssm status writes "Can't open service!" to stderr for a non-existent service,
 # which PowerShell turns into a terminating NativeCommandError even with
 # 2>&1 | Out-Null under $ErrorActionPreference='Stop'. Use sc.exe query for the
@@ -1162,9 +1197,30 @@ foreach ($svc in $Services) {
         Write-Ok "Installed $($svc.Name)"
     }
     # (Re)apply configuration each run so changes propagate.
+    #
+    # ⛔ EXCEPT AppParameters, WHICH IS PRESERVED WHEN IT ALREADY NAMES A
+    # LOOPBACK BIND. $Services above hardcodes
+    # `next start -p 3008`, and re-applying that blindly UNDOES the suite
+    # installer's TLS cutover on every SpanVault update: the console returns to
+    # 0.0.0.0:3008, the port the shared terminator (NocVault-Tls) is holding, so
+    # SpanVault-App then either fails to bind and crash-loops or - if it wins
+    # the race - takes the port and leaves the terminator unable to start. Either
+    # way the console goes dark, from an update that changed nothing about it.
+    #
+    # The test is on the RUNNING configuration, not on the terminator: "does
+    # this service already bind a loopback address" is the fact that matters,
+    # and it stays true for any future reason someone might bind one.
+    $applyArgs = $svc.Args
+    $liveArgs  = ''
+    try { $liveArgs = (& $nssm get $svc.Name AppParameters 2>&1 | Out-String) } catch { $liveArgs = '' }
+    $liveArgs = ($liveArgs -replace "`0", '').Trim()
+    if ($liveArgs -match '-H\s+127\.0\.0\.1') {
+        $applyArgs = $liveArgs
+        Write-Warn "$($svc.Name) is bound to 127.0.0.1 (behind NocVault-Tls) - keeping its existing AppParameters instead of resetting them to '$($svc.Args)'"
+    }
     $null = & $nssm set $svc.Name Application       $nodeExe              2>&1
     $null = & $nssm set $svc.Name AppDirectory      $svc.Dir             2>&1
-    $null = & $nssm set $svc.Name AppParameters     $svc.Args            2>&1
+    $null = & $nssm set $svc.Name AppParameters     $applyArgs           2>&1
     $null = & $nssm set $svc.Name AppStdout         (Join-Path $InstallDir "logs\$($svc.Name).log")     2>&1
     $null = & $nssm set $svc.Name AppStderr         (Join-Path $InstallDir "logs\$($svc.Name).err.log") 2>&1
     $null = & $nssm set $svc.Name AppRotateFiles    1                    2>&1
@@ -1180,6 +1236,7 @@ foreach ($svc in $Services) {
     $null = & $nssm start $svc.Name 2>&1
     Write-Ok "Started $($svc.Name)"
 }
+Start-NocVaultTls
 
 # ── 8. Health check (now a mandatory gate, not advisory) ───────
 Write-Step 'Health check'
