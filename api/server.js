@@ -36,6 +36,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.115.4': [
+    'Fixed: if the port used for remote polling agents was already taken by something else, and the agent channel was set up to use TLS, the whole SpanVault API would stop and keep restarting instead of carrying on. It now reports the clash and keeps running - only the agent channel is affected, and the message says which setting to change. Without TLS this already behaved correctly; the two paths are now consistent.',
+  ],
   '1.115.3': [
     'Fixed: the dashboard could understate an outage. "Needs attention now" counted open incidents from a list the API caps at 10, so with more than ten open it would have said "10 open incidents" at exactly the moment the real number mattered. It now uses the authoritative count.',
     'Fixed: the same certificate read "64 days" on the Services list and "65 days" on the service detail page - the two pages rounded the remaining days differently. There is now one shared calculation, and a certificate with one day left no longer reads "1 days".',

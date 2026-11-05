@@ -232,3 +232,30 @@ Live-verified 2026-09-22 against two production engines on firmware 7.1.11 (EU-D
 - **A LIMIT-ed list's `.length` is a page size, never a count — and the fallback order matters.** The dashboard's OverviewStateCard read `incidents.data?.length ?? ops.data?.open_incidents`. `/api/dashboard/incidents` is `LIMIT 10`, so with eleven or more open the headline card would have understated the outage, while the authoritative aggregate it already fetches sat unused in the fallback slot. Authoritative count first, capped list only as a fallback. (Same bug, same shape, shipped in netvault's dashboard the same week — check both when you touch either.)
 - **One calculation, one implementation.** Certificate days-remaining was computed in two places with different rounding (`Math.floor` on the Services list, `Math.ceil` on the service detail), so the same cert read 64 days on one page and 65 one click later. Now `lib/certDays.ts` — floor, matching the collector's stored `cert_days_left` and the `<=14`/`<=60` tone thresholds.
 - **`Tabs` from `components/ui` is the only accessible tab strip; a bare `<button className="sv-tab">` is not.** The 1.115.0 pass built it but converted only four pages, leaving Settings (the app's main settings navigation), the alert-rule scope switcher, Topology's view switcher and the per-service section tabs as plain buttons with no `role=tablist`, no `aria-selected` and no arrow keys. All four converted in 1.115.3. `TabDef.badge` exists for a marker that is not part of the accessible name (the Settings update dot) — keep `label` a plain string.
+
+## The agent WS listener's two bind paths were defended unequally (1.115.4)
+
+⛔ **MEASURED, NOT REASONED ABOUT.** `startWsServer(port)` in `api/ws-server.js` has two
+branches, and a port conflict behaved completely differently in each:
+
+| branch | taken when | EADDRINUSE did |
+|---|---|---|
+| `new WebSocketServer({ port })` | no `SV_WS_TLS_CERT`/`KEY` | surfaced on `wss.on('error')`, which IS handled — logged, process survives |
+| `httpsServer.listen(port)` | TLS configured | emitted on the https server, which had **NO** listener — **UNCAUGHT exception, SpanVault-API exits, NSSM restarts it, it exits again** |
+
+So the plain path degraded and the TLS path crash-looped, taking down polling, the API and
+every page that reads from it — because the agent channel's port was busy.
+
+⛔ **IT WAS GETTING MORE LIKELY, NOT LESS.** The suite is gaining a shared TLS terminator, so
+`SV_WS_TLS_CERT`/`KEY` being set moves from rare to normal — and the default `SV_WS_PORT` is
+**3010**, which is also SecVault's console port. Any box running both (the Windows staging
+machine does) hits exactly this.
+
+Fixed by giving the TLS listener the same treatment the plain one already had: log the
+conflict, name the setting to change (`SV_WS_PORT`), and keep serving. ⛔ The rule worth
+keeping: **`startWsServer` is ONE feature of this service, so a failure to bind it must never
+be able to stop the service.** If a third branch is ever added here it needs its own `'error'`
+handler too — the defect was the ASYMMETRY, not the missing line.
+
+⛔ `startWsServer(wsPort)` is called UNCONDITIONALLY from `api/server.js`, so the port is bound
+whether or not any agent exists. "We are not using agents" is not a reason the port is free.

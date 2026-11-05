@@ -235,6 +235,36 @@ function startWsServer(port) {
       key: fs.readFileSync(keyPath),
     });
     wss = new WebSocketServer({ server: httpsServer });
+    // ⛔ THE TLS BRANCH NEEDS ITS OWN 'error' HANDLER AND THE PLAIN ONE BELOW
+    // DOES NOT — the two paths were defended unequally, and only one of them
+    // crashed.
+    //
+    // Measured 2026-11-05 against a port already in use:
+    //   plain  `new WebSocketServer({ port })`  -> EADDRINUSE arrives on
+    //          wss.on('error') (ws forwards its internal server's errors),
+    //          which is handled below: the API logs and keeps running.
+    //   TLS    `httpsServer.listen(port)`       -> EADDRINUSE is emitted on the
+    //          https server, which had NO listener, so it became an UNCAUGHT
+    //          exception. SpanVault-API exits, NSSM restarts it, it exits
+    //          again — a crash loop, taking the whole API down rather than
+    //          just the agent channel.
+    //
+    // This matters more now than it used to: the suite is gaining a TLS
+    // terminator, so SV_WS_TLS_CERT/KEY being set is becoming the normal case
+    // rather than the rare one, which moves this from latent to likely.
+    //
+    // Degrade, do not die: the agent channel is one feature of this service.
+    // Losing it must not take down polling, the API and every page that reads
+    // from it.
+    httpsServer.on('error', (err) => {
+      console.error(
+        `[WS] TLS listener on port ${port} failed: ${err.code || err.message}. ` +
+        'The agent WebSocket channel is DOWN; the rest of the API is unaffected. ' +
+        (err.code === 'EADDRINUSE'
+          ? 'Another process already holds this port — set SV_WS_PORT to a free one.'
+          : '')
+      );
+    });
     httpsServer.listen(port);
     console.log('[WS] TLS enabled (SV_WS_TLS_CERT/KEY configured)');
   } else {
