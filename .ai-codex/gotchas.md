@@ -291,3 +291,17 @@ not an app-level one. Three real holes, all fixed 2026-11-07:
 ⛔ Only a parse gate on **PowerShell 5.1** can validate these scripts, and a
 parse gate cannot catch an undefined function — check that every `Write-*`
 helper a new line calls is actually defined in that same file.
+
+### A leftover `.lastgood` snapshot can be the only path back
+
+Each updater deletes any existing `.lastgood` directory before snapshotting the
+live install, on the reasoning that it is debris from an interrupted run. It is
+not always: if a PRIOR run failed **and its own rollback also failed**, that
+snapshot is the last intact copy of a working install — and the next attempt
+deleted all of it before snapshotting its own, already-broken tree.
+
+All four updaters now refuse in that case, using the heuristic DDIVault's had
+from the start: `last-update-status.json` recording `success:false` AND
+`rolledBack:false` is exactly the "ROLLBACK ALSO FAILED" state. They restart the
+services and the TLS front door first, so aborting does not also leave the app
+down on top of the bad state being reported.

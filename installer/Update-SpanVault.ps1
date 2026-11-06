@@ -748,6 +748,37 @@ $frontendNextBackup    = Join-Path $Frontend '.next.lastgood'
 $frontendModulesBackup = Join-Path $Frontend 'node_modules.lastgood'
 # Clear any stale backups left by a prior interrupted run before snapshotting the
 # CURRENTLY-serving version, not an older leftover one.
+# ⛔ A LEFTOVER SNAPSHOT MAY BE THE ONLY PATH BACK, NOT CRUFT. The deletion
+# below treats any existing .lastgood directory as debris from an interrupted
+# run. But if a PRIOR run failed AND its own rollback also failed, that
+# snapshot is the last intact copy of a working install — and this run would
+# delete all three before snapshotting its own, already-broken tree. The
+# heuristic is the one DDIVault's updater has carried since it was written:
+# last-update-status.json recording success:false AND rolledBack:false is
+# exactly the "ROLLBACK ALSO FAILED" state, so refuse while that stands.
+$hasLeftoverBackup = (Test-Path $rootModulesBackup) -or (Test-Path $frontendNextBackup) -or (Test-Path $frontendModulesBackup)
+if ($hasLeftoverBackup -and (Test-Path $StatusPath)) {
+    $prevStatus = $null
+    try {
+        $BOM = [char]0xfeff
+        $raw = Get-Content -LiteralPath $StatusPath -Raw -ErrorAction Stop
+        $prevStatus = ($raw.TrimStart($BOM)) | ConvertFrom-Json
+    } catch { $prevStatus = $null }
+    if ($prevStatus -and $prevStatus.success -eq $false -and $prevStatus.rolledBack -eq $false) {
+        Write-Warn "A leftover .lastgood snapshot exists AND the last recorded update ($($prevStatus.timestamp), stage '$($prevStatus.stage)') shows its rollback ALSO failed."
+        Write-Warn "Refusing to overwrite it - it may be the ONLY remaining path back to a working install. Manual intervention required before the next update."
+        Write-Warn "Investigate/restore from: $rootModulesBackup / $frontendNextBackup / $frontendModulesBackup"
+        sc.exe start SpanVault-API | Out-Null
+        Start-Sleep -Seconds 5
+        sc.exe start SpanVault-App | Out-Null
+        Start-Sleep -Seconds 5
+        sc.exe start SpanVault-Collector | Out-Null
+        Start-NocVaultTls
+        try { Stop-Transcript | Out-Null } catch {}
+        exit 1
+    }
+}
+
 foreach ($stale in @($rootModulesBackup, $frontendNextBackup, $frontendModulesBackup)) {
     if (Test-Path $stale) { Remove-Item $stale -Recurse -Force -ErrorAction SilentlyContinue }
 }
