@@ -219,10 +219,42 @@ function Write-Warn($msg)  { Write-Host "  [!]  $msg"   -ForegroundColor Yellow 
 #
 # Both functions no-op - silently and deliberately - when there is no terminator,
 # which is every install that never configured a certificate.
+# ⛔ ONLY WHEN IT ACTUALLY DEPENDS ON THIS SERVICE. Stopping the terminator
+# takes ALL FOUR consoles' public ports down, so doing it unconditionally turns
+# an update to ONE app into a suite-wide outage for the length of a build.
+# MEASURED on production during the netvault 1.61.0 deploy: NocVault-Tls was
+# Stopped for the entire build and all four consoles were unreachable.
+#
+# Cutovers from 1.61.1 no longer set DependOnService at all (it bought only the
+# order of four `sc start` calls at boot, and cost the 1051 refusal on every
+# console restart). On those installs `sc stop` on this console just works and
+# the terminator keeps serving the other three. On a legacy box the dependency
+# is still there and must still be honoured - so this ASKS rather than assumes.
+$script:StoppedTheTerminator = $false
+function Test-NocVaultTlsDependsOnMe {
+    $svc = Get-Service -Name 'NocVault-Tls' -ErrorAction SilentlyContinue
+    if (-not $svc) { return $false }
+    $ErrorActionPreference = 'Continue'
+    # `sc qc` lists DEPENDENCIES of the named service. We are a dependency of
+    # the terminator exactly when our service name appears here.
+    $qc = (& sc.exe qc NocVault-Tls 2>&1 | Out-String)
+    if ($qc -match [regex]::Escape('SpanVault-App')) { return $true }
+    # ⛔ A READ WE DID NOT GET IS TREATED AS "IT DEPENDS". Guessing the other way
+    # would let `sc stop` be refused (1051), the update rebuild underneath a LIVE
+    # process, and the only sign be a discarded exit code.
+    if ($qc -notmatch 'DEPENDENCIES') { return $true }
+    return $false
+}
 function Stop-NocVaultTls {
+    $script:StoppedTheTerminator = $false
     if (-not (Get-Service -Name 'NocVault-Tls' -ErrorAction SilentlyContinue)) { return }
+    if (-not (Test-NocVaultTlsDependsOnMe)) {
+        Write-Host "    [--] NocVault-Tls does not depend on SpanVault-App - leaving it running so the other consoles stay up" -ForegroundColor Gray
+        return
+    }
     $ErrorActionPreference = 'Continue'
     $null = & sc.exe stop NocVault-Tls 2>&1
+    $script:StoppedTheTerminator = $true
     Start-Sleep -Seconds 2
 }
 # And started again afterwards: with this app's console bound to 127.0.0.1, the
@@ -230,8 +262,13 @@ function Stop-NocVaultTls {
 # console nobody can reach.
 function Start-NocVaultTls {
     if (-not (Get-Service -Name 'NocVault-Tls' -ErrorAction SilentlyContinue)) { return }
+    # Only restart what we stopped. Starting a service we left running is
+    # harmless, but claiming to have restored something we never touched is the
+    # kind of line that gets believed later.
+    if (-not $script:StoppedTheTerminator) { return }
     $ErrorActionPreference = 'Continue'
     $null = & sc.exe start NocVault-Tls 2>&1
+    $script:StoppedTheTerminator = $false
     Start-Sleep -Seconds 3
 }
 
