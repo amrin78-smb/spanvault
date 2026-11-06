@@ -261,3 +261,33 @@ handler too — the defect was the ASYMMETRY, not the missing line.
 
 ⛔ `startWsServer(wsPort)` is called UNCONDITIONALLY from `api/server.js`, so the port is bound
 whether or not any agent exists. "We are not using agents" is not a reason the port is free.
+
+### The shared TLS front door must come back on EVERY path out of an update
+
+`installer/Update-SpanVault.ps1` stops `NocVault-Tls` only when that service
+actually declares a dependency on this app's service — but once stopped, it
+fronts **all four** consoles, so failing to restart it is a suite-wide outage,
+not an app-level one. Three real holes, all fixed 2026-11-07:
+
+1. **The Stop/Start pair sat inside the main `try` with no `finally`.** An
+   exception, an `exit`, or an early `return` from the rollback skipped the
+   Start. (LogVault's rollback had exactly that shape: `return $false` on an
+   un-revertable source, several lines above its own Start call.) The Start now
+   runs from the script-level `finally`, and is idempotent — it returns at once
+   unless THIS run stopped the service.
+2. **The start's exit code was discarded, and nothing downstream could
+   notice.** `Wait-Healthy` probes this app's API on `127.0.0.1`, which sits
+   BEHIND the front door and answers whether or not it is up — so a terminator
+   that failed to start still printed "health check passed", wrote
+   `success:true` and exited 0 with every public port dead. The start now waits
+   for `Running` and probes the PUBLIC port.
+3. **The stop slept 2 seconds instead of waiting for `Stopped`.** The cutover
+   sets `AppStopMethodConsole 15000` on that service deliberately, because it
+   drains every live socket (upgraded WebSockets included) before exiting — so
+   at t+2s it is routinely still `STOP_PENDING`, this app's own `sc stop` is
+   then refused with **1051**, and the `npm install`/build that follows rewrites
+   `node_modules` underneath a live process.
+
+⛔ Only a parse gate on **PowerShell 5.1** can validate these scripts, and a
+parse gate cannot catch an undefined function — check that every `Write-*`
+helper a new line calls is actually defined in that same file.

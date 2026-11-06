@@ -36,6 +36,11 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.115.6': [
+    "Fixed: if an update failed partway through, the shared HTTPS front door could be left stopped - which takes ALL FOUR consoles off the air, not just this app's. The front door is now restored on every path out of an update, including an unexpected error and an abandoned rollback.",
+    "Fixed: an update could report success while the HTTPS front door had failed to come back and every public port was dead. The health check it relied on talks to this app directly, behind the front door, so it answered either way. The update now waits for the front door to be running and checks the public port itself before declaring success.",
+    "Fixed: stopping the front door did not wait for it to actually stop. It drains open connections first, so this app's own service stop could still be refused - and the rebuild that followed would then run against a live process. It now waits.",
+  ],
   '1.115.5': [
     'Fixed: every public map share link, and the SSO landing page, showed "Application error: a client-side exception has occurred" instead of the page. Both render without a sign-in by design, and the licence check that runs on every page refused the request because it was not signed in - then crashed the page rather than carrying on. Public maps work again.',
     'Fixed the underlying cause too, not just this one symptom: the licence check treated any reply from the server as a valid answer, including a refusal. It now recognises a refusal and falls back to running normally, so a licence lookup that cannot be performed can never lock anyone out of the app.',
