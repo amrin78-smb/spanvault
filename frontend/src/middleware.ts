@@ -51,7 +51,27 @@ export async function middleware(req: NextRequest) {
     // instead of real numbers). Everything else requires a valid token; the
     // RBAC middleware in api/server.js only gates writes (POST/PUT/PATCH/DELETE),
     // so without this check every GET was reachable with zero authentication.
-    const PUBLIC_API = /^\/api\/(maps\/public\/|health$|stats$|sso$)/;
+    // ⛔ /api/license-status IS LOAD-BEARING FOR EVERY UNAUTHENTICATED PAGE.
+    // `LicenseProvider` sits in the ROOT layout (app/layout.tsx) — deliberately,
+    // so a disabled licence hard-blocks EVERY route — which means it also runs
+    // on /sso and /maps/public/*, routes that render with no session BY DESIGN.
+    // This route being [auth] was a defensible choice on its own, and moving the
+    // provider to the root was a defensible choice on its own; TOGETHER they
+    // broke both pages. The 401 body is valid JSON, so LicenseProvider's
+    // try/catch never fired — it stored `undefined` as the state and
+    // LicenseGate threw `Cannot read properties of undefined (reading
+    // 'disabled')`. MEASURED on production 2026-11-06: every public map share
+    // link and the SSO landing page rendered React's "Application error:
+    // a client-side exception has occurred" instead of the page.
+    //
+    // ⛔ DO NOT also add /api/system/update-available or
+    // /api/system/last-update-status here "for consistency with the other
+    // suite apps". Their only consumers (UpdateNotifier, UpdateFailureBanner)
+    // live in (app)/layout.tsx and always have a session, and
+    // last-update-status returns commit hashes and raw updater error text —
+    // real disclosure, bought for nothing. Their absence here is deliberate;
+    // routes.md's `[public]` label on update-available was simply wrong.
+    const PUBLIC_API = /^\/api\/(maps\/public\/|health$|stats$|sso$|license-status$)/;
     if (PUBLIC_API.test(pathname)) {
       return NextResponse.rewrite(target);
     }

@@ -36,6 +36,11 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.115.5': [
+    'Fixed: every public map share link, and the SSO landing page, showed "Application error: a client-side exception has occurred" instead of the page. Both render without a sign-in by design, and the licence check that runs on every page refused the request because it was not signed in - then crashed the page rather than carrying on. Public maps work again.',
+    'Fixed the underlying cause too, not just this one symptom: the licence check treated any reply from the server as a valid answer, including a refusal. It now recognises a refusal and falls back to running normally, so a licence lookup that cannot be performed can never lock anyone out of the app.',
+    'Only the licence check was opened up - the two update-status endpoints stay signed-in-only on purpose, since nothing reaches them before sign-in and one of them returns internal build detail.',
+  ],
   '1.115.4': [
     'Fixed: if the port used for remote polling agents was already taken by something else, and the agent channel was set up to use TLS, the whole SpanVault API would stop and keep restarting instead of carrying on. It now reports the clash and keeps running - only the agent channel is affected, and the message says which setting to change. Without TLS this already behaved correctly; the two paths are now consistent.',
   ],

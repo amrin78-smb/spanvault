@@ -50,9 +50,23 @@ export function LicenseProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const check = async () => {
       try {
-        const res  = await fetch('/api/license-status');
+        const res = await fetch('/api/license-status');
+        // ⛔ CHECK res.ok, AND CHECK THE SHAPE. The catch below is NOT reached
+        // by an error response that happens to carry valid JSON: middleware's
+        // 401 body is `{"error":"Unauthorized"}`, which parses fine, leaving
+        // `data.state` undefined. `setState(undefined)` then made LicenseGate
+        // throw `Cannot read properties of undefined (reading 'disabled')` and
+        // every unauthenticated route (/sso, /maps/public/*) rendered React's
+        // "Application error" screen instead of the page. Both failures must
+        // land in the catch so the state falls back to a fail-OPEN
+        // 'unreachable' — a license lookup we cannot perform must never lock a
+        // customer out of their own app.
+        if (!res.ok) throw new Error(`license-status returned ${res.status}`);
         const data = await res.json();
-        setLicense(data.license);
+        if (!data || typeof data.state !== 'object' || data.state === null) {
+          throw new Error('license-status returned no state');
+        }
+        setLicense(data.license ?? null);
         setState(data.state);
       } catch {
         setState({ mode: 'unreachable', canWrite: true, canRead: true, disabled: false });
@@ -166,6 +180,10 @@ export function LicenseDisabledScreen() {
 // app. While the license is still loading, render children to avoid a flash.
 export function LicenseGate({ children }: { children: ReactNode }) {
   const { state, loading } = useLicense();
-  if (!loading && state.disabled) return <LicenseDisabledScreen />;
+  // `state?.` is belt-and-braces on top of the provider's shape check above.
+  // This component is in the ROOT layout, so throwing here takes down EVERY
+  // route in the app — it must degrade to "render the children" rather than
+  // crash, whatever it is handed.
+  if (!loading && state?.disabled) return <LicenseDisabledScreen />;
   return <>{children}</>;
 }
