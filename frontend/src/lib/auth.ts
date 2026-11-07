@@ -145,7 +145,6 @@ export async function authorizeSsoToken(
 
   const userId = String(payload.userId);
   const tokenEmail = typeof payload.email === 'string' ? payload.email : '';
-
   // Look the user up by the VERIFIED token id ONLY. This lookup used to also
   // match on `credentials.email`; now that the DB row decides the role, letting
   // the request body choose which row is read would just move the escalation
@@ -154,15 +153,22 @@ export async function authorizeSsoToken(
   //
   // ⛔ "NO SUCH ROW" AND "THE QUERY FAILED" ARE DIFFERENT ANSWERS, and the role
   // fallback below must only ever apply to the second. A zero-row result is
-  // definitive: this user does not exist in NetVault. Treating that as a
-  // transient miss and honouring the token's own `role` claim would leave a
-  // real escalation open, because the hub's handoff route reads the session
-  // with getToken() on a JWT that has NO maxAge (30-day next-auth default) and
-  // re-resolves the role only for Entra users — so a user who has been DELETED
-  // still holds a cookie that mints a token claiming their old role. With a
-  // zero-row fallback they would keep it here. LogVault's reference
-  // implementation (logvault/frontend/src/auth.ts) rejects a no-row user for
-  // exactly this reason; match it.
+  // definitive — this user does not exist in NetVault — so the login is
+  // refused. LogVault's reference implementation
+  // (logvault/frontend/src/auth.ts) refuses a no-row user for the same reason.
+  //
+  // ⚠ CORRECTED (hub net-vault 1.63.0). This comment used to justify the check
+  // by saying the hub "reads the session with getToken() on a JWT that has NO
+  // maxAge (30-day next-auth default) and re-resolves the role only for Entra
+  // users". BOTH HALVES ARE NOW FALSE: the hub bounds its session at 12h, sets
+  // jwt.maxAge as well as session.maxAge, re-resolves the role from `users` on
+  // every token use for local accounts too, clears the role when the account's
+  // row is gone, and refuses a cleared-role session at all three handoffs. So a
+  // deleted user's stale token is now also stopped upstream.
+  //
+  // The check stays anyway, and not out of inertia: it is the half of the
+  // defence that lives in THIS repo. The reason this suite keeps re-finding
+  // this bug class is that each app trusted the one next to it to get it right.
   let dbUser: { id?: number | string; name?: string; email?: string; role?: string } = {};
   let lookupFailed = false;
   try {

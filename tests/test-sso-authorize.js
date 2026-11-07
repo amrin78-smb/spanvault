@@ -139,8 +139,8 @@ const VIEWER_ROW = { id: 7, name: 'Vera Viewer', email: 'viewer@example.com', ro
   // A zero-row result is definitive: this user does not exist in NetVault, so
   // the login is refused. Only a THROWN query (a transient cross-DB failure)
   // may fall back to the hub-signed role claim. This matters because the hub's
-  // handoff route reads the session with getToken() on a JWT with no maxAge
-  // (30-day next-auth default), so a DELETED user still holds a cookie that
+  // handoff route USED TO read the session with getToken() on a JWT with no
+  // maxAge (30-day next-auth default), so a DELETED user still held a cookie that
   // mints a token claiming their old role — a zero-row fallback would hand it
   // straight back. logvault/frontend/src/auth.ts refuses a no-row user too.
   {
