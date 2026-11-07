@@ -39,6 +39,47 @@ Consumed by `enforceLicense` middleware in api/server.js (gates writes during gr
 module.exports = { renderTrendChart(doc, opts) — draws a line/area trend chart onto a pdfkit doc }
 ```
 
+### rbacScope.js — the PURE half of RBAC site scoping (added 1.115.9)
+⛔ **Extracted from `api/server.js` so it can actually be TESTED.** `api/server.js`
+cannot be required by a test — it opens two Postgres pools, starts the agent
+WebSocket listener and binds a port — so every predicate deciding what a
+`site_admin` may see had zero coverage, in a codebase whose own gotchas.md records
+that bug class recurring five times. Everything here is pure: no DB, no network.
+The DB-touching wrappers (`deviceVisible`, `mapVisible`, `layoutIdsInScope`,
+`savedReport*`) stay in server.js and call into these.
+Suite: `tests/test-rbac-scoping.js` (`npm run test:rbac`).
+```
+module.exports = {
+  ROLE_RANK                                  — { viewer:0, site_admin:1, admin:2, super_admin:3 }
+  userRank(req)                              — x-user-role → rank; unknown/missing floors at viewer (0)
+  getSiteFilter(req)                         — site_admin → int[] of their sites; admin/viewer/missing → null (unscoped)
+  siteFilterClause(siteFilter, params, col)  — pushes onto params, returns `col = ANY($n::int[])` or null.
+                                               NEVER add `OR col IS NULL` — that inverts fail-closed into fail-open
+  rowInScope(siteFilter, siteId)             — ⛔ THE ONE per-row check. ~10 routes resolve a row's site_id then
+                                               call this; do not hand-roll an eleventh. NULL site_id → false
+  siteWritable(req, siteId)                  — for a WRITE whose PAYLOAD names a site (device create / move
+                                               between sites). Accepts numeric strings; null/non-numeric → false
+  mapOutOfScopeSql(mapIdExpr, paramIdx)      — `sv_maps` has NO site_id, so a map's scope is DERIVED from its
+                                               nodes. TRUE when the map has a node outside the caller's sites.
+                                               Site-less node fails CLOSED via a COALESCE(...,-1) <> ALL sentinel
+  makeDeviceScopeGuard(query)                — GUARD 1's body for the whole /api/devices/:id… family, as a
+                                               factory with an injected `query` purely so a test can drive it
+  NOT_FOUND                                  — frozen shared 404 bodies (device/ap/client/serviceCheck/map/
+                                               savedReport). Used by BOTH the absent and the out-of-scope branch
+                                               of every id-keyed route, so the two answers cannot drift apart
+  collectLayoutEntityIds(devices)            — { deviceIds, checkIds } a maps-layout payload wants to place;
+                                               drops 0/negative/non-numeric (a 0 would pass a count check)
+  mailErrorSummary(e)                        — code-only description of a report-delivery failure; nodemailer's
+                                               err.message carries the SMTP host/port/username/auth rejection
+  trustedFetchHostnames(env)                 — Set of hostnames a SERVER-SIDE fetch may target
+  pickHubFetchOrigin(env, candidate)         — ⛔ a fetch target is NOT a browser link. Returns the
+                                               request-derived `candidate` only when its hostname is configured
+                                               (NOCVAULT_HUB_URL / NEXT_PUBLIC_… / SV_PUBLIC_URL / NEXTAUTH_URL /
+                                               TLS_PUBLIC_HOST / NOCVAULT_TRUSTED_HOSTS / loopback); else the
+                                               configured hub. Closes the SSRF on /api/hub/settings + POST /api/sso
+}
+```
+
 ### reportScheduler.js — scheduled report email delivery (460 lines)
 ```
 module.exports = {
@@ -110,6 +151,28 @@ wirelessScore.js
 ```
 
 ## Frontend (frontend/src/lib/)
+
+### apiGate.ts — the two pure decisions `middleware.ts` makes per `/api/*` request (added 1.115.9)
+⛔ Extracted from `middleware.ts` because that file imports `next/server` +
+`next-auth/jwt` and runs on the edge runtime, so it cannot be required from a Node
+test script. **Keep this module dependency-free** (no `next/*`, no `next-auth`) or it
+stops being testable, which is the only reason it exists.
+Suite: `tests/test-rbac-scoping.js`.
+```
+CLIENT_SPOOFABLE_HEADERS            — ['x-user-role','x-user-sites','x-user-email'] — the headers api/server.js
+                                      trusts VERBATIM (userRank/getSiteFilter read them with no validation)
+stripClientIdentity(headers)        — deletes all of the above, in place; returns the same object.
+                                      ⛔ middleware.ts calls this ONCE, ahead of EVERY branch. The session branch
+                                      always overwrote them from the verified token, but the PUBLIC branch used
+                                      to return a bare `NextResponse.rewrite(target)` with no headers object, so
+                                      on a public path the caller's own x-user-role reached Express unchanged
+                                      (and already chose the actor string written into the audit_log row)
+isPublicApiPath(pathname, method)   — true when the request may be proxied with NO session. Exact+anchored for
+                                      health|stats|sso|license-status; `maps/public/:uuid` is the one variable
+                                      tail, so it is restricted to GET/HEAD and to a SINGLE path segment — it
+                                      used to be a bare PREFIX with no method check, which would have made any
+                                      future write under it an unauthenticated admin write
+```
 
 ### api.ts — fetch wrappers for the Express API via the same-origin `/api/*` proxy
 ```

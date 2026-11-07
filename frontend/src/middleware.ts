@@ -1,6 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getToken } from 'next-auth/jwt';
 import { resolveOrigin } from '@/lib/publicUrl';
+// The two pure decisions about an /api/* request — which paths are public, and
+// which client-supplied headers must never survive the proxy — live in
+// lib/apiGate.ts so they can be tested (this file imports next/server and runs
+// on the edge runtime, so it cannot be required from a Node test script).
+// Regression suite: tests/test-rbac-scoping.js.
+import { isPublicApiPath, stripClientIdentity } from '@/lib/apiGate';
 
 // Legacy fallback only — the real target origin is derived per-request from
 // the Host/X-Forwarded-Host headers (see resolveOrigin) so hub-redirects keep
@@ -35,6 +41,32 @@ export async function middleware(req: NextRequest) {
     }
 
     const target = new URL(`http://127.0.0.1:3009${pathname}${search}`);
+
+    // ⛔ STRIP CLIENT-SUPPLIED IDENTITY BEFORE ANY BRANCH BELOW CAN FORWARD IT.
+    // The session branch further down builds a fresh `Headers` and OVERWRITES
+    // x-user-role/-sites/-email from the verified token, so it was safe. The
+    // PUBLIC branch returned a bare `NextResponse.rewrite(target)` with no
+    // `headers` object at all — so on a public path the caller's OWN
+    // x-user-role / x-user-sites / x-user-email reached Express verbatim, and
+    // `userRank()` / `getSiteFilter()` in api/server.js trust those headers
+    // completely.
+    //
+    // Not exploitable as it stood, by accident: `PUBLIC_API` matches the PREFIX
+    // `maps\/public\/` with no method check, and the only thing that stopped an
+    // anonymous `POST /api/maps/public/toggle-...`-shaped call from arriving as
+    // super_admin was `app.param('id', …)` rejecting a non-numeric `:id` — a
+    // guard added for NaN 500s, not for this. Any new route under that prefix,
+    // or one keyed on `:uuid`, converts it into an unauthenticated admin write.
+    // It is ALSO already a real (if small) integrity problem: api/server.js
+    // writes `x-user-email`/`x-user-role` into the audit_log row, so an
+    // anonymous caller on a public path already chose the actor string recorded
+    // against it.
+    //
+    // Both siblings delete theirs before their public branch
+    // (logvault/frontend/src/proxy.ts, ddivault/frontend/src/middleware.ts).
+    // Stripping here, once, ahead of every branch, is the only shape that
+    // cannot be bypassed by a branch added later.
+    const stripped = stripClientIdentity(new Headers(req.headers));
 
     // Explicit, narrow allow-list of API routes that must work with no session:
     // public map viewers (/maps/public/:uuid page fetches its own data), the
@@ -71,9 +103,12 @@ export async function middleware(req: NextRequest) {
     // last-update-status returns commit hashes and raw updater error text —
     // real disclosure, bought for nothing. Their absence here is deliberate;
     // routes.md's `[public]` label on update-available was simply wrong.
-    const PUBLIC_API = /^\/api\/(maps\/public\/|health$|stats$|sso$|license-status$)/;
-    if (PUBLIC_API.test(pathname)) {
-      return NextResponse.rewrite(target);
+    // ⛔ The allow-list itself (and the METHOD restriction the `maps/public/:uuid`
+    // prefix needs, because it is the one entry that cannot be `$`-anchored)
+    // lives in lib/apiGate.ts — see isPublicApiPath there for the per-route
+    // reasoning, including why license-status MUST stay public.
+    if (isPublicApiPath(pathname, req.method)) {
+      return NextResponse.rewrite(target, { request: { headers: stripped } });
     }
 
     // Forward the authenticated user's role + assigned sites so the API can
@@ -91,7 +126,7 @@ export async function middleware(req: NextRequest) {
     if (!appAllowed((token as any).apps, 'spanvault')) {
       return NextResponse.json({ error: 'forbidden', reason: 'app_access_denied' }, { status: 403 });
     }
-    const headers = new Headers(req.headers);
+    const headers = stripped;
     headers.set('x-user-role', (token.role as string) || 'viewer');
     headers.set('x-user-sites', ((token.sites as number[]) || []).join(','));
     headers.set('x-user-email', (token.email as string) || (token.name as string) || 'unknown');

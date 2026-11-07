@@ -33,6 +33,157 @@ a replacement.
 - ⛔ **A site-less alert must fail CLOSED, and `OR <owner> IS NULL` is the trap that makes it fail OPEN.** An alert whose owner chain resolves to NULL (agent-scoped, `wireless_client_mac`-only, orphaned owner) is invisible AND unwritable to any site-scoped caller — `NULL = ANY(...)` is NULL, never TRUE — and only admin/super_admin can see or action it (80 of 41,139 rows today, none active). `/api/dashboard/alert-trend` took the other reading, `d.site_id = ANY($1) OR a.device_id IS NULL`, which reads like "include the ones with no device to attribute" and actually means "include EVERY other site's wireless/service/agent alerts" — the 99% case on this estate (8,554 rows returned to a site_admin vs 8,536 genuinely theirs, out of 8,630 estate-wide). Fixed; don't reintroduce the pattern anywhere.
 - `getSiteFilter(req)` reads `x-user-sites`/`x-user-role` headers set by the frontend proxy from the verified session — a `site_admin` is scoped, admin/viewer/missing headers get `null` (no filter). Enforced server-side in Express, not just client-side, so a site_admin can't bypass it by calling the API directly.
 
+## Site-scoping / disclosure sweep (1.115.9) — scan BY TABLE, not by URL prefix
+
+- ⛔ **THE PATTERN BEHIND ALL OF IT: a route whose URL PREFIX differs from the
+  resource family it logically belongs to.** `/api/devices` has a mount guard
+  (GUARD 1) covering its whole `:id` family, and `ADMIN_ONLY_WRITE` /
+  `getSiteFilter` are applied per prefix — so a device route that does not live
+  under `/api/devices` inherits nothing. Every finding in this sweep was that
+  shape: `/api/alert-rules/effective/:device_id` and
+  `/api/intelligence/device/:id` and `/api/intelligence/capacity?device_id=` and
+  `/api/dependencies/tree` are DEVICE routes; `/api/wireless/history/:ap_id` is
+  an AP route; `/api/agents/:id` returns a device list. **When auditing, group
+  routes by the TABLE they read, never by their URL prefix** — grep
+  `monitored_devices`, `service_checks`, `wireless_controllers`, `wireless_aps`,
+  `wireless_clients`, `sv_maps`, `alerts`, `incidents` and check EVERY hit.
+- ⛔ **404, NOT 403, for an out-of-scope row — the split was an enumeration
+  oracle.** The guards answered 403 "forbidden: X outside your assigned sites"
+  for out-of-scope while an absent id fell through to the route's own 404, which
+  read as deliberate (GUARD 1's comment even said so, on the grounds of not
+  duplicating the 404). That reasoning was about code shape, not about hiding
+  existence: walking `/api/devices/1..5000` mapped the exact device-id population
+  of the estate, and the same walk on `/api/wireless/clients/:mac` revealed
+  whether a MAC is present anywhere. Every out-of-scope branch now returns a body
+  BYTE-IDENTICAL to its own not-found branch, and for the `/api/devices/:id…`
+  family — the one that walk actually targets — the two branches share the frozen
+  `NOT_FOUND.device` OBJECT from `api/rbacScope.js`, so they cannot drift apart at
+  all. The other families still hold byte-identical literals: **if you touch one,
+  change both branches** (or move them onto `NOT_FOUND.*` too).
+  DDIVault (`/api/scopes/:scopeId/history`) and LogVault already did this.
+  **Deliberate exceptions, which stay 403:** `POST /api/reports/saved`,
+  `PUT /api/maps/:id/layout` and the `site_id` checks on `POST`/`PUT /api/devices`
+  validate values the caller SUPPLIED — they are not probes for existence.
+- ⛔ **`ADMIN_ONLY_WRITE` only covers mutating verbs, so "the page is admin-only"
+  protected nothing.** `/api/agents`, `/api/netvault/devices`,
+  `/api/notification-routes`, `/api/escalation-steps`, `/api/oncall-shifts` and
+  `GET /api/system/update-status` all had admin-gated UI and admin-gated writes
+  while every READ answered any authenticated session. `GET /api/agents/4`
+  returned the agent row plus every device it polls (name, ip_address, site_id,
+  site_name, current_status) and every service check, estate-wide — around the
+  `siteFilterClause` that `GET /api/devices` applies. Fixed with
+  `requireAdminRead` **MOUNT** guards (all methods), not per-route checks, so a
+  route added to a family later inherits the gate. ⛔ `/api/netvault/sites` is
+  deliberately NOT in that set — the devices/sites/services/reports/wireless
+  pages and `SiteScopeBanner` (which renders only FOR a site_admin) all fetch it,
+  so it is site-SCOPED instead. Don't "finish the job" by gating it.
+- ⛔ **`sv_maps` HAS NO `site_id`, so the maps family was a standing scope
+  bypass.** A site_admin could list every map in the estate (with node counts and
+  device ids), open one built for another site and read every node's
+  name/ip_address/live status, add any device id to it via
+  `PUT /api/maps/:id/layout`, flip it public, and fetch it **with no cookie at
+  all**. The model now: a map is in scope when EVERY entity-linked node resolves
+  to one of the caller's sites (`mapOutOfScopeSql`); decorative nodes are
+  ignored, an empty map is visible to everyone, a node with a NULL site fails
+  CLOSED via a `COALESCE(..., -1) <> ALL(...)` sentinel. `toggle-public` moved to
+  **admin rank** (`ADMIN_ONLY_WRITE`), and the layout route validates every
+  device/service id in the payload. Consequence to expect, not a bug: **an
+  estate-wide map is invisible to a site_admin.**
+- ⛔ **A SERVER-SIDE `fetch()` TARGET IS NOT A BROWSER LINK.** `resolveOrigin`
+  derives its host from the request on purpose (that is why it exists —
+  `NEXTAUTH_URL` is baked to the install-time IP), and that is correct for a
+  redirect or link. Handing the same value to `fetch()` made `/api/hub/settings`
+  and `POST /api/sso` an SSRF: both are in middleware's `PUBLIC_API`, i.e. **no
+  session required**, `Host`/`X-Forwarded-Host` are attacker-controlled on a
+  plain-HTTP install and on a TLS install whose terminator has no
+  `TLS_PUBLIC_HOST` pin (it echoes the client Host), and `HOSTNAME_RE` accepts
+  dotted IPv4 — so an anonymous caller could make this process fetch any host and
+  read the body back. The fetch sinks now go through `pickHubFetchOrigin`, which
+  honours the request-derived origin ONLY when its hostname is one this install
+  was configured with (`NOCVAULT_HUB_URL` / `NEXT_PUBLIC_…` / `SV_PUBLIC_URL` /
+  `NEXTAUTH_URL` / `TLS_PUBLIC_HOST` / `NOCVAULT_TRUSTED_HOSTS` / loopback) and
+  falls back to the configured hub otherwise. **Fix only the fetch sinks** — don't
+  "make resolveOrigin safe", that breaks the links it exists for. `getServerUrl`
+  is dead code (definition only) but has the same shape: if it is ever wired to a
+  fetch it inherits this exact bug.
+- ⛔ **An agent could write telemetry for devices it does not own.** Both
+  `api/ws-server.js` telemetry paths checked only that the device row EXISTED
+  (`SELECT 1 FROM monitored_devices WHERE id=$1`), never that it is ASSIGNED to
+  the connecting agent — and the single `snmp_result` case had no check at all,
+  relying on the FK. Any valid agent token could push `ping_results`/
+  `snmp_results` for any device in the estate, fabricating or suppressing alerts
+  for another site's hardware (the collector evaluates alerts from exactly those
+  rows). All three now carry `AND agent_id = <this agent>`, which is precisely the
+  set `pushConfigToAgent` hands the agent to poll. **Why this is safe under
+  accept-both auth and a re-link:** `agent.id` is always the LOCAL `agents` row id
+  for api_key and hub-JWT rows alike, `tryLinkAgentByHostname()` re-keys the live
+  connection onto the MERGED row (the row `monitored_devices.agent_id` already
+  points at), and before the link lands the provisional row owns no devices so
+  `pushConfigToAgent` sends it an EMPTY list — and the link runs on the FIRST
+  heartbeat, which `netvault/agent/core/transport.js` sends BEFORE the buffered
+  batch flush ("ORDER MATTERS"). So there is no window where a legitimately
+  re-linked agent has telemetry to drop. A device moved OFF the agent is dropped,
+  the same decision already taken for a deleted device, and logged once per
+  agent+device rather than on every poll.
+- **The agent WebSocket had no `maxPayload`.** Now 32 MiB
+  (`SV_WS_MAX_PAYLOAD_MB`), sized against the largest legitimate frame: the
+  reconnect flush `{type:'batch', results:[…]}`, whose agent-side buffer is capped
+  at 500 items (`createBuffer({max:500})`), at a deliberately pessimistic ~64 KB
+  per item. ⛔ Pass it on EVERY `WebSocketServer` branch — the last defect in
+  `startWsServer` was an ASYMMETRY between the TLS and plain branches, not a
+  missing line. Getting the value wrong is loud, not silent: `ws` closes an
+  oversize frame with 1009.
+- ⛔ **`middleware.ts`'s public branch forwarded the caller's own `x-user-*`
+  headers.** The session branch builds a fresh `Headers` and overwrites all three
+  from the verified token, so it was safe; the public branch returned a bare
+  `NextResponse.rewrite(target)` with no `headers` object, so on a public path the
+  caller's own `x-user-role`/`-sites`/`-email` reached Express verbatim — and
+  `userRank()`/`getSiteFilter()` trust them completely. Not exploitable as it
+  stood only by accident: `PUBLIC_API` matched the bare PREFIX `maps\/public\/`
+  with no method check, and the only thing stopping an anonymous admin write was
+  `app.param('id')` rejecting a non-numeric id — a guard added for NaN 500s. It
+  WAS already an integrity problem: `api/server.js` wrote the caller's chosen
+  `x-user-email`/`x-user-role` into the `audit_log` row. Stripping now happens
+  ONCE, ahead of every branch (`stripClientIdentity`), and the `maps/public`
+  entry is GET/HEAD-only and matches a single path segment. Both siblings already
+  stripped theirs (`logvault/frontend/src/proxy.ts`,
+  `ddivault/frontend/src/middleware.ts`).
+- ⛔ **A SECOND, ungated error middleware was registered at the bottom of
+  `api/server.js`.** It returned `err.message` with no `PROD` gate and was dead
+  only because the first handler never calls `next(err)` — so a reorder, or
+  someone "tidying" the first into delegating, would have turned every 500 in the
+  app into a message leak with nothing failing. There is now exactly ONE handler
+  (method/path/stack to the log, PROD-gated body). Do not add a second.
+  Separately, `GET /api/reports/executive` has its OWN try/catch so it bypasses
+  that handler entirely and was returning `err.message` to any authenticated
+  viewer; it is PROD-gated now too.
+- **`POST /api/reports/saved/:id/run-now` leaked SMTP configuration twice over.**
+  nodemailer's `err.message` routinely embeds the host, port, configured username
+  and the server's verbatim auth rejection, and it went BOTH to the caller
+  (rank >= 1) and into `report_history.error`, which
+  `GET /api/reports/saved/:id/history` hands back — a table with no readonly-role
+  protection. Only `mailErrorSummary(e)` (the `code`/`responseCode`) leaves the
+  process now. Same family: `POST /api/system/update` was returning schtasks'
+  echo of the whole command line (install path + `SERVER_IP`).
+- **Found by the by-table sweep, NOT reported:** `GET /api/maintenance` was
+  unscoped while its sibling `/api/dashboard/maintenance` (same two tables) was
+  scoped; `POST /api/devices` and `PUT /api/devices/:id` accepted any `site_id`,
+  so a site_admin could create or park a device in a site they cannot see — GUARD
+  1 is a READ guard and resolves the site from the STORED row, so it structurally
+  cannot see a payload that supplies the site itself (hence `siteWritable`).
+- **The four `/api/wireless/debug*` routes hand-roll their admin check**
+  (`req.headers['x-user-role'] !== 'admin' && … 'super_admin'`) instead of using
+  `userRank`/`requireAdminRead`. They are correctly gated — a consistency nit, not
+  a hole — but a grep for `userRank` will NOT find them. Keep that in mind when
+  auditing role gates.
+- **Testing:** `npm run test:rbac` (`tests/test-rbac-scoping.js`) covers the
+  predicates, the 404 convention (GUARD 1 driven for real with a stubbed
+  `query`), the maps model, the agent-ownership SQL, the WS frame cap, the header
+  stripping / public allow-list, the SSRF allow-list and the mail-error summary.
+  ⛔ It runs no queries, so whether a scoped SQL fragment selects the right ROWS
+  still needs the live DB. Every check in it was verified to FAIL against the
+  pre-fix behaviour by mutation.
+
 ## Distributed polling agents (Phase 3 hub-JWT + duplicate-row fix)
 - `api/ws-server.js`'s agent WS auth is accept-both: a hub-signed JWT (`Authorization: Bearer <jwt>`, verified locally against `NEXTAUTH_SECRET` via `agent-identity.js`, cross-checked against NetVault's `agents.revoked_at` for live revocation) is tried first; on any failure it falls through to the legacy `api_key` DB lookup completely unchanged. `agents.hub_agent_id` (TEXT UNIQUE, nullable) marks a hub-enrolled row; `agents.api_key` is nullable since Phase 3 (JWT-provisioned rows have none). See CLAUDE.md's "Phase 3/4a — hub-JWT agents" section for the full model.
 - A JWT-authenticated connection with no matching `hub_agent_id` row auto-provisions one at connect time (`INSERT ... ON CONFLICT (hub_agent_id) DO UPDATE`) — this is UNAVOIDABLY blind at that point, because the JWT carries no hostname (the hub mints it before it has ever seen the agent) and config must be pushed immediately on connect. Without the fix below, migrating an EXISTING api_key agent to hub-JWT mode (config swap + restart) stranded its old row (history/site-assignment orphaned) and auto-provisioned a second, empty one — exactly the risk `netvault/docs/nocvault-agents-phase3-plan.md`'s own "duplicate row" section warned about and that shipped unfixed initially.
@@ -127,7 +278,7 @@ Live-verified 2026-09-22 against two production engines on firmware 7.1.11 (EU-D
 - `api/reportScheduler.js`'s `runAndEmailReport` never uses nodemailer's `raw` option — load-bearing for the deferred nodemailer v6->v9 security-debt decision in CLAUDE.md (the v6 CVE requires the `raw` option to be reachable).
 
 ## Testing
-- `tests/` is OFFLINE UNIT TESTS ONLY (parsers, plus the one SSO-auth suite below) — no framework (plain Node scripts, `spawnSync` per suite), no network, no DB. Run via `node tests/run-parser-tests.js` or `npm run test:parsers`; exits non-zero on any failure (CI-gateable). Covers `collector/wireless/*` vendor SNMP parsers (Aruba, Cisco, Ruckus, Mikrotik, HPE, Fortinet, Grandstream) against synthetic MIB-shaped walk data, plus `collector/parsers/forcepoint.js` (`test-forcepoint-parser.js` — the first suite for a non-wireless vendor parser; its expected values are the measured live readings, and it feeds Counter64 columns as Buffers deliberately). Run this after ANY change to `collector/wireless/*`, `collector/parsers/*` or `collector/snmp-session.js`. **Non-parser suite: `tests/test-sso-authorize.js`** (`npm run test:auth`) — the SSO privilege-escalation regression tests for `frontend/src/lib/auth.ts`. It is deliberately NOT in `run-parser-tests.js` (that runner is parser-only) and it transpiles the TS module on the fly with the frontend's own `typescript` into `frontend/node_modules/.cache/` (never into `src/`, so `next build` cannot see it), injecting `authorizeSsoToken`'s `deps.query` to stub the NetVault DB — no framework, no network, no DB, no new dependency.
+- `tests/` is OFFLINE UNIT TESTS ONLY (parsers, plus the one SSO-auth suite below) — no framework (plain Node scripts, `spawnSync` per suite), no network, no DB. Run via `node tests/run-parser-tests.js` or `npm run test:parsers`; exits non-zero on any failure (CI-gateable). Covers `collector/wireless/*` vendor SNMP parsers (Aruba, Cisco, Ruckus, Mikrotik, HPE, Fortinet, Grandstream) against synthetic MIB-shaped walk data, plus `collector/parsers/forcepoint.js` (`test-forcepoint-parser.js` — the first suite for a non-wireless vendor parser; its expected values are the measured live readings, and it feeds Counter64 columns as Buffers deliberately). Run this after ANY change to `collector/wireless/*`, `collector/parsers/*` or `collector/snmp-session.js`. **Non-parser suites (two now): `tests/test-sso-authorize.js`** (`npm run test:auth`) — the SSO privilege-escalation regression tests for `frontend/src/lib/auth.ts`. It is deliberately NOT in `run-parser-tests.js` (that runner is parser-only) and it transpiles the TS module on the fly with the frontend's own `typescript` into `frontend/node_modules/.cache/` (never into `src/`, so `next build` cannot see it), injecting `authorizeSsoToken`'s `deps.query` to stub the NetVault DB — no framework, no network, no DB, no new dependency. **And `tests/test-rbac-scoping.js`** (`npm run test:rbac`) — the 1.115.9 site-scoping/disclosure regression suite: the scoping predicates in `api/rbacScope.js`, the 404-not-403 convention (GUARD 1 driven for real against a stubbed `query`), the derived maps scope model, the agent-ownership SQL in `api/ws-server.js` (`__testables`, exported for this only), the WS frame cap (spawned per-case, since it is read at module load), the header stripping + public allow-list in `frontend/src/lib/apiGate.ts` (transpiled the same way `test-sso-authorize.js` does it), the SSRF allow-list and the mail-error summary. Also deliberately NOT in `run-parser-tests.js`. ⛔ It runs no queries, so whether a scoped SQL fragment selects the right ROWS still needs the live DB — and the ws SQL checks assert the exported statement strings, so they catch the predicate being weakened but not a handler that stops using the constant.
 - Playwright is NOT a project dependency (not in package.json, no config file anywhere in the repo) despite commit messages referencing "confirmed live via a Playwright screenshot" — those refer to AD HOC manual UI verification during development sessions (e.g. an MCP browser tool), not a checked-in test suite. Don't go looking for a `playwright.config.ts` or `e2e/` directory; there isn't one.
 
 ## Updater / deployment resilience

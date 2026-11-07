@@ -28,6 +28,14 @@ const intelligence = require('./intelligence');
 const { getLicense, getLicenseState } = require('./licenseCheck');
 const reportScheduler = require('./reportScheduler');
 const { generateReportPdf, hasPdfRenderer } = require('./reportsPdf');
+// The PURE half of RBAC site scoping, extracted so it can actually be tested —
+// api/server.js itself cannot be required by a test (two pools + a bound WS
+// port). See api/rbacScope.js's header and tests/test-rbac-scoping.js.
+const {
+  ROLE_RANK, userRank, getSiteFilter, siteFilterClause, rowInScope, siteWritable,
+  mapOutOfScopeSql, collectLayoutEntityIds, mailErrorSummary, pickHubFetchOrigin,
+  NOT_FOUND, makeDeviceScopeGuard,
+} = require('./rbacScope');
 
 // App version — single source of truth is the root package.json.
 const { version } = require('../package.json');
@@ -36,6 +44,13 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.115.9': [
+    "Security: sharing a network map publicly is now an administrator action, and maps are limited to the sites you are assigned to. Previously a site administrator could list every map in the estate, publish one built for a site they have no access to, and then read its devices, addresses and live status with no sign-in at all. Note the consequence: a map that spans sites you are not assigned to is no longer listed for you.",
+    "Security: wireless controller and access-point views, agent views, the dependency tree, maintenance windows, capacity and threshold recommendations, and the dashboard incident feed now all respect your site assignments. Each had a sibling view beside it that always did.",
+    "Security: agent management views and the notification, escalation and on-call settings now require an administrator. The navigation already hid them, but the data behind them was readable by any signed-in user.",
+    "Security: creating or moving a monitored device into a site you are not assigned to is now refused, and a remote agent can no longer submit monitoring results for equipment it does not poll.",
+    "A record outside your assigned sites now answers exactly as one that does not exist, so other sites' record identifiers can no longer be discovered by trying them in turn. Error messages no longer carry mail-server or installation detail.",
+  ],
   '1.115.8': [
     "Security: the sign-in step accepted the role that was sent with the request, which meant anyone able to present any token signed with the suite's shared secret - including the token held by every remote polling agent - could ask for, and be given, full administrator access. A user's role, name and identity now come from the NocVault user record and from the signed token's own verified contents only; nothing sent alongside the request is trusted.",
     "Security: a sign-in token is now checked to be a sign-on token issued for this app specifically. A token issued for a sibling app, or an agent's own token, is refused instead of being accepted as a login.",
@@ -1685,7 +1700,8 @@ app.use(enforceLicense);
 // spoofable). viewer = read-only (blocked from all mutations); site_admin can do
 // operational writes (devices, acks, maps, reports); admin/super_admin can also
 // change configuration/infrastructure (settings, rules, agents, controllers, …).
-const ROLE_RANK = { viewer: 0, site_admin: 1, admin: 2, super_admin: 3 };
+// ROLE_RANK / userRank live in ./rbacScope (pure + tested); the route list below
+// stays here because it is about THIS file's routes.
 const ADMIN_ONLY_WRITE = [
   /^\/api\/settings$/, /^\/api\/system\//,
   /^\/api\/agents(\/|$)/, /^\/api\/alert-rules(\/|$)/,
@@ -1693,11 +1709,13 @@ const ADMIN_ONLY_WRITE = [
   /^\/api\/oncall-shifts(\/|$)/, /^\/api\/maintenance(\/|$)/,
   /^\/api\/service-checks(\/|$)/, /^\/api\/wireless\/controllers(\/|$)/,
   /^\/api\/topology\//, /^\/api\/intelligence\//,
+  // ⛔ Publishing a map to the UNAUTHENTICATED /api/maps/public/:uuid view is an
+  // estate-wide disclosure decision, not an operational edit. `sv_maps` has no
+  // site_id, so a site_admin scoped to one site could list every map, flip one
+  // built for another site public, and then read every node's name, ip_address
+  // and live current_status with no cookie at all. Admin rank only.
+  /^\/api\/maps\/\d+\/toggle-public$/,
 ];
-function userRank(req) {
-  const role = req.headers['x-user-role'] || 'viewer';
-  return ROLE_RANK[role] != null ? ROLE_RANK[role] : 0;
-}
 // POST /api/sso is the one deliberately-unauthenticated write: it's the means
 // by which a session gets created in the first place (see middleware.ts's
 // PUBLIC_API allowlist), so it never carries an x-user-role header and must
@@ -1894,28 +1912,71 @@ function resolveOrigin(req, port, legacyFallback) {
   return legacyFallback;
 }
 
+// ⛔ A SERVER-SIDE FETCH TARGET IS NOT A BROWSER LINK — keep these separate.
+// `resolveOrigin` above deliberately derives its host from the REQUEST, which is
+// right for a redirect or link the browser follows (NEXTAUTH_URL is baked to the
+// install-time IP, so a customer reaching the suite by their own DNS name needs
+// the link to follow that name). Handing the SAME value to a server-side
+// `fetch()` is an SSRF primitive instead: `Host`/`X-Forwarded-Host` are
+// attacker-controlled on a plain-HTTP install AND on a TLS install whose
+// terminator has no `TLS_PUBLIC_HOST` pin (it then echoes the client Host),
+// HOSTNAME_RE happily accepts dotted IPv4, and BOTH fetch sinks here
+// (`GET /api/hub/settings`, `POST /api/sso`) are in middleware's `PUBLIC_API` —
+// so an UNAUTHENTICATED caller could make this process fetch an arbitrary host
+// and read the response body back out. Worst instance in the suite.
+//
+// The legitimate behaviour is preserved: the request-derived origin is still
+// used for the fetch, but ONLY when its hostname is one this install has been
+// configured with. Anything else falls back to the configured hub URL, so a
+// spoofed Host can never point the fetch off-box. Set NOCVAULT_TRUSTED_HOSTS
+// (comma-separated) if the suite is reached by a name none of the other vars
+// already carry.
+// NOTE: `getServerUrl` below has the same request-derived shape. It is dead code
+// (definition only, no call site) and is left alone, but if it is ever wired up
+// to a fetch rather than a link, it inherits this exact problem.
+// The allow-list decision itself is pure and lives in ./rbacScope
+// (pickHubFetchOrigin) so it can be tested against a spoofed Host without a
+// server. This wrapper only supplies the request-derived candidate and env.
+function resolveHubFetchOrigin(req) {
+  return pickHubFetchOrigin(process.env, resolveOrigin(req, 3000, null));
+}
+
 // ── RBAC site scoping ─────────────────────────────────────────
 // The frontend middleware sets x-user-role / x-user-sites headers from the
 // session when proxying /api/* calls. A site_admin is scoped to their assigned
 // sites; admin/viewer (and missing headers) get null = no filter. Filtering is
 // enforced here, server-side, so a site_admin cannot bypass it by calling the
 // API directly.
-function getSiteFilter(req) {
-  const sites = req.headers['x-user-sites'];
-  const role = req.headers['x-user-role'];
-  if (role === 'site_admin' && sites) {
-    const siteIds = String(sites).split(',').map(Number).filter(Boolean);
-    return siteIds.length > 0 ? siteIds : null;
-  }
-  return null; // no filter for admin/viewer
+// getSiteFilter / siteFilterClause / rowInScope / siteWritable are defined in
+// ./rbacScope and imported at the top of this file. They are PURE (headers in,
+// SQL fragment or boolean out) and are covered by tests/test-rbac-scoping.js.
+// Do not re-declare a local copy here.
+
+// Guard for a device WRITE that names a site: a site-scoped caller may only
+// create or move a device inside their own sites. GUARD 1 below is a READ guard
+// (it resolves the site from the STORED row), so it cannot see a payload that
+// supplies the site itself. `null`/absent fails closed for a scoped caller —
+// a device with no site belongs to no site, same rule as everywhere else.
+// True when the caller may see this device id. Returns false for BOTH "no such
+// device" and "out of scope" ON PURPOSE: every caller answers the same 404
+// either way, so an out-of-scope probe is indistinguishable from a miss (see
+// the 404-convention note on GUARD 1 in the device-routes section).
+async function deviceVisible(req, deviceId) {
+  const r = await sv.query('SELECT site_id FROM monitored_devices WHERE id = $1', [deviceId]);
+  if (!r.rows[0]) return false;
+  return rowInScope(getSiteFilter(req), r.rows[0].site_id);
 }
 
-// Push a site filter onto `params` and return the SQL clause (or null when the
-// user is unscoped). `col` is the site_id column reference, e.g. 'd.site_id'.
-function siteFilterClause(siteFilter, params, col) {
-  if (!siteFilter || !siteFilter.length) return null;
-  params.push(siteFilter);
-  return `${col} = ANY($${params.length}::int[])`;
+// Read-side admin gate. `ADMIN_ONLY_WRITE` above only covers POST/PUT/PATCH/
+// DELETE, so a family whose PAGE is admin-gated in the UI (Agents, the
+// "Import from NetVault" dialog) still answered every GET to any authenticated
+// session — the "page guarded, API wide open" failure mode CLAUDE.md names as
+// recurring. Used as a MOUNT guard, not per-route, for the same reason GUARD 1
+// is: a route added to the family later inherits it instead of being the one
+// that got missed.
+function requireAdminRead(req, res, next) {
+  if (userRank(req) < 2) return res.status(403).json({ error: 'This action requires an admin role.' });
+  next();
 }
 
 // Device-scope filter for report queries (monitored_devices aliased as d).
@@ -2059,7 +2120,14 @@ async function remotePackageVersion(fallback) {
 // (checked over git transport). ANY differing commit counts as an update
 // available — package.json version is for display only. Never 500s the Settings
 // page — a check failure degrades to "up to date" with an error string.
-app.get('/api/system/update-status', wrap(async (_req, res) => {
+// Admin-rank READ gate. `POST /api/system/update` is already rank >= 2 via
+// ADMIN_ONLY_WRITE's /^\/api\/system\//, but the GET had no role gate at all,
+// so any authenticated viewer could read the deployed commit hash, the upstream
+// commit hash and the release notes. Its only consumer is the Settings page,
+// which is already `canManageSettings` (admin|super_admin) — so this aligns the
+// API with both the write side and the UI. See the report for why the POST was
+// NOT raised to super_admin to match LogVault/DDIVault.
+app.get('/api/system/update-status', requireAdminRead, wrap(async (_req, res) => {
   const localVersion = version;
   const localHash = await localCommitHash();
   try {
@@ -2284,7 +2352,9 @@ app.post('/api/system/update', wrap(async (_req, res) => {
     res.json({ started: true });
   } catch (err) {
     console.error('[Update] schtasks error:', err.message);
-    res.status(500).json({ error: 'Failed to schedule update: ' + err.message });
+    // err.message is schtasks' echo of the whole command line — the install
+    // path and SERVER_IP. Keep it in the log, not in the response.
+    res.status(500).json({ error: 'Failed to schedule the update task — see the API log for detail.' });
   }
 }));
 
@@ -2311,7 +2381,7 @@ app.get('/api/collector/status', wrap(async (_req, res) => {
 // Proxy the NocVault hub's settings server-side so the browser doesn't make a
 // cross-origin (CORS-blocked) request to the hub. Used by the idle-timeout UI.
 app.get('/api/hub/settings', wrap(async (req, res) => {
-  const hub = resolveOrigin(req, 3000, process.env.NOCVAULT_HUB_URL || 'http://localhost:3000').replace(/\/+$/, '');
+  const hub = resolveHubFetchOrigin(req); // allow-listed host only — see resolveHubFetchOrigin
   try {
     const r = await fetch(`${hub}/api/settings`, { headers: { Accept: 'application/json' } });
     if (!r.ok) return res.status(502).json({ error: `Hub returned ${r.status}` });
@@ -2327,7 +2397,7 @@ app.get('/api/hub/settings', wrap(async (req, res) => {
 // which a session gets created in the first place, so it must be reachable
 // with NO existing session (see PUBLIC_API in middleware.ts).
 app.post('/api/sso', wrap(async (req, res) => {
-  const hub = resolveOrigin(req, 3000, process.env.NOCVAULT_HUB_URL || 'http://localhost:3000').replace(/\/+$/, '');
+  const hub = resolveHubFetchOrigin(req); // allow-listed host only — see resolveHubFetchOrigin
   const token = req.body && req.body.token;
   if (!token) return res.status(400).json({ error: 'No token provided' });
   try {
@@ -2411,17 +2481,23 @@ app.get('/api/dashboard/summary', wrap(async (req, res) => {
 }));
 
 // Devices unreachable because their polling agent is offline, grouped by agent.
-app.get('/api/dashboard/agent-offline', wrap(async (_req, res) => {
+// RBAC: counts only, so the lowest-value of the dashboard gaps — but an agent
+// whose devices are ALL in other sites should not appear here at all for a
+// site_admin, and the count must reflect only their own devices.
+app.get('/api/dashboard/agent-offline', wrap(async (req, res) => {
+  const aoP = [];
+  const aoSc = siteFilterClause(getSiteFilter(req), aoP, 'd.site_id');
   const r = await sv.query(`
     SELECT a.id AS agent_id, a.name AS agent_name, a.hostname, a.last_seen_at,
            COUNT(d.*)::int AS device_count
     FROM agents a
     JOIN monitored_devices d ON d.agent_id = a.id AND d.active = TRUE
+      ${aoSc ? `AND ${aoSc}` : ''}
     WHERE a.status = 'offline'
     GROUP BY a.id, a.name, a.hostname, a.last_seen_at
     HAVING COUNT(d.*) > 0
     ORDER BY a.name
-  `);
+  `, aoP);
   res.json(r.rows);
 }));
 
@@ -2939,19 +3015,28 @@ app.get('/api/dashboard/ops-summary', wrap(async (req, res) => {
 }));
 
 // ── Open incidents (latest 10) with root-cause device name ──
-app.get('/api/dashboard/incidents', wrap(async (_req, res) => {
+// ⛔ RBAC: this was the ONLY unscoped route among the 18 /api/dashboard/* ones.
+// Scoped with the same EXISTS-over-the-incident's-alerts predicate
+// /api/intelligence/incidents uses on the same table, so the two agree.
+app.get('/api/dashboard/incidents', wrap(async (req, res) => {
   const caps = await getAlertCaps();
   if (!caps.has_incidents) return res.json([]);
   try {
+    const incP = [];
+    const incSc = siteFilterClause(getSiteFilter(req), incP, 'd3.site_id');
     const r = await sv.query(`
       SELECT i.id, i.title, i.affected_count, i.severity, i.started_at,
              i.root_cause_device_id, d.name AS root_cause_device_name
       FROM incidents i
       LEFT JOIN monitored_devices d ON d.id = i.root_cause_device_id
       WHERE i.status = 'active'
+      ${incSc ? `AND EXISTS (
+        SELECT 1 FROM alerts a3 JOIN monitored_devices d3 ON d3.id = a3.device_id
+         WHERE a3.incident_id = i.id AND ${incSc}
+      )` : ''}
       ORDER BY i.started_at DESC
       LIMIT 10
-    `);
+    `, incP);
     res.json(r.rows);
   } catch (_e) {
     res.json([]);
@@ -3286,27 +3371,26 @@ async function netvaultInventory() {
 //   • `getSiteFilter` returns null for admin/super_admin/viewer, and the guard
 //     returns before touching the DB in that case — no added query for the
 //     common path.
-//   • A device the caller cannot see, and a device that does not exist, are
-//     handled differently on purpose: a missing row calls next() so the route
-//     answers its own 404, matching the two earlier fixes.
+//   • A device the caller cannot see and a device that does not exist now answer
+//     IDENTICALLY — 404 `{error:'Device not found'}`. The earlier split (403
+//     here, the route's own 404 for an absent row) read as deliberate and was a
+//     working enumeration oracle: walking /api/devices/1..5000 mapped the exact
+//     device-id population of the estate, because the two answers differed. The
+//     original reasoning — "let the route answer its own 404" — was about not
+//     duplicating the 404, not about hiding existence, so it does not defeat the
+//     enumeration point. A missing row still falls through to next(); the
+//     out-of-scope branch just returns the same body. DDIVault
+//     (`/api/scopes/:scopeId/history`) and LogVault already do exactly this.
 //   • A device with a NULL site_id belongs to no site, so it is out of scope for
 //     a site_admin — the same semantics as `siteFilterClause` on the list route,
 //     where `site_id = ANY(...)` already excludes NULL.
 // This must stay registered ABOVE every `/api/devices…` route below it.
-app.use('/api/devices', wrap(async (req, res, next) => {
-  const m = /^\/(\d+)(\/|$)/.exec(req.path);
-  if (!m) return next();
-  const siteFilter = getSiteFilter(req);
-  if (!siteFilter || !siteFilter.length) return next();
-  const id = parseInt(m[1], 10);
-  if (!Number.isFinite(id)) return next();
-  const r = await sv.query('SELECT site_id FROM monitored_devices WHERE id = $1', [id]);
-  if (!r.rows[0]) return next();
-  if (!siteFilter.includes(r.rows[0].site_id)) {
-    return res.status(403).json({ error: 'forbidden: device outside your assigned sites' });
-  }
-  return next();
-}));
+//
+// The guard's BODY lives in ./rbacScope as `makeDeviceScopeGuard(query)` — a
+// factory taking an injected `query` — purely so tests/test-rbac-scoping.js can
+// drive it (out-of-scope id -> 404 with the exact body an absent id produces)
+// without a live Postgres. This file cannot be required by a test at all.
+app.use('/api/devices', wrap(makeDeviceScopeGuard((sql, params) => sv.query(sql, params))));
 
 // ⛔ GUARD 2 — SNMP credentials must never leave the API in a device row.
 //
@@ -3682,7 +3766,9 @@ app.get('/api/devices/:id', wrap(async (req, res) => {
     `SELECT ${DEVICE_PUBLIC_COLUMNS},
             snmp_community, snmp_v3_auth_pass, snmp_v3_priv_pass
        FROM monitored_devices WHERE id = $1`, [id]);
-  if (!r.rows[0]) return res.status(404).json({ error: 'Device not found' });
+  // NOT_FOUND.device, not a fresh literal: GUARD 1's out-of-scope branch returns
+  // this very object, so the two answers cannot drift apart (see rbacScope.js).
+  if (!r.rows[0]) return res.status(404).json(NOT_FOUND.device);
   // The three secret columns are selected only so publicDevice() can turn them
   // into has_* booleans + the round-trip mask; it strips the values themselves.
   res.json(publicDevice(r.rows[0], req));
@@ -3691,6 +3777,9 @@ app.get('/api/devices/:id', wrap(async (req, res) => {
 app.post('/api/devices', wrap(async (req, res) => {
   const b = req.body || {};
   if (!b.name || !b.ip_address) return res.status(400).json({ error: 'name and ip_address are required' });
+  if (!siteWritable(req, b.site_id)) {
+    return res.status(403).json({ error: 'forbidden: site outside your assigned sites' });
+  }
   const r = await sv.query(`
     INSERT INTO monitored_devices
       (name, ip_address, device_type, site_id, site_name,
@@ -3725,6 +3814,12 @@ app.put('/api/devices/:id', wrap(async (req, res) => {
     'snmp_community','snmp_port','snmp_v3_user','snmp_v3_auth_pass','snmp_v3_priv_pass',
     'poll_interval_seconds','ping_threshold_ms','ping_failures_before_down','active',
   ];
+  // Moving a device BETWEEN sites is a write that names a site, so it needs the
+  // payload-side check too — GUARD 1 only proved the caller may touch the device
+  // as it stands, not that they may park it somewhere they cannot see.
+  if (b.site_id !== undefined && !siteWritable(req, b.site_id)) {
+    return res.status(403).json({ error: 'forbidden: site outside your assigned sites' });
+  }
   const sets = [];
   const params = [];
   for (const key of allowed) {
@@ -4080,22 +4175,36 @@ app.post('/api/devices/:id/dependencies', wrap(async (req, res) => {
 }));
 
 // Full dependency tree (flat array with depth + parent_device_id).
-app.get('/api/dependencies/tree', wrap(async (_req, res) => {
+// ⛔ RBAC: a DEVICE route under the /api/dependencies prefix, so GUARD 1 on
+// /api/devices never saw it, while its per-device sibling
+// GET /api/devices/:id/dependencies IS covered. It returned name, ip_address,
+// site_name and current_status for every active device in the estate.
+// BOTH branches of the recursive CTE are filtered: scoping only the anchor
+// would still let a child in another site ride in through the recursion.
+app.get('/api/dependencies/tree', wrap(async (req, res) => {
+  const dtP = [];
+  // Two calls on one params array: the anchor and the recursive branch use
+  // different table aliases, so each gets its own clause (and its own bind of
+  // the same array — cheaper than hand-rolling a second predicate shape).
+  const dtScAnchor = siteFilterClause(getSiteFilter(req), dtP, 'md.site_id');
+  const dtScChild  = siteFilterClause(getSiteFilter(req), dtP, 'd.site_id');
   const r = await sv.query(`
     WITH RECURSIVE dep_tree AS (
-      SELECT id, name, ip_address, site_name, current_status, alert_suppressed,
+      SELECT md.id, md.name, md.ip_address, md.site_name, md.current_status, md.alert_suppressed,
              NULL::integer AS parent_device_id, 0 AS depth
-      FROM monitored_devices
-      WHERE id NOT IN (SELECT child_device_id FROM device_dependencies) AND active = TRUE
+      FROM monitored_devices md
+      WHERE md.id NOT IN (SELECT child_device_id FROM device_dependencies) AND md.active = TRUE
+        ${dtScAnchor ? `AND ${dtScAnchor}` : ''}
       UNION ALL
       SELECT d.id, d.name, d.ip_address, d.site_name, d.current_status, d.alert_suppressed,
              dd.parent_device_id, dt.depth + 1
       FROM monitored_devices d
       JOIN device_dependencies dd ON dd.child_device_id = d.id
       JOIN dep_tree dt ON dt.id = dd.parent_device_id
+      ${dtScChild ? `WHERE ${dtScChild}` : ''}
     )
     SELECT * FROM dep_tree ORDER BY depth, parent_device_id, name
-  `);
+  `, dtP);
   res.json(r.rows);
 }));
 
@@ -4366,13 +4475,31 @@ app.post('/api/snmp-test-adhoc', wrap(async (req, res) => {
 // ══════════════════════════════════════════════════════════════
 // NetVault integration (read-only source)
 // ══════════════════════════════════════════════════════════════
+// ⛔ GUARD — /api/netvault/devices + /api/netvault/import are admin-only READS
+// AND writes. They answer straight off NetVault's own `nv` pool, so an
+// unscoped read here bypasses NetVault's RBAC entirely (SpanVault's session is
+// not NetVault's). The only UI path to both is the "Import from NetVault"
+// dialog, which is already `canEdit` (admin|super_admin) in
+// app/(app)/devices/page.tsx — so this aligns the API with the UI rather than
+// restricting anything a user can reach today.
+// ⛔ /api/netvault/sites is DELIBERATELY NOT in this guard. It is fetched by the
+// devices, sites, services, reports and wireless pages and by SiteScopeBanner
+// (which only renders FOR a site_admin), so admin-gating it would break the
+// site pickers for every non-admin role. It is site-SCOPED instead, below.
+app.use('/api/netvault/devices', requireAdminRead);
+app.use('/api/netvault/import', requireAdminRead);
+
 // Devices in NetVault that are NOT yet monitored
-app.get('/api/netvault/devices', wrap(async (_req, res) => {
+app.get('/api/netvault/devices', wrap(async (req, res) => {
   const monitored = await sv.query(`SELECT netvault_device_id FROM monitored_devices WHERE netvault_device_id IS NOT NULL`);
   // Compare as strings on both sides: netvault_device_id is TEXT here and the
   // NetVault id is cast to text below, so a SERIAL-variant id that once arrived
   // as a JS number can never miss a match against its own text form.
   const existing = new Set(monitored.rows.map((r) => String(r.netvault_device_id)));
+  // Site-scoped as well as admin-gated: belt and braces, and it keeps the
+  // import list honest if the admin gate above is ever relaxed.
+  const nvdParams = [];
+  const nvdSc = siteFilterClause(getSiteFilter(req), nvdParams, 'd.site_id');
   // netvault.devices.ip_address is `character varying`, not `inet` — see the
   // matching comment in collector/collector.js's syncNetVaultDevices() for
   // how this was confirmed. No host(...) cast needed.
@@ -4388,8 +4515,9 @@ app.get('/api/netvault/devices', wrap(async (_req, res) => {
     LEFT JOIN sites s ON s.id = d.site_id
     WHERE d.ip_address IS NOT NULL
       AND COALESCE(d.device_status, 'Active') <> 'Decommed'
+      ${nvdSc ? `AND ${nvdSc}` : ''}
     ORDER BY s.name NULLS LAST, d.name
-  `);
+  `, nvdParams);
   res.json(r.rows.filter((row) => !existing.has(String(row.netvault_device_id))));
 }));
 
@@ -4433,20 +4561,46 @@ app.post('/api/netvault/import', wrap(async (req, res) => {
   res.json({ imported, requested: ids.length });
 }));
 
-// Sites from NetVault (for map + filters)
-app.get('/api/netvault/sites', wrap(async (_req, res) => {
+// Sites from NetVault (for map + filters). Site-scoped: a site_admin's pickers
+// and SiteScopeBanner only ever need their OWN sites, and the full roster of
+// every site/code/city in the estate is inventory they should not have.
+app.get('/api/netvault/sites', wrap(async (req, res) => {
+  const nvsParams = [];
+  const nvsSc = siteFilterClause(getSiteFilter(req), nvsParams, 'id');
   const r = await nv.query(`
     SELECT id, name, code, city
     FROM sites
     WHERE COALESCE(site_status, 'Active') = 'Active'
+      ${nvsSc ? `AND ${nvsSc}` : ''}
     ORDER BY name
-  `);
+  `, nvsParams);
   res.json(r.rows);
 }));
 
 // ══════════════════════════════════════════════════════════════
 // Distributed polling agents
 // ══════════════════════════════════════════════════════════════
+// ⛔ GUARD — admin rank for the WHOLE /api/agents family, reads included.
+//
+// Every /api/agents WRITE was already rank-2 via ADMIN_ONLY_WRITE and the nav
+// item is `canManageAgents` (admin|super_admin) in Sidebar.tsx — but the READS
+// carried no role gate and no site filter, which is exactly the recurring
+// failure mode CLAUDE.md names: "a UI redirect is not a security boundary by
+// itself". `GET /api/agents/4` returned the agent row plus every device it
+// polls (name, ip_address, site_id, site_name, current_status) and every
+// service check, estate-wide — stepping around the siteFilterClause that
+// GET /api/devices applies.
+//
+// It is a MOUNT guard, not per-route, for the same reason GUARD 1 on
+// /api/devices is one: a route added to this family later inherits it. Only the
+// three /api/agents consumers in the frontend exist, and all three already
+// fetch behind canManageAgents/canEdit, so nothing reachable today changes.
+//
+// Credit where due, and do not break it: `api_key` is deleted from the detail
+// response and excluded from the list query's column whitelist, and
+// `agent_discovered_devices.snmp_community` is deliberately not selected.
+app.use('/api/agents', requireAdminRead);
+
 // The agents.disabled / agents.health columns are later migrations — probe once
 // so the list/detail endpoints work before and after schema.sql is re-applied.
 async function agentColExists(col) {
@@ -5308,11 +5462,18 @@ app.get('/api/alert-rules', wrap(async (req, res) => {
 }));
 
 // Effective ruleset for a device after global → site → device inheritance.
+// ⛔ RBAC: this is a DEVICE route whose URL prefix is /api/alert-rules, so the
+// /api/devices mount guard (GUARD 1) never saw it and `GET /api/alert-rules`
+// right above — which DOES call getSiteFilter — was not enough. Walking
+// :device_id 1..N enumerated every monitored device's name/site in the estate.
 app.get('/api/alert-rules/effective/:device_id', wrap(async (req, res) => {
   const id = parseInt(req.params.device_id, 10);
   const dq = await sv.query(`SELECT id, name, site_id, site_name FROM monitored_devices WHERE id = $1`, [id]);
   const device = dq.rows[0];
   if (!device) return res.status(404).json({ error: 'Device not found' });
+  if (!rowInScope(getSiteFilter(req), device.site_id)) {
+    return res.status(404).json({ error: 'Device not found' }); // same body as the absent case
+  }
   const r = await sv.query(`
     SELECT r.*, d.name AS device_name
     FROM alert_rules r LEFT JOIN monitored_devices d ON d.id = r.device_id
@@ -5334,6 +5495,13 @@ app.get('/api/alert-rules/effective-service/:service_check_id', wrap(async (req,
   const sq = await sv.query(`SELECT id, name, type, target, site_id, site_name FROM service_checks WHERE id = $1`, [id]);
   const service = sq.rows[0];
   if (!service) return res.status(404).json({ error: 'Service check not found' });
+  // ⛔ RBAC: the FOURTH instance of the documented `service_checks` scoping gap
+  // (after /api/service-checks/:id, /:id/results and /api/reports/service-detail).
+  // Walking :service_check_id 1..N enumerated every monitored service's
+  // `target` — hostname/URL/IP — across the whole estate.
+  if (!rowInScope(getSiteFilter(req), service.site_id)) {
+    return res.status(404).json({ error: 'Service check not found' }); // same body as the absent case
+  }
   const r = await sv.query(`
     SELECT r.*, sc.name AS service_name
     FROM alert_rules r LEFT JOIN service_checks sc ON sc.id = r.service_check_id
@@ -5565,6 +5733,68 @@ async function fetchFullMap(mapId) {
   return { ...map, devices: devices.rows, connections: connRows, labels: labels.rows, shapes };
 }
 
+// ⛔ `sv_maps` HAS NO `site_id` — a map's scope is DERIVED from its nodes.
+//
+// Until now every /api/maps route was unscoped, and the in-code note on the list
+// route argued (correctly) that the card preview "adds no new exposure" relative
+// to GET /api/maps/:id. What it missed is that this made maps a STANDING scope
+// bypass as a family: a site_admin scoped to site 3 could list every map in the
+// estate with its node count and device ids, open one built for site 9 and read
+// every node's name/ip_address/current_status, add any device id to it via
+// PUT /api/maps/:id/layout, and flip it public and read it with no cookie at all.
+//
+// THE MODEL CHOSEN (no schema change, nothing to migrate):
+//   A map is in scope for a site-scoped caller when EVERY entity-linked node on
+//   it resolves to one of their assigned sites. A node with no device and no
+//   service check (a decorative/label-only node) carries no data and is ignored.
+//   An empty map is therefore visible to everyone — it contains nothing.
+//   A node whose device/service has a NULL site_id belongs to no site and so
+//   fails CLOSED, exactly like `siteFilterClause`'s `site_id = ANY(...)` already
+//   excludes NULL everywhere else (see gotchas.md: "a site-less row must fail
+//   CLOSED, and `OR <owner> IS NULL` is the trap that makes it fail OPEN").
+//
+// Consequence, stated deliberately: an estate-wide map built by an admin becomes
+// invisible to a site_admin. That IS the site-scoping model — the alternative
+// (showing them a map and silently blanking the nodes they may not see) would
+// publish the node count and geometry of another site's network either way.
+// admin/viewer are unscoped here as everywhere else (getSiteFilter returns null).
+//
+// Returns a SQL fragment that is TRUE for a map having at least one node outside
+// the caller's scope. `-1` can never be a real site id (the sequence starts at
+// 1), so COALESCE(..., -1) <> ALL(...) treats "no site" as out of scope.
+// True when a site-scoped caller may act on this map id. Unscoped callers always
+// may. A map id that does not exist returns true so the route still answers its
+// own 404 — same split GUARD 1 uses for a missing device row.
+async function mapVisible(req, mapId) {
+  const siteFilter = getSiteFilter(req);
+  if (!siteFilter || !siteFilter.length) return true;
+  const r = await sv.query(
+    `SELECT ${mapOutOfScopeSql('$1', 2)} AS bad`, [mapId, siteFilter]);
+  return !r.rows[0].bad;
+}
+
+// Every device/service id a layout payload wants to place must itself be in the
+// caller's scope, or PUT /api/maps/:id/layout is a way to pull another site's
+// devices (name, ip_address, live status) into a map you CAN read.
+async function layoutIdsInScope(req, devices) {
+  const siteFilter = getSiteFilter(req);
+  if (!siteFilter || !siteFilter.length) return true;
+  const { deviceIds, checkIds } = collectLayoutEntityIds(devices);
+  if (deviceIds.length) {
+    const r = await sv.query(
+      `SELECT COUNT(*)::int AS n FROM monitored_devices
+        WHERE id = ANY($1::int[]) AND site_id = ANY($2::int[])`, [deviceIds, siteFilter]);
+    if (r.rows[0].n !== new Set(deviceIds).size) return false;
+  }
+  if (checkIds.length) {
+    const r = await sv.query(
+      `SELECT COUNT(*)::int AS n FROM service_checks
+        WHERE id = ANY($1::int[]) AND site_id = ANY($2::int[])`, [checkIds, siteFilter]);
+    if (r.rows[0].n !== new Set(checkIds).size) return false;
+  }
+  return true;
+}
+
 // Geometry caps for the /api/maps card preview. A map larger than this still
 // draws — the miniature is simply truncated — but one pathological map can't
 // bloat the list response for every other card on the page.
@@ -5579,21 +5809,32 @@ const MAP_PREVIEW_SHAPE_CAP = 80;
 // The preview deliberately carries no identifying data — only canvas-space
 // coordinates and a status bucket per node. Every status in it is already
 // fully readable (with names and IPs) via GET /api/maps/:id for any caller who
-// can list maps, so this adds no new exposure; it just saves the card from
-// having to fetch N full maps to draw N thumbnails.
+// can list maps, so this adds no new exposure relative to that route; both are
+// now site-scoped (see mapOutOfScopeSql above).
 //
 // Cost stays flat in the number of maps: three extra queries total (nodes,
-// links, shapes), grouped in JS — never one query per map.
-app.get('/api/maps', wrap(async (_req, res) => {
+// links, shapes), grouped in JS — never one query per map. The three are now
+// also restricted to the map ids this caller may see, so a scoped caller can
+// never be handed another site's geometry even as coordinates.
+app.get('/api/maps', wrap(async (req, res) => {
+  const listParams = [];
+  const siteFilter = getSiteFilter(req);
+  let listWhere = '';
+  if (siteFilter && siteFilter.length) {
+    listParams.push(siteFilter);
+    listWhere = `WHERE NOT ${mapOutOfScopeSql('m.id', listParams.length)}`;
+  }
   const r = await sv.query(`
     SELECT m.id, m.uuid, m.name, m.description, m.is_public,
            m.bg_color, m.canvas_w, m.canvas_h, m.updated_at,
            (SELECT COUNT(*)::int FROM map_devices md WHERE md.map_id = m.id) AS device_count
     FROM sv_maps m
+    ${listWhere}
     ORDER BY m.updated_at DESC
-  `);
+  `, listParams);
   const maps = r.rows;
   if (!maps.length) return res.json(maps);
+  const visibleIds = maps.map((m) => m.id);
 
   const nodes = await sv.query(`
     SELECT md.map_id, md.id, md.x, md.y, md.width, md.height, md.node_style,
@@ -5602,20 +5843,22 @@ app.get('/api/maps', wrap(async (_req, res) => {
     FROM map_devices md
     LEFT JOIN monitored_devices d ON d.id = md.device_id
     LEFT JOIN service_checks sc ON sc.id = md.service_check_id
+    WHERE md.map_id = ANY($1::int[])
     ORDER BY md.map_id, md.id
-  `);
+  `, [visibleIds]);
   const links = await sv.query(`
     SELECT map_id, from_item_id, to_item_id, from_kind, to_kind
-    FROM map_connections ORDER BY map_id, id
-  `);
+    FROM map_connections WHERE map_id = ANY($1::int[]) ORDER BY map_id, id
+  `, [visibleIds]);
   // map_shapes is a later migration — degrade to "no decorative shapes" on an
   // un-migrated DB rather than 500-ing the whole list (same guard fetchFullMap
   // already uses).
   let shapeRows = [];
   try {
     const sh = await sv.query(`
-      SELECT map_id, id, x, y, width, height FROM map_shapes ORDER BY map_id, z_index, id
-    `);
+      SELECT map_id, id, x, y, width, height FROM map_shapes
+       WHERE map_id = ANY($1::int[]) ORDER BY map_id, z_index, id
+    `, [visibleIds]);
     shapeRows = sh.rows;
   } catch (_e) { shapeRows = []; }
 
@@ -5695,7 +5938,11 @@ app.post('/api/maps', wrap(async (req, res) => {
 
 // Full map (properties + content + live device status).
 app.get('/api/maps/:id', wrap(async (req, res) => {
-  const map = await fetchFullMap(parseInt(req.params.id, 10));
+  const mapId = parseInt(req.params.id, 10);
+  if (!(await mapVisible(req, mapId))) {
+    return res.status(404).json({ error: 'Map not found' }); // same body as the absent case
+  }
+  const map = await fetchFullMap(mapId);
   if (!map) return res.status(404).json({ error: 'Map not found' });
   res.json(map);
 }));
@@ -5703,6 +5950,9 @@ app.get('/api/maps/:id', wrap(async (req, res) => {
 // Update map properties.
 app.put('/api/maps/:id', wrap(async (req, res) => {
   const id = parseInt(req.params.id, 10);
+  if (!(await mapVisible(req, id))) {
+    return res.status(404).json({ error: 'Map not found' }); // same body as the absent case
+  }
   const b = req.body || {};
   const allowed = ['name', 'description', 'bg_color', 'canvas_w', 'canvas_h'];
   const sets = [];
@@ -5722,7 +5972,11 @@ app.put('/api/maps/:id', wrap(async (req, res) => {
 
 // Delete a map (cascades to devices/connections/labels).
 app.delete('/api/maps/:id', wrap(async (req, res) => {
-  await sv.query(`DELETE FROM sv_maps WHERE id = $1`, [parseInt(req.params.id, 10)]);
+  const id = parseInt(req.params.id, 10);
+  if (!(await mapVisible(req, id))) {
+    return res.status(404).json({ error: 'Map not found' }); // same body as the absent case
+  }
+  await sv.query(`DELETE FROM sv_maps WHERE id = $1`, [id]);
   res.json({ ok: true });
 }));
 
@@ -5738,6 +5992,19 @@ app.put('/api/maps/:id/layout', wrap(async (req, res) => {
   // Only touch shapes when the client actually sends a `shapes` array, so older
   // clients that don't know about shapes don't wipe them.
   const shapes = Array.isArray(b.shapes) ? b.shapes : null;
+
+  if (!(await mapVisible(req, id))) {
+    return res.status(404).json({ error: 'Map not found' }); // same body as the absent case
+  }
+  // ⛔ The map being in scope is NOT enough: this route accepted any device id
+  // the client sent, so a site_admin could add another site's devices to a map
+  // they legitimately own and then read those devices' name/ip_address/live
+  // status straight back out of GET /api/maps/:id (and publish them, before
+  // toggle-public became admin-only). A 403 here, not a 404 — the caller is
+  // asking about ids it supplied, not probing for a resource.
+  if (!(await layoutIdsInScope(req, devices))) {
+    return res.status(403).json({ error: 'forbidden: one or more nodes reference a site outside your assigned sites' });
+  }
 
   const exists = await sv.query(`SELECT id FROM sv_maps WHERE id = $1`, [id]);
   if (!exists.rows[0]) return res.status(404).json({ error: 'Map not found' });
@@ -5849,6 +6116,9 @@ app.put('/api/maps/:id/layout', wrap(async (req, res) => {
 // Save (or clear) the background image. Pass bg_image_b64 = null/'' to clear.
 app.post('/api/maps/:id/background', wrap(async (req, res) => {
   const id = parseInt(req.params.id, 10);
+  if (!(await mapVisible(req, id))) {
+    return res.status(404).json({ error: 'Map not found' }); // same body as the absent case
+  }
   const b64 = req.body && req.body.bg_image_b64 ? String(req.body.bg_image_b64) : null;
   const r = await sv.query(
     `UPDATE sv_maps SET bg_image_b64 = $2, updated_at = NOW() WHERE id = $1 RETURNING id`,
@@ -5859,8 +6129,15 @@ app.post('/api/maps/:id/background', wrap(async (req, res) => {
 }));
 
 // Toggle public sharing.
+// Admin rank is enforced by ADMIN_ONLY_WRITE (/^\/api\/maps\/\d+\/toggle-public$/)
+// — publishing to the unauthenticated share view is a disclosure decision, not
+// an operational edit. The scope check stays as well, so the gate does not rest
+// on one regex alone.
 app.post('/api/maps/:id/toggle-public', wrap(async (req, res) => {
   const id = parseInt(req.params.id, 10);
+  if (!(await mapVisible(req, id))) {
+    return res.status(404).json({ error: 'Map not found' }); // same body as the absent case
+  }
   const r = await sv.query(
     `UPDATE sv_maps SET is_public = NOT is_public, updated_at = NOW() WHERE id = $1 RETURNING is_public, uuid`,
     [id]
@@ -5869,7 +6146,18 @@ app.post('/api/maps/:id/toggle-public', wrap(async (req, res) => {
   res.json(r.rows[0]);
 }));
 
-// Public map view (NO AUTH). Only resolves when is_public = TRUE.
+// Public map view (NO AUTH) — the only no-auth DATA route in the app. Only
+// resolves when is_public = TRUE.
+//
+// LEFT AS-IS deliberately, and it is now safe to be: publishing is an explicit,
+// admin-rank, audited act on a map the admin can already see in full
+// (POST /api/maps/:id/toggle-public), and sharing a read-only view of a network
+// map with someone who has no account is the whole point of the feature. What
+// made it a finding was the PUBLISHING side — a site_admin could publish a map
+// built for a site they have no access to — and that is what moved to admin
+// rank. No site filter is applied to the response itself: an anonymous caller
+// has no sites, and narrowing a deliberately-shared map by the viewer's
+// (non-existent) scope would return an empty canvas to every share link.
 app.get('/api/maps/public/:uuid', wrap(async (req, res) => {
   const m = await sv.query(
     `SELECT * FROM sv_maps WHERE uuid = $1 AND is_public = TRUE`, [String(req.params.uuid)]
@@ -6276,10 +6564,17 @@ function fmtUptime(seconds) {
 }
 
 // ── Controllers CRUD ──────────────────────────────────────────
+// ⛔ RBAC: `wireless_controllers.site_id` exists and nine routes in this family
+// already scope on it; this one (and /overview, /events, /history/:ap_id,
+// /intelligence/:controller_id) did not. Credentials were already masked by
+// publicSnmpFields, so the leak was inventory: every site's controller names,
+// models, firmware levels and HA peer addresses.
 app.get('/api/wireless/controllers', wrap(async (req, res) => {
   const hp = (await wctlHasHaPeer())
     ? 'c.ha_peer_controller_id, c.ha_manual_role'
     : 'NULL::int AS ha_peer_controller_id, NULL::text AS ha_manual_role';
+  const ctlParams = [];
+  const ctlSc = siteFilterClause(getSiteFilter(req), ctlParams, 'c.site_id');
   const r = await sv.query(`
     SELECT c.id, c.name, c.vendor, c.controller_url, c.api_username, c.snmp_device_id,
            c.site_id, c.site_name, c.active, c.last_polled_at, c.status,
@@ -6302,8 +6597,9 @@ app.get('/api/wireless/controllers', wrap(async (req, res) => {
            (SELECT COALESCE(SUM(a.clients_total), 0)::int FROM wireless_aps a WHERE a.controller_id = c.id) AS client_count
     FROM wireless_controllers c
     LEFT JOIN monitored_devices d ON d.id = c.snmp_device_id
+    ${ctlSc ? `WHERE ${ctlSc}` : ''}
     ORDER BY c.name
-  `);
+  `, ctlParams);
   // The SNMP credentials on this row belong to the linked `monitored_devices`
   // row, so they are subject to exactly the same rule as `/api/devices/:id`:
   // never hand the plaintext to the browser. `publicDevice()` only guards the
@@ -6330,7 +6626,9 @@ async function wctlHasHaPeer() {
   return _wctlHaPeerCol;
 }
 
-app.get('/api/wireless/controllers/overview', wrap(async (_req, res) => {
+app.get('/api/wireless/controllers/overview', wrap(async (req, res) => {
+  const ovParams = [];
+  const ovSc = siteFilterClause(getSiteFilter(req), ovParams, 'c.site_id');
   const hp = (await wctlHasHaPeer())
     ? `c.ha_peer_controller_id, c.ha_manual_role,
        (SELECT name FROM wireless_controllers p WHERE p.id = c.ha_peer_controller_id) AS ha_peer_name`
@@ -6365,8 +6663,9 @@ app.get('/api/wireless/controllers/overview', wrap(async (_req, res) => {
       WHERE device_id = c.snmp_device_id AND metric_name = 'uptime_seconds'
       ORDER BY ts DESC LIMIT 1
     ) up ON TRUE
+    ${ovSc ? `WHERE ${ovSc}` : ''}
     ORDER BY c.name
-  `);
+  `, ovParams);
 
   let totalAps = 0;
   let totalClients = 0;
@@ -6474,7 +6773,13 @@ app.get('/api/wireless/controllers/overview', wrap(async (_req, res) => {
 }));
 
 // ── Recent events across all controllers (client events + alerts) ──
-app.get('/api/wireless/controllers/events', wrap(async (_req, res) => {
+app.get('/api/wireless/controllers/events', wrap(async (req, res) => {
+  // Each query needs its OWN params array — Postgres rejects a bind carrying
+  // more parameters than the statement has placeholders, so one shared array
+  // cannot serve two fragments (same reason wlScope() returns a per-query
+  // factory; see gotchas.md).
+  const evP1 = [];
+  const evSc1 = siteFilterClause(getSiteFilter(req), evP1, 'c.site_id');
   const clientEvents = await sv.query(`
     SELECT e.ts,
            c.name AS controller_name,
@@ -6484,10 +6789,13 @@ app.get('/api/wireless/controllers/events', wrap(async (_req, res) => {
     FROM wireless_client_events e
     JOIN wireless_controllers c ON c.id = e.controller_id
     WHERE e.event_type IN ('join', 'leave', 'low_signal', 'roam')
+      ${evSc1 ? `AND ${evSc1}` : ''}
     ORDER BY e.ts DESC
     LIMIT 20
-  `);
+  `, evP1);
 
+  const evP2 = [];
+  const evSc2 = siteFilterClause(getSiteFilter(req), evP2, 'c.site_id');
   const alertEvents = await sv.query(`
     SELECT al.triggered_at AS ts,
            c.name AS controller_name,
@@ -6496,9 +6804,10 @@ app.get('/api/wireless/controllers/events', wrap(async (_req, res) => {
            al.message
     FROM alerts al
     JOIN wireless_controllers c ON c.snmp_device_id = al.device_id
+    ${evSc2 ? `WHERE ${evSc2}` : ''}
     ORDER BY al.triggered_at DESC
     LIMIT 20
-  `);
+  `, evP2);
 
   const events = [];
 
@@ -6992,8 +7301,8 @@ app.get('/api/wireless/aps/:id', wrap(async (req, res) => {
   // prominent UI path straight into this route by AP ID, so the gap is more
   // reachable than before even though it predates today's changes.
   const siteFilter = getSiteFilter(req);
-  if (siteFilter && siteFilter.length && !siteFilter.includes(ap.site_id)) {
-    return res.status(403).json({ error: 'forbidden: AP outside your assigned sites' });
+  if (!rowInScope(siteFilter, ap.site_id)) {
+    return res.status(404).json({ error: 'AP not found' }); // same body as the absent case — no existence oracle
   }
 
   const hist = await sv.query(`
@@ -7094,8 +7403,18 @@ app.get('/api/wireless/aps/:id', wrap(async (req, res) => {
 }));
 
 // AP client/utilization history (bucketed by range).
+// ⛔ RBAC: this is an AP route under the /api/wireless/history prefix, so neither
+// the /api/devices mount guard nor the per-route check on /api/wireless/aps/:id
+// covered it. Its param is `:ap_id`, NOT `:id`, so it also escapes the
+// app.param('id') numeric guard — hence the explicit Number.isFinite test.
 app.get('/api/wireless/history/:ap_id', wrap(async (req, res) => {
   const id = parseInt(req.params.ap_id, 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id' });
+  const apQ = await sv.query(`SELECT site_id FROM wireless_aps WHERE id = $1`, [id]);
+  if (!apQ.rows[0]) return res.status(404).json({ error: 'AP not found' });
+  if (!rowInScope(getSiteFilter(req), apQ.rows[0].site_id)) {
+    return res.status(404).json({ error: 'AP not found' }); // same body as the absent case
+  }
   const interval = rangeToInterval(req.query.range);
   const bucket = rangeToBucket(req.query.range);
   // retry_rate columns are a later migration — degrade to NULL if absent.
@@ -7728,12 +8047,16 @@ app.get('/api/wireless/intelligence/summary', wrap(async (req, res) => {
 
 app.get('/api/wireless/intelligence/:controller_id', wrap(async (req, res) => {
   const id = parseInt(req.params.controller_id, 10);
+  // ⛔ RBAC: the two sibling routes above (/intelligence and
+  // /intelligence/summary) both scope on c.site_id; this by-id one did not.
+  const ciParams = [id];
+  const ciSc = siteFilterClause(getSiteFilter(req), ciParams, 'c.site_id');
   const ctrl = await sv.query(`
     SELECT wi.*, c.name AS controller_name, c.vendor
     FROM wireless_intelligence wi
     JOIN wireless_controllers c ON c.id = wi.controller_id
-    WHERE wi.controller_id = $1
-  `, [id]);
+    WHERE wi.controller_id = $1${ciSc ? ` AND ${ciSc}` : ''}
+  `, ciParams);
   if (!ctrl.rows[0]) return res.status(404).json({ error: 'No intelligence for this controller yet' });
   const aps = await sv.query(`
     SELECT ai.*, a.name AS ap_name, a.site_name, a.clients_total,
@@ -7743,7 +8066,7 @@ app.get('/api/wireless/intelligence/:controller_id', wrap(async (req, res) => {
     JOIN wireless_aps a ON a.id = ai.ap_id
     WHERE a.controller_id = $1
     ORDER BY ai.health_score ASC
-  `, [id]);
+  `, [id]); // controller already proven in-scope above, so its APs are too
   res.json({ ...ctrl.rows[0], aps: aps.rows });
 }));
 
@@ -8163,8 +8486,8 @@ app.get('/api/wireless/aps/:id/clients', wrap(async (req, res) => {
   const apQ = await sv.query(`SELECT site_id FROM wireless_aps WHERE id = $1`, [id]);
   if (!apQ.rows[0]) return res.status(404).json({ error: 'AP not found' });
   const siteFilter = getSiteFilter(req);
-  if (siteFilter && siteFilter.length && !siteFilter.includes(apQ.rows[0].site_id)) {
-    return res.status(403).json({ error: 'forbidden: AP outside your assigned sites' });
+  if (!rowInScope(siteFilter, apQ.rows[0].site_id)) {
+    return res.status(404).json({ error: 'AP not found' }); // same body as the absent case — no existence oracle
   }
 
   const r = await sv.query(`
@@ -8189,8 +8512,8 @@ app.get('/api/wireless/clients/:mac', wrap(async (req, res) => {
   // RBAC site scoping — enforced server-side so a site_admin cannot bypass it by
   // calling the API directly. An unscoped (admin/viewer) caller passes through.
   const siteFilter = getSiteFilter(req);
-  if (siteFilter && siteFilter.length && !siteFilter.includes(cr.rows[0].site_id)) {
-    return res.status(403).json({ error: 'forbidden: client outside your assigned sites' });
+  if (!rowInScope(siteFilter, cr.rows[0].site_id)) {
+    return res.status(404).json({ error: 'Client not found' }); // same body as the absent case — no existence oracle
   }
 
   const client = { ...cr.rows[0], signal_quality: signalQuality(cr.rows[0].rssi_dbm) };
@@ -8237,8 +8560,8 @@ app.get('/api/wireless/clients/:mac/history', wrap(async (req, res) => {
   `, [mac]);
   if (!clQ.rows[0]) return res.status(404).json({ error: 'Client not found' });
   const siteFilter = getSiteFilter(req);
-  if (siteFilter && siteFilter.length && !siteFilter.includes(clQ.rows[0].site_id)) {
-    return res.status(403).json({ error: 'forbidden: client outside your assigned sites' });
+  if (!rowInScope(siteFilter, clQ.rows[0].site_id)) {
+    return res.status(404).json({ error: 'Client not found' }); // same body as the absent case — no existence oracle
   }
 
   const r = await sv.query(`
@@ -8884,7 +9207,7 @@ app.put('/api/reports/saved/:id', wrap(async (req, res) => {
   const cur = await sv.query(`SELECT scope_type, scope_id FROM saved_reports WHERE id = $1`, [id]);
   if (!cur.rows[0]) return res.status(404).json({ error: 'not found' });
   if (!(await savedReportWritable(req, cur.rows[0]))) {
-    return res.status(403).json({ error: 'forbidden: saved report outside your assigned sites' });
+    return res.status(404).json({ error: 'not found' }); // same body as the absent case — no existence oracle
   }
   const s = scheduleFields(req.body || {});
   const r = await sv.query(`
@@ -8897,6 +9220,11 @@ app.put('/api/reports/saved/:id', wrap(async (req, res) => {
   res.json(r.rows[0]);
 }));
 
+// Bounded, credential-free description of a report-delivery failure.
+// ⛔ nodemailer's `err.message` routinely embeds the SMTP host, port, configured
+// username and the mail server's verbatim auth rejection. `code`/`responseCode`
+// are what an operator actually triages on and carry no configuration, so only
+// those leave the process.
 // Run a saved report immediately and email it now (does not change next_run_at).
 app.post('/api/reports/saved/:id/run-now', wrap(async (req, res) => {
   const id = parseInt(req.params.id, 10);
@@ -8905,7 +9233,7 @@ app.post('/api/reports/saved/:id/run-now', wrap(async (req, res) => {
   const report = r.rows[0];
   if (!report) return res.status(404).json({ error: 'not found' });
   if (!(await savedReportWritable(req, report))) {
-    return res.status(403).json({ error: 'forbidden: saved report outside your assigned sites' });
+    return res.status(404).json({ error: 'not found' }); // same body as the absent case — no existence oracle
   }
   if (!report.recipients) return res.status(400).json({ error: 'no recipients configured' });
   try {
@@ -8913,11 +9241,18 @@ app.post('/api/reports/saved/:id/run-now', wrap(async (req, res) => {
     await sv.query(`UPDATE saved_reports SET last_sent_at = NOW() WHERE id = $1`, [id]);
     res.json({ ok: true, recipients: out.recipients });
   } catch (e) {
+    // The raw message went BOTH to the caller (rank >= 1) and into
+    // report_history.error, which GET /api/reports/saved/:id/history hands
+    // straight back — so one failed send published the SMTP host/port/username
+    // and the server's auth rejection to every site_admin who could see the
+    // report, and persisted it in a table with no readonly-role protection.
+    console.error(`[reports/run-now] saved report #${id} delivery failed:`, e && e.stack ? e.stack : e);
+    const safe = mailErrorSummary(e);
     await sv.query(`
       INSERT INTO report_history (report_id, status, error, recipients)
       VALUES ($1, 'failed', $2, $3)
-    `, [id, e.message, report.recipients]).catch(() => {});
-    res.status(500).json({ error: e.message });
+    `, [id, safe, report.recipients]).catch(() => {});
+    res.status(500).json({ error: safe });
   }
 }));
 
@@ -8928,7 +9263,7 @@ app.get('/api/reports/saved/:id/history', wrap(async (req, res) => {
   const owner = await sv.query(`SELECT scope_type, scope_id FROM saved_reports WHERE id = $1`, [id]);
   if (!owner.rows[0]) return res.status(404).json({ error: 'not found' });
   if (!(await savedReportInScope(req, owner.rows[0]))) {
-    return res.status(403).json({ error: 'forbidden: saved report outside your assigned sites' });
+    return res.status(404).json({ error: 'not found' }); // same body as the absent case — no existence oracle
   }
   const r = await sv.query(`
     SELECT id, report_id, run_at, status, error, recipients
@@ -8942,7 +9277,7 @@ app.delete('/api/reports/saved/:id', wrap(async (req, res) => {
   if (isNaN(id)) return res.status(400).json({ error: 'invalid id' });
   const owner = await sv.query(`SELECT scope_type, scope_id FROM saved_reports WHERE id = $1`, [id]);
   if (owner.rows[0] && !(await savedReportWritable(req, owner.rows[0]))) {
-    return res.status(403).json({ error: 'forbidden: saved report outside your assigned sites' });
+    return res.status(404).json({ error: 'not found' }); // same body as the absent case — no existence oracle
   }
   await sv.query(`DELETE FROM saved_reports WHERE id = $1`, [id]);
   res.json({ ok: true });
@@ -9175,8 +9510,8 @@ app.get('/api/reports/device-detail', wrap(async (req, res) => {
   // RBAC site scoping — enforced server-side so a site_admin cannot bypass it by
   // calling the API directly. An unscoped (admin/viewer) caller passes through.
   const siteFilter = getSiteFilter(req);
-  if (siteFilter && siteFilter.length && !siteFilter.includes(d.site_id)) {
-    return res.status(403).json({ error: 'forbidden: device outside your assigned sites' });
+  if (!rowInScope(siteFilter, d.site_id)) {
+    return res.status(404).json({ error: 'Device not found' }); // same body as the absent case
   }
 
   // Each sub-query is isolated: a failure (e.g. an optional intelligence/topology
@@ -9807,7 +10142,10 @@ app.get('/api/reports/executive', wrap(async (req, res) => {
   } catch (err) {
     console.error('[reports/executive] FULL ERROR:', err);
     console.error('[reports/executive] STACK:', err.stack);
-    res.status(500).json({ error: err.message });
+    // This route has its own try/catch, so it never reaches the PROD-gated
+    // central handler — it was returning the raw DB/stack message to any
+    // authenticated viewer. The full detail is in the two log lines above.
+    res.status(500).json({ error: PROD ? 'Internal server error' : err.message });
   }
 }));
 
@@ -10507,8 +10845,8 @@ app.get('/api/reports/ap-detail/:id', wrap(async (req, res) => {
   // RBAC site scoping — enforced server-side so a site_admin cannot bypass it by
   // calling the API directly. An unscoped (admin/viewer) caller passes through.
   const siteFilter = getSiteFilter(req);
-  if (siteFilter && siteFilter.length && !siteFilter.includes(ap.site_id)) {
-    return res.status(403).json({ error: 'forbidden: AP outside your assigned sites' });
+  if (!rowInScope(siteFilter, ap.site_id)) {
+    return res.status(404).json({ error: 'AP not found' }); // same body as the absent case — no existence oracle
   }
 
   const sRange = resolveSeriesRange(req.query);
@@ -10641,8 +10979,8 @@ app.get('/api/reports/service-detail', wrap(async (req, res) => {
   // RBAC site scoping — enforced server-side so a site_admin cannot bypass it by
   // calling the API directly. An unscoped (admin/viewer) caller passes through.
   const siteFilter = getSiteFilter(req);
-  if (siteFilter && siteFilter.length && !siteFilter.includes(svc.site_id)) {
-    return res.status(403).json({ error: 'forbidden: service outside your assigned sites' });
+  if (!rowInScope(siteFilter, svc.site_id)) {
+    return res.status(404).json({ error: 'Service check not found' }); // same body as the absent case
   }
 
   // Each sub-query is isolated: a failure degrades that section to empty rather
@@ -10809,6 +11147,15 @@ app.put('/api/settings', wrap(async (req, res) => {
 
 // ── Notification routing ──────────────────────────────────────
 // Route matching alerts to specific email recipients (NULL match = any).
+// ⛔ Read gate, found by the sweep. Every write on these three families is
+// already rank-2 via ADMIN_ONLY_WRITE and their only UI is the admin-only
+// Settings page, but the GETs had no role gate — so any authenticated viewer
+// could read the alert-email recipient lists, the escalation contacts and the
+// on-call roster. Mount guards, for the same reason the /api/agents one is.
+app.use('/api/notification-routes', requireAdminRead);
+app.use('/api/escalation-steps', requireAdminRead);
+app.use('/api/oncall-shifts', requireAdminRead);
+
 app.get('/api/notification-routes', wrap(async (_req, res) => {
   try {
     const r = await sv.query(`SELECT * FROM notification_routes ORDER BY name`);
@@ -11182,8 +11529,8 @@ app.get('/api/service-checks/:id', wrap(async (req, res) => {
   if (!r.rows.length) return res.status(404).json({ error: 'Service check not found' });
   const svc = r.rows[0];
   const siteFilter = getSiteFilter(req);
-  if (siteFilter && siteFilter.length && !siteFilter.includes(svc.site_id)) {
-    return res.status(403).json({ error: 'forbidden: service outside your assigned sites' });
+  if (!rowInScope(siteFilter, svc.site_id)) {
+    return res.status(404).json({ error: 'Service check not found' }); // same body as the absent case
   }
   res.json(svc);
 }));
@@ -11202,8 +11549,8 @@ app.get('/api/service-checks/:id/results', wrap(async (req, res) => {
     const svcQ = await sv.query(`SELECT site_id FROM service_checks WHERE id = $1`, [id]);
     if (!svcQ.rows.length) return res.status(404).json({ error: 'Service check not found' });
     const siteFilter = getSiteFilter(req);
-    if (siteFilter && siteFilter.length && !siteFilter.includes(svcQ.rows[0].site_id)) {
-      return res.status(403).json({ error: 'forbidden: service outside your assigned sites' });
+    if (!rowInScope(siteFilter, svcQ.rows[0].site_id)) {
+      return res.status(404).json({ error: 'Service check not found' }); // same body as the absent case
     }
     const r = await sv.query(
       `SELECT ts, status, response_ms, detail FROM service_check_results
@@ -11269,13 +11616,21 @@ app.delete('/api/oncall-shifts/:id', wrap(async (req, res) => {
 // ══════════════════════════════════════════════════════════════
 // Maintenance windows
 // ══════════════════════════════════════════════════════════════
-app.get('/api/maintenance', wrap(async (_req, res) => {
+// ⛔ RBAC: found by the by-table sweep, not reported. This listed every
+// maintenance window in the estate with its device_name/service_name, while its
+// sibling /api/dashboard/maintenance (same two tables) IS scoped — the same
+// split-family shape as the rest of this batch. A window attached to neither a
+// device nor a service check has no site, so it fails closed for a scoped caller.
+app.get('/api/maintenance', wrap(async (req, res) => {
+  const mwP = [];
+  const mwSc = siteFilterClause(getSiteFilter(req), mwP, 'COALESCE(d.site_id, sc.site_id, -1)');
   const r = await sv.query(`
     SELECT m.*, d.name AS device_name, sc.name AS service_name FROM maintenance_windows m
     LEFT JOIN monitored_devices d ON d.id = m.device_id
     LEFT JOIN service_checks sc ON sc.id = m.service_check_id
+    ${mwSc ? `WHERE ${mwSc}` : ''}
     ORDER BY m.starts_at DESC
-  `);
+  `, mwP);
   res.json(r.rows);
 }));
 
@@ -11639,9 +11994,15 @@ app.post('/api/intelligence/anomalies/:id/create-rule', wrap(async (req, res) =>
 }));
 
 // Capacity forecast for one device (computed on demand).
+// ⛔ RBAC: /api/intelligence/patterns right below scopes its own ?device_id= and
+// so must this — the device id arrives as a query param, so the /api/devices
+// mount guard (GUARD 1) never sees it.
 app.get('/api/intelligence/capacity', wrap(async (req, res) => {
   const deviceId = safeInt(req.query.device_id, 0);
   if (!deviceId) return res.status(400).json({ error: 'device_id required' });
+  if (!(await deviceVisible(req, deviceId))) {
+    return res.status(404).json({ error: 'Device not found' }); // absent and out-of-scope answer alike
+  }
   const forecast = await intelligence.computeCapacityForecasts(deviceId);
   res.json(forecast);
 }));
@@ -11710,16 +12071,21 @@ app.get('/api/intelligence/incidents', wrap(async (req, res) => {
 }));
 
 // Smart threshold recommendations (highest confidence first).
-app.get('/api/intelligence/thresholds', wrap(async (_req, res) => {
+// ⛔ RBAC: the widest-breadth gap of the three — one row per ACTIVE device in the
+// whole estate, each carrying device_name, site_id and site_name. Every sibling
+// in this family scopes with siteFilterClause(getSiteFilter(req), …, 'd.site_id').
+app.get('/api/intelligence/thresholds', wrap(async (req, res) => {
+  const thParams = [];
+  const thSc = siteFilterClause(getSiteFilter(req), thParams, 'd.site_id');
   const r = await sv.query(`
     SELECT t.id, t.device_id, d.name AS device_name, d.site_id, d.site_name,
            t.metric, t.current_threshold, t.recommended_threshold,
            t.reasoning, t.confidence, t.computed_at
     FROM threshold_recommendations t
     JOIN monitored_devices d ON d.id = t.device_id
-    WHERE d.active = TRUE
+    WHERE d.active = TRUE${thSc ? ` AND ${thSc}` : ''}
     ORDER BY t.confidence DESC, ABS(t.recommended_threshold - t.current_threshold) DESC
-  `);
+  `, thParams);
   res.json(r.rows);
 }));
 
@@ -11727,6 +12093,13 @@ app.get('/api/intelligence/thresholds', wrap(async (_req, res) => {
 app.post('/api/intelligence/thresholds/:device_id/apply', wrap(async (req, res) => {
   const deviceId = safeInt(req.params.device_id, 0);
   if (!deviceId) return res.status(400).json({ error: 'invalid device_id' });
+  // Not a live bypass today — /api/intelligence/ is in ADMIN_ONLY_WRITE, so only
+  // a rank-2 admin (who is already unscoped) can reach this write at all. Added
+  // for consistency so the check does not have to be remembered if the write
+  // gate on this prefix is ever relaxed to site_admin.
+  if (!(await deviceVisible(req, deviceId))) {
+    return res.status(404).json({ error: 'device not found' });
+  }
   const rec = await sv.query(`
     SELECT recommended_threshold FROM threshold_recommendations
     WHERE device_id = $1 AND metric = 'response_ms'
@@ -11748,6 +12121,12 @@ app.post('/api/intelligence/thresholds/:device_id/apply', wrap(async (req, res) 
 app.get('/api/intelligence/device/:id', wrap(async (req, res) => {
   const deviceId = safeInt(req.params.id, 0);
   if (!deviceId) return res.status(400).json({ error: 'invalid device id' });
+  // ⛔ RBAC: a DEVICE route under the /api/intelligence prefix, so GUARD 1 on
+  // /api/devices never covered it. Returns health score, response baseline,
+  // active anomalies and learned patterns for any device id.
+  if (!(await deviceVisible(req, deviceId))) {
+    return res.status(404).json({ error: 'Device not found' }); // absent and out-of-scope answer alike
+  }
 
   const health = await sv.query(`
     SELECT h.score, h.grade, h.trend, h.uptime_score, h.response_score,
@@ -11794,10 +12173,21 @@ app.post('/api/intelligence/baselines/recompute', wrap(async (_req, res) => {
   res.json({ started: true });
 }));
 
-// ── Error handler (generic message in production) ─────────────
-app.use((err, _req, res, _next) => {
-  console.error('[API Error]', err.message);
-  res.status(500).json({ error: PROD ? 'Internal server error' : err.message });
+// ── Error handler — THE ONLY ONE. Do not add a second. ────────
+// ⛔ A SECOND app.use error middleware used to be registered further down (after
+// the license/update timers) and returned `err.message` UNGATED. It was dead
+// only because this handler never calls next(err) — so a reorder, or someone
+// "tidying" this one into delegating, would have silently turned every 500 in
+// the app into a message leak with nothing failing. The two are now one
+// handler: the diagnostics the second one existed for (method, path, stack to
+// the log) folded in, the response body PROD-gated.
+app.use((err, req, res, _next) => {
+  console.error(`[500] ${req.method} ${req.path}:`, err && err.stack ? err.stack : err);
+  if (res.headersSent) return;
+  res.status(500).json({
+    error: PROD ? 'Internal server error' : ((err && err.message) || 'Internal server error'),
+    path: req.path,
+  });
 });
 
 // ── License: check on startup, refresh every 24h ──────────────
@@ -11811,14 +12201,6 @@ setInterval(() => getLicense(true), 24 * 60 * 60 * 1000);
 checkForUpdates();
 setInterval(checkForUpdates, 24 * 60 * 60 * 1000);
 
-// Central error handler — log the route + stack and return clean JSON so a 500 is
-// diagnosable in the UI / network tab instead of an opaque default HTML page.
-// (Must be registered AFTER all routes.)
-app.use((err, req, res, _next) => {
-  console.error(`[500] ${req.method} ${req.path}:`, err && err.stack ? err.stack : err);
-  if (res.headersSent) return;
-  res.status(500).json({ error: (err && err.message) || 'Internal server error', path: req.path });
-});
 
 // Apply scripts/schema.sql through the existing pg pool on startup. The schema is
 // fully idempotent (CREATE ... IF NOT EXISTS / ADD COLUMN IF NOT EXISTS), so this

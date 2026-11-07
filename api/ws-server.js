@@ -223,9 +223,35 @@ async function tryLinkAgentByHostname(agent, hostname) {
   }
 }
 
+// Upper bound on a single agent frame. Without one, `ws` will buffer a frame of
+// ANY size — an agent connection (or anything that can reach port 3010 with a
+// valid token) could pin arbitrary memory in the process that also serves the
+// whole API.
+//
+// Sizing, not guessing: the largest LEGITIMATE frame is the reconnect flush,
+// `{type:'batch', results:[...]}`. The agent's own buffer is capped at 500 items
+// (`createBuffer({ max: 500 })` in netvault/agent/nocvault-agent.js), and the
+// biggest item type is `snmp_batch` — raw varbinds for one device. A ping_result
+// is ~150 bytes; an snmp_batch for a large chassis is tens of KB. 500 items at a
+// deliberately pessimistic ~64 KB each is 32 MiB, so that is the default: ~200x
+// the typical flush, and still a hard ceiling.
+//
+// Getting it wrong is LOUD, not silent: `ws` closes an oversize frame with 1009
+// ("Max payload size exceeded"), so the agent reconnects and the close code
+// shows up rather than telemetry quietly vanishing. `SV_WS_MAX_PAYLOAD_MB`
+// raises it for an estate with a bigger chassis than this arithmetic assumed.
+const WS_MAX_PAYLOAD_MB = (() => {
+  const n = parseInt(process.env.SV_WS_MAX_PAYLOAD_MB || '32', 10);
+  return Number.isFinite(n) && n > 0 ? n : 32;
+})();
+const WS_MAX_PAYLOAD = WS_MAX_PAYLOAD_MB * 1024 * 1024;
+
 function startWsServer(port) {
   // Optional TLS: if a cert + key are configured, terminate wss:// here. Otherwise
   // serve plain ws:// (expected on trusted LAN / behind a TLS-terminating proxy).
+  // ⛔ EVERY branch below must pass maxPayload. The last defect in this function
+  // was an ASYMMETRY between these two branches, not a missing line — so if a
+  // third one is ever added, it needs the option (and its own 'error' handler).
   let wss;
   const certPath = process.env.SV_WS_TLS_CERT;
   const keyPath = process.env.SV_WS_TLS_KEY;
@@ -234,7 +260,7 @@ function startWsServer(port) {
       cert: fs.readFileSync(certPath),
       key: fs.readFileSync(keyPath),
     });
-    wss = new WebSocketServer({ server: httpsServer });
+    wss = new WebSocketServer({ server: httpsServer, maxPayload: WS_MAX_PAYLOAD });
     // ⛔ THE TLS BRANCH NEEDS ITS OWN 'error' HANDLER AND THE PLAIN ONE BELOW
     // DOES NOT — the two paths were defended unequally, and only one of them
     // crashed.
@@ -268,7 +294,7 @@ function startWsServer(port) {
     httpsServer.listen(port);
     console.log('[WS] TLS enabled (SV_WS_TLS_CERT/KEY configured)');
   } else {
-    wss = new WebSocketServer({ port });
+    wss = new WebSocketServer({ port, maxPayload: WS_MAX_PAYLOAD });
     console.warn(
       `[WS] WARNING: TLS is NOT configured — agent connections are unencrypted (plain ws://) ` +
       `on port ${port}. This exposes the agent self-update mechanism (SHA-256 check over an ` +
@@ -432,7 +458,9 @@ function startWsServer(port) {
     }
   }, 30000);
 
-  console.log(`SpanVault WebSocket server listening on port ${port}`);
+  console.log(
+    `SpanVault WebSocket server listening on port ${port} ` +
+    `(max frame ${WS_MAX_PAYLOAD_MB} MB — SV_WS_MAX_PAYLOAD_MB)`);
   return { wss, connectedAgents };
 }
 
@@ -494,6 +522,65 @@ async function pushConfigToAgent(ws, agentId) {
   }
 }
 
+// ⛔ A DEVICE'S OWNER IS PART OF THE AUTHORISATION, NOT JUST ITS EXISTENCE.
+//
+// Both telemetry paths used to check only that the device row EXISTED
+// (`SELECT 1 FROM monitored_devices WHERE id=$1`), never that it is ASSIGNED to
+// the connecting agent. So any valid agent token could push snmp_results /
+// ping_results for any device in the estate — fabricating or suppressing alerts
+// for another site's hardware, since the collector evaluates alerts from exactly
+// these rows. The predicate is now `agent_id = <this agent>`, which is precisely
+// the set `pushConfigToAgent` hands the agent to poll: an agent can only write
+// back what the server itself told it to collect.
+//
+// Why this is safe under the accept-both auth model and a re-link (CLAUDE.md's
+// Phase 3/4a section, and the "duplicate row" notes above):
+//   • `agent.id` is always the LOCAL `agents` row id — for a legacy api_key row
+//     and a hub-JWT row alike — and `tryLinkAgentByHostname()` re-keys the live
+//     connection's `agent` binding onto the MERGED row, which is the row
+//     `monitored_devices.agent_id` already points at. After a link, ownership
+//     holds with no further action.
+//   • BEFORE the link lands, the provisional hub-JWT row owns no devices, so
+//     `pushConfigToAgent` sends it an EMPTY device list and it has nothing to
+//     report. And the link runs on the agent's FIRST heartbeat, which
+//     `core/transport.js` sends BEFORE the buffered-batch flush ("ORDER MATTERS:
+//     heartbeat first, THEN the buffered batch flush"). So there is no window in
+//     which a legitimately re-linked or newly-provisioned agent has telemetry to
+//     drop.
+//   • A device moved OFF this agent (the 30-min NetVault site-change sync) is
+//     dropped — the same decision already taken for a DELETED device: the agent
+//     stops polling it on its next config push. Logged once per agent+device so
+//     a real misassignment is visible without spamming on every poll.
+// ── The ownership predicate and the three statements that use it ────────────
+// Built once, module-level, and EXPORTED, so tests/test-rbac-scoping.js can
+// assert against the exact SQL text each telemetry path sends to Postgres —
+// not a re-typed copy of it. (Full end-to-end coverage of these three paths
+// would need a live DB; see the suite's own note.)
+function ownedDeviceExists(idParam, agentParam) {
+  return `EXISTS (SELECT 1 FROM monitored_devices WHERE id = ${idParam} AND agent_id = ${agentParam})`;
+}
+const SQL_DEVICE_OWNED_PROBE =
+  `SELECT 1 FROM monitored_devices WHERE id=$1 AND agent_id=$2`;
+const SQL_INSERT_PING_RESULT = `
+  INSERT INTO ping_results (device_id, ts, response_ms, packet_loss_pct, status, agent_id)
+  SELECT $1,$2,$3,$4,$5,$6
+   WHERE ${ownedDeviceExists('$1', '$6')}`;
+const SQL_INSERT_SNMP_RESULT = `
+  INSERT INTO snmp_results (device_id, ts, oid, metric_name, value, if_index, if_name, agent_id)
+  SELECT $1,$2,$3,$4,$5,$6,$7,$8
+   WHERE ${ownedDeviceExists('$1', '$8')}`;
+
+const droppedUnowned = new Set();
+function noteUnowned(agentId, deviceId) {
+  const k = `${agentId}:${deviceId}`;
+  if (droppedUnowned.has(k)) return;
+  if (droppedUnowned.size > 5000) droppedUnowned.clear(); // bounded; re-logs after a wrap
+  droppedUnowned.add(k);
+  console.warn(
+    `[WS] agent #${agentId} sent telemetry for device #${deviceId}, which it does not own ` +
+    '(reassigned, deleted, or not assigned to this agent) — dropped');
+}
+
 // Interpret a remote agent's raw SNMP batch through the shared collector logic
 // and persist the results. The agent fetched the OIDs named in its pushed plan;
 // here we replay them via a PrefetchedSession so collectCandidates() runs exactly
@@ -510,8 +597,11 @@ async function handleSnmpBatch(agent, msg) {
   // this batch throw: the telemetry belongs to something that no longer exists,
   // and the agent stops polling it on its next config push. Same guard as the
   // ping_result path below.
-  const known = await sv.query(`SELECT 1 FROM monitored_devices WHERE id=$1`, [deviceId]);
-  if (!known.rows[0]) return;
+  //
+  // The `agent_id` half is the OWNERSHIP check — see the long note above
+  // noteUnowned(). Existence alone was not authorisation.
+  const known = await sv.query(SQL_DEVICE_OWNED_PROBE, [deviceId, agent.id]);
+  if (!known.rows[0]) { noteUnowned(agent.id, deviceId); return; }
 
   // Reconstruct varbind values; the agent base64-encodes Buffers as { b: ... }.
   const dec = (v) => (v && typeof v === 'object' && typeof v.b === 'string')
@@ -650,33 +740,38 @@ async function handleAgentMessage(agent, msg) {
       // skipped the monitored_devices update below. The INSERT ... SELECT ...
       // WHERE EXISTS does this in one round trip; rowCount tells us whether the
       // device is still real, so we only touch monitored_devices when it is.
+      // `AND agent_id = $6` is the OWNERSHIP half — see the note above
+      // noteUnowned(). $6 is already this agent's id, so no extra bind.
       const ins = await sv.query(
-        `INSERT INTO ping_results (device_id, ts, response_ms, packet_loss_pct, status, agent_id)
-         SELECT $1,$2,$3,$4,$5,$6
-          WHERE EXISTS (SELECT 1 FROM monitored_devices WHERE id = $1)`,
+        SQL_INSERT_PING_RESULT,
         [msg.device_id, msg.ts || new Date(), msg.response_ms,
          msg.packet_loss_pct, msg.status, agent.id]
       );
-      if (!ins.rowCount) break;
+      if (!ins.rowCount) { noteUnowned(agent.id, msg.device_id); break; }
       await sv.query(
         `UPDATE monitored_devices SET
            current_status=$2, last_response_ms=$3, last_checked_at=$4,
            last_seen_at=CASE WHEN $2='up' THEN NOW() ELSE last_seen_at END,
            updated_at=NOW()
-         WHERE id=$1`,
-        [msg.device_id, msg.status, msg.response_ms, new Date()]
+         WHERE id=$1 AND agent_id=$5`,
+        [msg.device_id, msg.status, msg.response_ms, new Date(), agent.id]
       );
       break;
     }
 
-    case 'snmp_result':
-      await sv.query(
-        `INSERT INTO snmp_results (device_id, ts, oid, metric_name, value, if_index, if_name, agent_id)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+    case 'snmp_result': {
+      // This path had NO check at all — not even the existence probe the ping and
+      // snmp_batch paths carried — so it relied solely on the device_id FK, which
+      // says nothing about ownership. Same INSERT...SELECT...WHERE EXISTS shape as
+      // ping_result, with the same `agent_id` ownership predicate.
+      const sins = await sv.query(
+        SQL_INSERT_SNMP_RESULT,
         [msg.device_id, msg.ts || new Date(), msg.oid, msg.metric_name,
          msg.value, msg.if_index || null, msg.if_name || null, agent.id]
       );
+      if (!sins.rowCount) noteUnowned(agent.id, msg.device_id);
       break;
+    }
 
     case 'snmp_batch':
       // Raw varbinds the agent fetched for its server-pushed plan. The server
@@ -785,4 +880,13 @@ async function handleAgentMessage(agent, msg) {
 module.exports = {
   startWsServer, connectedAgents, agentLogs, pushConfigToAgent, pushConfigToAgentId,
   disconnectAgent, sendToAgentId, mergeAgentRows,
+  // Exported for tests/test-rbac-scoping.js only — the exact SQL the three
+  // telemetry paths run, plus the frame cap. Nothing in the app reads these.
+  __testables: {
+    WS_MAX_PAYLOAD,
+    SQL_DEVICE_OWNED_PROBE,
+    SQL_INSERT_PING_RESULT,
+    SQL_INSERT_SNMP_RESULT,
+    ownedDeviceExists,
+  },
 };
