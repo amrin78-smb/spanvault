@@ -120,9 +120,17 @@ useApi<T>(path, pollMs=0) — React hook: fetch + optional interval polling. Ret
 
 ### auth.ts — NextAuth config
 ```
-authOptions: NextAuthOptions — CredentialsProvider(ssoToken only, no local login), resolves per-user
-  app-access (resolveUserApps, fail-open read of netvault.user_apps) and site/name lookups from
-  netvault users/user_sites when the SSO JWT omits them  [SENSITIVE: verifies JWT against NEXTAUTH_SECRET, reads netvault DB]
+authOptions: NextAuthOptions — CredentialsProvider(ssoToken only, no local login; declares only
+  email/password/ssoToken — NEVER name/role/userId), delegates to authorizeSsoToken  [SENSITIVE]
+authorizeSsoToken(credentials, deps?: { query?: NetvaultQuery; secret?: string }) => Promise<SsoUser|null>
+  — the whole SSO trust decision. Verifies the hub JWT (HS256 PINNED), REJECTS anything that is not
+  a hub SpanVault SSO token (requires payload.userId + payload.app==='spanvault', rejects typ==='agent'),
+  then derives role/name/email/sites from the netvault users + user_sites rows and app-access from
+  resolveUserApps (fail-open read of netvault.user_apps). Reads NOTHING from `credentials` but
+  `ssoToken`. `deps` exists only so tests/test-sso-authorize.js can stub the DB.
+  [SENSITIVE: verifies JWT against NEXTAUTH_SECRET, reads netvault DB, decides the session role]
+NetvaultQuery = (sql, params) => Promise<{ rows: any[] }>  — injectable query surface (type export)
+SsoUser { id, email, name, role, sites: number[], apps: string[] }  — the session subject (type export)
 ```
 
 ### mapExport.ts — client-side map export

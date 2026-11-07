@@ -36,6 +36,12 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.115.8': [
+    "Security: the sign-in step accepted the role that was sent with the request, which meant anyone able to present any token signed with the suite's shared secret - including the token held by every remote polling agent - could ask for, and be given, full administrator access. A user's role, name and identity now come from the NocVault user record and from the signed token's own verified contents only; nothing sent alongside the request is trusted.",
+    "Security: a sign-in token is now checked to be a sign-on token issued for this app specifically. A token issued for a sibling app, or an agent's own token, is refused instead of being accepted as a login.",
+    "Security: signing in as a user who has since been deleted from NocVault is now refused. Previously the role recorded in an in-flight token could still be honoured.",
+    "The sign-on page no longer sends your name, role or identity to the server at sign-in, because the server no longer has any reason to trust them.",
+  ],
   '1.115.7': [
     "Hardening: a failed update whose own rollback also failed left behind the last intact copy of the working install - and the next update attempt deleted it before snapshotting its own broken copy. The next attempt now stops and says where that copy is instead.",
   ],

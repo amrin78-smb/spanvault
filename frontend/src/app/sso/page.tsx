@@ -44,17 +44,17 @@ function SsoInner() {
         });
         if (!res.ok) throw new Error('Token verification failed');
 
-        // The hub's verify response is the authoritative profile
-        // ({ email, role, name, userId }) — pass it into signIn so the session
-        // has a real name/email even when the raw SSO JWT omits those claims.
-        const profile = await res.json().catch(() => ({} as any));
-
+        // Deliberately forward NOTHING but the token itself. This used to also
+        // pass the sso-verify response's { email, role, name, userId } into
+        // signIn, and authorize() trusted those fields — but signIn posts them
+        // as plain request-body strings, so anyone POSTing straight to
+        // /api/auth/callback/credentials could name their own role. Identity is
+        // now derived server-side from the signed token's claims plus the
+        // NetVault users row (frontend/src/lib/auth.ts), so the browser has no
+        // say in it. The /api/sso call above is kept as a gate: a token the hub
+        // will not verify never reaches signIn at all.
         const result = await signIn('credentials', {
           ssoToken: token,
-          email: profile?.email ?? '',
-          name: profile?.name ?? '',
-          role: profile?.role ?? '',
-          userId: String(profile?.userId ?? ''),
           redirect: false,
         });
         if (result?.error) throw new Error('Sign-in failed');
