@@ -9973,7 +9973,7 @@ app.get('/api/reports/executive', wrap(async (req, res) => {
   const caps = await getReportCaps();
 
   // Each core query degrades to a safe fallback row instead of 500ing the whole
-  // report, and logs WHICH query failed (visible in SpanVault-API.err.log) so a
+  // report, and logs WHICH query failed (visible in logs/api-err.log) so a
   // schema/data problem on the live DB is pinpointed without taking the page
   // down. The outer try/catch below is the backstop for anything non-query.
   const runQ = async (label, sql, params, fallbackRows) => {
