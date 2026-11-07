@@ -195,10 +195,13 @@ Start-Sleep -Seconds 5
 # for distributed polling agents. Ensure port 3010 is reachable from agent servers
 # (the loopback-only API on 3009 is NOT used by agents - they reach it through the
 # frontend proxy on 3008 for file downloads, and 3010 directly for the WS link).
+# Log = the NSSM stdout/stderr basename. It is deliberately NOT derived from
+# Name: these files must carry the names a FRESH install produces (see the
+# AppStdout/AppStderr comment in step 7).
 $Services = @(
-    @{ Name = 'SpanVault-API';       App = 'node'; Args = 'api\server.js';            Dir = $AppRoot },
-    @{ Name = 'SpanVault-Collector'; App = 'node'; Args = 'collector\collector.js';   Dir = $AppRoot },
-    @{ Name = 'SpanVault-App';       App = 'node'; Args = 'node_modules\next\dist\bin\next start -p 3008'; Dir = $Frontend }
+    @{ Name = 'SpanVault-API';       App = 'node'; Args = 'api\server.js';            Dir = $AppRoot; Log = 'api' },
+    @{ Name = 'SpanVault-Collector'; App = 'node'; Args = 'collector\collector.js';   Dir = $AppRoot; Log = 'collector' },
+    @{ Name = 'SpanVault-App';       App = 'node'; Args = 'node_modules\next\dist\bin\next start -p 3008'; Dir = $Frontend; Log = 'app' }
 )
 function Write-Step($msg)  { Write-Host "`n=== $msg ===" -ForegroundColor Cyan }
 function Write-Ok($msg)    { Write-Host "  [OK] $msg"   -ForegroundColor Green }
@@ -1314,6 +1317,13 @@ if (-not $nodeCmd) {
     Fail-Update -Stage 'service-start' -Message "node not found on PATH when registering services - cannot determine node.exe path for NSSM. Check that Node.js is installed and PATH includes it."
 }
 $nodeExe = $nodeCmd.Source
+# NSSM's stdout/stderr for these services go to <AppRoot>\logs, which is NOT
+# <InstallDir>\logs: on a suite install $InstallDir is the PARENT of $AppRoot
+# (see the InstallDir derivation near the top). The transcript/lock/status files
+# live in <InstallDir>\logs and that folder is created up there; this one has to
+# be ensured here, or NSSM is pointed at a path it cannot write.
+$svcLogDir = Join-Path $AppRoot 'logs'
+New-Item -ItemType Directory -Force -Path $svcLogDir | Out-Null
 foreach ($svc in $Services) {
     # Same guard as the stop section: probe existence with sc.exe query rather
     # than nssm status, which would raise NativeCommandError for a service that
@@ -1348,15 +1358,27 @@ foreach ($svc in $Services) {
     $null = & $nssm set $svc.Name Application       $nodeExe              2>&1
     $null = & $nssm set $svc.Name AppDirectory      $svc.Dir             2>&1
     $null = & $nssm set $svc.Name AppParameters     $applyArgs           2>&1
-    $null = & $nssm set $svc.Name AppStdout         (Join-Path $InstallDir "logs\$($svc.Name).log")     2>&1
-    $null = & $nssm set $svc.Name AppStderr         (Join-Path $InstallDir "logs\$($svc.Name).err.log") 2>&1
+    # ⛔ THESE TWO PATHS MUST MATCH WHAT A FRESH INSTALL PRODUCES, NOT THIS
+    # SCRIPT'S SERVICE NAMES. The suite installer registers the three services
+    # with <AppRoot>\logs\api|app|collector.log + ...-err.log
+    # (Install-NocVault-Suite.ps1, "NSSM - SpanVault-*" blocks), and the
+    # post-install tester crash-scans exactly SpanVault\app\logs\collector-err.log
+    # (Test-NocVault-Suite.ps1 section 10d). This block used to re-point NSSM at
+    # <InstallDir>\logs\<ServiceName>.log / .err.log - a different FOLDER and a
+    # different NAME - so the first update after a fresh install silently moved
+    # the collector's stderr out from under the tester: it then found no file and
+    # reported a crash-looping collector as a benign "no error log ... (often a
+    # clean start)" INFO, while the stale files left behind still showed frozen
+    # output to anyone reading them. Keep these in sync with the installer.
+    $null = & $nssm set $svc.Name AppStdout         (Join-Path $svcLogDir "$($svc.Log).log")     2>&1
+    $null = & $nssm set $svc.Name AppStderr         (Join-Path $svcLogDir "$($svc.Log)-err.log") 2>&1
     $null = & $nssm set $svc.Name AppRotateFiles    1                    2>&1
     $null = & $nssm set $svc.Name AppRotateBytes    10485760             2>&1
     $null = & $nssm set $svc.Name Start             SERVICE_AUTO_START   2>&1
     $null = & $nssm set $svc.Name AppExit Default   Restart              2>&1
 }
-# logs\ is already created near the top of the script (transcript setup) —
-# no need to re-create it here.
+# <InstallDir>\logs is already created near the top of the script (transcript
+# setup), and <AppRoot>\logs just above this loop — no need to re-create either.
 
 Write-Step 'Starting services'
 foreach ($svc in $Services) {

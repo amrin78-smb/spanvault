@@ -44,6 +44,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.115.10': [
+    "Fixed: the updater pointed the three services' output logs at a different folder and different filenames than a fresh install creates, so after the first update the post-install test was scanning for crash logs that nothing wrote any more - and reported a crash-looping collector as a clean start. Log files move back to the folder a fresh install uses; any files left in the old location can be deleted.",
+  ],
   '1.115.9': [
     "Security: sharing a network map publicly is now an administrator action, and maps are limited to the sites you are assigned to. Previously a site administrator could list every map in the estate, publish one built for a site they have no access to, and then read its devices, addresses and live status with no sign-in at all. Note the consequence: a map that spans sites you are not assigned to is no longer listed for you.",
     "Security: wireless controller and access-point views, agent views, the dependency tree, maintenance windows, capacity and threshold recommendations, and the dashboard incident feed now all respect your site assignments. Each had a sibling view beside it that always did.",
