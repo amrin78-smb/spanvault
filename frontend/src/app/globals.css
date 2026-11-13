@@ -2632,7 +2632,12 @@ body.sv-noc .sv-content:has(.sv-sticky-top) > :first-child { padding-top: 28px; 
   font-size: var(--text-sm); color: var(--text-muted);
   line-height: 1.5; padding: 0 10px; margin-bottom: var(--space-5);
 }
-.settings-nav-hub a { color: var(--primary); font-weight: 600; text-decoration: none; }
+/* ⛔ --text-primary, NOT --primary. The brand red measures 3.17:1 on the dark
+   page background at 12px, under the 4.5:1 floor - the same defect the
+   transport panel's HUB_LINK fix closed one level in, missed here because
+   the rail link shipped in the same batch. Weight + underline carry the
+   affordance instead of hue. */
+.settings-nav-hub a { color: var(--text-primary); font-weight: 700; text-decoration: underline; }
 .settings-nav-hub a:hover { text-decoration: underline; }
 
 @media (max-width: 900px) {
