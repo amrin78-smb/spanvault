@@ -98,6 +98,11 @@ and `collector/collector.js` (`sendAlertEmail()` → alerts, recovery, escalatio
 `netvault.smtp_config` (hub-owned, netvault 1.65.1+) over `NETVAULT_DB_*` as the `netvault` role —
 no new env var, no new grant. The password format is a cross-app contract byte-identical to
 `ddivault/collector/credStore.js` and `net-vault/lib/credStore.ts`.
+⛔ Since 1.117.0 the four local transport keys (`smtp_host`/`_port`/`_user`/`_pass`) are
+READ-ONLY in the app — `PUT /api/settings` drops them and the Settings page no longer offers
+them — but **this module must keep READING them**: they are the fallback for an install whose
+hub has not been updated yet. Removing the local branch would break mail on exactly those
+installs.
 
 ### reportScheduler.js — scheduled report email delivery (460 lines)
 ```

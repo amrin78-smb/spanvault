@@ -45,6 +45,12 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.117.0': [
+    'The mail server is now configured in one place for the whole NocVault suite. Settings - Notifications no longer offers its own SMTP server, port, username and password fields; instead it states which mail server SpanVault is actually sending through, and links to NetVault where it is set. Nothing is hidden: if this app is still falling back to a mail server stored here from before centralisation, the page names that server and says it is no longer editable here.',
+    "What remains editable here is what is genuinely this app's own: the From address, the alert recipients, the re-notify cooldown, recovery and baseline-anomaly alerting, and the whole notification routing section. Escalation and on-call are unchanged.",
+    'Saving settings no longer writes the mail server, port, username or password. They are still read, so an installation whose NetVault has not been updated yet keeps sending exactly as it does today.',
+    'Security: the mail library was upgraded from version 6 to version 10, closing a known high-severity advisory that had been deliberately deferred, plus a further batch of parsing flaws present in every version before 10. Both senders - alert, recovery and escalation email from the collector, and scheduled report email - were re-tested against the new version.',
+  ],
   '1.116.0': [
     'Mail server settings can now be shared across the whole NocVault suite. If an administrator configures and enables mail centrally in NetVault, SpanVault sends alert, recovery, escalation and scheduled-report email through it automatically - no change needed here. Nothing is required of existing installations: with central mail switched off, or on a NetVault that predates it, SpanVault keeps using its own mail server settings exactly as before.',
     "Alerts still arrive from SpanVault. Only the mail server itself is shared - the From address, recipients, routing rules, cooldown and escalation stay this app's own.",
@@ -11108,6 +11114,25 @@ const SECRET_PLACEHOLDER = '__unchanged__';
 // is no longer in the browser. So clearing is an explicit, separate token.
 const SECRET_CLEAR = '__clear__';
 
+// ── Mail transport keys: READ-ONLY from here on ───────────────
+//
+// The NocVault hub owns the single mail server the whole suite sends through
+// (`netvault.smtp_config`, read by `api/suiteSmtp.js`). These four keys survive
+// ONLY as the pre-centralization fallback for a hub that has not been updated
+// yet — `getSmtpSettings()` and `collector/collector.js` both still READ them,
+// and must keep doing so. Nothing may WRITE them any more: an editable field
+// here decided nothing on any install whose hub is configured, which is the
+// exact "a control that looks live but owns nothing" this change removes.
+//
+// ⛔ Ignored, not rejected. A 400 would fail the WHOLE settings save, and the
+// caller most likely to still send these is a browser tab holding the previous
+// JS bundle across a deploy — whose edits to retention or thresholds have
+// nothing to do with SMTP. The response names what it dropped, so a scripted
+// caller is never left believing it configured a mail server.
+//
+// Mirrors READ_ONLY_SMTP_KEYS in frontend/src/app/(app)/settings/page.tsx.
+const TRANSPORT_SETTING_KEYS = new Set(['smtp_host', 'smtp_port', 'smtp_user', 'smtp_pass']);
+
 app.get('/api/settings', wrap(async (req, res) => {
   if (userRank(req) < 2) return res.status(403).json({ error: 'Admin only' });
   const r = await sv.query(`SELECT key, value FROM app_settings`);
@@ -11160,11 +11185,22 @@ app.get('/api/audit', wrap(async (req, res) => {
 
 app.put('/api/settings', wrap(async (req, res) => {
   const b = req.body || {};
+  // Transport keys are dropped outright — the hub owns them (see
+  // TRANSPORT_SETTING_KEYS). GET still MASKS `smtp_pass`, because a legacy
+  // local password may still be in use and must not reach the browser.
+  const ignored = Object.keys(b).filter((k) => TRANSPORT_SETTING_KEYS.has(k));
   // A secret echoed back unchanged (the placeholder GET sent) is skipped, so
   // saving any other setting cannot clear a stored password the operator was
   // never shown. Sending a real value still replaces it; sending '' clears it.
+  //
+  // ⛔ Today SECRET_SETTING_KEYS holds only `smtp_pass`, which the line above
+  // already dropped, so the placeholder/clear handling below is unreachable.
+  // It is kept deliberately, not forgotten: it is the generic rule for ANY
+  // write-able secret setting, and deleting it would mean the next one added
+  // round-trips its masked placeholder straight into the database.
   const keys = Object.keys(b).filter(
-    (k) => !(SECRET_SETTING_KEYS.has(k) && String(b[k]) === SECRET_PLACEHOLDER),
+    (k) => !TRANSPORT_SETTING_KEYS.has(k)
+      && !(SECRET_SETTING_KEYS.has(k) && String(b[k]) === SECRET_PLACEHOLDER),
   );
   for (const k of keys) {
     const raw = b[k];
@@ -11176,7 +11212,7 @@ app.put('/api/settings', wrap(async (req, res) => {
       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
     `, [k, value]);
   }
-  res.json({ ok: true, updated: keys.length });
+  res.json({ ok: true, updated: keys.length, ignored });
 }));
 
 // ── Notification routing ──────────────────────────────────────

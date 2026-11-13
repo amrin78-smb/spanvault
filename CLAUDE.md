@@ -76,13 +76,41 @@ Tracked npm-audit findings deliberately deferred (triaged 2026-06-26). NOT fixab
 safe `npm audit fix` — each needs a breaking change, so schedule as deliberate, tested
 work. **NEVER run `npm audit fix --force`.**
 
-- **nodemailer → v9 (root).** The current v6 line carries a high advisory
-  (GHSA-p6gq-j5cr-w38f: the message-level `raw` option bypasses
-  `disableFileAccess`/`disableUrlAccess` → file-read/SSRF) plus an addressparser ReDoS.
-  The only fix is the breaking major **9.0.1**. Not currently reachable — SMTP config is
-  admin-only and `api/reportScheduler.js` never uses the `raw` option — so low risk on the
-  internal LAN. Upgrade to nodemailer 9.x in a maintenance window and re-test the scheduled
-  report email path.
+- **~~nodemailer → v9 (root)~~ — DONE in 1.117.0 (`^6.9.13` → `^10.5.0`).**
+  GHSA-p6gq-j5cr-w38f (the message-level `raw` option bypassing
+  `disableFileAccess`/`disableUrlAccess` → file-read/SSRF) and the v6 addressparser
+  ReDoS are closed; `npm audit` no longer reports either. Both senders
+  (`collector/collector.js`'s `sendAlertEmail` and `api/reportScheduler.js`'s
+  `runAndEmailReport`) were re-checked against the three breaking majors and
+  needed **no code change**: 7.0.0 removed the SES v2/v3 transports (SMTP only
+  here), 8.0.0 renamed the error code `NoAuth` → `ENOAUTH` (no string in this repo
+  reads either — `mailErrorSummary()` in `api/rbacScope.js` only stringifies
+  whatever `e.code`/`e.responseCode` is), and 9.0.0 began verifying TLS when
+  **fetching remote content** for an attachment `href`/`path`, an OAuth2 endpoint
+  or a proxy CONNECT — none of which exist here (the only attachment is an
+  in-memory `content: pdfBuffer`).
+  ⛔ **Verify a bump the way the SERVER resolves it.** This dev box is node 24 /
+  npm 11, production is node 22 / npm 10, and npm 11 silently overrides peer
+  conflicts npm 10 refuses — a netvault bump that passed `npm install`/`test`/
+  `build` here failed the production deploy with `ERESOLVE`. So check
+  `peerDependencies` of the root deps (none declares a nodemailer peer; the only
+  nodemailer peer in the repo is next-auth's **optional** `^7.0.7` in
+  `frontend/`, which has no nodemailer dependency at all) and run
+  `npx -y npm@10 install --dry-run --no-audit --no-fund` on a tree with no
+  `node_modules`, confirming **zero** ERESOLVE. Never reach for
+  `--legacy-peer-deps` — the installer runs a plain install on a customer's box.
+- **~~nodemailer 9 → 10~~ — ALSO DONE in 1.117.0.** The 9.1.1 bump was found to leave
+  the root still flagged high: 12 advisories against `nodemailer <=10.1.3`, fixed only in
+  the 10.x line. The one that mattered is **GHSA-6vj9-mwq6-2f5v** (a process-global DNS
+  cache reusing the TLS `servername` across transports → cross-tenant SMTP credential
+  disclosure); the rest are addressparser/SMTP-parsing ReDoS and envelope-mangling bugs.
+  Reachability here was low, but shipping 9.x would have meant redoing this immediately,
+  so it went to `^10.5.0` in the same change. 10.0.0's only breaking change is
+  **Node.js >= 20**; the server runs 22. Verified with a clean-tree `npm@10 ci --dry-run`
+  (zero ERESOLVE) and `npm audit` now reports nodemailer CLEAR. ⛔ Note this was closed
+  WITHOUT `npm audit fix --force`, which remains banned.
+
+
 - **Next.js 14 → 15 (frontend).** The frontend is on the latest 14.2.x patch (14.2.35),
   but the remaining `next` advisories (RSC/image-optimizer DoS, rewrites request-smuggling,
   CSP-nonce XSS, middleware cache-poisoning) are only patched in the 15.x/16.x line — there

@@ -7,6 +7,10 @@ import { useApi, apiSend } from '@/lib/api';
 import { useRbac } from '@/lib/rbac';
 import { Loading, ErrorBox, Empty, EmptyState, fmtTime, PageHeader, TableSkeleton, Pager, useClientPagination, useConfirm, useToast, useTableSort, sortRows, SortTh, Tabs, useUrlTab, InfoTip, Notice, SevTag, LoadError, TableScroll, NoResults } from '@/components/ui';
 import { useLicense } from '@/components/LicenseGuard';
+// Hub origin derived from the current page's own hostname — the same helper the
+// agent pages use. ⛔ Never a hardcoded host and never a raw NEXT_PUBLIC_* read:
+// see CLAUDE.md's "No hardcoded IPs or hostnames".
+import { getHubUrl } from '@/components/AgentBits';
 
 const TABS = [
   { key: 'general', label: 'General' },
@@ -21,6 +25,17 @@ const TABS = [
   // update-available dot moved with it.
   { key: 'about', label: 'About & Updates' },
 ];
+
+/**
+ * Mail TRANSPORT keys this app reads but no longer writes.
+ *
+ * The NocVault hub owns the one mail server the suite sends through; these four
+ * `app_settings` keys survive only as the pre-centralization fallback that
+ * `api/suiteSmtp.js` still honours for a hub that has not been updated yet.
+ * ⛔ Must stay in step with `TRANSPORT_SETTING_KEYS` in `api/server.js`, which
+ * drops the same four on the write path.
+ */
+const READ_ONLY_SMTP_KEYS = new Set(['smtp_host', 'smtp_port', 'smtp_user', 'smtp_pass']);
 
 export default function SettingsPage() {
   const { canManageSettings, sessionLoading } = useRbac();
@@ -80,7 +95,16 @@ export default function SettingsPage() {
     setSaving(true);
     setSaveErr(null);
     try {
-      await apiSend('/api/settings', 'PUT', form);
+      // The four transport keys are loaded (so the Notifications tab can name a
+      // legacy local server that is still live) but never written back: the hub
+      // owns the transport and PUT /api/settings ignores them anyway. Dropping
+      // them here keeps the request honest rather than relying on the server to
+      // discard them.
+      const body: Record<string, string> = {};
+      for (const k of Object.keys(form)) {
+        if (!READ_ONLY_SMTP_KEYS.has(k)) body[k] = form[k];
+      }
+      await apiSend('/api/settings', 'PUT', body);
       setBaseline(form); // saved values are the new clean baseline
       toast('Settings saved');
     } catch (e: any) {
@@ -235,13 +259,13 @@ function settingLabel(key: string): string {
   const wl = WIRELESS_ALERT_FIELDS.find((f) => f.key === key);
   if (wl) return wl.label.replace(/\s*\([^)]*\)$/, '');
   const SPECIAL: Record<string, string> = {
-    smtp_host: 'SMTP host', smtp_port: 'SMTP port', smtp_user: 'SMTP username',
-    // No `smtp_secure` entry: SpanVault has never had such a field or setting.
-    // TLS on the LOCAL transport is derived from the port (465 = implicit TLS);
-    // the explicit boolean lives on the hub's `smtp_config.secure` and is read
-    // through api/suiteSmtp.js, not through app_settings. Removed in 1.116.0 —
-    // it only ever labelled a key nothing could produce.
-    smtp_pass: 'SMTP password', smtp_from: 'From address',
+    // No transport keys here any more (`smtp_host`/`_port`/`_user`/`_pass`).
+    // They are no longer editable — the hub owns the transport — so they can
+    // never appear in a pending-changes list, and a label for a key nothing can
+    // produce is exactly the rot the removed `smtp_secure` entry was. TLS on a
+    // surviving LOCAL row is still derived from the port (465 = implicit TLS);
+    // the explicit boolean lives on the hub's `smtp_config.secure`.
+    smtp_from: 'From address',
     alert_email_to: 'Default alert recipients', sla_target_pct: 'SLA target',
     retention_raw_days: 'Raw sample retention', retention_rollup_days: 'Daily rollup retention',
     retention_audit_days: 'Audit log retention',
@@ -390,16 +414,21 @@ function numFieldErrors(form: Record<string, string>): Record<string, string> {
   }
   return out;
 }
-// Mirrors SECRET_PLACEHOLDER / SECRET_CLEAR in api/server.js: the value
-// GET /api/settings substitutes for a stored secret, and the token that asks
-// the server to clear one. Must stay in step with the server.
-const SECRET_PLACEHOLDER = '__unchanged__';
-const SECRET_CLEAR = '__clear__';
+// ── Mail settings this app still owns ─────────────────────────
+//
+// ⛔ The TRANSPORT (host / port / username / password) is NOT here any more.
+// The NocVault hub owns the one mail server the whole suite sends through
+// (NetVault → Settings → Notifications); SpanVault only reads it, through
+// `api/suiteSmtp.js`. Offering editable host/port/user/password fields here
+// implied SpanVault could still decide where mail goes, which it cannot — and
+// `PUT /api/settings` now ignores those four keys outright, so a field that
+// looked editable would have silently done nothing.
+//
+// What remains is genuinely per-app: the From identity (so a recipient still
+// sees SpanVault as the sender on the shared transport) and who gets alerted.
+// The EFFECTIVE transport is stated read-only by <MailTransport> instead —
+// never hidden, including when a legacy local row is still the one in use.
 const SMTP_FIELDS = [
-  { key: 'smtp_host', label: 'SMTP Host' },
-  { key: 'smtp_port', label: 'SMTP Port', short: true },
-  { key: 'smtp_user', label: 'SMTP User' },
-  { key: 'smtp_pass', label: 'SMTP Password', type: 'password' },
   { key: 'smtp_from', label: 'From Address' },
   { key: 'alert_email_to', label: 'Alert Recipients' },
 ];
@@ -520,16 +549,126 @@ function GeneralSettings({ settings, form, set, save, saving, saveErr, dirty, nu
 
 /**
  * Which SMTP transport the server is actually sending through.
- * `hub` = the suite-wide config owned by NetVault; `local` = the fields below.
+ * `hub` = the suite-wide config owned by NetVault; `local` = a legacy
+ * `app_settings` row still held by this app.
  * Never carries the username or password — only enough to name the transport.
  */
 type SmtpSource = { source: 'hub' | 'local'; hub: { host: string; port: number; secure: boolean } | null };
+
+/**
+ * The EFFECTIVE mail transport, stated read-only.
+ *
+ * SpanVault no longer owns a mail server, so there is nothing to edit here —
+ * but "nothing to edit" must not become "nothing to see". An operator whose
+ * alerts stop arriving needs to know WHICH server this app is actually handing
+ * mail to, and there are three genuinely different answers:
+ *
+ *   hub           — the suite transport in NetVault. Named, with a link.
+ *   local-legacy  — the hub has none (or is unreachable), and a `smtp_host`
+ *                   left in this app's own `app_settings` is still being used.
+ *                   ⛔ Named too. Silently hiding a live config is the one
+ *                   thing this panel must never do, however deprecated it is.
+ *   none          — nothing anywhere. Said plainly, pointing at the hub, with
+ *                   no suggestion that SpanVault can be made to fix it itself.
+ *
+ * `localHost` is the stored `app_settings.smtp_host` (plain text, never the
+ * password — GET /api/settings masks that). It distinguishes the last two
+ * states, which `/api/settings/smtp-source` reports identically as 'local'.
+ *
+ * Top-level by the no-sub-components rule, though nothing here takes input.
+ */
+function MailTransport({ loading, error, source, hub, localHost }: {
+  loading: boolean;
+  error: string | null;
+  source: 'hub' | 'local' | null;
+  hub: { host: string; port: number; secure: boolean } | null;
+  localHost: string;
+}) {
+  const hubUrl = getHubUrl();
+  const hubLink = (
+    <a href={`${hubUrl}/settings?tab=notifications`} target="_blank" rel="noreferrer"
+      style={{ color: 'var(--primary)', fontWeight: 600 }}>
+      NetVault → Settings → Notifications
+    </a>
+  );
+
+  let body: React.ReactNode;
+  if (loading && !source) {
+    body = <span className="sv-muted">Checking which mail server is in use…</span>;
+  } else if (error) {
+    // The transport itself is unaffected — only our ability to describe it.
+    body = <span className="sv-muted">The mail server in use could not be read ({error}).</span>;
+  } else if (source === 'hub' && hub) {
+    body = (
+      <>
+        <div style={{ marginBottom: 6 }}>
+          Managed centrally by the NocVault hub. SpanVault sends through{' '}
+          <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, color: 'var(--text-primary)' }}>
+            {hub.host}:{hub.port}
+          </span>{hub.secure ? ' over implicit TLS' : ''}.
+        </div>
+        <div className="sv-muted" style={{ fontSize: 'var(--text-sm)' }}>
+          Change the server, credentials or encryption in {hubLink}. The From address below stays
+          SpanVault&apos;s own, so alerts still arrive from this app.
+        </div>
+      </>
+    );
+  } else if (localHost) {
+    body = (
+      <>
+        <div style={{ marginBottom: 6 }}>
+          No suite-wide mail server is switched on at the hub, so SpanVault is still sending
+          through the mail server stored in this app:{' '}
+          <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, color: 'var(--text-primary)' }}>
+            {localHost}
+          </span>.
+        </div>
+        <div className="sv-muted" style={{ fontSize: 'var(--text-sm)' }}>
+          It keeps working, but it is no longer editable here. Configure the suite mail server in{' '}
+          {hubLink} and every app switches to it automatically.
+        </div>
+      </>
+    );
+  } else {
+    body = (
+      <>
+        <div style={{ marginBottom: 6 }}>
+          No mail server is configured, so no email can be sent — alerts, recovery notices,
+          escalation and scheduled reports are all affected.
+        </div>
+        <div className="sv-muted" style={{ fontSize: 'var(--text-sm)' }}>
+          The mail server for the whole suite is configured once, in {hubLink}. It cannot be set
+          from SpanVault.
+        </div>
+      </>
+    );
+  }
+
+  return (
+    <div style={{
+      border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
+      background: 'var(--surface-subtle)', padding: '10px 12px', marginBottom: 16,
+      fontSize: 'var(--text-base)', lineHeight: 1.45,
+    }}>
+      <div style={{
+        fontSize: 'var(--text-xs)', textTransform: 'uppercase', letterSpacing: '0.04em',
+        color: 'var(--text-muted)', fontWeight: 700, marginBottom: 6,
+      }}>
+        Mail server in use
+      </div>
+      {body}
+    </div>
+  );
+}
 
 // ── Notifications settings (email + notification routing) ──────
 function NotificationSettings({ settings, form, set, save, saving, saveErr, dirty, hasNumErrors, changedFields }: SettingsFormProps) {
   // Must be called before the early returns below — hooks cannot be conditional.
   const smtpSource = useApi<SmtpSource>('/api/settings/smtp-source');
-  const hubSmtp = smtpSource.data?.source === 'hub' ? smtpSource.data.hub : null;
+  // The STORED host, not the form's: the field is no longer editable, so the
+  // form can only ever echo what was loaded — and reading the saved value keeps
+  // this honest even if some other writer changes it.
+  const localSmtpHost = String(settings.data?.smtp_host || '').trim();
 
   if (settings.loading && !settings.data) return <Loading />;
   if (settings.error) return <ErrorBox message={settings.error} />;
@@ -547,60 +686,26 @@ function NotificationSettings({ settings, form, set, save, saving, saveErr, dirt
                 onChange={(e) => set('email_alerts_enabled', e.target.checked ? 'true' : 'false')} />
               Enable email alerts
             </label>
-            {hubSmtp && (
-              <Notice tone="info">
-                <span>
-                  The mail server is managed centrally in NetVault — SpanVault sends through{' '}
-                  <strong>{hubSmtp.host}:{hubSmtp.port}</strong>{hubSmtp.secure ? ' over TLS' : ''}.
-                  The server fields below are the fallback: they are used only if central mail is
-                  turned off in NetVault. The From address is always SpanVault&apos;s own, so alerts
-                  still arrive from this app.
-                </span>
-              </Notice>
-            )}
+            <MailTransport
+              loading={smtpSource.loading}
+              error={smtpSource.error}
+              source={smtpSource.data?.source ?? null}
+              hub={smtpSource.data?.source === 'hub' ? smtpSource.data.hub : null}
+              localHost={localSmtpHost}
+            />
+            {/* Only the per-app identity and recipients remain — the transport
+                is the hub's (see <MailTransport> above and SMTP_FIELDS). */}
             <div className="sv-form-grid-text">
-              {SMTP_FIELDS.map((f) => {
-                // The server never sends a stored secret's value — it sends
-                // SECRET_PLACEHOLDER so the page can tell "set" from "empty"
-                // without the cleartext crossing the wire.
-                //
-                // That makes an empty field ambiguous ("never set" vs "I
-                // deleted what I typed"), so clearing is a separate, explicit
-                // action rather than "leave it blank": deleting what you typed
-                // returns to "unchanged", and only the Clear button removes a
-                // stored password.
-                const isSecret = f.type === 'password';
-                const stored = isSecret && form[f.key] === SECRET_PLACEHOLDER;
-                const clearing = isSecret && form[f.key] === SECRET_CLEAR;
-                return (
-                  <label className="sv-field" key={f.key}>{f.label}
-                    <input
-                      className="sv-input"
-                      type={f.type || 'text'}
-                      value={stored || clearing ? '' : (form[f.key] ?? '')}
-                      placeholder={stored ? 'Stored — type to replace' : clearing ? 'Will be cleared on save' : undefined}
-                      onChange={(e) => set(f.key, isSecret && e.target.value === '' ? SECRET_PLACEHOLDER : e.target.value)}
-                      autoComplete={isSecret ? 'new-password' : undefined}
-                    />
-                    {stored && (
-                      <span className="sv-muted" style={{ fontSize: 'var(--text-xs)' }}>
-                        A password is stored. It is never sent to the browser.{' '}
-                        <button type="button" className="sv-link-btn" onClick={() => set(f.key, SECRET_CLEAR)}>
-                          Clear it
-                        </button>
-                      </span>
-                    )}
-                    {clearing && (
-                      <span style={{ fontSize: 'var(--text-xs)', color: 'var(--tint-warn-fg)', fontWeight: 600 }}>
-                        The stored password will be removed when you save.{' '}
-                        <button type="button" className="sv-link-btn" onClick={() => set(f.key, SECRET_PLACEHOLDER)}>
-                          Keep it instead
-                        </button>
-                      </span>
-                    )}
-                  </label>
-                );
-              })}
+              {SMTP_FIELDS.map((f) => (
+                <label className="sv-field" key={f.key}>{f.label}
+                  <input
+                    className="sv-input"
+                    type="text"
+                    value={form[f.key] ?? ''}
+                    onChange={(e) => set(f.key, e.target.value)}
+                  />
+                </label>
+              ))}
             </div>
             <div style={{ marginTop: 14, display: 'flex', flexWrap: 'wrap', gap: 24, alignItems: 'flex-end' }}>
               <label className="sv-field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8, margin: 0 }}>
@@ -629,6 +734,10 @@ function NotificationSettings({ settings, form, set, save, saving, saveErr, dirt
         <aside className="sv-info-card">
           <h3>How delivery works</h3>
           <dl>
+            <dt>Mail server</dt>
+            <dd>One server for the whole suite, configured in NetVault. SpanVault keeps its own From address and recipients so its alerts stay identifiable in an inbox.</dd>
+            <dt>From address</dt>
+            <dd>What recipients see as the sender. Left blank, SpanVault falls back to the mail server&apos;s own address.</dd>
             <dt>Re-notify cooldown</dt>
             <dd>Minimum minutes between emails for the same device and alert type — stops a flapping alert from flooding your inbox. 0 disables the throttle entirely.</dd>
             <dt>Recovery emails</dt>
