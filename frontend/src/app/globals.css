@@ -60,6 +60,12 @@
   --text-2xl:  28px;  /* stat numbers / display */
   --font-mono: 'JetBrains Mono', 'Fira Code', 'Consolas', 'Courier New', monospace;
 
+  /* Spacing scale (suite standard — copied verbatim from netvault's globals.css,
+     which is where the shared .settings-layout rail below gets its gaps from.
+     Sizes do not change per theme. Use these instead of a literal px gap. */
+  --space-1: 4px;  --space-2: 8px;  --space-3: 12px; --space-4: 16px;
+  --space-5: 20px; --space-6: 24px; --space-8: 32px; --space-10: 40px;
+
   /* Status */
   --green:   #16a34a;
   --yellow:  #d97706;
@@ -1247,15 +1253,19 @@ label.sv-field .sv-input, label.sv-field .sv-select { font-weight: 400; }
 /* Settings > General: a threshold panel paired with a short contextual
    explainer, mirroring how a well-organized settings page uses its freed-up
    width (info, not blank canvas) instead of just capping the panel and
-   leaving the rest of the row empty. The aside sticks just below the
-   sticky tab bar (45px, measured) so it stays visible while the — often
-   much taller — panel beside it scrolls. Stacks to one column below 900px. */
+   leaving the rest of the row empty. The aside sticks near the top of the
+   content scroller so it stays visible while the — often much taller — panel
+   beside it scrolls. Stacks to one column below 900px.
+   (The offset used to be 45px, measured against the sticky horizontal tab
+   strip that sat above it. That strip is gone — Settings navigates from the
+   grouped `.settings-layout` rail now — so the aside offsets by the same 16px
+   as the rail does, from the same origin.) */
 .sv-settings-row { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 20px; align-items: start; max-width: 1180px; margin-bottom: 20px; }
 @media (max-width: 900px) { .sv-settings-row { grid-template-columns: 1fr; } }
 
 .sv-info-card {
   background: var(--tint-info); border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 16px 18px; position: sticky; top: 45px;
+  padding: 16px 18px; position: sticky; top: 16px;
 }
 .sv-info-card h3 { margin: 0 0 12px; font-size: var(--text-base); font-weight: 700; color: var(--tint-info-fg); }
 .sv-info-card dl { margin: 0; }
@@ -2553,6 +2563,84 @@ body.sv-noc .sv-content:has(.sv-sticky-top) > :first-child { padding-top: 28px; 
 /* A page with a bottom-sticky save bar must reserve room for it, or the last
    field (and any error under it) scrolls underneath and cannot be reached. */
 .sv-settings { padding-bottom: 64px; }
+
+/* ── Settings: grouped sub-navigation ────────────────────────────
+   A rail beside the panel instead of one long horizontal tab strip.
+   Collapses above the content on narrow screens rather than forcing a
+   two-column layout onto a phone.
+   ⛔ Copied VERBATIM from netvault's globals.css so all four suite apps stay
+   byte-identical here — do not "tidy" it in one app only. */
+.settings-layout {
+  display: grid;
+  grid-template-columns: 196px minmax(0, 1fr);
+  gap: var(--space-8);
+  align-items: start;
+}
+.settings-nav { position: sticky; top: calc(var(--header-height) + 16px); }
+.settings-nav-group { margin-bottom: var(--space-5); }
+.settings-nav-label {
+  font-size: var(--text-xs); font-weight: 700; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--text-muted);
+  padding: 0 10px 6px;
+}
+.settings-nav-item {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 8px 10px; margin-bottom: 1px;
+  border: none; background: none; cursor: pointer;
+  border-radius: var(--radius-sm);
+  font-family: inherit; font-size: var(--text-md);
+  color: var(--text-secondary); text-align: left;
+}
+.settings-nav-item:hover { background: var(--surface-subtle); color: var(--text-primary); }
+.settings-nav-item[aria-current="page"] {
+  background: var(--primary-light);
+  color: var(--primary);
+  font-weight: 600;
+}
+.settings-nav-count {
+  font-size: var(--text-xs); color: var(--text-muted);
+  background: var(--surface-subtle); border: 1px solid var(--border);
+  border-radius: var(--radius-pill); padding: 1px 7px; flex-shrink: 0;
+}
+.settings-panel { min-width: 0; }
+
+@media (max-width: 900px) {
+  .settings-layout { grid-template-columns: 1fr; gap: var(--space-5); }
+  .settings-nav { position: static; display: flex; flex-wrap: wrap; gap: 4px 14px; }
+  .settings-nav-group { margin-bottom: 0; display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+  .settings-nav-label { padding: 0 4px 0 0; }
+  .settings-nav-item { width: auto; }
+}
+
+/* ⛔ The ONE deliberate deviation from the verbatim block above, and the reason
+   is structural, not cosmetic: NetVault scrolls the WINDOW under a fixed page
+   header, so its rail offsets by --header-height. SpanVault scrolls
+   `.sv-content` and its header sits OUTSIDE that scroller, so a sticky offset
+   is already measured from the top of the content area — the NetVault calc
+   would float the rail 88px down the page with nothing in the gap. Same 16px
+   of breathing room, measured from the right origin. */
+.settings-nav { top: 16px; }
+
+/* Standing hub pointer at the head of the rail. Quiet chrome, NOT an alert:
+   muted secondary-size type, the link in the brand colour, no tint and no
+   border box. It is a signpost for the four things this app genuinely does
+   not own (users, sign-on, licence, mail server).
+   ⛔ The spec block above has no slot for this class — LogVault's port settled
+   it first and these exact declarations are now shared by all three
+   satellites. Keep them byte-identical; do not restyle in one app only. */
+.settings-nav-hub {
+  font-size: var(--text-sm); color: var(--text-muted);
+  line-height: 1.5; padding: 0 10px; margin-bottom: var(--space-5);
+}
+.settings-nav-hub a { color: var(--primary); font-weight: 600; text-decoration: none; }
+.settings-nav-hub a:hover { text-decoration: underline; }
+
+@media (max-width: 900px) {
+  /* The nav is a wrapping flex row here, so the pointer has to claim a whole
+     line of its own - otherwise it sits inline with the first group's buttons
+     and reads as one of them. */
+  .settings-nav-hub { flex: 0 0 100%; padding: 0; margin-bottom: var(--space-3); }
+}
 
 /* ── Escalation timeline (Settings → Escalation & On-Call) ───── */
 .sv-esc-timeline { list-style: none; margin: 0 0 14px; padding: 0 0 0 4px; }

@@ -45,6 +45,13 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.117.1': [
+    'Settings is easier to navigate. The seven tabs that ran across the top of the page are now a grouped list down the left-hand side: System (general settings and maintenance windows), Alerting (alert rules, notifications, escalation and on-call), Records (the audit log) and About. Nothing moved out of the page and nothing changed inside any section - only how you get to them.',
+    'The alerting sections now sit together and read in the order they happen: what raises an alert, who is told about it, and what happens if nobody acts. Previously those three were separated by unrelated tabs.',
+    'Notifications shows how many default alert recipients are configured, so an empty recipient list is visible without opening the section.',
+    'Settings now states, once at the top, that users, single sign-on, licensing and the mail server are managed in NetVault, with a link straight there. The mail server card no longer repeats the same point in different words.',
+    'On a narrow screen or a small window the list folds above the settings content instead of forcing a two-column layout.',
+  ],
   '1.117.0': [
     'The mail server is now configured in one place for the whole NocVault suite. Settings - Notifications no longer offers its own SMTP server, port, username and password fields; instead it states which mail server SpanVault is actually sending through, and links to NetVault where it is set. Nothing is hidden: if this app is still falling back to a mail server stored here from before centralisation, the page names that server and says it is no longer editable here.',
     "What remains editable here is what is genuinely this app's own: the From address, the alert recipients, the re-notify cooldown, recovery and baseline-anomaly alerting, and the whole notification routing section. Escalation and on-call are unchanged.",

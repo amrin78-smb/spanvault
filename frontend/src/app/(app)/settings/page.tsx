@@ -26,6 +26,39 @@ const TABS = [
   { key: 'about', label: 'About & Updates' },
 ];
 
+const TAB_LABEL: Record<string, string> = Object.fromEntries(TABS.map((t) => [t.key, t.label]));
+
+/**
+ * Grouped settings navigation (the left rail).
+ *
+ * Seven tabs in one horizontal strip gave no hint that most of them belong
+ * together. The grouping below is conceptual, not a cosmetic split of the list:
+ *
+ *   System    — facts about THIS installation: how often it polls, what counts
+ *               as a problem, and the windows when it deliberately stays quiet.
+ *               Set once when the app is commissioned and rarely touched again.
+ *   Alerting  — the whole alert lifecycle, in the order it actually happens:
+ *               what raises an alert (Alert Rules), who gets told
+ *               (Notifications), and what happens if nobody acts
+ *               (Escalation & On-Call). These three are edited together — and
+ *               in the old strip they were separated by two unrelated tabs.
+ *   Records   — what already happened. Read-only history, not configuration,
+ *               which is why it does not sit under System.
+ *   About     — the build itself: version, suite and update state.
+ *
+ * Users, single sign-on, licensing and the mail server are deliberately absent:
+ * they live on the hub. The rail says so, once, at the top (`.settings-nav-hub`).
+ *
+ * ⛔ The keys here are the SAME keys the content blocks and the ?tab= deep-link
+ * handler use. A tab added to TABS but not to a group renders no nav button.
+ */
+const SETTINGS_GROUPS: [string, string[]][] = [
+  ['System', ['general', 'maintenance']],
+  ['Alerting', ['rules', 'notifications', 'escalation']],
+  ['Records', ['audit']],
+  ['About', ['about']],
+];
+
 /**
  * Mail TRANSPORT keys this app reads but no longer writes.
  *
@@ -78,6 +111,17 @@ export default function SettingsPage() {
   const changedFields = useMemo(() => Object.keys(form)
     .filter((k) => form[k] !== (baseline[k] ?? ''))
     .map((k) => settingLabel(k)), [form, baseline]);
+
+  // Nav count for Notifications: how many people the default alert recipients
+  // field names. Read straight out of the settings form this page has ALREADY
+  // loaded — ⛔ no extra request is made to produce a badge. (Nothing else on
+  // the rail has a count for the same reason: Alert Rules, Maintenance,
+  // Escalation and Audit all fetch their rows INSIDE their own tab, and Alert
+  // Rules' count is not even one number — it is four scope-dependent queries.)
+  const recipientCount = useMemo(() => String(form.alert_email_to || '')
+    .split(/[,;]/)
+    .map((s) => s.trim())
+    .filter(Boolean).length, [form.alert_email_to]);
 
   // Unsaved-change protection. A browser-level guard is all that is reliable
   // here: App Router gives no cancellable in-app navigation hook, so an
@@ -148,47 +192,92 @@ export default function SettingsPage() {
     <div className="sv-settings">
       {ToastUI}
       <PageHeader title="Settings" subtitle="Polling, thresholds, notifications, and alert rules." />
-      {/* The shared Tabs, not a hand-rolled strip: this is the app's main
-          settings navigation and it was the one place still rendering bare
-          buttons with no role=tablist, no aria-selected and no arrow keys. */}
-      <Tabs
-        sticky
-        ariaLabel="Settings sections"
-        active={tab}
-        onChange={(k) => setTab(k)}
-        tabs={TABS
-          .filter((t) => t.key !== 'audit' || canManageSettings)
-          .map((t) => (t.key === 'about' && updateAvail
-            ? {
-              ...t,
-              badge: (
-                <span
-                  title="Update available"
-                  style={{
-                    display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
-                    background: '#dc2626', marginLeft: 6, verticalAlign: 'middle',
-                  }}
-                />
-              ),
-            }
-            : t))}
-      />
-      {tab === 'general' && <GeneralSettings {...formProps} />}
-      {tab === 'notifications' && <NotificationSettings {...formProps} />}
-      {tab === 'escalation' && <EscalationSettings {...formProps} />}
-      {tab === 'rules' && <AlertRules />}
-      {/* The remaining tabs render through the same two-column shell as the
-          four above. Without it their panels take the full 1216px while the
-          others are capped at 860px by .sv-settings-row, so the content
-          visibly resized — a 356px jump — every time you changed tab. */}
-      {tab === 'maintenance' && <TabShell aside={MAINTENANCE_HELP}><Maintenance /></TabShell>}
-      {tab === 'audit' && canManageSettings && <TabShell aside={AUDIT_HELP}><AuditLog /></TabShell>}
-      {tab === 'about' && (
-        <TabShell aside={ABOUT_HELP}>
-          <SystemUpdates />
-          <AboutSettings />
-        </TabShell>
-      )}
+      {/* Grouped settings sub-navigation — the suite-standard `.settings-layout`
+          rail (same class names and CSS in all four NocVault apps), replacing a
+          single horizontal strip of seven tabs.
+
+          This is CHROME ONLY: every content block below keeps its own
+          `tab === '<key>'` guard and its own role gate, unchanged. The one role
+          filter the strip carried (Audit Log behind canManageSettings) is
+          carried over verbatim, and the content block still repeats it — a nav
+          filter alone only hides the button. */}
+      <div className="settings-layout">
+        <nav className="settings-nav" aria-label="Settings sections">
+          {/* Standing signpost, not a warning. Users, single sign-on, licensing
+              and — since 1.117.0 — the mail server are all owned by the hub;
+              SpanVault has no screen for any of them, so the rail says where
+              they live rather than leaving someone hunting through seven tabs.
+              Hub origin is derived from the current page's hostname
+              (getHubUrl()); ⛔ never a hardcoded host. */}
+          <div className="settings-nav-hub">
+            Users, sign-on, licence and mail are managed in{' '}
+            <a href={`${getHubUrl()}/settings`} target="_blank" rel="noreferrer">NetVault&nbsp;→</a>
+          </div>
+          {SETTINGS_GROUPS.map(([group, keys]) => {
+            // Carried over UNCHANGED from the tab strip this replaces.
+            const visible = keys.filter((k) => k !== 'audit' || canManageSettings);
+            if (visible.length === 0) return null;
+            return (
+              <div key={group} className="settings-nav-group">
+                <div className="settings-nav-label">{group}</div>
+                {visible.map((key) => (
+                  <button
+                    key={key}
+                    type="button"
+                    className="settings-nav-item"
+                    aria-current={tab === key ? 'page' : undefined}
+                    onClick={() => setTab(key)}
+                  >
+                    <span style={{ flex: 1, minWidth: 0, textAlign: 'left' }}>{TAB_LABEL[key]}</span>
+                    {/* ⛔ `settings-nav-count` alone, NOT netvault's
+                        `tnum settings-nav-count`: SpanVault has no `.tnum`
+                        utility and one is not worth inventing for a single
+                        one-or-two-digit badge. */}
+                    {key === 'notifications' && recipientCount > 0 && (
+                      <span
+                        className="settings-nav-count"
+                        title={`${recipientCount} default alert recipient${recipientCount === 1 ? '' : 's'}`}
+                      >
+                        {recipientCount}
+                      </span>
+                    )}
+                    {key === 'about' && updateAvail && (
+                      <span
+                        title="Update available"
+                        aria-label="Update available"
+                        style={{
+                          display: 'inline-block', width: 8, height: 8,
+                          borderRadius: '50%', /* intentional: update-available status dot */
+                          background: 'var(--red)', flexShrink: 0,
+                        }}
+                      />
+                    )}
+                  </button>
+                ))}
+              </div>
+            );
+          })}
+        </nav>
+
+        <div className="settings-panel">
+          {tab === 'general' && <GeneralSettings {...formProps} />}
+          {tab === 'notifications' && <NotificationSettings {...formProps} />}
+          {tab === 'escalation' && <EscalationSettings {...formProps} />}
+          {tab === 'rules' && <AlertRules />}
+          {/* The remaining tabs render through the same two-column shell as the
+              four above. Without it their panels take the full width while the
+              others are capped by .sv-settings-row, so the content visibly
+              resized every time you changed tab. */}
+          {tab === 'maintenance' && <TabShell aside={MAINTENANCE_HELP}><Maintenance /></TabShell>}
+          {tab === 'audit' && canManageSettings && <TabShell aside={AUDIT_HELP}><AuditLog /></TabShell>}
+          {tab === 'about' && (
+            <TabShell aside={ABOUT_HELP}>
+              <SystemUpdates />
+              <AboutSettings />
+            </TabShell>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -636,9 +725,14 @@ function MailTransport({ loading, error, source, hub, localHost }: {
           No mail server is configured, so no email can be sent — alerts, recovery notices,
           escalation and scheduled reports are all affected.
         </div>
+        {/* ⛔ Do not re-add "It cannot be set from SpanVault." here. The
+            settings rail now carries that standing fact once, at the top of
+            the page ("…mail are managed in NetVault →"); repeating it in this
+            card said the same thing twice in two different voices on one
+            screen. This card's job is the STATE — which server is actually in
+            use — plus the deep link to the exact hub tab that changes it. */}
         <div className="sv-muted" style={{ fontSize: 'var(--text-sm)' }}>
-          The mail server for the whole suite is configured once, in {hubLink}. It cannot be set
-          from SpanVault.
+          The mail server for the whole suite is configured once, in {hubLink}.
         </div>
       </>
     );
