@@ -236,7 +236,12 @@ function settingLabel(key: string): string {
   if (wl) return wl.label.replace(/\s*\([^)]*\)$/, '');
   const SPECIAL: Record<string, string> = {
     smtp_host: 'SMTP host', smtp_port: 'SMTP port', smtp_user: 'SMTP username',
-    smtp_pass: 'SMTP password', smtp_from: 'From address', smtp_secure: 'SMTP TLS',
+    // No `smtp_secure` entry: SpanVault has never had such a field or setting.
+    // TLS on the LOCAL transport is derived from the port (465 = implicit TLS);
+    // the explicit boolean lives on the hub's `smtp_config.secure` and is read
+    // through api/suiteSmtp.js, not through app_settings. Removed in 1.116.0 —
+    // it only ever labelled a key nothing could produce.
+    smtp_pass: 'SMTP password', smtp_from: 'From address',
     alert_email_to: 'Default alert recipients', sla_target_pct: 'SLA target',
     retention_raw_days: 'Raw sample retention', retention_rollup_days: 'Daily rollup retention',
     retention_audit_days: 'Audit log retention',
@@ -513,8 +518,19 @@ function GeneralSettings({ settings, form, set, save, saving, saveErr, dirty, nu
   );
 }
 
+/**
+ * Which SMTP transport the server is actually sending through.
+ * `hub` = the suite-wide config owned by NetVault; `local` = the fields below.
+ * Never carries the username or password — only enough to name the transport.
+ */
+type SmtpSource = { source: 'hub' | 'local'; hub: { host: string; port: number; secure: boolean } | null };
+
 // ── Notifications settings (email + notification routing) ──────
 function NotificationSettings({ settings, form, set, save, saving, saveErr, dirty, hasNumErrors, changedFields }: SettingsFormProps) {
+  // Must be called before the early returns below — hooks cannot be conditional.
+  const smtpSource = useApi<SmtpSource>('/api/settings/smtp-source');
+  const hubSmtp = smtpSource.data?.source === 'hub' ? smtpSource.data.hub : null;
+
   if (settings.loading && !settings.data) return <Loading />;
   if (settings.error) return <ErrorBox message={settings.error} />;
 
@@ -531,6 +547,17 @@ function NotificationSettings({ settings, form, set, save, saving, saveErr, dirt
                 onChange={(e) => set('email_alerts_enabled', e.target.checked ? 'true' : 'false')} />
               Enable email alerts
             </label>
+            {hubSmtp && (
+              <Notice tone="info">
+                <span>
+                  The mail server is managed centrally in NetVault — SpanVault sends through{' '}
+                  <strong>{hubSmtp.host}:{hubSmtp.port}</strong>{hubSmtp.secure ? ' over TLS' : ''}.
+                  The server fields below are the fallback: they are used only if central mail is
+                  turned off in NetVault. The From address is always SpanVault&apos;s own, so alerts
+                  still arrive from this app.
+                </span>
+              </Notice>
+            )}
             <div className="sv-form-grid-text">
               {SMTP_FIELDS.map((f) => {
                 // The server never sends a stored secret's value — it sends

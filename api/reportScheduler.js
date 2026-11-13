@@ -100,11 +100,20 @@ async function runAndEmailReport(pool, report, getSmtpSettings) {
   }
 
   const port = parseInt(smtp.port, 10) || 587;
+  // `secure` is now resolved upstream (api/suiteSmtp.js): a REAL boolean from
+  // the hub's `smtp_config.secure` when the transport is hub-managed, and the
+  // historical `port === 465` derivation for local config. The fallback here
+  // only covers a caller that predates that and supplies no `secure` at all.
+  const secure = typeof smtp.secure === 'boolean' ? smtp.secure : port === 465;
   const transporter = nodemailer.createTransport({
     host: smtp.host,
     port,
-    secure: port === 465,
+    secure,
     auth: smtp.user ? { user: smtp.user, pass: smtp.pass } : undefined,
+    // Only ever true when the hub's "allow self-signed certificate" box is
+    // ticked for the suite-wide transport; local config always verifies, as it
+    // always has.
+    ...(smtp.allowSelfSigned ? { tls: { rejectUnauthorized: false } } : {}),
   });
 
   const recipients = String(report.recipients).split(',').map((e) => e.trim()).filter(Boolean);

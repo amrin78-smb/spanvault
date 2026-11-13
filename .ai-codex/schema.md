@@ -142,6 +142,16 @@ cast broke NetVault sync in three places) — `monitored_devices.ip_address` her
 is plain `TEXT` deliberately for the same reason; never add a `host()`/`inet`
 cast when joining/importing from netvault's `devices` table.
 
+**Cross-DB read: `netvault.smtp_config`** (added 1.116.0, hub-owned by netvault
+1.65.1+). SpanVault reads one row — `host, port, secure, username, password,
+from_email, enabled, allow_self_signed` — through `api/suiteSmtp.js` to decide
+which SMTP transport to send through. **No spanvault schema change, no new grant,
+no new env var:** SpanVault connects on `NETVAULT_DB_*` as the `netvault` role,
+which owns that table, and both SpanVault services already carry
+`NEXTAUTH_SECRET` (the key that decrypts `password`) via `.env.local`. A hub
+that predates the table returns `42P01` and SpanVault falls back to its own
+`app_settings` — see gotchas.md.
+
 ## Privilege notes
 
 - **`spanvault_user`** (app role) gets `GRANT ALL PRIVILEGES` reasserted after

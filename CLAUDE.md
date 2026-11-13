@@ -98,6 +98,11 @@ api/licenseCheck.js    ← license/feature-gate checks
 api/pdfCharts.js       ← chart rendering helpers for PDF reports
 api/reportScheduler.js ← scheduled report email delivery
 api/reportsPdf.js      ← pdfkit report renderers
+api/suiteSmtp.js       ← resolves the SMTP transport: the NocVault hub's central
+                          smtp_config when enabled, else this app's app_settings.
+                          Required by BOTH senders (api/server.js's
+                          getSmtpSettings and collector/collector.js's
+                          sendAlertEmail). ⛔ Never throws — see .ai-codex/gotchas.md
 collector/collector.js ← Background polling service (ICMP + SNMP), NetVault device sync
 collector/discovery.js ← LLDP/CDP topology discovery
 collector/topology.js  ← topology engine

@@ -1,6 +1,6 @@
 # SpanVault API routes
 
-Real API surface = Express app in `api/server.js` (195 routes, port 3009, loopback-only,
+Real API surface = Express app in `api/server.js` (196 routes, port 3009, loopback-only,
 proxied by `frontend/src/middleware.ts`) + 1 Next.js route (NextAuth catch-all). A
 Next.js route anywhere else under `frontend/src/app/api/**` is DEAD CODE — see
 `.ai-codex/gotchas.md`.
@@ -291,6 +291,7 @@ geometry anyway. Before this, the whole family was a standing scope bypass.
 ## Settings / audit / notification routing
 - `GET /api/settings` [auth:admin+] [db] — ADMIN ONLY (403 below rank 2). **Secrets are masked**: any key in `SECRET_SETTING_KEYS` (currently `smtp_pass`) is returned as the literal `__unchanged__` when set, `''` when not. Admin-only is not the same as safe-to-transmit — the page only needs to know a password EXISTS. Added 1.115.0
 - `PUT /api/settings` [auth+write:admin+] [db] — a secret sent back as `__unchanged__` is SKIPPED (so saving any other field cannot wipe a password the operator was never shown); the literal `__clear__` stores `''` (the explicit "remove it" path, since an empty field is indistinguishable from an untouched one once the value is masked)
+- `GET /api/settings/smtp-source` [auth:admin+] [db] — ADMIN ONLY (403 below rank 2). Which SMTP transport the server actually sends through: `{ source: 'hub'|'local', hub: { host, port, secure }|null }`. `hub` = the suite-wide `netvault.smtp_config` row (read via `api/suiteSmtp.js`); `local` = this app's `app_settings`. **Never returns the username or password** — only enough for the Settings page to name the transport. Fails soft to `{source:'local',hub:null}` rather than erroring the page. Added 1.116.0
 - `GET /api/audit` [auth] [db] — admin-only in practice (UI-gated); recent successful mutations
 - `GET /api/notification-routes` [auth+read:admin+] [db] — admin READ gate added 1.115.9 (`app.use('/api/notification-routes', requireAdminRead)`). Every write was already admin-only and the only UI is the admin Settings page, but the GET had no role gate — any viewer could read the alert-email recipient lists (`notification_routes.email_to`)
 - `POST /api/notification-routes` [auth+write:admin+] [db]

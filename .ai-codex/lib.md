@@ -80,12 +80,33 @@ module.exports = {
 }
 ```
 
+### suiteSmtp.js — which SMTP transport to send through (added 1.116.0, ~280 lines)  [SENSITIVE: decrypts the hub's SMTP password]
+```
+module.exports = {
+  resolveSmtp(local, opts?) — async; -> { source: 'hub'|'local', cfg: {host,port,secure,user,pass,from,allowSelfSigned} }
+                              `local` = this app's app_settings values {host,port,user,pass,from} (pass `from` RAW,
+                              without the caller's own fallback chain). `opts.pool` injects a netvault pool; omitted,
+                              the module opens its OWN small one (max 2, 3s connect + statement + query timeouts).
+                              ⛔ NEVER REJECTS — every failure yields `{source:'local'}`, see gotchas.md.
+  clearSmtpCache() — drops the cached hub lookup (tests; after a hub config change)
+  CACHE_MS — 5 min; the hub lookup is cached, SUCCESS AND FAILURE alike
+  __decryptCred(value) — AES-256-GCM decrypt, exported for the cross-app format test only
+}
+```
+Required by BOTH sender processes: `api/server.js` (`getSmtpSettings()` → `api/reportScheduler.js`)
+and `collector/collector.js` (`sendAlertEmail()` → alerts, recovery, escalation). Reads
+`netvault.smtp_config` (hub-owned, netvault 1.65.1+) over `NETVAULT_DB_*` as the `netvault` role —
+no new env var, no new grant. The password format is a cross-app contract byte-identical to
+`ddivault/collector/credStore.js` and `net-vault/lib/credStore.ts`.
+
 ### reportScheduler.js — scheduled report email delivery (460 lines)
 ```
 module.exports = {
   startReportScheduler(pool, getSmtpSettings) — setInterval poller for saved_reports.next_run_at
   runDueReports(pool, getSmtpSettings) — finds + runs reports whose next_run_at has passed  [SENSITIVE: SMTP send]
   runAndEmailReport(pool, report, getSmtpSettings) — renders HTML report + emails it  [SENSITIVE: SMTP send, nodemailer]
+    — `getSmtpSettings` (api/server.js) now returns `secure` and `allowSelfSigned` too, resolved by
+      api/suiteSmtp.js; this file uses `smtp.secure` and only falls back to `port === 465` if absent
   calculateNextRun(report) — computes next_run_at from schedule/schedule_day/schedule_hour
   fetchReportData(report) — pulls the same data a saved report's template needs
 }

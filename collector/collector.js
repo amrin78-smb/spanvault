@@ -31,6 +31,9 @@ const { collectCandidates, candidatesToSamples } = require('./discovery');
 const { discoverAndStore } = require('./topology');
 const { startWirelessCollector, stopWirelessCollector } = require('./wirelessCollector');
 const { isTokenRefreshInFlight } = require('./wireless/api/aruba-central');
+// Suite SMTP: resolves the hub's central transport, falling back to this app's
+// own app_settings. Written to never throw — see the ⛔ block in that file.
+const { resolveSmtp } = require('../api/suiteSmtp');
 
 // ── Crash resilience ──────────────────────────────────────────
 process.on('uncaughtException', (err) => {
@@ -1282,20 +1285,62 @@ async function notifyRecovery(device, alertType, label) {
   }
 }
 
+// Send one alert / recovery / escalation email.
+//
+// The TRANSPORT credentials come from the NocVault hub's central `smtp_config`
+// row when the hub has one enabled, and from this app's own `app_settings`
+// otherwise (`api/suiteSmtp.js`). Everything ELSE here is unchanged and stays
+// local: `email_alerts_enabled`, the `alert_email_to` fallback, the
+// `notification_routes` routing that produced `to`, the cooldown, and
+// `email_recovery_enabled`. Only where the host/port/secure/user/pass come from
+// has moved.
+//
+// ⛔ The From identity stays LOCAL — SpanVault's own `smtp_from` — so a
+// recipient still sees SpanVault as the sender even on the shared transport.
+//
+// ⛔ Nothing in the resolve path may throw into this process. `resolveSmtp()`
+// is written never to reject; the try/catch below is the second belt, because
+// this function runs on the polling engine and an unhandled rejection over a
+// mail setting would be a monitoring outage.
 async function sendAlertEmail(subject, body, to) {
   if (!settingBool('email_alerts_enabled')) return;
-  const host = setting('smtp_host', '');
   const recipients = to || setting('alert_email_to', '');
-  if (!host || !recipients) return;
+  if (!recipients) return;
+
+  const localPort = settingInt('smtp_port', 587);
+  let cfg = {
+    host: setting('smtp_host', ''),
+    port: localPort,
+    secure: localPort === 465,
+    user: setting('smtp_user', ''),
+    pass: setting('smtp_pass', ''),
+    from: setting('smtp_from', ''),
+    allowSelfSigned: false,
+  };
+  try {
+    const resolved = await resolveSmtp(cfg);
+    if (resolved && resolved.cfg) cfg = resolved.cfg;
+  } catch (err) {
+    // Already-local `cfg` stands. Logged, never rethrown — and `err && ...`
+    // because a thrown non-Error would otherwise make the CATCH throw.
+    console.error('[email] SMTP resolve failed, using local settings:', err && err.message);
+  }
+
+  if (!cfg.host) return;
   try {
     const transport = nodemailer.createTransport({
-      host,
-      port: settingInt('smtp_port', 587),
-      secure: settingInt('smtp_port', 587) === 465,
-      auth: setting('smtp_user', '') ? { user: setting('smtp_user', ''), pass: setting('smtp_pass', '') } : undefined,
+      host: cfg.host,
+      port: cfg.port,
+      // A real boolean when hub-managed; still the historical port === 465
+      // derivation for local config, so existing installs do not change.
+      secure: cfg.secure,
+      auth: cfg.user ? { user: cfg.user, pass: cfg.pass } : undefined,
+      ...(cfg.allowSelfSigned ? { tls: { rejectUnauthorized: false } } : {}),
     });
     await transport.sendMail({
-      from: setting('smtp_from', '') || setting('smtp_user', 'spanvault@localhost'),
+      // Unchanged fallback chain: own From, then (new) the hub's from_email
+      // that resolveSmtp already folded in, then the local SMTP username.
+      from: cfg.from || setting('smtp_user', '') || 'spanvault@localhost',
       to: recipients,
       subject,
       text: body,

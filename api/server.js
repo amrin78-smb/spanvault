@@ -27,6 +27,7 @@ const { startWsServer, connectedAgents, agentLogs, pushConfigToAgent, pushConfig
 const intelligence = require('./intelligence');
 const { getLicense, getLicenseState } = require('./licenseCheck');
 const reportScheduler = require('./reportScheduler');
+const { resolveSmtp } = require('./suiteSmtp');
 const { generateReportPdf, hasPdfRenderer } = require('./reportsPdf');
 // The PURE half of RBAC site scoping, extracted so it can actually be tested —
 // api/server.js itself cannot be required by a test (two pools + a bound WS
@@ -44,6 +45,13 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.116.0': [
+    'Mail server settings can now be shared across the whole NocVault suite. If an administrator configures and enables mail centrally in NetVault, SpanVault sends alert, recovery, escalation and scheduled-report email through it automatically - no change needed here. Nothing is required of existing installations: with central mail switched off, or on a NetVault that predates it, SpanVault keeps using its own mail server settings exactly as before.',
+    "Alerts still arrive from SpanVault. Only the mail server itself is shared - the From address, recipients, routing rules, cooldown and escalation stay this app's own.",
+    'The Notifications settings page now says when the mail server is being managed centrally, and names it, so an administrator is not left wondering why editing the server fields changed nothing. Those fields remain editable and remain the fallback.',
+    'Fixed: encryption on a relay that is not on port 465 can now be set correctly. SpanVault previously decided whether to use TLS purely from the port number, which left a mail relay on port 25 or 2525 using STARTTLS with no correct setting. A centrally managed mail server now uses the explicit setting from NetVault.',
+    'Mail server settings are now cached for five minutes instead of being re-read from the database on every single message sent.',
+  ],
   '1.115.10': [
     "Fixed: the updater pointed the three services' output logs at a different folder and different filenames than a fresh install creates, so after the first update the post-install test was scanning for crash logs that nothing wrote any more - and reported a crash-looping collector as a clean start. Log files move back to the folder a fresh install uses; any files left in the old location can be deleted.",
   ],
@@ -11114,6 +11122,29 @@ app.get('/api/settings', wrap(async (req, res) => {
   res.json(out);
 }));
 
+// Which SMTP transport is actually in use — the hub's central config, or this
+// app's own `app_settings`. Admin only, same rank gate as GET /api/settings.
+//
+// The Settings page uses this to say "the transport is managed centrally in
+// NetVault and these fields are the fallback" rather than leaving an admin to
+// wonder why editing the SMTP host changed nothing. Returns the hub's
+// host/port/secure so the note can be specific; NEVER the username or password.
+app.get('/api/settings/smtp-source', wrap(async (req, res) => {
+  if (userRank(req) < 2) return res.status(403).json({ error: 'Admin only' });
+  let s;
+  try {
+    s = await getSmtpSettings();
+  } catch (_e) {
+    // Same fail-soft posture as the senders: an unreadable config is reported
+    // as "local" rather than failing the whole Settings page.
+    return res.json({ source: 'local', hub: null });
+  }
+  res.json({
+    source: s.source,
+    hub: s.source === 'hub' ? { host: s.host, port: s.port, secure: !!s.secure } : null,
+  });
+}));
+
 // Audit log (admin only) — recent successful mutations.
 app.get('/api/audit', wrap(async (req, res) => {
   if (userRank(req) < 2) return res.status(403).json({ error: 'Admin only' });
@@ -12261,8 +12292,18 @@ app.listen(PORT, '127.0.0.1', async () => {
   }
 });
 
-// SMTP config for scheduled reports, read from app_settings (the same keys the
-// collector uses for alert emails). Returns null-ish when unconfigured.
+// SMTP config for scheduled reports. The TRANSPORT (host/port/secure/user/pass)
+// comes from the NocVault hub's `smtp_config` row when the hub has one enabled,
+// and from this app's own `app_settings` otherwise — see `api/suiteSmtp.js` for
+// the precedence and the fail-soft rules. The From identity is always LOCAL:
+// `smtp_from` is read here and wins over the hub's `from_email`, so recipients
+// keep seeing SpanVault as the sender.
+//
+// `resolveSmtp` never throws and caches the hub lookup for 5 minutes; the local
+// read below stays per-call, so editing SMTP settings in the UI still takes
+// effect on the next send exactly as it did before.
+//
+// Returns null-ish (`host: ''`) when unconfigured — callers check `.host`.
 async function getSmtpSettings() {
   const r = await sv.query(
     `SELECT key, value FROM app_settings WHERE key IN
@@ -12270,11 +12311,14 @@ async function getSmtpSettings() {
   );
   const m = {};
   for (const row of r.rows) m[row.key] = row.value;
-  return {
+  const resolved = await resolveSmtp({
     host: m.smtp_host || '',
     port: m.smtp_port ? parseInt(m.smtp_port, 10) : 587,
     user: m.smtp_user || '',
     pass: m.smtp_pass || '',
+    // Raw `smtp_from` only — the hub's from_email is the next preference, and
+    // the caller's own last-resort default comes after that.
     from: m.smtp_from || '',
-  };
+  });
+  return Object.assign({ source: resolved.source }, resolved.cfg);
 }
