@@ -56,7 +56,7 @@ const SETTINGS_GROUPS: [string, string[]][] = [
   ['System', ['general', 'maintenance']],
   ['Alerting', ['rules', 'notifications', 'escalation']],
   ['Records', ['audit']],
-  ['About', ['about']],
+  ['Software', ['about']],
 ];
 
 /**
@@ -507,7 +507,7 @@ function numFieldErrors(form: Record<string, string>): Record<string, string> {
 //
 // ⛔ The TRANSPORT (host / port / username / password) is NOT here any more.
 // The NocVault hub owns the one mail server the whole suite sends through
-// (NetVault → Settings → Notifications); SpanVault only reads it, through
+// (NetVault → Settings → Mail server); SpanVault only reads it, through
 // `api/suiteSmtp.js`. Offering editable host/port/user/password fields here
 // implied SpanVault could still decide where mail goes, which it cannot — and
 // `PUT /api/settings` now ignores those four keys outright, so a field that
@@ -807,7 +807,7 @@ function MailTransport({ loading, error, source, hub, local, localHost }: {
   const hubUrl = getHubUrl();
   const link = (
     <a href={`${hubUrl}/settings?tab=notifications`} target="_blank" rel="noreferrer" style={HUB_LINK}>
-      NetVault → Settings → Notifications
+      NetVault → Settings → Mail server
     </a>
   );
 
