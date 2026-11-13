@@ -45,6 +45,15 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.117.2': [
+    "The mail-server panel no longer says the suite mail server is switched off when it cannot actually tell. SpanVault falls back to its own settings for several reasons - none configured on the hub, the hub unreachable, an older hub, or a password it cannot read - and naming the wrong one would send you to the wrong screen. It now states what is true: no suite mail server is reaching SpanVault.",
+    "The labels in that panel were a shade too light to read comfortably against its tinted background, measured just under the accessibility threshold. They are now a step darker.",
+    "Settings - Notifications now states the mail server in use as four plain facts instead of a sentence: the server and port, whether the connection is TLS/SSL or STARTTLS, the username it authenticates as (or that it does not authenticate at all), and whether the server's certificate is actually checked. The last one is new here and matters: a mail server set to accept any certificate is now visible from this page, not only from where it is configured.",
+    'The same four facts are shown whether SpanVault is sending through the suite mail server or through a mail server left in its own settings by an earlier release, so the two can be compared directly.',
+    'Wording now matches DDIVault and LogVault exactly - all three apps call it "the NocVault suite mail server" rather than each inventing its own name for the same thing.',
+    'A field that genuinely cannot be read is shown as "(unknown)" rather than being filled in with a default.',
+    'Nothing changed about how mail is sent, who receives it, or any alert, escalation or on-call setting.',
+  ],
   '1.117.1': [
     'Settings is easier to navigate. The seven tabs that ran across the top of the page are now a grouped list down the left-hand side: System (general settings and maintenance windows), Alerting (alert rules, notifications, escalation and on-call), Records (the audit log) and About. Nothing moved out of the page and nothing changed inside any section - only how you get to them.',
     'The alerting sections now sit together and read in the order they happen: what raises an alert, who is told about it, and what happens if nobody acts. Previously those three were separated by unrelated tabs.',
@@ -11159,8 +11168,28 @@ app.get('/api/settings', wrap(async (req, res) => {
 //
 // The Settings page uses this to say "the transport is managed centrally in
 // NetVault and these fields are the fallback" rather than leaving an admin to
-// wonder why editing the SMTP host changed nothing. Returns the hub's
-// host/port/secure so the note can be specific; NEVER the username or password.
+// wonder why editing the SMTP host changed nothing.
+//
+// ⛔ NEVER the password, and nothing derived from it (not its length, not
+// whether it decrypted). What IS returned is the four facts an operator needs
+// to reason about delivery — host:port, the connection mode, the username, and
+// whether the server's certificate is actually checked:
+//
+//   `username`          — an address, not a secret, and `GET /api/settings`
+//                         already returns the local `smtp_user` in the clear to
+//                         this same admin-only caller. Same reasoning as
+//                         DDIVault's `smtp_config_public` view.
+//   `allow_self_signed` — a *consequence* of configuration an operator must be
+//                         able to see: "any certificate is accepted" is exactly
+//                         the kind of thing that must never be silent.
+//
+// Both sit behind the same rank-2 gate as the rest of this route. The password
+// (`smtp_pass` / the hub's encrypted `password`) is never part of the response.
+//
+// `local` carries the same shape for the legacy local transport, so the page
+// can state the same four facts whichever one is live. It is only populated
+// when `local` is the SOURCE — the stale `app_settings` row behind a hub-backed
+// install is not the transport and has no business being described as one.
 app.get('/api/settings/smtp-source', wrap(async (req, res) => {
   if (userRank(req) < 2) return res.status(403).json({ error: 'Admin only' });
   let s;
@@ -11168,12 +11197,22 @@ app.get('/api/settings/smtp-source', wrap(async (req, res) => {
     s = await getSmtpSettings();
   } catch (_e) {
     // Same fail-soft posture as the senders: an unreadable config is reported
-    // as "local" rather than failing the whole Settings page.
-    return res.json({ source: 'local', hub: null });
+    // as "local" rather than failing the whole Settings page. Both summaries
+    // are null because nothing was read — the page renders the fields it
+    // cannot state as "(unknown)" rather than inventing a default.
+    return res.json({ source: 'local', hub: null, local: null });
   }
+  const summary = {
+    host: s.host,
+    port: s.port,
+    secure: !!s.secure,
+    username: String(s.user || ''),
+    allow_self_signed: !!s.allowSelfSigned,
+  };
   res.json({
     source: s.source,
-    hub: s.source === 'hub' ? { host: s.host, port: s.port, secure: !!s.secure } : null,
+    hub: s.source === 'hub' ? summary : null,
+    local: s.source === 'local' ? summary : null,
   });
 }));
 

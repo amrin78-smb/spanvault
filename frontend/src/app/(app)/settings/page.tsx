@@ -637,12 +637,134 @@ function GeneralSettings({ settings, form, set, save, saving, saveErr, dirty, nu
 }
 
 /**
+ * One mail transport, described the same way whichever one is live.
+ *
+ * ⛔ No password, and nothing derived from one. `username` is an address, not a
+ * secret (`GET /api/settings` already returns the local `smtp_user` in the
+ * clear to this same admin-only caller), and `allow_self_signed` is a
+ * CONSEQUENCE an operator must be able to see — "any certificate is accepted"
+ * is exactly the kind of thing that must never be silent. Both sit behind the
+ * same rank-2 gate as the rest of `/api/settings/smtp-source`.
+ */
+type TransportSummary = {
+  host: string;
+  port: number;
+  secure: boolean;
+  username: string;
+  allow_self_signed: boolean;
+};
+
+/**
  * Which SMTP transport the server is actually sending through.
  * `hub` = the suite-wide config owned by NetVault; `local` = a legacy
- * `app_settings` row still held by this app.
- * Never carries the username or password — only enough to name the transport.
+ * `app_settings` row still held by this app. Exactly one of the two summaries
+ * is populated — the one actually carrying mail; a stale local row behind a
+ * hub-backed install is not the transport and is not described as one. Both
+ * are null when the config could not be read at all.
  */
-type SmtpSource = { source: 'hub' | 'local'; hub: { host: string; port: number; secure: boolean } | null };
+type SmtpSource = {
+  source: 'hub' | 'local';
+  hub: TransportSummary | null;
+  local: TransportSummary | null;
+};
+
+// ── Transport panel styling (suite standard) ──────────────────
+// Canonical shape: ddivault/frontend/src/components/SmtpSettings.tsx. A calm
+// info panel for "the suite mail server is carrying your mail", and the warn
+// tint for the two states an administrator should act on (a legacy local row
+// still sending, or nothing configured at all).
+const NOTE: React.CSSProperties = {
+  background: 'var(--tint-info)',
+  color: 'var(--tint-info-fg)',
+  border: '1px solid var(--border)',
+  borderRadius: 'var(--radius-sm)',
+  padding: '14px 16px',
+  marginBottom: 16,
+  fontSize: 'var(--text-base)',
+  lineHeight: 1.55,
+};
+
+const NOTE_WARN: React.CSSProperties = { ...NOTE, background: 'var(--tint-warn)', color: 'var(--tint-warn-fg)' };
+
+const NOTE_TITLE: React.CSSProperties = {
+  fontWeight: 700, marginBottom: 6, fontSize: 'var(--text-md)',
+};
+
+// Read-only fact grid inside a transport panel: label on the left, value right.
+// `max-content 1fr` is what keeps the values aligned down a single column
+// regardless of label length, in both themes.
+const FACTS: React.CSSProperties = {
+  display: 'grid',
+  gridTemplateColumns: 'max-content 1fr',
+  columnGap: 14,
+  rowGap: 6,
+  margin: '12px 0',
+  fontSize: 'var(--text-base)',
+};
+
+const FACT_LABEL: React.CSSProperties = {
+  // --text-secondary, not --text-muted: measured 4.37:1 on the light --tint-info
+  // wash, just under the 4.5:1 floor. 13px/600 is not WCAG large text, so the
+  // exemption does not apply. Changed in all three apps at once - one app
+  // quietly altering a shared token is how the divergence started.
+  color: 'var(--text-secondary)', fontWeight: 600, whiteSpace: 'nowrap',
+};
+
+const FACT_VALUE: React.CSSProperties = {
+  color: 'var(--text-primary)', fontFamily: 'var(--font-mono)', wordBreak: 'break-all',
+};
+
+// ⛔ The link INHERITS the panel's own foreground token rather than carrying a
+// signal colour of its own, and is marked as a link by weight + underline.
+// Measured on these tints: `--primary` reads 2.66:1 and `--blue` 3.03:1 against
+// the dark warn wash — both fail — while the panel's `--tint-*-fg` is 8.9:1
+// (info) / 10.9:1 (warn) dark and 6.2:1 / 4.8:1 light. This is the same trap
+// `--canvas-light` documents in globals.css from the other direction: a colour
+// chosen against page chrome is not automatically readable on a tinted surface.
+const HUB_LINK: React.CSSProperties = { color: 'inherit', fontWeight: 700, textDecoration: 'underline' };
+
+// What a fact reads when it genuinely could not be read. ⛔ Never a guessed
+// default: "Enforced" printed over a server whose certificate is NOT checked
+// is worse than admitting we do not know.
+const UNKNOWN = '(unknown)';
+
+// ── Read-only fact row ────────────────────────────────────────
+// ⛔ Module scope, never nested inside MailTransport — a component defined
+// inside another component remounts on every parent render (CLAUDE.md's
+// no-sub-components rule).
+function Fact({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <>
+      <div style={FACT_LABEL}>{label}</div>
+      <div style={FACT_VALUE}>{children}</div>
+    </>
+  );
+}
+
+// Certificate-checking wording, shared by both configured states so they cannot
+// drift apart. `allow_self_signed === true` is the ONE rule the senders apply.
+function certText(allowSelfSigned: boolean): string {
+  return allowSelfSigned
+    ? 'Not enforced — any certificate is accepted, including an expired or impersonated one'
+    : 'Enforced';
+}
+
+// The four facts, in one place, so the hub panel and the legacy panel cannot
+// end up describing the same kind of thing in two different ways.
+//
+// `t` is null only when `/api/settings/smtp-source` could not read the config
+// at all. `fallbackHost` is then the stored `app_settings.smtp_host` — the one
+// thing still known — and the other three say so instead of guessing.
+function TransportFacts({ t, fallbackHost }: { t: TransportSummary | null; fallbackHost?: string }) {
+  return (
+    <div style={FACTS}>
+      <Fact label="Server">{t ? `${t.host}:${t.port}` : (fallbackHost || UNKNOWN)}</Fact>
+      <Fact label="Connection">{t ? (t.secure ? 'TLS / SSL' : 'STARTTLS or plain') : UNKNOWN}</Fact>
+      <Fact label="Username">{t ? (t.username || '(none — unauthenticated)') : UNKNOWN}</Fact>
+      <Fact label="Certificate checking">{t ? certText(t.allow_self_signed) : UNKNOWN}</Fact>
+    </div>
+  );
+}
 
 /**
  * The EFFECTIVE mail transport, stated read-only.
@@ -660,97 +782,92 @@ type SmtpSource = { source: 'hub' | 'local'; hub: { host: string; port: number; 
  *   none          — nothing anywhere. Said plainly, pointing at the hub, with
  *                   no suggestion that SpanVault can be made to fix it itself.
  *
+ * Both configured states state the SAME four facts — server, connection mode,
+ * username, certificate checking — rather than embedding `host:port` in a
+ * sentence. Prose cannot carry four facts without becoming a paragraph, and
+ * certificate checking in particular is now a real setting on the hub, so it
+ * must be visible here and not only where it is configured. This is the shape
+ * all three satellites share; DDIVault is the canonical implementation.
+ *
  * `localHost` is the stored `app_settings.smtp_host` (plain text, never the
  * password — GET /api/settings masks that). It distinguishes the last two
- * states, which `/api/settings/smtp-source` reports identically as 'local'.
+ * states, which `/api/settings/smtp-source` reports identically as 'local',
+ * and it is the only fact still available if that route failed to read at all.
  *
  * Top-level by the no-sub-components rule, though nothing here takes input.
  */
-function MailTransport({ loading, error, source, hub, localHost }: {
+function MailTransport({ loading, error, source, hub, local, localHost }: {
   loading: boolean;
   error: string | null;
   source: 'hub' | 'local' | null;
-  hub: { host: string; port: number; secure: boolean } | null;
+  hub: TransportSummary | null;
+  local: TransportSummary | null;
   localHost: string;
 }) {
   const hubUrl = getHubUrl();
-  const hubLink = (
-    <a href={`${hubUrl}/settings?tab=notifications`} target="_blank" rel="noreferrer"
-      style={{ color: 'var(--primary)', fontWeight: 600 }}>
+  const link = (
+    <a href={`${hubUrl}/settings?tab=notifications`} target="_blank" rel="noreferrer" style={HUB_LINK}>
       NetVault → Settings → Notifications
     </a>
   );
 
-  let body: React.ReactNode;
   if (loading && !source) {
-    body = <span className="sv-muted">Checking which mail server is in use…</span>;
-  } else if (error) {
+    return <div style={NOTE}>Checking which mail server is in use…</div>;
+  }
+
+  if (error) {
     // The transport itself is unaffected — only our ability to describe it.
-    body = <span className="sv-muted">The mail server in use could not be read ({error}).</span>;
-  } else if (source === 'hub' && hub) {
-    body = (
-      <>
-        <div style={{ marginBottom: 6 }}>
-          Managed centrally by the NocVault hub. SpanVault sends through{' '}
-          <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, color: 'var(--text-primary)' }}>
-            {hub.host}:{hub.port}
-          </span>{hub.secure ? ' over implicit TLS' : ''}.
-        </div>
-        <div className="sv-muted" style={{ fontSize: 'var(--text-sm)' }}>
-          Change the server, credentials or encryption in {hubLink}. The From address below stays
-          SpanVault&apos;s own, so alerts still arrive from this app.
-        </div>
-      </>
+    return (
+      <div style={NOTE_WARN}>
+        The mail server in use could not be read ({error}).
+      </div>
     );
-  } else if (localHost) {
-    body = (
-      <>
-        <div style={{ marginBottom: 6 }}>
-          No suite-wide mail server is switched on at the hub, so SpanVault is still sending
-          through the mail server stored in this app:{' '}
-          <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, color: 'var(--text-primary)' }}>
-            {localHost}
-          </span>.
-        </div>
-        <div className="sv-muted" style={{ fontSize: 'var(--text-sm)' }}>
-          It keeps working, but it is no longer editable here. Configure the suite mail server in{' '}
-          {hubLink} and every app switches to it automatically.
-        </div>
-      </>
+  }
+
+  if (source === 'hub' && hub) {
+    return (
+      <div style={NOTE}>
+        {/* The title states WHAT is sending, not who owns it. The settings rail
+            already carries the standing "mail is managed in NetVault" line, and
+            two differently-worded statements of the same fact on one screen
+            read as two different facts. */}
+        <div style={NOTE_TITLE}>Sending through the NocVault suite mail server</div>
+        Alerts, recovery notices, escalation and scheduled reports are delivered through the
+        mail server configured once for the whole NocVault suite.
+        <TransportFacts t={hub} />
+        Change the server in {link}. SpanVault keeps its own sender identity and its own
+        delivery switch, below.
+      </div>
     );
-  } else {
-    body = (
-      <>
-        <div style={{ marginBottom: 6 }}>
-          No mail server is configured, so no email can be sent — alerts, recovery notices,
-          escalation and scheduled reports are all affected.
-        </div>
-        {/* ⛔ Do not re-add "It cannot be set from SpanVault." here. The
-            settings rail now carries that standing fact once, at the top of
-            the page ("…mail are managed in NetVault →"); repeating it in this
-            card said the same thing twice in two different voices on one
-            screen. This card's job is the STATE — which server is actually in
-            use — plus the deep link to the exact hub tab that changes it. */}
-        <div className="sv-muted" style={{ fontSize: 'var(--text-sm)' }}>
-          The mail server for the whole suite is configured once, in {hubLink}.
-        </div>
-      </>
+  }
+
+  if (localHost) {
+    return (
+      <div style={NOTE_WARN}>
+        <div style={NOTE_TITLE}>Sending through a mail server stored in SpanVault</div>
+        No suite mail server is reaching SpanVault, so it is falling back to the
+        server saved in its own settings by an earlier release.
+        <TransportFacts t={local} fallbackHost={localHost} />
+        These values are <strong>no longer editable here</strong> — a mail server is now
+        configured for the whole suite in {link}. This one keeps working until one is set
+        up there, which then takes over.
+      </div>
     );
   }
 
   return (
-    <div style={{
-      border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
-      background: 'var(--surface-subtle)', padding: '10px 12px', marginBottom: 16,
-      fontSize: 'var(--text-base)', lineHeight: 1.45,
-    }}>
-      <div style={{
-        fontSize: 'var(--text-xs)', textTransform: 'uppercase', letterSpacing: '0.04em',
-        color: 'var(--text-muted)', fontWeight: 700, marginBottom: 6,
-      }}>
-        Mail server in use
+    <div style={NOTE_WARN}>
+      <div style={NOTE_TITLE}>No mail server configured</div>
+      No suite mail server is reaching SpanVault, and SpanVault has none of its own. Until
+      one is configured, alerts, recovery notices, escalation and scheduled reports{' '}
+      <strong>will not be delivered</strong>.
+      {/* The settings rail already says mail is managed in NetVault, so this
+          branch only has to say what follows from there being no server yet
+          and link to where one is set up. Restating the ownership here, in a
+          louder voice, reads as a second and different fact. */}
+      <div style={{ marginTop: 10 }}>
+        Set one up in {link}. SpanVault cannot be pointed at a mail server from this page.
       </div>
-      {body}
     </div>
   );
 }
@@ -785,6 +902,7 @@ function NotificationSettings({ settings, form, set, save, saving, saveErr, dirt
               error={smtpSource.error}
               source={smtpSource.data?.source ?? null}
               hub={smtpSource.data?.source === 'hub' ? smtpSource.data.hub : null}
+              local={smtpSource.data?.source === 'local' ? smtpSource.data.local : null}
               localHost={localSmtpHost}
             />
             {/* Only the per-app identity and recipients remain — the transport
