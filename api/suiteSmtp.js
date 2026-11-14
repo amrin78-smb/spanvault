@@ -93,12 +93,18 @@ function warnOnce(key, message) {
 // never stall a send for 30s), and those are the wrong timeouts for the device
 // /site sync queries that share the other pool.
 let pool = null;
-let poolFailed = false;
 
+// ⛔ NO PERMANENT "could not build a pool" LATCH. There used to be a
+// `poolFailed` flag set in the catch below and never cleared, so one failed
+// construction pinned this process to local SMTP until the service was
+// restarted — days, on a box nobody reboots. `new Pool()` does not connect, so
+// the only way it throws is a bad option object, which a later call is no more
+// likely to survive; but "no more likely" is not "impossible", and the cost of
+// retrying is one object allocation against a 5-minute cache. `warnOnce` is
+// what keeps the log quiet, which is all the latch was really buying.
 function getPool(injected) {
   if (injected) return injected;
   if (pool) return pool;
-  if (poolFailed) return null;
   try {
     pool = new Pool({
       host: process.env.NETVAULT_DB_HOST || 'localhost',
@@ -124,7 +130,6 @@ function getPool(injected) {
     });
     return pool;
   } catch (err) {
-    poolFailed = true;
     warnOnce('pool-create', `could not open a netvault pool: ${err.message} (using local SMTP settings)`);
     return null;
   }
@@ -156,10 +161,45 @@ function decryptCred(encrypted) {
 // Resolves to the hub transport, or null when the hub has none to offer.
 let cache = null; // { at: number, hub: object|null }
 
+// ⛔ ONE LOOKUP AT A TIME, SHARED BY EVERY CONCURRENT CALLER.
+//
+// The cache alone does not bound concurrency: it is only written once an answer
+// has arrived, so N sends that start inside the same cold window each open their
+// own lookup. That is not hypothetical here — an alert storm raises many alerts
+// in the same tick, and this pool is deliberately `max: 2` with a 3s connect
+// timeout. Ten simultaneous lookups meant two queries and eight connection
+// timeouts, every one of which returns null and reads as "the hub has no SMTP";
+// whichever finished last then wrote THAT into the cache, pinning the app to its
+// local settings for the next five minutes. The burst caused the fallback it
+// then blamed on the hub.
+//
+// So callers that arrive while a lookup is open await the SAME promise. A
+// rejection is not cached at all (the `.then` below never runs), which is the
+// other half of the fix: an unforeseen throw must not freeze the answer either.
+//
+// `generation` makes an admin's save win a race with a lookup already in the
+// air: clearSmtpCache() bumps it, and a stale lookup resolving afterwards is
+// handed back to whoever was waiting but is NOT allowed to write the cache.
+let inflight = null;
+let generation = 0;
+
 async function loadHubConfig(injectedPool) {
   if (cache && Date.now() - cache.at < CACHE_MS) return cache.hub;
+  if (inflight) return inflight;
 
-  const hub = await (async () => {
+  const gen = generation;
+  const p = readHubConfig(injectedPool)
+    .then((hub) => {
+      if (gen === generation) cache = { at: Date.now(), hub };
+      return hub;
+    })
+    .finally(() => { if (inflight === p) inflight = null; });
+  inflight = p;
+  return p;
+}
+
+async function readHubConfig(injectedPool) {
+  return await (async () => {
     if (!process.env.NEXTAUTH_SECRET) {
       // Not fatal: a hub row with no password (an unauthenticated internal
       // relay) would still be usable. But we cannot tell one from the other
@@ -222,9 +262,6 @@ async function loadHubConfig(injectedPool) {
       allowSelfSigned: row.allow_self_signed === true,
     };
   })();
-
-  cache = { at: Date.now(), hub };
-  return hub;
 }
 
 /**
@@ -286,9 +323,17 @@ async function resolveSmtp(local, opts) {
   };
 }
 
-/** Drop the cached hub lookup — used by tests and after a hub config change. */
+/**
+ * Drop the cached hub lookup — used by tests and after a hub config change.
+ *
+ * Bumping `generation` is the part that matters: a lookup that was already in
+ * flight when this was called must not be allowed to write its now-stale answer
+ * over the fresh one the next caller will fetch.
+ */
 function clearSmtpCache() {
   cache = null;
+  inflight = null;
+  generation += 1;
 }
 
 module.exports = { resolveSmtp, clearSmtpCache, CACHE_MS, __decryptCred: decryptCred };

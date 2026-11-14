@@ -17,6 +17,25 @@
 const http = require('http');
 const nodemailer = require('nodemailer');
 const { generateReportPdf, hasPdfRenderer } = require('./reportsPdf');
+const { mailErrorSummary } = require('./rbacScope');
+
+// SpanVault's own delivery switch for UNATTENDED report mail — Settings →
+// Notifications → "Send scheduled report emails".
+//
+// ⛔ WHY THIS EXISTS. Until now the scheduler had no switch of any kind: a row
+// in `saved_reports` with a cadence and recipients sent mail, full stop. That
+// was survivable while the mail server lived in this app (no server configured
+// meant no mail), but the transport is now the hub's — so switching SMTP on in
+// NetVault could reanimate schedules that had been failing quietly for months,
+// and nothing in SpanVault could stop it. `email_alerts_enabled` is NOT the
+// right switch to borrow: an install may legitimately want reports without
+// alerts, and vice versa.
+//
+// ⛔ DEFAULTS ON, deliberately. An absent key means a pre-existing install
+// whose reports work today, and a silent upgrade must not stop their mail. The
+// value this adds is a visible, documented way to STOP report mail, which did
+// not exist before — it does not by itself prevent the reanimation above.
+const REPORT_MAIL_SETTING = 'report_email_enabled';
 
 const API_PORT = parseInt(process.env.SV_API_PORT || '3009', 10);
 
@@ -30,7 +49,37 @@ function startReportScheduler(pool, getSmtpSettings) {
   console.log('[Reports] Scheduler started');
 }
 
+/**
+ * Is unattended report mail switched on? Missing row / unreadable table => yes,
+ * matching every other `setting()` read in this app and keeping a settings
+ * hiccup from silently stopping a customer's reports.
+ */
+async function reportMailEnabled(pool) {
+  try {
+    const r = await pool.query(
+      `SELECT value FROM app_settings WHERE key = $1`, [REPORT_MAIL_SETTING]);
+    if (!r.rows.length || r.rows[0].value == null) return true;
+    return String(r.rows[0].value).trim().toLowerCase() !== 'false';
+  } catch (e) {
+    console.error('[Reports] could not read the report-email switch, assuming enabled:', e.message);
+    return true;
+  }
+}
+
+let loggedDisabled = false;
+
 async function runDueReports(pool, getSmtpSettings) {
+  if (!(await reportMailEnabled(pool))) {
+    // Once per process, not once per 15 minutes: an admin who turned this off
+    // does not need four log lines an hour confirming it.
+    if (!loggedDisabled) {
+      loggedDisabled = true;
+      console.log('[Reports] Scheduled report email is switched off in Settings — no reports will be sent.');
+    }
+    return 0;
+  }
+  loggedDisabled = false;
+
   const now = new Date();
   const due = await pool.query(`
     SELECT * FROM saved_reports
@@ -51,11 +100,17 @@ async function runDueReports(pool, getSmtpSettings) {
       `, [report.id, next]);
       console.log(`[Reports] Sent "${report.name}" (#${report.id}); next run ${next.toISOString()}`);
     } catch (e) {
-      console.error(`[Reports] Failed to send "${report.name}" (#${report.id}):`, e.message);
+      // ⛔ THE SUMMARY IS WHAT PERSISTS, NEVER `e.message`. A nodemailer failure
+      // names the mail server's host, port and username and quotes the server's
+      // auth rejection verbatim, and `report_history.error` is handed straight
+      // back by GET /api/reports/saved/:id/history to every site_admin who can
+      // see the report. The run-now path was fixed for exactly this; the
+      // unattended path — the one that actually runs — was missed.
+      console.error(`[Reports] Failed to send "${report.name}" (#${report.id}):`, e && e.stack ? e.stack : e);
       await pool.query(`
         INSERT INTO report_history (report_id, status, error, recipients)
         VALUES ($1, 'failed', $2, $3)
-      `, [report.id, e.message, report.recipients]).catch(() => {});
+      `, [report.id, mailErrorSummary(e), report.recipients]).catch(() => {});
       // Still advance next_run_at so a persistently-failing report doesn't retry
       // every 15 minutes forever.
       const next = calculateNextRun(report);

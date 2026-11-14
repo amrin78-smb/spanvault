@@ -45,6 +45,14 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.118.0': [
+    "New: Settings - Notifications has a switch for scheduled report email. There was never one: a saved report with a schedule and recipients sent mail and the only way to stop it was to delete the schedule. It starts switched on, so nothing changes for reports that work today.",
+    "Fixed: when a scheduled report failed to send, the mail server's own error text was stored against that report - quoting its address, port, sign-in name and refusal - and the report history screen handed it to anyone who could see the report. It now stores a short code, with the detail in the service log. The Run now button was already correct; the scheduled path, the one that actually runs, was not.",
+    "Fixed: when several alerts went out at once, each email looked up the suite mail server separately. On a cold start those lookups competed, timed out, and were each read as \"there is no suite mail server\" - remembered for five minutes, so the burst produced the fallback it would have been blamed on. One lookup is now shared by everything sending at that moment.",
+    "Fixed: a single failure to open a connection to NetVault put SpanVault on its own mail settings until the service was restarted, rather than retrying.",
+    "The mail server's address, port and sign-in name now require a super administrator, matching the other three applications. An administrator is still told which mail server is in use and whether an older local one is still carrying the mail.",
+    "Fixed: on the mail panel, the sentence explaining that certificate checking is switched off could break mid-word.",
+  ],
   '1.117.4': [
     "Fixed: the link to NetVault at the top of the settings menu was brand red on a dark background, measured at about 3:1 against the 4.5:1 readability threshold. It now uses the normal text colour with an underline.",
   ],
@@ -11156,8 +11164,18 @@ const SECRET_CLEAR = '__clear__';
 // Mirrors READ_ONLY_SMTP_KEYS in frontend/src/app/(app)/settings/page.tsx.
 const TRANSPORT_SETTING_KEYS = new Set(['smtp_host', 'smtp_port', 'smtp_user', 'smtp_pass']);
 
+// The legacy local transport's own fields. Not secrets (the password is in
+// SECRET_SETTING_KEYS and masked separately), but the same class of operator
+// detail as the `hub`/`local` summaries on /api/settings/smtp-source — which
+// are super_admin-only. Handing the host, port and username out here to a
+// rank-2 admin while withholding exactly those three facts one route over made
+// that gate decorative. Three of the four apps already draw the line at
+// super_admin for the mail server's identity; this is SpanVault following.
+const TRANSPORT_DETAIL_KEYS = new Set(['smtp_host', 'smtp_port', 'smtp_user']);
+
 app.get('/api/settings', wrap(async (req, res) => {
   if (userRank(req) < 2) return res.status(403).json({ error: 'Admin only' });
+  const detailed = userRank(req) >= ROLE_RANK.super_admin;
   const r = await sv.query(`SELECT key, value FROM app_settings`);
   const out = {};
   for (const row of r.rows) {
@@ -11165,6 +11183,11 @@ app.get('/api/settings', wrap(async (req, res) => {
       out[row.key] = row.value ? SECRET_PLACEHOLDER : '';
       continue;
     }
+    // ⛔ Omitted, not blanked. The Settings page no longer reads these at all
+    // (it takes `local_configured` off /api/settings/smtp-source instead), and
+    // an empty string would read as "configured, with no host" to anything that
+    // still did.
+    if (!detailed && TRANSPORT_DETAIL_KEYS.has(row.key)) continue;
     out[row.key] = row.value;
   }
   res.json(out);
@@ -11199,6 +11222,26 @@ app.get('/api/settings', wrap(async (req, res) => {
 // install is not the transport and has no business being described as one.
 app.get('/api/settings/smtp-source', wrap(async (req, res) => {
   if (userRank(req) < 2) return res.status(403).json({ error: 'Admin only' });
+  // ⛔ TWO TIERS, not one gate. WHICH transport is carrying the mail, and
+  // whether a legacy local one exists at all, are facts a rank-2 admin needs to
+  // make sense of the Notifications page — and neither names a server. The four
+  // FACTS (host:port, connection mode, username, certificate checking) are the
+  // mail server's identity, and that is super_admin in the hub, in DDIVault and
+  // in LogVault. Returning them to an admin here was the odd one out.
+  const detailed = userRank(req) >= ROLE_RANK.super_admin;
+
+  // Asked of app_settings directly rather than taken from the resolution: when
+  // the hub owns the transport, `s` describes the HUB's server, and whether a
+  // stale local row is sitting behind it is a different question. The page
+  // needs it to tell "the legacy server is still sending" from "nothing is
+  // configured anywhere" without being told the hostname.
+  let localConfigured = false;
+  try {
+    const lr = await sv.query(
+      `SELECT value FROM app_settings WHERE key = 'smtp_host'`);
+    localConfigured = !!(lr.rows[0] && String(lr.rows[0].value || '').trim());
+  } catch (_e) { /* reported as false — see the fail-soft note below */ }
+
   let s;
   try {
     s = await getSmtpSettings();
@@ -11207,7 +11250,7 @@ app.get('/api/settings/smtp-source', wrap(async (req, res) => {
     // as "local" rather than failing the whole Settings page. Both summaries
     // are null because nothing was read — the page renders the fields it
     // cannot state as "(unknown)" rather than inventing a default.
-    return res.json({ source: 'local', hub: null, local: null });
+    return res.json({ source: 'local', local_configured: localConfigured, hub: null, local: null });
   }
   const summary = {
     host: s.host,
@@ -11218,8 +11261,9 @@ app.get('/api/settings/smtp-source', wrap(async (req, res) => {
   };
   res.json({
     source: s.source,
-    hub: s.source === 'hub' ? summary : null,
-    local: s.source === 'local' ? summary : null,
+    local_configured: localConfigured,
+    hub: detailed && s.source === 'hub' ? summary : null,
+    local: detailed && s.source === 'local' ? summary : null,
   });
 }));
 

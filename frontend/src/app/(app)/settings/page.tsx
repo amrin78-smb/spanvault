@@ -664,6 +664,15 @@ type TransportSummary = {
  */
 type SmtpSource = {
   source: 'hub' | 'local';
+  // Whether a legacy `app_settings.smtp_host` exists at all. A BOOLEAN, not the
+  // hostname: the panel needs to tell "the old local server is still carrying
+  // our mail" from "nothing is configured anywhere", and that distinction does
+  // not require naming the server. The host itself is now super_admin-only, in
+  // the four `hub`/`local` facts below.
+  local_configured: boolean;
+  // null when the caller is not a super_admin — withheld, which is NOT the same
+  // as unknown. The panel drops its fact grid rather than printing four
+  // placeholder rows for a reader allowed to see none of them.
   hub: TransportSummary | null;
   local: TransportSummary | null;
 };
@@ -711,7 +720,18 @@ const FACT_LABEL: React.CSSProperties = {
 };
 
 const FACT_VALUE: React.CSSProperties = {
-  color: 'var(--text-primary)', fontFamily: 'var(--font-mono)', wordBreak: 'break-all',
+  // ⛔ `overflow-wrap: anywhere`, NOT `word-break: break-all`. These four facts
+  // are a MIX: two are unbreakable tokens that must wrap mid-string on a narrow
+  // panel (a long mail-server hostname, a username), and two are prose — the
+  // connection mode, and "Certificate checking", whose value is a whole sentence
+  // ending "...including an expired or impersonated one". `break-all` breaks at
+  // the last character that fits REGARDLESS of word boundaries, so it chopped
+  // that sentence mid-word, which on the warning that certificate checking is
+  // off is precisely the line that must not look like a rendering glitch.
+  // `anywhere` prefers word boundaries and only breaks inside a word when a
+  // single word genuinely cannot fit — the hostname case — so both kinds of
+  // value come out right. Changed in all three apps at once.
+  color: 'var(--text-primary)', fontFamily: 'var(--font-mono)', overflowWrap: 'anywhere',
 };
 
 // ⛔ The link INHERITS the panel's own foreground token rather than carrying a
@@ -722,11 +742,6 @@ const FACT_VALUE: React.CSSProperties = {
 // `--canvas-light` documents in globals.css from the other direction: a colour
 // chosen against page chrome is not automatically readable on a tinted surface.
 const HUB_LINK: React.CSSProperties = { color: 'inherit', fontWeight: 700, textDecoration: 'underline' };
-
-// What a fact reads when it genuinely could not be read. ⛔ Never a guessed
-// default: "Enforced" printed over a server whose certificate is NOT checked
-// is worse than admitting we do not know.
-const UNKNOWN = '(unknown)';
 
 // ── Read-only fact row ────────────────────────────────────────
 // ⛔ Module scope, never nested inside MailTransport — a component defined
@@ -752,16 +767,19 @@ function certText(allowSelfSigned: boolean): string {
 // The four facts, in one place, so the hub panel and the legacy panel cannot
 // end up describing the same kind of thing in two different ways.
 //
-// `t` is null only when `/api/settings/smtp-source` could not read the config
-// at all. `fallbackHost` is then the stored `app_settings.smtp_host` — the one
-// thing still known — and the other three say so instead of guessing.
-function TransportFacts({ t, fallbackHost }: { t: TransportSummary | null; fallbackHost?: string }) {
+// ⛔ Only rendered when the summary EXISTS. It is absent in two cases — the
+// caller is not a super_admin, or /api/settings/smtp-source could not read the
+// config — and in both the caller renders nothing rather than calling this with
+// a null. A grid of four "(unknown)" rows reads as a broken panel; the sentence
+// above it already says which transport is live, which is the part that does
+// not depend on being allowed to see the server's name.
+function TransportFacts({ t }: { t: TransportSummary }) {
   return (
     <div style={FACTS}>
-      <Fact label="Server">{t ? `${t.host}:${t.port}` : (fallbackHost || UNKNOWN)}</Fact>
-      <Fact label="Connection">{t ? (t.secure ? 'TLS / SSL' : 'STARTTLS or plain') : UNKNOWN}</Fact>
-      <Fact label="Username">{t ? (t.username || '(none — unauthenticated)') : UNKNOWN}</Fact>
-      <Fact label="Certificate checking">{t ? certText(t.allow_self_signed) : UNKNOWN}</Fact>
+      <Fact label="Server">{`${t.host}:${t.port}`}</Fact>
+      <Fact label="Connection">{t.secure ? 'TLS / SSL' : 'STARTTLS or plain'}</Fact>
+      <Fact label="Username">{t.username || '(none — unauthenticated)'}</Fact>
+      <Fact label="Certificate checking">{certText(t.allow_self_signed)}</Fact>
     </div>
   );
 }
@@ -789,20 +807,25 @@ function TransportFacts({ t, fallbackHost }: { t: TransportSummary | null; fallb
  * must be visible here and not only where it is configured. This is the shape
  * all three satellites share; DDIVault is the canonical implementation.
  *
- * `localHost` is the stored `app_settings.smtp_host` (plain text, never the
- * password — GET /api/settings masks that). It distinguishes the last two
- * states, which `/api/settings/smtp-source` reports identically as 'local',
- * and it is the only fact still available if that route failed to read at all.
+ * `localConfigured` is a BOOLEAN from the server — "a legacy smtp_host exists"
+ * — and it is what distinguishes the last two states, which
+ * `/api/settings/smtp-source` reports identically as 'local'. It used to be the
+ * hostname itself, read out of `GET /api/settings`; that key is now
+ * super_admin-only, because the mail server's identity is super_admin in the
+ * other three apps, and this panel never needed more than the boolean to pick
+ * its wording. The four FACTS are the super_admin half and arrive separately;
+ * `hub`/`local` are null when they were withheld, and each branch below drops
+ * its grid rather than describing a server it was not given.
  *
  * Top-level by the no-sub-components rule, though nothing here takes input.
  */
-function MailTransport({ loading, error, source, hub, local, localHost }: {
+function MailTransport({ loading, error, source, hub, local, localConfigured }: {
   loading: boolean;
   error: string | null;
   source: 'hub' | 'local' | null;
   hub: TransportSummary | null;
   local: TransportSummary | null;
-  localHost: string;
+  localConfigured: boolean;
 }) {
   const hubUrl = getHubUrl();
   const link = (
@@ -824,7 +847,7 @@ function MailTransport({ loading, error, source, hub, local, localHost }: {
     );
   }
 
-  if (source === 'hub' && hub) {
+  if (source === 'hub') {
     return (
       <div style={NOTE}>
         {/* The title states WHAT is sending, not who owns it. The settings rail
@@ -834,20 +857,23 @@ function MailTransport({ loading, error, source, hub, local, localHost }: {
         <div style={NOTE_TITLE}>Sending through the NocVault suite mail server</div>
         Alerts, recovery notices, escalation and scheduled reports are delivered through the
         mail server configured once for the whole NocVault suite.
-        <TransportFacts t={hub} />
+        {/* Withheld from a non-super_admin, who still gets the sentence above
+            and the link. The grid is dropped whole rather than filled with
+            "(unknown)" — see the note on SmtpSource.hub. */}
+        {hub ? <TransportFacts t={hub} /> : null}
         Change the server in {link}. SpanVault keeps its own sender identity and its own
         delivery switch, below.
       </div>
     );
   }
 
-  if (localHost) {
+  if (localConfigured) {
     return (
       <div style={NOTE_WARN}>
         <div style={NOTE_TITLE}>Sending through a mail server stored in SpanVault</div>
         No suite mail server is reaching SpanVault, so it is falling back to the
         server saved in its own settings by an earlier release.
-        <TransportFacts t={local} fallbackHost={localHost} />
+        {local ? <TransportFacts t={local} /> : null}
         These values are <strong>no longer editable here</strong> — a mail server is now
         configured for the whole suite in {link}. This one keeps working until one is set
         up there, which then takes over.
@@ -876,10 +902,11 @@ function MailTransport({ loading, error, source, hub, local, localHost }: {
 function NotificationSettings({ settings, form, set, save, saving, saveErr, dirty, hasNumErrors, changedFields }: SettingsFormProps) {
   // Must be called before the early returns below — hooks cannot be conditional.
   const smtpSource = useApi<SmtpSource>('/api/settings/smtp-source');
-  // The STORED host, not the form's: the field is no longer editable, so the
-  // form can only ever echo what was loaded — and reading the saved value keeps
-  // this honest even if some other writer changes it.
-  const localSmtpHost = String(settings.data?.smtp_host || '').trim();
+  // Whether a legacy local mail server is still sitting in app_settings, as a
+  // boolean from the server. It used to be derived from `settings.data.smtp_host`
+  // — but that key is now super_admin-only (GET /api/settings), and the panel
+  // needs this distinction for every admin who can open the page.
+  const localConfigured = smtpSource.data?.local_configured === true;
 
   if (settings.loading && !settings.data) return <Loading />;
   if (settings.error) return <ErrorBox message={settings.error} />;
@@ -903,7 +930,7 @@ function NotificationSettings({ settings, form, set, save, saving, saveErr, dirt
               source={smtpSource.data?.source ?? null}
               hub={smtpSource.data?.source === 'hub' ? smtpSource.data.hub : null}
               local={smtpSource.data?.source === 'local' ? smtpSource.data.local : null}
-              localHost={localSmtpHost}
+              localConfigured={localConfigured}
             />
             {/* Only the per-app identity and recipients remain — the transport
                 is the hub's (see <MailTransport> above and SMTP_FIELDS). */}
@@ -925,6 +952,18 @@ function NotificationSettings({ settings, form, set, save, saving, saveErr, dirt
                   checked={String(form.email_recovery_enabled ?? 'true').toLowerCase() !== 'false'}
                   onChange={(e) => set('email_recovery_enabled', e.target.checked ? 'true' : 'false')} />
                 Send recovery (“all-clear”) emails
+              </label>
+              {/* ⛔ DEFAULTS ON when the key is absent, matching api/reportScheduler.js.
+                  Scheduled reports had no switch at all before this — a saved report with
+                  a cadence and recipients sent mail and nothing could stop it short of
+                  deleting the schedule. Separate from "Enable email alerts" on purpose:
+                  wanting reports but not alerts (or the reverse) is an ordinary thing to
+                  want, and one checkbox for both would make the other impossible. */}
+              <label className="sv-field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8, margin: 0 }}>
+                <input type="checkbox"
+                  checked={String(form.report_email_enabled ?? 'true').toLowerCase() !== 'false'}
+                  onChange={(e) => set('report_email_enabled', e.target.checked ? 'true' : 'false')} />
+                Send scheduled report emails
               </label>
               <label className="sv-field" style={{ margin: 0 }}>Re-notify cooldown (minutes)
                 <input className="sv-input sv-input-sm" type="number" min={0}
