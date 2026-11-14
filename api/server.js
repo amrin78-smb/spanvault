@@ -45,6 +45,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.118.1': [
+    "An update now installs the exact dependency versions this release was built and tested against. Before, an update could resolve newer compatible versions instead, so two servers on the same NocVault release could end up running subtly different software with no way to tell them apart. This takes effect from your next update onwards, because an update always runs the previous release's own update script."
+  ],
   '1.118.0': [
     "New: Settings - Notifications has a switch for scheduled report email. There was never one: a saved report with a schedule and recipients sent mail and the only way to stop it was to delete the schedule. It starts switched on, so nothing changes for reports that work today.",
     "Fixed: when a scheduled report failed to send, the mail server's own error text was stored against that report - quoting its address, port, sign-in name and refusal - and the report history screen handed it to anyone who could see the report. It now stores a short code, with the detail in the service log. The Run now button was already correct; the scheduled path, the one that actually runs, was not.",

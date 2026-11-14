@@ -1118,7 +1118,24 @@ $currentStage = 'npm-install-root'
 Push-Location $AppRoot
 # npm writes progress/warnings to stderr; consume both streams to avoid
 # NativeCommandError over WinRM, and gate on $LASTEXITCODE for real failures.
-$null = & $npm install --omit=dev 2>&1
+# ⛔ npm ci, NOT npm install. Two load-bearing reasons:
+#   1. Reproducibility. npm install is free to resolve newer transitive versions
+#      that still satisfy package.json's semver ranges, so two updates to the SAME
+#      NocVault tag can ship different dependency trees - and the one that breaks
+#      is the customer's, weeks later, with nothing to diff. npm ci installs
+#      package-lock.json exactly and fails loudly if the lock and package.json
+#      disagree. All four repos track their locks (root + frontend).
+#   2. npm install REWRITES the tracked package-lock.json on every run. That write
+#      is precisely why this script can never use 'git pull' - a dirty tree
+#      refuses the merge - and must 'git reset --hard' instead. npm ci never
+#      writes the lock, so it removes the cause rather than working around it.
+# ⛔ And it costs nothing here, contrary to the old rationale ("the updaters keep
+# npm install to stay incremental and preserve node_modules"): the snapshot step
+# above has ALREADY renamed node_modules to node_modules.lastgood before this
+# line runs, so npm was installing into an empty directory either way. The
+# incremental saving was imaginary. A failure is covered - Fail-Update restores
+# the .lastgood snapshots.
+$null = & $npm ci --omit=dev 2>&1
 $rootInstallExit = $LASTEXITCODE
 Pop-Location
 if ($rootInstallExit -eq 0) {
@@ -1127,19 +1144,20 @@ if ($rootInstallExit -eq 0) {
     # Previously this only warned and kept going, deploying the API/Collector
     # against a possibly-broken root node_modules. Root deps failing to install
     # is exactly the class of failure the rollback exists for.
-    Fail-Update -Stage 'npm-install-root' -Message "npm install (root) failed (exit $rootInstallExit)"
+    Fail-Update -Stage 'npm-install-root' -Message "npm ci (root) failed (exit $rootInstallExit)"
 }
 
 Write-Step 'Installing dependencies (frontend)'
 $currentStage = 'npm-install-frontend'
 Push-Location $Frontend
-$null = & $npm install 2>&1
+# npm ci, not npm install - see the note at the root install above.
+$null = & $npm ci 2>&1
 $feInstallExit = $LASTEXITCODE
 Pop-Location
 if ($feInstallExit -eq 0) {
     Write-Ok 'Frontend dependencies installed'
 } else {
-    Fail-Update -Stage 'npm-install-frontend' -Message "npm install (frontend) failed (exit $feInstallExit)"
+    Fail-Update -Stage 'npm-install-frontend' -Message "npm ci (frontend) failed (exit $feInstallExit)"
 }
 
 # ── 4b. Reassign public-object ownership to spanvault_user ─────
