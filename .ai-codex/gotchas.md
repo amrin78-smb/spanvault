@@ -513,7 +513,21 @@ React events bubble through the **React** tree, not the DOM tree: `RowMenu`'s
 `onClick={stopPropagation}` (which stops a menu click from toggling the row open)
 both behave exactly as before.
 
-⛔ Not yet verified: whether the menu can still open past the bottom of the
-viewport on the last row of a tall table. `toggle()` always anchors at
-`rect.bottom + 4` with no flip-up, and the menu closes on scroll, so there would
-be no way to bring it back into view. Measure before assuming either way.
+**Verified, and it was real — fixed separately in 1.118.3.** `toggle()` anchored
+at `rect.bottom + 4` with no flip-up. Measured on the live /services page at a
+768px viewport: the LAST row's panel sat **69px past the fold, 57% of it
+off-screen, with `occluders: []`** — nothing was covering it, it was simply
+below the window. And because the menu closes on ANY scroll, scrolling down to
+reach it dismissed it, so it was unreachable rather than merely awkward.
+`RowMenu` now measures the panel in a layout effect (before paint, so the
+corrected position is the first one drawn) and flips it above the trigger when
+it would not fit below, clamping to the viewport if it fits neither way. The
+`settled` flag on `pos` is what stops that state write from re-triggering its
+own effect.
+
+**The wider lesson: this control had THREE independent ways to be invisible** —
+clipped by the scroller (fixed positioning), occluded by a sticky cell's
+stacking context (the portal), and positioned off-screen (the flip). Each one
+produces the identical user report, and fixing one makes the next easier to
+assume is already handled. When a popup "isn't there", measure which of the
+three it is instead of reaching for the fix you remember.

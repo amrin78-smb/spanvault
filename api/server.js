@@ -45,6 +45,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.118.3': [
+    "Fixed: on a shorter screen, the actions menu on the last row of a list opened past the bottom edge of the window. Because the menu closes as soon as the page is scrolled, scrolling down to reach it dismissed it instead, leaving it unreachable. It now opens upwards when there is not enough room below.",
+  ],
   '1.118.2': [
     "Fixed: on the Services screen, the actions menu behind the three dots at the end of a row opened mostly hidden - a narrow strip of it showed and the rest sat behind the rows underneath, so Edit, Pause and Delete could not be read or clicked. The menu now opens clear of the table.",
     "The same menu is used by the wireless controller list, which is now protected from the same fault.",

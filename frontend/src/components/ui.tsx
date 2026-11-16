@@ -1,6 +1,11 @@
 'use client';
 
-import { useEffect, useRef, useState, useCallback, useId } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, useCallback, useId } from 'react';
+
+// useLayoutEffect warns when a client component is rendered on the server.
+// Anything that MEASURES and then repositions before paint needs the layout
+// timing on the client and does nothing at all on the server, so pick once.
+const useIsoLayoutEffect = typeof window !== 'undefined' ? useLayoutEffect : useEffect;
 import { createPortal } from 'react-dom';
 
 /** Small shared presentational helpers — all defined at top level (never nested). */
@@ -1200,7 +1205,7 @@ export function TableScroll({ label, children, className = '' }: { label: string
 export interface RowMenuItem { label: string; onClick: () => void; danger?: boolean; disabled?: boolean; title?: string }
 export function RowMenu({ items, label = 'More actions' }: { items: RowMenuItem[]; label?: string }) {
   const [open, setOpen] = useState(false);
-  const [pos, setPos] = useState<{ top: number; right: number } | null>(null);
+  const [pos, setPos] = useState<{ top: number; right: number; anchorTop: number; settled: boolean } | null>(null);
   const [cursor, setCursor] = useState(0);
   const ref = useRef<HTMLSpanElement>(null);
   const btnRef = useRef<HTMLButtonElement>(null);
@@ -1227,9 +1232,33 @@ export function RowMenu({ items, label = 'More actions' }: { items: RowMenuItem[
     if (!open) return;
     menuRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')[cursor]?.focus();
   }, [open, cursor]);
+  // ⛔ Keep the panel inside the viewport. A row near the bottom of a tall table
+  // would otherwise open a menu that runs off the bottom edge -- and because the
+  // menu closes on ANY scroll, scrolling to reach it dismisses it instead, so it
+  // is unreachable rather than merely awkward. Measured on /services at a 768px
+  // viewport before this: the last row's panel sat 69px past the fold with 57% of
+  // it off-screen and NOTHING occluding it. That is a different failure from the
+  // stacking-context one above and the portal does not address it.
+  // Runs before paint so the corrected position is the first one drawn, and
+  // `settled` stops the state write from re-triggering this effect forever.
+  useIsoLayoutEffect(() => {
+    if (!open || !pos || pos.settled) return;
+    const el = menuRef.current;
+    if (!el) return;
+    const h = el.getBoundingClientRect().height;
+    const maxBottom = window.innerHeight - 8;
+    let top = pos.top;
+    if (top + h > maxBottom) {
+      const above = pos.anchorTop - 4 - h;
+      top = above >= 8 ? above : Math.max(8, maxBottom - h);
+    }
+    setPos({ ...pos, top, settled: true });
+  }, [open, pos]);
   function toggle() {
     const r = btnRef.current?.getBoundingClientRect();
-    if (r) setPos({ top: r.bottom + 4, right: Math.max(8, window.innerWidth - r.right) });
+    // Opens below the trigger; the layout effect above flips it above when the
+    // panel would not fit, which it cannot know until the panel has a height.
+    if (r) setPos({ top: r.bottom + 4, right: Math.max(8, window.innerWidth - r.right), anchorTop: r.top, settled: false });
     setCursor(0);
     setOpen((o) => !o);
   }
