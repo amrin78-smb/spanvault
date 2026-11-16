@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState, useCallback, useId } from 'react';
+import { createPortal } from 'react-dom';
 
 /** Small shared presentational helpers — all defined at top level (never nested). */
 
@@ -1181,6 +1182,21 @@ export function TableScroll({ label, children, className = '' }: { label: string
 // computes overflow-y to auto and would otherwise clip an absolute popup.
 // Destructive items stay visually separated and still go through their own
 // confirmation at the call site.
+//
+// ⛔ The panel is PORTALLED to document.body, and position:fixed alone is NOT
+// enough without it. On a `.sv-table-pin-actions` table the last cell of every
+// row is `position: sticky` WITH a z-index, and that pair creates a stacking
+// context. The menu renders inside one of those cells, so its own z-index is
+// resolved against its siblings INSIDE that cell's context — it can never
+// paint above a LATER row's pinned cell, which sits at the same z-index 2 and
+// paints after it in document order. The result on /services was a menu whose
+// left sliver was visible over the ordinary cells and whose right 64% was
+// hidden behind the "View details" buttons of the rows below (measured: 29 of
+// 45 sample points occluded; re-parenting the identical element to body with
+// identical coordinates took it to 0). position:fixed escapes the scroll
+// CLIPPING; only leaving the stacking context escapes the OCCLUSION.
+// So: don't "simplify" this back to an inline render because fixed positioning
+// looks sufficient on a page whose table has no pinned column.
 export interface RowMenuItem { label: string; onClick: () => void; danger?: boolean; disabled?: boolean; title?: string }
 export function RowMenu({ items, label = 'More actions' }: { items: RowMenuItem[]; label?: string }) {
   const [open, setOpen] = useState(false);
@@ -1239,7 +1255,7 @@ export function RowMenu({ items, label = 'More actions' }: { items: RowMenuItem[
       >
         ⋮
       </button>
-      {open && pos && (
+      {open && pos && typeof document !== 'undefined' && createPortal(
         <span
           ref={menuRef}
           className="sv-dropdown"
@@ -1262,7 +1278,8 @@ export function RowMenu({ items, label = 'More actions' }: { items: RowMenuItem[
               {it.label}
             </button>
           ))}
-        </span>
+        </span>,
+        document.body,
       )}
     </span>
   );

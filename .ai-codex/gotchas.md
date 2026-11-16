@@ -479,3 +479,41 @@ down on top of the bad state being reported.
 - ⛔ **The read-only transport statement names THREE states, and the middle one is the whole point.** `<MailTransport>` on the Notifications tab renders: hub-managed (names `host:port`, links to the hub), **local-legacy** (the hub has none and a `smtp_host` left in `app_settings` is STILL the live transport — it is named, and said to be no longer editable here), or nothing-configured (said plainly, pointing at the hub, with no suggestion SpanVault can fix it locally). `/api/settings/smtp-source` reports the last two identically as `source: 'local'`, so the page distinguishes them with the stored `app_settings.smtp_host`. **Never collapse local-legacy into "not configured"** — that hides a config that is still sending mail, which is the failure this design exists to prevent. **1.117.2:** both configured states now state the SAME FOUR FACTS in a grid (server / connection mode / username / certificate checking) rather than prose, and the three titles are byte-identical to DDIVault's and LogVault's — see pages.md's `/settings` entry for the full contract. ⛔ The route still **never** returns the password or anything derived from it; `username` and `allow_self_signed` are not secrets and were added deliberately, behind the same rank-2 gate. ⛔ If a fact cannot be read, render `(unknown)` — **do not default `allow_self_signed` to `false`**: printing "Enforced" over a server whose certificate is not checked is worse than admitting we do not know.
 - **Measured before removing anything (2026-11-13):** no app in this suite has EVER sent an alert email — `ddivault.alert_email_log` empty for all time, SpanVault's `email_alerts_enabled=false` with an empty `smtp_host`. There was no working local configuration to protect. That measurement, not an assumption, is what made the removal safe.
 - **No installer or env change was needed, and that was verified, not assumed.** Both SpanVault services read `.env.local` via dotenv (neither `SpanVault-API` nor `SpanVault-Collector` has an NSSM `AppEnvironmentExtra` block at all), and the suite installer's `$svEnv` already writes `NEXTAUTH_SECRET` + `NETVAULT_DB_*`. SpanVault connects as the `netvault` role — the owner of `smtp_config` — so no grant change either. If a future satellite-side cross-DB read needs a NEW env var, note LogVault is the one that does: its collector has no `NEXTAUTH_SECRET`.
+
+## A popup inside a pinned table cell needs a PORTAL, not just `position: fixed` (1.118.2)
+
+`.sv-table-pin-actions` gives the last cell of every row `position: sticky` **with
+a `z-index`**. That pair creates a **stacking context**. Any popup rendered inside
+such a cell has its own `z-index` resolved against that cell's context only — so a
+menu at `z-index: 50` still cannot paint above a *later* row's pinned cell, which
+is a sibling context at `z-index: 2` that paints after it in document order.
+
+`position: fixed` does not help. Fixed positioning escapes the **clipping** of the
+`.sv-table-scroll` scroller (which is why `RowMenu` uses it), but it does **not**
+escape a stacking context. The two problems look identical to the user — "the menu
+isn't there" — and the first fix makes the second one easy to believe is already
+solved.
+
+**Reported symptom (/services, 1.118.1):** clicking the row kebab appeared to do
+nothing useful — a narrow strip of the menu showed over the ordinary cells, and
+everything right of the pinned column's left edge was hidden behind the "View
+details" buttons of the rows below. Measured on a reduced repro: **29 of 45 sample
+points across the panel occluded (64%)**; re-parenting the identical element to
+`document.body` with identical fixed coordinates took it to **0**.
+
+**The rule:** a popup that must float over a table whose last column is pinned is
+portalled to `document.body` (`createPortal`) AND positioned `fixed` from a
+measured trigger rect. Both halves are load-bearing — don't remove the portal
+because fixed positioning "already works" on a page whose table has no pinned
+column (`/wireless` uses the same `RowMenu` and would not have shown the fault).
+
+Portals keep working with the existing outside-click and key handling because
+React events bubble through the **React** tree, not the DOM tree: `RowMenu`'s
+`menuRef.current?.contains(...)` outside-click test and the panel's
+`onClick={stopPropagation}` (which stops a menu click from toggling the row open)
+both behave exactly as before.
+
+⛔ Not yet verified: whether the menu can still open past the bottom of the
+viewport on the last row of a tall table. `toggle()` always anchors at
+`rect.bottom + 4` with no flip-up, and the menu closes on scroll, so there would
+be no way to bring it back into view. Measure before assuming either way.

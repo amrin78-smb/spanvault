@@ -121,8 +121,11 @@ Currently used by `(app)/services/page.tsx` (9 cols) and `(app)/alerts/page.tsx`
   silently cut off by an `overflow: hidden` card (the /alerts bug).
   ⚠ `overflow-x: auto` computes `overflow-y` to `auto` too, so an `absolute`-positioned
   popup inside the table gets clipped by the wrapper. Anchor such menus with
-  `position: fixed` measured from the trigger — see `ServiceRowMenu` (services/page.tsx),
-  which was converted for exactly this.
+  `position: fixed` measured from the trigger — see `RowMenu` (components/ui.tsx),
+  which was converted for exactly this. ⛔ fixed positioning alone only escapes the
+  CLIPPING. On a `.sv-table-pin-actions` table it does NOT escape the sticky cell's
+  stacking context, so the panel is also portalled to `document.body` — see the
+  RowMenu entry below and gotchas.md.
 - `.sv-table-pin-actions` — pins the LAST column (the actions cell) with
   `position: sticky; right: 0` so it stays reachable while the rest scrolls under it.
   Opaque backgrounds per the suite sticky rule; `:not([colspan])` keeps full-width
@@ -169,7 +172,9 @@ StaleNotice / Notice({tone})     inline notices
 TableScroll({label,children})    labelled, focusable horizontal scroll region (role=region +
                                     aria-label + tabIndex). Prefer over a bare .sv-table-scroll div.
 RowMenu({items,label})           kebab action menu, position:fixed anchored (a .sv-table-scroll
-                                    wrapper clips an absolute popup), arrow-key roving focus.
+                                    wrapper clips an absolute popup) AND portalled to document.body
+                                    (a .sv-table-pin-actions sticky cell is a stacking context that
+                                    fixed positioning does not escape), arrow-key roving focus.
                                     Promoted out of services/page.tsx's private ServiceRowMenu.
 PageHeader({title,subtitle,context,freshness,children})
                                     title is now a real <h1>; `context` takes a Breadcrumb,

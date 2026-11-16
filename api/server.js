@@ -45,6 +45,10 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.118.2': [
+    "Fixed: on the Services screen, the actions menu behind the three dots at the end of a row opened mostly hidden - a narrow strip of it showed and the rest sat behind the rows underneath, so Edit, Pause and Delete could not be read or clicked. The menu now opens clear of the table.",
+    "The same menu is used by the wireless controller list, which is now protected from the same fault.",
+  ],
   '1.118.1': [
     "An update now installs the exact dependency versions this release was built and tested against. Before, an update could resolve newer compatible versions instead, so two servers on the same NocVault release could end up running subtly different software with no way to tell them apart. This takes effect from your next update onwards, because an update always runs the previous release's own update script."
   ],
