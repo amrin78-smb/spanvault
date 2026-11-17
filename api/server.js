@@ -45,6 +45,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.119.2': [
+    "Fixed: the correction shipped in 1.119.1 identified wireless incidents by a field that an unrelated, long-deleted device could also leave empty, so it could have adjusted the figure on an old device incident as well. It now identifies them by what the incident actually groups.",
+  ],
   '1.119.1': [
     "Fixed: when several access points on a controller went down together, the incident on the Alerts screen kept the number of access points it was first created with. As those access points came back - or were retired - the heading went on claiming the original number, so one read \"15 access points down\" while four were. The heading no longer carries a count, and the figure shown beside it now follows what is actually still down.",
   ],

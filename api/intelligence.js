@@ -945,9 +945,12 @@ async function correlateIncidents() {
     }
 
     // Keep the wireless incidents' affected_count true to what is still down.
-    // Scoped to root_cause_device_id IS NULL — that is exactly the set this
-    // function creates for wireless (a device incident always has a root-cause
-    // device), so the device pass's own creation-time semantics are untouched.
+    //
+    // ⛔ `root_cause_device_id IS NULL` IS NOT A RELIABLE "IS WIRELESS" TEST,
+    // though it looks like one. The column is ON DELETE SET NULL, so a DEVICE
+    // incident whose root-cause device was later deleted also reads NULL —
+    // production has two such rows. Discriminate on what the incident actually
+    // groups instead: a wireless incident's alerts carry wireless_ap_id.
     await sv.query(`
       UPDATE incidents i
          SET affected_count = s.n
@@ -957,8 +960,9 @@ async function correlateIncidents() {
                GROUP BY incident_id) s
        WHERE i.id = s.incident_id
          AND i.status = 'active'
-         AND i.root_cause_device_id IS NULL
          AND i.affected_count <> s.n
+         AND EXISTS (SELECT 1 FROM alerts a
+                      WHERE a.incident_id = i.id AND a.wireless_ap_id IS NOT NULL)
     `);
     // Repair titles written by the first 1.119.0 build, which embedded the
     // count. Rewriting the stored title is right rather than special-casing the
@@ -967,7 +971,6 @@ async function correlateIncidents() {
       UPDATE incidents
          SET title = regexp_replace(title, '^[0-9]+ access points down', 'Access points down')
        WHERE status = 'active'
-         AND root_cause_device_id IS NULL
          AND title ~ '^[0-9]+ access points down'
     `);
 

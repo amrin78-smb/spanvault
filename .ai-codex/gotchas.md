@@ -646,3 +646,13 @@ other 11 had just been retired by the same change. The title is now countless
 (`root_cause_device_id IS NULL` — the device pass keeps its own creation-time semantics).
 The same pass rewrites titles left behind by the first build. **Anything immutable that
 quotes a mutable quantity will eventually state it wrongly, with full confidence.**
+
+⛔ **`incidents.root_cause_device_id IS NULL` IS NOT "THIS IS A WIRELESS INCIDENT"
+(1.119.2).** It reads like one — the wireless pass always writes NULL there, because the
+column is an FK to `monitored_devices` and a controller is not one. But the column is
+**ON DELETE SET NULL**, so a *device* incident whose root-cause device was later deleted
+is also NULL; production carries two. 1.119.1 used it to scope the `affected_count`
+refresh and would have quietly rewritten those rows' counts. Discriminate on what the
+incident actually groups instead — `EXISTS (SELECT 1 FROM alerts a WHERE a.incident_id =
+i.id AND a.wireless_ap_id IS NOT NULL)`. General shape: a nullable FK answers "is this
+set", never "what kind of row is this", once anything can null it after the fact.

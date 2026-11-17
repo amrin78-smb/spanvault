@@ -169,6 +169,18 @@ async function main() {
   eq((await sv.query(`SELECT status FROM incidents WHERE id=$1`, [inc[0].id])).rows[0].status, 'resolved',
     'E10: the incident auto-resolves once every linked alert has');
 
+  // ⛔ A DEVICE INCIDENT WHOSE ROOT DEVICE WAS DELETED ALSO HAS A NULL
+  // root_cause_device_id (the FK is ON DELETE SET NULL) — production has two.
+  // The refresh above must key on the alerts actually being wireless, not on
+  // that column, or it silently rewrites device incidents' counts too.
+  const orphan = (await sv.query(
+    `INSERT INTO incidents (title, root_cause_device_id, affected_count, severity, status, started_at)
+     VALUES ('2 devices down in Nowhere', NULL, 2, 'critical', 'active', NOW()) RETURNING id`)).rows[0].id;
+  await intelligence.correlateIncidents();
+  const orphanAfter = (await sv.query(`SELECT affected_count, title FROM incidents WHERE id=$1`, [orphan])).rows[0];
+  eq(orphanAfter.affected_count, 2, 'E11: a device incident with a deleted root device is NOT touched');
+  eq(orphanAfter.title, '2 devices down in Nowhere', 'E12: and its title is left alone');
+
   // ⛔ a retired AP must never be dragged into an incident
   await reset();
   const c5 = await ctrl('wlc-e', 'ok');
