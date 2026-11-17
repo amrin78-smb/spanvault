@@ -531,3 +531,106 @@ stacking context (the portal), and positioned off-screen (the flip). Each one
 produces the identical user report, and fixing one makes the next easier to
 assume is already handled. When a popup "isn't there", measure which of the
 three it is instead of reaching for the fix you remember.
+
+## ⛔ "Offline" and "gone" are different facts — AP retirement (1.119.0)
+
+`evaluateWirelessAlerts()` raised a critical `wireless_ap_down` for every AP whose
+`status` was `offline`, with no notion of how long it had been that way. Measured on
+production 2026-11-17: **of 22 active AP-down criticals, 16 were for APs last seen 23
+to 158 days earlier**, every one of their controllers reporting `ok`. Seven of them (at
+TUFS) stopped reporting within the *same second* — 2026-08-26 08:42:06 — which is one
+decommission, not seven failures. Decommissioned hardware nobody removed from the
+controller's list was generating permanent criticals that buried the six APs genuinely
+down that morning.
+
+The collector now stamps `wireless_aps.retired_at` once an AP has been unseen for longer
+than `wireless_ap_stale_days` (default **14**), resolves its open alert and stops raising.
+
+⛔ **RETIRING RESOLVES THE ALERT, IT NEVER DELETES THE AP.** `wireless_history`,
+`alerts` and the channel-change rows all reference `wireless_aps(id)` **ON DELETE
+CASCADE**, so "tidying up" a retired AP by deleting the row silently destroys its entire
+history. The row is the record; retirement is a flag on it.
+
+⛔ **`retired_at` IS CLEARED AUTOMATICALLY WHEN THE AP REPORTS ONLINE AGAIN**, and that
+is what makes the threshold safe. Without it, a site genuinely shut for three weeks would
+be retired and then stay silent forever afterwards — the feature would convert a long
+outage into a permanent blind spot. The test suite asserts the full round trip: retire →
+report in → un-retire → go down again → alerts normally.
+
+⛔ **THE THRESHOLD LIVES IN ONE PLACE OR IT DRIFTS.** The Wireless page had independently
+derived the same lifecycle months earlier (`apLifecycle()`, `AP_STALE_AFTER_DAYS`) and
+labelled these APs "probably decommissioned" — while the Alerts page called the *same* AP
+a critical outage, for 158 days. The page was explicitly passive by design ("we never
+decide which"), which was defensible until the collector started deciding. `GET
+/api/wireless/aps` now returns `is_stale`/`stale_after_days` computed from the same
+`app_settings` key the collector reads, and the page prefers the server's verdict. The
+local constant is a fallback only. **If you add a third consumer, read it from the API —
+do not add a fourth copy of the number.**
+
+⛔ **A SETTINGS CHANGE TAKES UP TO 60 SECONDS.** `settingInt()` reads an in-memory cache
+that `main()` refreshes on a 60s timer. A caller driving these passes directly (tests)
+must `loadSettings()` itself or it silently reads the code-level defaults — which is
+exactly how the threshold test first failed.
+
+## ⛔ Controller-down suppression, and why it is SUPPRESSED not RESOLVED (1.119.0)
+
+When a controller's last poll errored we are not observing its APs at all — every one of
+them reads `offline` because our only source of truth is unreachable. Raising a critical
+per AP is N false statements plus one true one. The APs' open alerts are now set to
+`status='suppressed'` with a `suppression_reason` naming the controller, exactly mirroring
+`evaluateAgentDevices()`'s agent-down dependency.
+
+⛔ **`'resolved'` WOULD BE A LIE AND A TRAP.** It claims the AP came back. It also matters
+mechanically: `idx_alerts_active_wap_unique` is a partial unique index on `status='active'`,
+so a *suppressed* row leaves the slot free and the alert re-raises by itself on the first
+pass after the controller recovers. The suite asserts that recovery path — a suppression
+with no way back is a silent black hole, which is worse than the flood it replaced.
+
+⛔ **`alerts.suppressed_by` IS AN FK TO `monitored_devices`** and a wireless controller is
+not one, so only `suppression_reason` is set here. That is not an oversight — it is the
+same shape the agent-down path already uses.
+
+## ⛔ Wireless alerts could never form an incident (1.119.0)
+
+`correlateIncidents()` was bounded to `alert_type = 'device_down'` with a `JOIN
+monitored_devices`; an AP alert hangs off `wireless_ap_id` with a NULL `device_id`, so no
+wireless alert could ever enter an incident. The Alerts page's own code already said so:
+"the collector has never populated `alerts.incident_id`: 0 of the newest 1000 rows".
+
+⛔ **THE PAGE'S OTHER GROUPING CANNOT COVER THIS CASE, BY CONSTRUCTION.** Entity grouping
+collapses MANY alerts on ONE AP (measured 4.8x). An AP outage is the mirror image: ONE
+alert on MANY APs, so every AP is its own group of one and nothing collapses. Different
+axis, different mechanism — reaching for the entity grouping here will not work.
+
+⛔ **THE WIRELESS PASS HAS NO 2-HOUR RECENCY BOUND, DELIBERATELY**, unlike the device
+pass it sits beside. An AP-down alert stays active for the whole outage — days — so a
+recency filter would mean grouping only ever applied to outages younger than the window,
+and the page kept showing one row per AP for everything older. The 2-minute *clustering*
+is kept, so APs that failed at unrelated times are never merged into a fictitious single
+incident, and retired APs are excluded entirely (nothing is wrong with them).
+`incidents.root_cause_device_id` stays NULL for these — it is an FK to `monitored_devices`
+and the column is nullable for exactly this reason.
+
+## ⛔ `require`-ing collector.js used to START the collector (fixed 1.119.0)
+
+`collector/collector.js` ended with a bare `main()`, so merely importing the file launched
+the whole polling service — DB pools, ICMP/SNMP sweeps, wireless polls and alert emails —
+as a side effect. It is now guarded by `require.main === module`, which changes nothing in
+production (NSSM runs `node collector\collector.js` directly) and makes the module
+importable, which is what lets `tests/test-wireless-retirement.js` drive the real
+evaluation passes instead of asserting against a reimplementation.
+
+⛔ **`node -e "require('./collector/collector.js')"` IS NOT A SYNTAX CHECK** — it was one
+of the ways this bit. Use `node --check <file>`.
+
+## ⛔ A raw NUL byte made the whole collector invisible to grep (fixed 1.119.0)
+
+`ruleSubjectKey()` built a composite key as `` `${rule.metric}\0${rule.sensor_key}` `` with
+a **literal 0x00 byte typed into the source** rather than the `\0` escape. Node parses it
+fine, so it worked — but `file` reported `collector/collector.js` as `data`, and **grep and
+ripgrep treat the file as binary and return nothing for every pattern**, silently, across
+all 2,538 lines. Searching the collector for `wireless_ap_down`, `raiseWirelessAlert` or
+even `alert` produced zero hits while the code was right there. Now written as `\0`.
+
+⛔ If a search for something you can SEE in a file returns nothing, check `file <path>`
+before concluding the code does not exist.

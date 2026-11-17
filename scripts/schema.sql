@@ -1130,6 +1130,28 @@ ALTER TABLE wireless_aps ADD COLUMN IF NOT EXISTS cpu_pct    NUMERIC;
 ALTER TABLE wireless_aps ADD COLUMN IF NOT EXISTS mem_total  BIGINT;
 ALTER TABLE wireless_aps ADD COLUMN IF NOT EXISTS mem_free   BIGINT;
 
+-- An AP that stopped reporting is RETIRED, not "down" (1.119.0).
+--
+-- ⛔ "OFFLINE" AND "GONE" ARE DIFFERENT FACTS AND ONLY ONE IS ACTIONABLE.
+-- evaluateWirelessAlerts() raises a critical wireless_ap_down for every AP whose
+-- status is 'offline', with no notion of how long it has been that way. Measured
+-- on production 2026-11-17: of 22 active AP-down criticals, SIXTEEN were for APs
+-- last seen 23-158 days earlier (seven of them at TUFS stopped reporting within
+-- the same SECOND, 2026-08-26 08:42:06 — one decommission, not seven failures),
+-- while their controllers all reported ok. Decommissioned kit was generating
+-- permanent criticals that buried the six APs genuinely down that morning.
+--
+-- retired_at is stamped by the collector once an AP has been unseen longer than
+-- `wireless_ap_stale_days` (default 14), and CLEARED the moment the AP reports
+-- online again — so a long outage self-heals back into normal alerting with no
+-- operator action. It can also be set/cleared by hand from the Wireless page.
+-- A retired AP is excluded from alerting, never deleted: the row carries the
+-- history (wireless_history, alerts, channel changes) and deleting it would
+-- cascade all of it away.
+ALTER TABLE wireless_aps ADD COLUMN IF NOT EXISTS retired_at TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS idx_wireless_aps_retired
+  ON wireless_aps(retired_at) WHERE retired_at IS NOT NULL;
+
 -- Per-SSID security/encryption type (e.g. "WPA2-PSK (AES)", "Open"), from the
 -- vendor's ESSID table where available.
 ALTER TABLE wireless_ssids ADD COLUMN IF NOT EXISTS encryption_type TEXT;

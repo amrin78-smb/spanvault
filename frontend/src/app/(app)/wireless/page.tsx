@@ -220,6 +220,15 @@ interface AccessPoint {
   // for at-a-glance badges. See congestionTint()/CongestionPill() below.
   congestion_score: number | null;
   congestion_level: 'low' | 'medium' | 'high' | null;
+  // Retirement — an AP that stopped reporting is decommissioned kit, not an
+  // outage, and stops raising wireless_ap_down. `retired_at` is set (by the
+  // collector past wireless_ap_stale_days, or by hand here); `is_stale` is the
+  // server's verdict using the SAME threshold the collector alerts on, so this
+  // list can never disagree with what is actually being alerted.
+  retired_at: string | null;
+  days_unseen: number | null;
+  is_stale: boolean;
+  stale_after_days: number | null;
 }
 
 interface ApHistoryRow {
@@ -2621,11 +2630,24 @@ function sortAps(aps: AccessPoint[], sort: ApSort | null): AccessPoint[] {
 //   stale           — down and not seen for over a week: probably decommissioned,
 //                     possibly a genuine long outage. We never decide which.
 //
-// Nothing here retires, deletes or suppresses a record; the exact last-seen
-// time is always shown so the operator can judge.
-const AP_STALE_AFTER_DAYS = 7;
+// ⛔ UPDATED 1.119.0 — THE COLLECTOR NOW ACTS ON THIS, SO THE NUMBER CANNOT
+// LIVE HERE ALONE. The paragraph above described the original, deliberately
+// passive design ("we never decide which"), and it was right that labelling
+// without acting is better than guessing. But the alerting side never learned
+// the distinction: evaluateWirelessAlerts() raised a permanent critical for
+// every offline AP, so this page said "probably decommissioned" about the exact
+// same AP the Alerts page was calling a critical outage — for 158 days in one
+// measured case. Now the collector retires past `wireless_ap_stale_days` and
+// stops alerting, and the API returns `is_stale`/`stale_after_days` computed
+// with THAT setting. This constant is only the fallback for a row that predates
+// those fields; prefer the server's verdict wherever one is present, or the two
+// halves drift apart again in the opposite direction.
+const AP_STALE_AFTER_DAYS = 14;
 
-type ApLifecycle = 'online' | 'recently-offline' | 'stale' | 'unknown';
+// 'retired' = we have stopped alerting on it (auto past the threshold, or by
+// hand). Distinct from 'stale', which is "old enough to qualify" — an AP can be
+// stale for a moment before the next collector pass retires it.
+type ApLifecycle = 'online' | 'recently-offline' | 'stale' | 'retired' | 'unknown';
 
 function apDaysSinceSeen(ap: { last_seen_at: string | null }): number | null {
   if (!ap.last_seen_at) return null;
@@ -2634,11 +2656,22 @@ function apDaysSinceSeen(ap: { last_seen_at: string | null }): number | null {
   return (Date.now() - t) / 86400000;
 }
 
-function apLifecycle(ap: { status: string; last_seen_at: string | null }): ApLifecycle {
+function apLifecycle(ap: {
+  status: string; last_seen_at: string | null;
+  retired_at?: string | null; is_stale?: boolean; stale_after_days?: number | null;
+}): ApLifecycle {
+  // Online wins over retired: the collector clears retired_at on the next pass
+  // after an AP reports again, and showing it as retired until then would be a
+  // stale answer about an AP that is demonstrably back.
   if (ap.status === 'online') return 'online';
+  if (ap.retired_at) return 'retired';
   const days = apDaysSinceSeen(ap);
   if (days == null) return 'unknown';
-  return days >= AP_STALE_AFTER_DAYS ? 'stale' : 'recently-offline';
+  // The server's verdict first — it used the same setting the collector alerts
+  // on. The local comparison is the fallback for rows without the field.
+  if (typeof ap.is_stale === 'boolean') return ap.is_stale ? 'stale' : 'recently-offline';
+  const threshold = ap.stale_after_days ?? AP_STALE_AFTER_DAYS;
+  return days >= threshold ? 'stale' : 'recently-offline';
 }
 
 /**
@@ -2714,14 +2747,15 @@ function ApControllerGroup({
   // offline AP's stored figure is historical.
   const clients = aps.reduce((s, a) => s + (apMetricsAreCurrent(a) ? (a.clients_total || 0) : 0), 0);
   const life = aps.reduce((acc, a) => { acc[apLifecycle(a)] += 1; return acc; },
-    { online: 0, 'recently-offline': 0, stale: 0, unknown: 0 } as Record<ApLifecycle, number>);
+    { online: 0, 'recently-offline': 0, stale: 0, retired: 0, unknown: 0 } as Record<ApLifecycle, number>);
   // The three lifecycle states are named separately: "14 APs" over a group
   // where four have not been seen in a month is a misleading fleet size.
   const summary = [
     `${aps.length} AP${aps.length === 1 ? '' : 's'}`,
     `${life.online} online`,
     life['recently-offline'] ? `${life['recently-offline']} offline` : null,
-    life.stale ? `${life.stale} not seen >${AP_STALE_AFTER_DAYS}d` : null,
+    life.stale ? `${life.stale} not seen` : null,
+    life.retired ? `${life.retired} retired` : null,
     `${clients} client${clients === 1 ? '' : 's'}`,
   ].filter(Boolean).join(' · ');
 
@@ -2931,12 +2965,18 @@ function AccessPointsTab({
     return Array.from(set).sort();
   }, [allAps]);
 
-  // Lifecycle is derived client-side from last_seen_at (the API has no such
-  // column), so it filters the fetched set rather than the query.
+  // The threshold the SERVER actually judged these rows against (it reads
+  // wireless_ap_stale_days, the same setting the collector alerts on). Labels
+  // use this, not the local fallback, so the page can never advertise a
+  // different number from the one that silenced the alert.
+  const staleDays = allAps.find((a) => a.stale_after_days != null)?.stale_after_days
+    ?? AP_STALE_AFTER_DAYS;
+
+  // Lifecycle filters the fetched set rather than the query.
   const [lifeFilter, setLifeFilter] = useState<'' | ApLifecycle>('');
   const fleet = useMemo(() => allAps.reduce((acc, a) => {
     acc[apLifecycle(a)] += 1; return acc;
-  }, { online: 0, 'recently-offline': 0, stale: 0, unknown: 0 } as Record<ApLifecycle, number>), [allAps]);
+  }, { online: 0, 'recently-offline': 0, stale: 0, retired: 0, unknown: 0 } as Record<ApLifecycle, number>), [allAps]);
 
   const groups = useMemo(() => {
     let rows = vendor ? allAps.filter((ap) => ap.vendor === vendor) : allAps;
@@ -2969,10 +3009,17 @@ function AccessPointsTab({
             onClick={() => setLifeFilter('recently-offline')}
           />
           <MetricCard
-            tone="warning" value={fleet.stale} label={`Not seen >${AP_STALE_AFTER_DAYS}d`}
-            definition={`Down and not heard from for over ${AP_STALE_AFTER_DAYS} days. Usually decommissioned hardware still in the controller's list — but it could be a long outage, so SpanVault labels it and leaves the judgement to you. Nothing is retired or hidden automatically.`}
+            tone="warning" value={fleet.stale} label={`Not seen >${staleDays}d`}
+            definition={`Down and not heard from for over ${staleDays} days, and not yet retired. The next collector pass retires these and stops alerting on them.`}
             onClick={() => setLifeFilter('stale')}
           />
+          {fleet.retired > 0 && (
+            <MetricCard
+              value={fleet.retired} label="Retired"
+              definition={`Not seen for over ${staleDays} days, so SpanVault has stopped raising a critical for them — they are almost always decommissioned hardware still listed by the controller. The record and its history are kept, and if one reports in again it is un-retired automatically. Use Restore to put one back into alerting sooner.`}
+              onClick={() => setLifeFilter('retired')}
+            />
+          )}
           {fleet.unknown > 0 && (
             <MetricCard
               value={fleet.unknown} label="Never seen"
@@ -3018,7 +3065,8 @@ function AccessPointsTab({
           <option value="">All lifecycle states</option>
           <option value="online">Online now</option>
           <option value="recently-offline">Currently offline</option>
-          <option value="stale">Not seen &gt;{AP_STALE_AFTER_DAYS}d</option>
+          <option value="stale">Not seen &gt;{staleDays}d</option>
+          <option value="retired">Retired</option>
           <option value="unknown">Never seen</option>
         </select>
         <select
@@ -3103,6 +3151,25 @@ function ApDetailDrawer({
   onViewAllClients: (apId: number) => void;
 }) {
   const mounted = useMountedPortal();
+  const { canEdit } = useRbac();
+  // Retirement is editable from here. Held in local state so the row updates
+  // immediately — the list behind refreshes on its own 30s poll.
+  const [retiredAt, setRetiredAt] = useState<string | null>(ap.retired_at ?? null);
+  const [retireBusy, setRetireBusy] = useState(false);
+  const [retireErr, setRetireErr] = useState<string | null>(null);
+  useEffect(() => { setRetiredAt(ap.retired_at ?? null); setRetireErr(null); }, [ap.id, ap.retired_at]);
+  async function toggleRetire() {
+    setRetireBusy(true);
+    setRetireErr(null);
+    try {
+      await apiSend(`/api/wireless/aps/${ap.id}/${retiredAt ? 'unretire' : 'retire'}`, 'POST');
+      setRetiredAt(retiredAt ? null : new Date().toISOString());
+    } catch (e: any) {
+      setRetireErr(e?.message || 'Failed to change retirement');
+    } finally {
+      setRetireBusy(false);
+    }
+  }
   const [history, setHistory] = useState<ApHistoryRow[]>([]);
   const [range, setRange] = useState<ApRange>('24h');
   const [loading, setLoading] = useState(true);
@@ -3208,6 +3275,36 @@ function ApDetailDrawer({
             <tr><td style={{ color: 'var(--text-muted)' }}>Bootstraps</td><td>{ap.bootstrap_count ?? '—'}</td></tr>
             <tr><td style={{ color: 'var(--text-muted)' }}>Auth Failures</td><td>{ap.auth_failures ?? '—'}</td></tr>
             <tr><td style={{ color: 'var(--text-muted)' }}>Last seen</td><td>{fmtTime(ap.last_seen_at)}</td></tr>
+            {/* Whether this AP can still raise a wireless_ap_down critical.
+                Shown for every AP, not just retired ones, so "why am I not
+                getting an alert for this?" has an answer on the page. */}
+            <tr>
+              <td style={{ color: 'var(--text-muted)' }}>Alerting</td>
+              <td>
+                {retiredAt ? (
+                  <span style={{ color: 'var(--tint-warn-fg)' }}>
+                    Retired — not alerting (since {fmtTime(retiredAt)})
+                  </span>
+                ) : 'Active'}
+                {/* Retiring an ONLINE AP is pointless: the next collector pass
+                    clears it again, so the control would appear to do nothing. */}
+                {canEdit && ap.status !== 'online' && (
+                  <button
+                    className="sv-btn ghost sm"
+                    style={{ marginLeft: 8 }}
+                    disabled={retireBusy}
+                    onClick={toggleRetire}
+                  >
+                    {retireBusy ? 'Saving…' : retiredAt ? 'Restore to alerting' : 'Retire'}
+                  </button>
+                )}
+                {retireErr && (
+                  <div style={{ color: 'var(--tint-danger-fg)', fontSize: 'var(--text-sm)', marginTop: 4 }}>
+                    {retireErr}
+                  </div>
+                )}
+              </td>
+            </tr>
             <tr>
               <td style={{ color: 'var(--text-muted)' }}>Controller</td>
               <td>

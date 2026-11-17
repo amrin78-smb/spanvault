@@ -861,6 +861,82 @@ async function correlateIncidents() {
       }
     }
 
+    // ── Wireless: one controller outage, not N AP alerts ──────────────────
+    // The device pass above collapses many devices failing together. APs need
+    // the same collapse for the same reason, but they can never reach it: the
+    // query above is bounded to alert_type='device_down' and JOINs
+    // monitored_devices, and an AP alert hangs off wireless_ap_id with a NULL
+    // device_id. Measured on production 2026-11-17: 0 of the newest 1000 alerts
+    // carried an incident_id, so the Alerts page's incident grouping — which is
+    // already built and already renders — had nothing to group.
+    //
+    // ⛔ THE ALERTS PAGE'S OTHER GROUPING CANNOT COVER THIS CASE. Entity
+    // grouping collapses MANY alerts on ONE AP (measured 4.8x). An AP outage is
+    // the mirror image: ONE alert on MANY APs, so every AP is a group of one and
+    // nothing collapses. Different axis, different mechanism.
+    //
+    // ⛔ NO 2-HOUR RECENCY BOUND HERE, DELIBERATELY, unlike the device pass. An
+    // AP-down alert stays active for the whole outage — days — so a recency
+    // filter would mean the grouping only ever applied to outages younger than
+    // the window and the page kept showing one row per AP for everything older.
+    // The 2-minute CLUSTERING is kept, so APs that failed at unrelated times are
+    // never merged into a fictitious single incident.
+    const apDown = await sv.query(`
+      SELECT a.id, a.triggered_at, w.name AS ap_name, w.controller_id,
+             w.site_name, c.name AS controller_name
+        FROM alerts a
+        JOIN wireless_aps w ON w.id = a.wireless_ap_id
+        LEFT JOIN wireless_controllers c ON c.id = w.controller_id
+       WHERE a.alert_type = 'wireless_ap_down'
+         AND a.status = 'active'
+         AND a.incident_id IS NULL
+         AND w.retired_at IS NULL
+       ORDER BY w.controller_id, a.triggered_at
+    `);
+
+    // Cluster per controller — an AP outage is scoped to the controller that
+    // stopped seeing them, which is also the thing an engineer would go look at.
+    const byController = new Map();
+    for (const row of apDown.rows) {
+      const k = row.controller_id == null ? 'none' : row.controller_id;
+      const arr = byController.get(k);
+      if (arr) arr.push(row); else byController.set(k, [row]);
+    }
+
+    for (const [, rows] of byController) {
+      if (rows.length < 2) continue;              // a lone AP stays a lone alert
+      const clusters = [];
+      let cur = [rows[0]];
+      for (let i = 1; i < rows.length; i++) {
+        const gap = new Date(rows[i].triggered_at) - new Date(rows[i - 1].triggered_at);
+        if (gap <= 120000) cur.push(rows[i]);
+        else { if (cur.length >= 2) clusters.push([...cur]); cur = [rows[i]]; }
+      }
+      if (cur.length >= 2) clusters.push(cur);
+
+      for (const cluster of clusters) {
+        const ctrl = cluster[0].controller_name;
+        const site = cluster[0].site_name;
+        const where = ctrl ? ` on ${ctrl}` : (site ? ` at ${site}` : '');
+        const title = `${cluster.length} access points down${where}`;
+        const timeline = cluster.map((x) => ({
+          ts: x.triggered_at, device: x.ap_name, event: 'went DOWN', alert_id: x.id,
+        }));
+        // root_cause_device_id stays NULL: it is an FK to monitored_devices and
+        // a wireless controller is not one. The column is nullable for exactly
+        // this kind of incident.
+        const result = await sv.query(`
+          INSERT INTO incidents (title, root_cause_device_id, affected_count,
+            severity, status, started_at, timeline, summary)
+          VALUES ($1,NULL,$2,'critical','active',$3,$4,$5)
+          RETURNING id
+        `, [title, cluster.length, cluster[0].triggered_at, JSON.stringify(timeline),
+          `${cluster.length} access points went down within 2 minutes${where}.`]);
+        await sv.query(`UPDATE alerts SET incident_id=$1 WHERE id = ANY($2::int[])`,
+          [result.rows[0].id, cluster.map((x) => x.id)]);
+      }
+    }
+
     // Auto-resolve incidents once all of their linked alerts are resolved.
     await sv.query(`
       UPDATE incidents SET status='resolved', resolved_at=NOW(),

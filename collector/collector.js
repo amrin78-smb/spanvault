@@ -1089,7 +1089,7 @@ const SERVICE_METRIC_UNITS = {
 // Including sensor_key separates them; two rules on the SAME sensor still
 // collapse, which is the documented one-rule-per-sensor limit.
 function ruleSubjectKey(rule) {
-  return `${rule.metric} ${rule.sensor_key || ''}`;
+  return `${rule.metric}\0${rule.sensor_key || ''}`;
 }
 
 async function getEffectiveRules(device) {
@@ -1914,6 +1914,58 @@ async function resolveWirelessAlert(idCol, id, alertType) {
   } catch (e) { console.error('[wireless-alert] resolve failed:', e.message); }
 }
 
+// ── AP retirement: "gone" is not "down" ──────────────────────────────────────
+// An AP that stopped reporting months ago is decommissioned kit, not an outage.
+// Alerting on it forever buries the APs that are genuinely down right now — see
+// scripts/schema.sql's retired_at block for the production measurement that
+// prompted this (16 of 22 active criticals were for APs unseen 23-158 days).
+//
+// ⛔ RETIRING RESOLVES THE ALERT, IT DOES NOT DELETE THE AP. The row carries
+// wireless_history/alerts/channel-change history and the FKs are ON DELETE
+// CASCADE, so deleting it would silently take all of that with it.
+async function retireAp(ap, reason) {
+  try {
+    if (!ap.retired_at) {
+      await sv.query(`UPDATE wireless_aps SET retired_at = NOW(), updated_at = NOW()
+                       WHERE id = $1 AND retired_at IS NULL`, [ap.id]);
+      log(`[wireless] RETIRED ${ap.name} — ${reason}`);
+    }
+    await resolveWirelessAlert('wireless_ap_id', ap.id, 'wireless_ap_down');
+  } catch (e) { console.error('[wireless-alert] retire failed:', e.message); }
+}
+
+// Cleared automatically the moment the AP reports online again, so a genuinely
+// long outage (a site shut for a month) self-heals back into normal alerting
+// without anyone remembering to un-retire it by hand.
+async function unretireAp(ap) {
+  try {
+    await sv.query(`UPDATE wireless_aps SET retired_at = NULL, updated_at = NOW()
+                     WHERE id = $1 AND retired_at IS NOT NULL`, [ap.id]);
+    log(`[wireless] UN-RETIRED ${ap.name} — reporting again`);
+  } catch (e) { console.error('[wireless-alert] un-retire failed:', e.message); }
+}
+
+// Controller-down dependency, mirroring evaluateAgentDevices()'s agent-down
+// suppression. When the controller's last poll errored we are not observing
+// its APs at all — every one of them reads "offline" because our only source
+// of truth is unreachable, so raising a critical per AP would be N false
+// statements plus one true one (the controller alert).
+//
+// ⛔ SUPPRESSED, NOT RESOLVED: 'resolved' claims the AP came back. It also keeps
+// the partial unique index (active-only) free, so the alert re-raises cleanly
+// on its own the next pass after the controller recovers.
+async function suppressApAlerts(ctrl, reason) {
+  try {
+    const r = await sv.query(
+      `UPDATE alerts SET status = 'suppressed', resolved_at = NOW(), suppression_reason = $2
+        WHERE status = 'active' AND alert_type = 'wireless_ap_down'
+          AND wireless_ap_id IN (SELECT id FROM wireless_aps WHERE controller_id = $1)
+        RETURNING id`,
+      [ctrl.id, reason]);
+    if (r.rowCount) log(`[wireless] suppressed ${r.rowCount} AP alert(s) under ${ctrl.name}`);
+  } catch (e) { console.error('[wireless-alert] suppress failed:', e.message); }
+}
+
 // Two-tier (warning/critical) checks can't just call raiseWirelessAlert directly
 // when conditions cross from one tier to the other: idx_alerts_active_wap_unique/
 // idx_alerts_active_wctl_unique enforce one ACTIVE row per (id, alert_type), so
@@ -1996,6 +2048,10 @@ async function evaluateWirelessAlerts() {
     const noiseFloorThresholdDbm = settingInt('wireless_noise_floor_threshold_dbm', -85);
     const roamStormCount = settingInt('wireless_roam_storm_count', 15);
     const roamStormWindowMinutes = settingInt('wireless_roam_storm_window_minutes', 10);
+    // An AP unseen for longer than this is treated as decommissioned, not down.
+    // 14 days is deliberately generous: a site closed for a fortnight still
+    // alerts. See scripts/schema.sql's retired_at block.
+    const apStaleDays = settingInt('wireless_ap_stale_days', 14);
     // Weak-client rollup — a client counts as "weak" for this check if it's
     // already flagged is_problem (bad RSSI/excess roaming, set by
     // wirelessCollector.js) OR stuck at a low negotiated PHY rate, a dimension
@@ -2043,9 +2099,13 @@ async function evaluateWirelessAlerts() {
     const aps = (await sv.query(`
       SELECT a.id, a.name, a.status, a.site_id, a.uptime_seconds,
              a.clients_2g, a.clients_5g, a.clients_6g, a.clients_total,
-             a.radio_2g_channel, a.radio_5g_channel, a.radio_6g_channel
+             a.radio_2g_channel, a.radio_5g_channel, a.radio_6g_channel,
+             a.controller_id, a.last_seen_at, a.retired_at,
+             (a.last_seen_at IS NOT NULL
+              AND a.last_seen_at < NOW() - make_interval(days => $1)) AS is_stale
         FROM wireless_aps a
-        JOIN wireless_controllers c ON c.id = a.controller_id AND c.active = TRUE`)).rows;
+        JOIN wireless_controllers c ON c.id = a.controller_id AND c.active = TRUE`,
+      [apStaleDays])).rows;
     const apsById = new Map(aps.map(a => [a.id, a]));
 
     // One grouped query covers the utilization/retry/interference/noise-floor
@@ -2083,11 +2143,32 @@ async function evaluateWirelessAlerts() {
       for (const row of wc.rows) weakClientsByAp.set(row.ap_id, row);
     } catch (e) { console.error('[wireless-alert] weak-client rollup query failed:', e.message); }
 
+    // Controllers whose last poll errored. Their APs all read 'offline' because
+    // our only source of truth for them is unreachable — that is one fact about
+    // the controller, not N facts about the APs.
+    const downControllers = new Map(
+      ctrls.filter((c) => c.status === 'error').map((c) => [c.id, c]));
+    for (const dc of downControllers.values()) {
+      await suppressApAlerts(dc, `Wireless controller ${dc.name} is unreachable`);
+    }
+
     for (const ap of aps) {
       if (ap.status === 'offline') {
-        await raiseWirelessAlert('wireless_ap_id', ap, 'wireless_ap_down', 'critical',
-          `Access point ${ap.name} is offline`);
+        // Order matters: retirement is checked BEFORE the controller dependency
+        // and before raising. An AP unseen for months under a controller that
+        // went down an hour ago is gone, not a casualty of that outage.
+        if (ap.retired_at || ap.is_stale) {
+          await retireAp(ap, `not seen since ${ap.last_seen_at ? new Date(ap.last_seen_at).toISOString().slice(0, 10) : 'ever'}`);
+        } else if (downControllers.has(ap.controller_id)) {
+          // Already suppressed in bulk above; nothing to raise while its
+          // controller is the thing that's actually broken.
+          continue;
+        } else {
+          await raiseWirelessAlert('wireless_ap_id', ap, 'wireless_ap_down', 'critical',
+            `Access point ${ap.name} is offline`);
+        }
       } else if (ap.status === 'online') {
+        if (ap.retired_at) await unretireAp(ap);
         await resolveWirelessAlert('wireless_ap_id', ap.id, 'wireless_ap_down');
 
         const agg = historyAggByAp.get(ap.id);
@@ -2532,7 +2613,36 @@ process.on('SIGTERM',  () => { shutdown('SIGTERM').catch(() => process.exit(1));
 process.on('SIGINT',   () => { shutdown('SIGINT').catch(() => process.exit(1)); });
 process.on('SIGBREAK', () => { shutdown('SIGBREAK').catch(() => process.exit(1)); });
 
-main().catch((err) => {
-  console.error('[FATAL] collector main failed:', err.message, err.stack);
-  process.exit(1);
-});
+// ⛔ ONLY START WHEN RUN AS THE ENTRY POINT. This used to call main()
+// unconditionally, so merely `require`-ing this file launched the whole polling
+// service — DB pools, SNMP/ICMP sweeps, wireless polls and alert emails — as a
+// side effect of importing it. That makes the module impossible to unit-test and
+// turns an ordinary `node -e "require('./collector/collector.js')"` syntax check
+// into a second live collector. NSSM runs `node collector\collector.js` directly
+// (installer/Update-SpanVault.ps1), so require.main === module is true in
+// production and startup behaviour there is unchanged.
+if (require.main === module) {
+  main().catch((err) => {
+    console.error('[FATAL] collector main failed:', err.message, err.stack);
+    process.exit(1);
+  });
+}
+
+// Exported for tests. Importing this module must never start anything (see the
+// guard above); these are the pure-ish evaluation passes the suite drives
+// directly against a scratch database.
+module.exports = {
+  // ⛔ settings are a CACHE refreshed every 60s by main(); a caller that drives
+  // the passes directly must loadSettings() itself after changing app_settings,
+  // or it reads the code-level defaults. (In production this is why a settings
+  // change takes up to a minute to affect alerting.)
+  loadSettings,
+  evaluateWirelessAlerts,
+  retireAp,
+  unretireAp,
+  suppressApAlerts,
+  raiseWirelessAlert,
+  resolveWirelessAlert,
+  shutdown,
+  sv,
+};

@@ -220,13 +220,15 @@ geometry anyway. Before this, the whole family was a standing scope bypass.
 - `GET /api/wireless/debug/walk-oid` [auth] [external] — walk one arbitrary OID subtree
 
 ## Wireless — access points / summary / SSIDs
-- `GET /api/wireless/aps` [auth] [db] — includes live congestion_score/congestion_level (see gotchas.md, display-only 15-min window)
+- `GET /api/wireless/aps` [auth] [db] — includes live congestion_score/congestion_level (see gotchas.md, display-only 15-min window) Also returns `retired_at`, `days_unseen`, `is_stale` and `stale_after_days` — `is_stale` is computed with the SAME `wireless_ap_stale_days` setting the collector alerts on, so the page cannot advertise a different threshold from the one that silenced the alert (1.119.0).
 - `GET /api/wireless/aps/:id` [auth] [db] — RBAC site-scoping fixed 2026-07-22 bug sweep (was missing; sibling list + `/clients` already had it) — see gotchas.md Also returns `congestion_factors` = `{window_minutes:15, factors[]}` — the per-factor breakdown behind `congestion_score` (input, weighted points, max, and a `saturated` flag). Detail-route ONLY; the list omits it deliberately (227 APs x 5 factors for a column that renders just the level).
 - `GET /api/wireless/history/:ap_id` [auth] [db] [site-scoped 1.115.9] — client/utilization history, bucketed by range. Its param is `:ap_id`, NOT `:id`, so it also escapes the `app.param('id')` numeric guard — it now validates the id itself. 404 for absent AND out-of-scope
 - `GET /api/wireless/summary` [auth] [db] — overview tab + dashboard card
 - `GET /api/wireless/channel-changes/top` [auth] [db] [site-scoped] — fleet channel-change leaderboard for the Insights tab. `?days=` (1-30, default 7), `?limit=` (1-50, default 10), `?controller_id=`. Returns `{days, controller_id, rows[], total_changes, total_aps_moving, total_radar_suspected, tracking_since}`. All three internal queries share one `buildScope()` predicate builder so the table, the totals and `tracking_since` can never describe different AP sets. `tracking_since` is the earliest record in the table, so the UI can distinguish "nothing moved" from "we only started watching on the 11th". Degrades to empty ONLY on 42P01 (missing table); every other error re-throws
 - `GET /api/wireless/ssids` [auth] [db]
 - `GET /api/wireless/ssids/summary` [auth] [db]
+- `POST /api/wireless/aps/:id/retire` [auth] [db] [admin] — stop raising wireless_ap_down for an AP that is gone; sets `wireless_aps.retired_at`, resolves the open alert. Site-scoped; 404 (not 403) when out of scope, matching the detail route so it is not an existence oracle.
+- `POST /api/wireless/aps/:id/unretire` [auth] [db] [admin] — clears `retired_at`. Raises nothing itself: the next collector pass decides from the AP's live status.
 - `GET /api/wireless/aps/:id/clients` [auth] [db] — site-scoped (fixed alongside the mac/history routes below)
 
 ## Wireless — intelligence

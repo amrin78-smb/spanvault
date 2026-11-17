@@ -28,6 +28,21 @@ const SUITES = [
   'test-vendor-fetch.js', // discovery.js fetchVendorRaw batching/by-OID match/SNMPv1 fallback + unitFor
 ];
 
+// Database-backed suites. Skipped unless SV_DB_NAME names a *test* database,
+// because unlike the parser suites these need real PostgreSQL — and must never
+// be pointed at a live install. Set one up with:
+//   createdb sv_retire_test
+//   pg_dump -s --no-owner --no-acl -d spanvault_dev | psql -d sv_retire_test
+//   SV_DB_NAME=sv_retire_test node tests/run-parser-tests.js
+const DB_SUITES = [
+  'test-wireless-retirement.js', // AP retirement, controller-down suppression, wireless incidents
+];
+if (process.env.SV_DB_NAME && /test/.test(process.env.SV_DB_NAME)) {
+  SUITES.push(...DB_SUITES);
+} else if (DB_SUITES.length) {
+  console.log(`[SKIP] ${DB_SUITES.join(', ')} — set SV_DB_NAME to a test database to run`);
+}
+
 let failed = 0;
 for (const suite of SUITES) {
   const file = path.join(__dirname, suite);

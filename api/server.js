@@ -45,6 +45,13 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.119.0': [
+    "An access point that stopped reporting months ago is no longer treated as an outage. SpanVault now retires an AP that has not been heard from for over 14 days and stops raising a critical alert for it, because that is almost always hardware that was removed and never taken out of the controller's list. On this installation 16 of the 22 AP alerts on the Alerts screen were for access points last seen between 23 and 158 days ago - they were burying the six that were genuinely down that morning.",
+    "A retired access point keeps its record and all of its history, and nothing is deleted. If it ever reports in again it is restored automatically. You can also retire or restore one by hand from the access point's details on the Wireless screen, and the Wireless screen now shows how many are retired.",
+    "New: when several access points on the same controller go down together, the Alerts screen now shows them as one incident instead of one row each. The Alerts screen could already group this way, but nothing had ever filled in the grouping for wireless.",
+    "New: if a wireless controller itself is unreachable, its access points no longer each raise their own critical. SpanVault cannot see those APs while the controller is down, so it shows the one controller alert and holds the rest back until the controller returns - the same way it already handles a polling agent going offline.",
+    "The length of time before an access point is retired can be changed if 14 days does not suit your site.",
+  ],
   '1.118.3': [
     "Fixed: on a shorter screen, the actions menu on the last row of a list opened past the bottom edge of the window. Because the menu closes as soon as the page is scrolled, scrolling down to reach it dismissed it instead, leaving it unreachable. It now opens upwards when there is not enough room below.",
   ],
@@ -7286,12 +7293,22 @@ app.get('/api/wireless/aps', wrap(async (req, res) => {
            a.throughput_in_bps, a.throughput_out_bps, a.serial_number, a.auth_failures,
            a.interference_pct_2g, a.interference_pct_5g,
            a.reboot_count, a.bootstrap_count,
-           a.cpu_pct, a.mem_total, a.mem_free
+           a.cpu_pct, a.mem_total, a.mem_free, a.retired_at
     FROM wireless_aps a
     LEFT JOIN wireless_controllers c ON c.id = a.controller_id
     ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
     ORDER BY a.site_name NULLS LAST, a.name
   `, params);
+
+  // The collector's staleness threshold, so "not seen recently" on the Wireless
+  // page means exactly what the collector acted on. Falls back to the same
+  // code-level default the collector uses when the key is unset.
+  let staleDays = 14;
+  try {
+    const sr = await sv.query(`SELECT value FROM app_settings WHERE key = 'wireless_ap_stale_days'`);
+    const v = parseInt(sr.rows[0] && sr.rows[0].value, 10);
+    if (Number.isFinite(v) && v > 0) staleDays = v;
+  } catch (e) { console.error('[wireless/aps] stale-days setting read failed:', e.message); }
 
   // Rolling-window RF averages (same 15-min window as the collector's default
   // wireless_util_window_minutes) and a weak-client ratio, both grouped by
@@ -7336,9 +7353,65 @@ app.get('/api/wireless/aps', wrap(async (req, res) => {
       congestion_score = scored.score;
       congestion_level = scored.level;
     }
-    return { ...row, uptime_formatted: fmtUptime(row.uptime_seconds), congestion_score, congestion_level };
+    // How long since this AP last reported, and whether that is long enough to
+    // call it decommissioned rather than down. Read from app_settings (not a
+    // fixed literal like the congestion window above) because the collector
+    // acts on this same number — a display that disagreed with what is actually
+    // being alerted on would be worse than no display at all.
+    const days_unseen = row.last_seen_at
+      ? Math.floor((Date.now() - new Date(row.last_seen_at).getTime()) / 86400000)
+      : null;
+    const is_stale = row.retired_at != null
+      || (days_unseen != null && days_unseen >= staleDays);
+    return {
+      ...row, uptime_formatted: fmtUptime(row.uptime_seconds),
+      congestion_score, congestion_level, days_unseen, is_stale,
+      // Echoed on every row so the UI labels the threshold it is ACTUALLY
+      // being judged against, rather than a second constant of its own that
+      // silently drifts from the collector's.
+      stale_after_days: staleDays,
+    };
   }));
 }));
+
+// ── AP retirement ────────────────────────────────────────────────────────────
+// Retiring stops the permanent wireless_ap_down critical for kit that is gone,
+// without deleting the AP (its history hangs off the row with ON DELETE
+// CASCADE). The collector does this automatically past wireless_ap_stale_days;
+// these two routes are the manual override in both directions.
+//
+// ⛔ ADMIN-ONLY AND SITE-SCOPED, like every other write here. A site_admin must
+// not be able to silence an alert for a site they do not hold — and the 404 on
+// an out-of-scope AP deliberately matches the absent case so the route is not
+// an existence oracle (same shape as GET /api/wireless/aps/:id).
+async function setApRetired(req, res, retire) {
+  if (userRank(req) < 2) return res.status(403).json({ error: 'This action requires an admin role.' });
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid AP id' });
+  const r = await sv.query(`SELECT id, name, site_id, status FROM wireless_aps WHERE id = $1`, [id]);
+  const ap = r.rows[0];
+  if (!ap) return res.status(404).json({ error: 'AP not found' });
+  if (!rowInScope(getSiteFilter(req), ap.site_id)) {
+    return res.status(404).json({ error: 'AP not found' });
+  }
+  if (retire) {
+    await sv.query(`UPDATE wireless_aps SET retired_at = NOW(), updated_at = NOW() WHERE id = $1`, [id]);
+    // Resolve rather than suppress: retiring is a human saying the AP is gone,
+    // which is an answer, not a dependency we are waiting on.
+    await sv.query(
+      `UPDATE alerts SET status = 'resolved', resolved_at = NOW()
+        WHERE wireless_ap_id = $1 AND alert_type = 'wireless_ap_down' AND status <> 'resolved'`, [id]);
+  } else {
+    await sv.query(`UPDATE wireless_aps SET retired_at = NULL, updated_at = NOW() WHERE id = $1`, [id]);
+    // Nothing is re-raised here on purpose — the next collector pass decides,
+    // from the AP's live status, whether it is actually down.
+  }
+  // No explicit audit call: the app.use middleware above already logs every
+  // successful POST/PUT/PATCH/DELETE to audit_log with user, path and body.
+  res.json({ ok: true, id, name: ap.name, retired: retire });
+}
+app.post('/api/wireless/aps/:id/retire', wrap((req, res) => setApRetired(req, res, true)));
+app.post('/api/wireless/aps/:id/unretire', wrap((req, res) => setApRetired(req, res, false)));
 
 app.get('/api/wireless/aps/:id', wrap(async (req, res) => {
   const id = parseInt(req.params.id, 10);
