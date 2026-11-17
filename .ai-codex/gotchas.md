@@ -656,3 +656,13 @@ refresh and would have quietly rewritten those rows' counts. Discriminate on wha
 incident actually groups instead — `EXISTS (SELECT 1 FROM alerts a WHERE a.incident_id =
 i.id AND a.wireless_ap_id IS NOT NULL)`. General shape: a nullable FK answers "is this
 set", never "what kind of row is this", once anything can null it after the fact.
+
+⛔ **`wireless_ap_stale_days` IS FLOORED IN THE COLLECTOR, NOT JUST THE FORM (1.120.0).**
+It is the only setting in the Wireless Alert Thresholds panel that *silences* alerts
+rather than re-aiming them, and it fails catastrophically rather than gradually: at `0`,
+every AP whose `last_seen_at` is in the past is instantly stale, so every offline AP is
+retired and `wireless_ap_down` ceases to exist — silently, estate-wide. The Settings form
+sets `min=2`, but `app_settings` is a freeform key/value table that is also edited by
+hand, so `evaluateWirelessAlerts()` applies `Math.max(2, …)` where the value is **used**.
+General shape: a bound that protects against a catastrophic value belongs at the point of
+use; a bound in the form only protects the people who use the form.

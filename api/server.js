@@ -45,6 +45,10 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.120.0': [
+    "New: how long an access point may be silent before it is retired is now a setting, under Settings - General - Wireless Alert Thresholds, instead of something that had to be changed in the database. It stays at 14 days unless you change it.",
+    "The setting will not accept a value below 2 days, and the collector enforces that floor independently of the form. At zero every access point that is offline would be retired at once and AP alerts would stop entirely, with nothing on screen to say why.",
+  ],
   '1.119.2': [
     "Fixed: the correction shipped in 1.119.1 identified wireless incidents by a field that an unrelated, long-deleted device could also leave empty, so it could have adjusted the figure on an old device incident as well. It now identifies them by what the incident actually groups.",
   ],

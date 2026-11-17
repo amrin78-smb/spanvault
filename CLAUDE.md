@@ -382,10 +382,25 @@ floor, per-radio client-count imbalance, client roam events — had **zero**
 alert logic wired to them at all. `evaluateWirelessAlerts()` now has five RF
 checks, all built on the existing `raiseWirelessAlert`/`resolveWirelessAlert`
 helpers and existing schema (no new tables/columns), each configured via
-`settingInt()`/`setting()` with a hardcoded code-level default and **no
-Settings-page UI** — same code-default-only pattern as
-`wireless_util_threshold_pct`/`wireless_rogue_alerts_enabled` above; an
-operator who wants a non-default value sets it directly in `app_settings`.
+`settingInt()`/`setting()` with a hardcoded code-level default.
+
+⛔ **STALE AS WRITTEN — these DO have a Settings UI now.** This paragraph used to
+end "and **no Settings-page UI** … an operator who wants a non-default value sets
+it directly in `app_settings`", which stopped being true when they were exposed
+under **Settings → General → "Wireless Alert Thresholds"** (`WIRELESS_ALERT_FIELDS`
+/ `WIRELESS_ALERT_GROUPS` in `frontend/src/app/(app)/settings/page.tsx`) and seeded
+in `scripts/schema.sql`. The stale line cost real time in 1.120.0: it was read as
+"this app deliberately keeps these out of Settings", when the panel had existed for
+ages. **Every key in that panel must be seeded in `scripts/schema.sql`** — the form
+treats them as required numerics, so a missing row renders blank and blocks Save.
+
+⛔ **`wireless_ap_stale_days` is the one setting in that panel that SILENCES alerts
+rather than re-aiming them**, so it is floored at 2 days in
+`evaluateWirelessAlerts()` itself, not only in the form. At 0 every AP with a past
+`last_seen_at` is instantly stale, so every offline AP retires and
+`wireless_ap_down` stops existing — silently, estate-wide, from one hand-edited
+`app_settings` row. A guard that lives only in the form does not guard a freeform
+key/value table.
 
 | `alert_type` | Check | Settings (default) |
 |---|---|---|

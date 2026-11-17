@@ -464,6 +464,12 @@ const WIRELESS_ALERT_FIELDS: NumField[] = [
   { key: 'wireless_weak_client_min_total', label: 'Min Total Clients to Evaluate', min: 1, step: 1 },
   { key: 'wireless_weak_client_min_count', label: 'Min Weak Client Count', min: 1, step: 1 },
   { key: 'wireless_weak_client_ratio_pct', label: 'Weak Client Ratio (%)', min: 1, max: 100, step: 1 },
+  // ⛔ THE ONLY SETTING HERE THAT SILENCES AN ALERT RATHER THAN RE-AIMING ONE.
+  // Below this many days an offline AP still raises a critical; past it the AP
+  // is treated as decommissioned and stops alerting. A low value hides real
+  // outages, so the floor is 2 days rather than the 1 the others use — a
+  // same-day threshold would retire an AP during a normal overnight outage.
+  { key: 'wireless_ap_stale_days', label: 'Retire AP After (days)', min: 2, step: 1 },
 ];
 
 // Sub-groups for rendering WIRELESS_ALERT_FIELDS as scannable clusters (each
@@ -474,6 +480,7 @@ const WIRELESS_ALERT_GROUPS: { title: string; keys: string[] }[] = [
   { title: 'Client Imbalance', keys: ['wireless_imbalance_min_clients', 'wireless_imbalance_ratio_pct'] },
   { title: 'Roam Storm', keys: ['wireless_roam_storm_count', 'wireless_roam_storm_window_minutes'] },
   { title: 'Weak Clients', keys: ['wireless_weak_client_rate_mbps', 'wireless_weak_client_min_total', 'wireless_weak_client_min_count', 'wireless_weak_client_ratio_pct'] },
+  { title: 'Access Point Retirement', keys: ['wireless_ap_stale_days'] },
 ];
 
 // Every required numeric field across both panels, validated together so Save
@@ -596,7 +603,9 @@ function GeneralSettings({ settings, form, set, save, saving, saveErr, dirty, nu
           <p className="sv-panel-hint">
             Controls how sensitive wireless AP alerts are to RF and client conditions. Raising a
             threshold reduces alert volume for environments that are genuinely busy or noisy;
-            lowering one surfaces problems sooner at the cost of more alerts.
+            lowering one surfaces problems sooner at the cost of more alerts. The last setting
+            is different in kind: it decides when an access point has been silent long enough
+            to be treated as removed rather than down.
           </p>
           {WIRELESS_ALERT_GROUPS.map((g) => (
             <div key={g.title}>
@@ -627,6 +636,14 @@ function GeneralSettings({ settings, form, set, save, saving, saveErr, dirty, nu
             <dd>Channel Utilization has two tiers — crossing Critical escalates an already-open alert rather than raising a second one.</dd>
             <dt>Weak clients</dt>
             <dd>A client counts as &quot;weak&quot; if it&apos;s already flagged as a connectivity problem, or stuck at a low negotiated data rate.</dd>
+            <dt>Retiring an access point</dt>
+            <dd>
+              An access point that has not reported for longer than this is almost always hardware
+              that was removed but left in the controller&apos;s list, so SpanVault stops raising a
+              critical for it and shows it as Retired on the Wireless screen. Nothing is deleted,
+              and if it ever reports in again it starts alerting again on its own. Set this too low
+              and a genuine overnight or weekend outage goes quiet instead of being escalated.
+            </dd>
           </dl>
         </aside>
       </div>

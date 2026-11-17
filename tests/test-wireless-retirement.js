@@ -111,6 +111,21 @@ async function main() {
   await collector.evaluateWirelessAlerts();
   ok(await retiredAt(midAged), 'C2: lowering the setting to 7 retires the same AP');
 
+  // ⛔ A ZERO/NEGATIVE THRESHOLD MUST NOT RETIRE THE WHOLE ESTATE. app_settings
+  // is freeform key/value and hand-edited, and at 0 every AP with a past
+  // last_seen_at is instantly stale — which would silently end AP alerting
+  // altogether. The floor lives where the value is used, not just in the form.
+  await reset();
+  const c2b = await ctrl('wlc-b2', 'ok');
+  const fresh = await ap(c2b, 'ap-down-today', 'offline', 0.1);
+  await sv.query(`INSERT INTO app_settings (key, value) VALUES ('wireless_ap_stale_days','0')
+                  ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value`);
+  await collector.loadSettings();
+  await collector.evaluateWirelessAlerts();
+  eq(await retiredAt(fresh), null, 'C3: a 0-day threshold is floored, not obeyed');
+  eq((await alertsFor(fresh)).filter((x) => x.status === 'active').length, 1,
+    'C4: and the AP that is genuinely down still alerts');
+
   // ── D. controller down suppresses, it does not resolve ────────────────────
   await reset();
   const c3 = await ctrl('wlc-c', 'ok');

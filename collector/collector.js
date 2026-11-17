@@ -2051,7 +2051,17 @@ async function evaluateWirelessAlerts() {
     // An AP unseen for longer than this is treated as decommissioned, not down.
     // 14 days is deliberately generous: a site closed for a fortnight still
     // alerts. See scripts/schema.sql's retired_at block.
-    const apStaleDays = settingInt('wireless_ap_stale_days', 14);
+    //
+    // ⛔ FLOORED, BECAUSE THIS ONE SETTING CAN SILENCE EVERY AP ALERT AT ONCE.
+    // Unlike the RF thresholds either side of it, a too-low value here does not
+    // make alerting noisier or quieter by degrees — at 0 every AP whose
+    // last_seen_at is in the past is instantly "stale", so every offline AP is
+    // retired and wireless_ap_down stops existing, silently. The Settings form
+    // enforces a minimum of 2, but app_settings is a freeform key/value table
+    // that is also edited by hand, so the floor has to live where the value is
+    // USED, not only where it is typed.
+    const AP_STALE_DAYS_FLOOR = 2;
+    const apStaleDays = Math.max(AP_STALE_DAYS_FLOOR, settingInt('wireless_ap_stale_days', 14));
     // Weak-client rollup — a client counts as "weak" for this check if it's
     // already flagged is_problem (bad RSSI/excess roaming, set by
     // wirelessCollector.js) OR stuck at a low negotiated PHY rate, a dimension

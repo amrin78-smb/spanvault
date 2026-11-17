@@ -1366,7 +1366,12 @@ INSERT INTO app_settings (key, value) VALUES
   ('wireless_weak_client_rate_mbps','24'),
   ('wireless_weak_client_min_total','8'),
   ('wireless_weak_client_min_count','3'),
-  ('wireless_weak_client_ratio_pct','25')
+  ('wireless_weak_client_ratio_pct','25'),
+  -- How long an AP may be silent before it is retired and stops raising
+  -- wireless_ap_down (1.119.0; exposed in Settings 1.120.0). Seeded for the
+  -- same reason as the rest of this block: the Settings form treats these as
+  -- required numerics, so a missing row renders blank and blocks Save.
+  ('wireless_ap_stale_days','14')
 ON CONFLICT (key) DO NOTHING;
 
 -- Aruba Central's NATIVE event stream (GET /monitoring/v2/events -- AP up/
