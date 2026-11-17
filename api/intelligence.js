@@ -918,7 +918,14 @@ async function correlateIncidents() {
         const ctrl = cluster[0].controller_name;
         const site = cluster[0].site_name;
         const where = ctrl ? ` on ${ctrl}` : (site ? ` at ${site}` : '');
-        const title = `${cluster.length} access points down${where}`;
+        // ⛔ NO COUNT IN THE TITLE. The title is immutable once written and the
+        // Alerts page renders it verbatim, but the number of APs still down is
+        // not: as they recover — or get retired — a baked-in count becomes a
+        // confidently wrong number on the page, which is the exact failure this
+        // whole change set exists to remove. Seen for real on the 1.119.0
+        // deploy: an incident read "15 access points down" while 4 were. The
+        // live figure lives in affected_count, refreshed below.
+        const title = `Access points down${where}`;
         const timeline = cluster.map((x) => ({
           ts: x.triggered_at, device: x.ap_name, event: 'went DOWN', alert_id: x.id,
         }));
@@ -936,6 +943,33 @@ async function correlateIncidents() {
           [result.rows[0].id, cluster.map((x) => x.id)]);
       }
     }
+
+    // Keep the wireless incidents' affected_count true to what is still down.
+    // Scoped to root_cause_device_id IS NULL — that is exactly the set this
+    // function creates for wireless (a device incident always has a root-cause
+    // device), so the device pass's own creation-time semantics are untouched.
+    await sv.query(`
+      UPDATE incidents i
+         SET affected_count = s.n
+        FROM (SELECT incident_id, count(*)::int AS n
+                FROM alerts
+               WHERE incident_id IS NOT NULL AND status = 'active'
+               GROUP BY incident_id) s
+       WHERE i.id = s.incident_id
+         AND i.status = 'active'
+         AND i.root_cause_device_id IS NULL
+         AND i.affected_count <> s.n
+    `);
+    // Repair titles written by the first 1.119.0 build, which embedded the
+    // count. Rewriting the stored title is right rather than special-casing the
+    // renderer: the page shows this string on every incident row.
+    await sv.query(`
+      UPDATE incidents
+         SET title = regexp_replace(title, '^[0-9]+ access points down', 'Access points down')
+       WHERE status = 'active'
+         AND root_cause_device_id IS NULL
+         AND title ~ '^[0-9]+ access points down'
+    `);
 
     // Auto-resolve incidents once all of their linked alerts are resolved.
     await sv.query(`

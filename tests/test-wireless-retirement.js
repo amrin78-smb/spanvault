@@ -153,6 +153,22 @@ async function main() {
     ok((await alertsFor(id))[0].incident_id === inc[0].id, `E4: ap ${id} is linked to the incident`);
   }
 
+  // ⛔ THE INCIDENT MUST NOT CARRY A COUNT THAT GOES STALE. Caught live on the
+  // 1.119.0 deploy: the title read "15 access points down on TUFS-OKF-WLC-1"
+  // while 4 still were, because the count was written into the title at
+  // creation and the other 11 had since been retired. A wrong number stated
+  // confidently is the failure this whole change set exists to remove.
+  ok(!/\d+ access points down/.test(inc[0].title), 'E7: the title carries no count');
+  await sv.query(`UPDATE alerts SET status='resolved', resolved_at=NOW() WHERE wireless_ap_id=$1`, [e3]);
+  await intelligence.correlateIncidents();
+  const after = (await sv.query(`SELECT affected_count, status FROM incidents WHERE id=$1`, [inc[0].id])).rows[0];
+  eq(after.affected_count, 2, 'E8: affected_count follows the APs that are still down');
+  eq(after.status, 'active', 'E9: the incident stays open while any AP is still down');
+  await sv.query(`UPDATE alerts SET status='resolved', resolved_at=NOW() WHERE incident_id=$1`, [inc[0].id]);
+  await intelligence.correlateIncidents();
+  eq((await sv.query(`SELECT status FROM incidents WHERE id=$1`, [inc[0].id])).rows[0].status, 'resolved',
+    'E10: the incident auto-resolves once every linked alert has');
+
   // ⛔ a retired AP must never be dragged into an incident
   await reset();
   const c5 = await ctrl('wlc-e', 'ok');

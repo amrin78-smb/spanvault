@@ -634,3 +634,15 @@ even `alert` produced zero hits while the code was right there. Now written as `
 
 ⛔ If a search for something you can SEE in a file returns nothing, check `file <path>`
 before concluding the code does not exist.
+
+⛔ **AN INCIDENT TITLE MUST NOT CARRY A COUNT (1.119.1).** The first 1.119.0 build wrote
+`${n} access points down on ${controller}` into `incidents.title`. The title is written
+once and the Alerts page renders it verbatim, but the number still down is not fixed — as
+APs recover or get retired it drifts. Caught on the live deploy within minutes: an
+incident read **"15 access points down on TUFS-OKF-WLC-1" while 4 were**, because the
+other 11 had just been retired by the same change. The title is now countless
+(`Access points down on X`) and the live figure lives in `affected_count`, which
+`correlateIncidents()` refreshes every pass for wireless incidents
+(`root_cause_device_id IS NULL` — the device pass keeps its own creation-time semantics).
+The same pass rewrites titles left behind by the first build. **Anything immutable that
+quotes a mutable quantity will eventually state it wrongly, with full confidence.**

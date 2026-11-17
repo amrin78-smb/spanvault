@@ -45,6 +45,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.119.1': [
+    "Fixed: when several access points on a controller went down together, the incident on the Alerts screen kept the number of access points it was first created with. As those access points came back - or were retired - the heading went on claiming the original number, so one read \"15 access points down\" while four were. The heading no longer carries a count, and the figure shown beside it now follows what is actually still down.",
+  ],
   '1.119.0': [
     "An access point that stopped reporting months ago is no longer treated as an outage. SpanVault now retires an AP that has not been heard from for over 14 days and stops raising a critical alert for it, because that is almost always hardware that was removed and never taken out of the controller's list. On this installation 16 of the 22 AP alerts on the Alerts screen were for access points last seen between 23 and 158 days ago - they were burying the six that were genuinely down that morning.",
     "A retired access point keeps its record and all of its history, and nothing is deleted. If it ever reports in again it is restored automatically. You can also retire or restore one by hand from the access point's details on the Wireless screen, and the Wireless screen now shows how many are retired.",
