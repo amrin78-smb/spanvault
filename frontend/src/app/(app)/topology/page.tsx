@@ -16,7 +16,40 @@ interface TopologyStatus {
   running: boolean;
   last_run_at: string | null;
   links_found: number;
+  // ⛔ Devices that produced LINKS, not devices walked — it is derived from
+  // topology_links. `devices_walked` / `devices_by_status` below are the ones
+  // that count every device discovery asked, including those that answered
+  // with nothing.
   devices_discovered: number;
+  devices_walked?: number;
+  devices_by_status?: Record<string, number>;
+}
+
+// One protocol's outcome on one device. 'not_applicable' = CDP on non-Cisco:
+// never render it as a result, it is not one.
+interface TopoPart {
+  protocol: 'lldp' | 'cdp';
+  status: string;
+  count: number;
+  error: string | null;
+}
+
+// A device discovery WALKED — including the ones that found nothing, which are
+// absent from TopologyLink[] entirely and were therefore invisible on this page.
+interface TopologyDevice {
+  id: number;
+  name: string;
+  ip_address: string;
+  site_id: number | null;
+  site_name: string | null;
+  device_vendor: string | null;
+  current_status: string;
+  link_count: number;
+  last_link_seen_at: string | null;
+  topology_status: string;
+  topology_parts: TopoPart[];
+  topology_error: string | null;
+  topology_discovered_at: string | null;
 }
 
 interface TopologyMapNode {
@@ -79,7 +112,8 @@ interface DependencySuggestion {
   confidence: number;
 }
 
-// A monitored (from-) device with all the neighbor links it discovered.
+// A monitored (from-) device with all the neighbor links it discovered — and
+// its discovery OUTCOME, so a group with zero links can still say why.
 interface FromDeviceGroup {
   key: string;
   from_device_id: number;
@@ -87,6 +121,64 @@ interface FromDeviceGroup {
   from_ip: string;
   last_seen_at: string;
   links: TopologyLink[];
+  topology_status: string;
+  topology_parts: TopoPart[];
+  topology_error: string | null;
+  topology_discovered_at: string | null;
+}
+
+// ── Discovery outcome copy ─────────────────────────────────────
+//
+// ⛔ DELIBERATE DUPLICATE of the vocabulary in collector/topologyStatus.js. The
+// frontend cannot import from collector/, so a new outcome means editing both —
+// the same trade AgentsTab's PROTOCOL_PLATFORMS makes. What must NOT be
+// duplicated is the DECISION: the collapsed status is computed server-side and
+// this map only renders it. An unknown status falls through to a neutral chip
+// rather than being guessed at.
+const TOPO_STATUS: Record<string, { label: string; tint: string; fg: string; hint: string }> = {
+  ok: {
+    label: 'Discovered', tint: 'var(--tint-success)', fg: 'var(--tint-success-fg)',
+    hint: 'The neighbour table answered and its contents are stored below.',
+  },
+  no_data: {
+    label: 'No neighbours reported', tint: 'var(--tint-warn)', fg: 'var(--tint-warn-fg)',
+    hint: 'SNMP answered, but this device reported an empty neighbour table. That is '
+        + 'not a fault in SpanVault — the usual causes are LLDP/CDP disabled on this '
+        + 'device or on the switch port facing it, or an SNMP community whose view '
+        + 'excludes the LLDP MIB.',
+  },
+  error: {
+    label: 'Discovery failed', tint: 'var(--tint-danger)', fg: 'var(--tint-danger-fg)',
+    hint: 'The neighbour walk itself failed. Any links shown are from an earlier run '
+        + 'and may be stale.',
+  },
+  unreachable: {
+    label: 'SNMP not answering', tint: 'var(--tint-danger)', fg: 'var(--tint-danger-fg)',
+    hint: 'The SNMP agent did not answer a basic sysName probe, so nothing could be '
+        + 'asked of it. Any links shown are from an earlier run and may be stale.',
+  },
+  pending: {
+    label: 'Not walked yet', tint: 'var(--surface-subtle)', fg: 'var(--text-secondary)',
+    hint: 'Discovery has not run against this device since it was added. It runs every '
+        + '6 hours, or immediately via Run Discovery.',
+  },
+};
+
+function StatusChip({ status }: { status: string }) {
+  const m = TOPO_STATUS[status];
+  const label = m ? m.label : status;
+  return (
+    <span
+      title={m ? m.hint : undefined}
+      style={{
+        fontSize: 'var(--text-xs)', fontWeight: 600, padding: '2px 8px', borderRadius: 999,
+        background: m ? m.tint : 'var(--surface-subtle)',
+        color: m ? m.fg : 'var(--text-secondary)', whiteSpace: 'nowrap',
+      }}
+    >
+      {label}
+    </span>
+  );
 }
 
 // ── CSV export helpers ─────────────────────────────────────────
@@ -282,6 +374,14 @@ export default function TopologyPage() {
   }, [watching, polled, flash]);
 
   const last = status.data;
+  // How many SNMP devices returned no neighbour data on the last run. Comes
+  // from monitored_devices (via /status), NOT from topology_links — a device
+  // with no links is absent from the link table by construction.
+  const notReporting = useMemo(() => {
+    const by = last?.devices_by_status;
+    if (!by) return 0;
+    return Object.entries(by).reduce((n, [k, v]) => (k === 'ok' ? n : n + (v || 0)), 0);
+  }, [last]);
   const running = starting || watching;
 
   return (
@@ -309,6 +409,27 @@ export default function TopologyPage() {
         {last ? (
           <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>
             Last run: {fmtRel(last.last_run_at)} · {last.links_found} link{last.links_found === 1 ? '' : 's'} · {last.devices_discovered} device{last.devices_discovered === 1 ? '' : 's'}
+            {/* ⛔ `devices_discovered` means devices that PRODUCED links, so on
+                its own it silently omitted every device that reported nothing.
+                The Visual Map is the default tab, so this has to be visible
+                here and not only in the Link Table. */}
+            {notReporting > 0 && (
+              <>
+                {' · '}
+                <button
+                  type="button"
+                  onClick={() => selectTab('links')}
+                  title="Show these devices and why they returned no data"
+                  style={{
+                    background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+                    font: 'inherit', color: 'var(--tint-warn-fg)', fontWeight: 600,
+                    textDecoration: 'underline',
+                  }}
+                >
+                  {notReporting} not reporting
+                </button>
+              </>
+            )}
           </span>
         ) : (
           <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>
@@ -1079,8 +1200,28 @@ function neighborName(r: TopologyLink): string {
 }
 
 // Group raw links by the monitored (from-) device that discovered them.
-function buildFromDeviceGroups(rows: TopologyLink[]): FromDeviceGroup[] {
+// ⛔ THE DEVICE LIST IS THE SPINE, NOT THE LINK LIST. This used to build groups
+// purely from TopologyLink[], so a device that discovered zero neighbours had no
+// group and never appeared on the page — the one device an operator is looking
+// at when they ask why nothing was discovered. Every walked device gets a row;
+// links hang off it. A link whose from-device is somehow absent from the device
+// list still gets a group, so nothing is dropped either way.
+function buildFromDeviceGroups(rows: TopologyLink[], devices: TopologyDevice[]): FromDeviceGroup[] {
   const map = new Map<string, FromDeviceGroup>();
+  for (const d of devices) {
+    map.set(String(d.id), {
+      key: String(d.id),
+      from_device_id: d.id,
+      from_device_name: d.name,
+      from_ip: d.ip_address,
+      last_seen_at: d.last_link_seen_at || '',
+      links: [],
+      topology_status: d.topology_status,
+      topology_parts: d.topology_parts || [],
+      topology_error: d.topology_error,
+      topology_discovered_at: d.topology_discovered_at,
+    });
+  }
   for (const r of rows) {
     const key = String(r.from_device_id);
     let g = map.get(key);
@@ -1092,6 +1233,10 @@ function buildFromDeviceGroups(rows: TopologyLink[]): FromDeviceGroup[] {
         from_ip: r.from_ip,
         last_seen_at: r.last_seen_at,
         links: [],
+        topology_status: 'ok',
+        topology_parts: [],
+        topology_error: null,
+        topology_discovered_at: null,
       };
       map.set(key, g);
     }
@@ -1115,8 +1260,15 @@ function LinkTable({
   flash: (node: React.ReactNode) => void;
 }) {
   const links = useApi<TopologyLink[]>('/api/topology/links', 0);
+  // Every device discovery walked, with its outcome — including the ones with
+  // no links, which /api/topology/links cannot report on by construction.
+  const devices = useApi<TopologyDevice[]>('/api/topology/devices', 0);
   const [q, setQ] = useState('');
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  // Off by default: on a healthy estate most devices have links and the table
+  // should stay about the topology. On by default would bury the links under
+  // every switch that has nothing to report.
+  const [problemsOnly, setProblemsOnly] = useState(false);
 
   function toggle(key: string) {
     setExpanded((prev) => {
@@ -1140,13 +1292,34 @@ function LinkTable({
       : all;
   }, [links.data, q]);
 
+  // The device list is searched on its OWN fields, not filtered by which links
+  // matched — otherwise searching for a device that discovered nothing would
+  // hide the very row that explains why.
+  const filteredDevices = useMemo<TopologyDevice[]>(() => {
+    const all = devices.data || [];
+    const needle = q.trim().toLowerCase();
+    return needle
+      ? all.filter((d: TopologyDevice) =>
+          [d.name, d.ip_address, d.site_name].filter(Boolean).join(' ').toLowerCase().includes(needle))
+      : all;
+  }, [devices.data, q]);
+
   // Sort runs AFTER the search filter + grouping, so the default (name-ordered)
   // grouping still applies until a header is clicked.
   const { sort, onSort } = useTableSort();
-  const groups = useMemo<FromDeviceGroup[]>(() => sortRows(buildFromDeviceGroups(filtered), sort, {
-    device: (g) => g.from_device_name,
-    lastseen: (g) => g.last_seen_at,
-  }), [filtered, sort]);
+  const groups = useMemo<FromDeviceGroup[]>(() => {
+    const built = buildFromDeviceGroups(filtered, filteredDevices);
+    const scoped = problemsOnly ? built.filter((g) => g.topology_status !== 'ok') : built;
+    return sortRows(scoped, sort, {
+      device: (g) => g.from_device_name,
+      status: (g) => g.topology_status,
+      lastseen: (g) => g.last_seen_at,
+    });
+  }, [filtered, filteredDevices, problemsOnly, sort]);
+
+  const notOk = useMemo(
+    () => (devices.data || []).filter((d: TopologyDevice) => d.topology_status !== 'ok').length,
+    [devices.data]);
 
   if (links.loading && !links.data) {
     return <div className="sv-panel"><Loading /></div>;
@@ -1166,6 +1339,14 @@ function LinkTable({
           placeholder="Search device name or IP…"
           style={{ maxWidth: 320, height: 32 }}
         />
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--text-sm)', color: 'var(--text-secondary)' }}>
+          <input
+            type="checkbox"
+            checked={problemsOnly}
+            onChange={(e) => setProblemsOnly(e.target.checked)}
+          />
+          Only devices with a discovery problem
+        </label>
         <div style={{ flex: 1 }} />
         <button
           className="sv-btn ghost sm"
@@ -1177,9 +1358,21 @@ function LinkTable({
         </button>
       </div>
 
+      {/* ⛔ The count that used to be impossible to see. A device that
+          discovered nothing had no row, so "discovery found 0 links on 2 of
+          your firewalls" was information the page physically could not carry. */}
+      {notOk > 0 && !problemsOnly && (
+        <Notice tone="warn">
+          {notOk} of {(devices.data || []).length} SNMP device{(devices.data || []).length === 1 ? '' : 's'}
+          {' '}did not return neighbour data on the last discovery run. They are listed below with the reason.
+        </Notice>
+      )}
+
       {groups.length === 0 ? (
         <div className="sv-panel" style={{ padding: 0 }}>
-          <Empty message="No links to show. Run discovery to detect device connections." />
+          <Empty message={problemsOnly
+            ? 'Every SNMP device returned neighbour data on the last discovery run.'
+            : 'No SNMP-enabled devices to show. Enable SNMP on a device, then run discovery.'} />
         </div>
       ) : (
         <div className="sv-panel" style={{ padding: 0, overflowX: 'auto' }}>
@@ -1187,6 +1380,7 @@ function LinkTable({
             <thead>
               <tr>
                 <SortTh label="Device" col="device" sort={sort} onSort={onSort} />
+                <SortTh label="Discovery" col="status" sort={sort} onSort={onSort} />
                 <SortTh label="Last Seen" col="lastseen" sort={sort} onSort={onSort} />
                 <th style={{ width: 32 }} />
               </tr>
@@ -1236,9 +1430,17 @@ function FromDeviceRow({
     lastseen: (l) => l.last_seen_at,
   }), [group.links, sort]);
 
+  // A device with no links has nothing to expand — and the row must still
+  // exist, because "nothing to expand" is the answer someone came here for.
+  const canExpand = count > 0;
+
   return (
     <Fragment>
-      <tr className="sv-neighbor-head" style={{ cursor: 'pointer', height: 40 }} onClick={onToggle}>
+      <tr
+        className="sv-neighbor-head"
+        style={{ cursor: canExpand ? 'pointer' : 'default', height: 40 }}
+        onClick={canExpand ? onToggle : undefined}
+      >
         <td style={{ height: 40 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
             <StatusDot status="up" />
@@ -1261,16 +1463,53 @@ function FromDeviceRow({
             </span>
           </div>
         </td>
-        <td title={fmtTime(group.last_seen_at)} style={{ whiteSpace: 'nowrap', height: 40, color: 'var(--text-muted)' }}>
-          {fmtRel(group.last_seen_at)}
+        <td style={{ height: 40 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <StatusChip status={group.topology_status} />
+            {/* Per-protocol detail. 'not_applicable' is omitted entirely —
+                rendering "CDP: n/a" on every non-Cisco device would be noise
+                about a protocol that was never going to apply. */}
+            {group.topology_parts
+              .filter((p) => p.status !== 'not_applicable')
+              .map((p) => (
+                <span key={p.protocol} style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)' }}>
+                  {p.protocol.toUpperCase()} {p.count}
+                </span>
+              ))}
+          </div>
+        </td>
+        <td
+          title={group.last_seen_at ? fmtTime(group.last_seen_at) : undefined}
+          style={{ whiteSpace: 'nowrap', height: 40, color: 'var(--text-muted)' }}
+        >
+          {/* ⛔ Falls back to when discovery last ASKED, clearly labelled as
+              such. The previous code rendered fmtRel(last_seen_at) off a link
+              row, so a device with no links had nothing to show here at all. */}
+          {group.last_seen_at
+            ? fmtRel(group.last_seen_at)
+            : group.topology_discovered_at
+              ? <span title={fmtTime(group.topology_discovered_at)}>asked {fmtRel(group.topology_discovered_at)}</span>
+              : '—'}
         </td>
         <td style={{ textAlign: 'center', width: 32, color: 'var(--text-muted)', height: 40 }}>
-          {expanded ? '▾' : '▸'}
+          {canExpand ? (expanded ? '▾' : '▸') : ''}
         </td>
       </tr>
-      {expanded && (
+      {/* The reason, inline, for any device that did not return data. This is
+          the sentence the page could not say before. */}
+      {group.topology_status !== 'ok' && (
         <tr className="sv-neighbor-detail">
-          <td colSpan={3} style={{ padding: 0 }}>
+          <td colSpan={4} style={{ padding: '8px 12px' }}>
+            <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)' }}>
+              {group.topology_error || (TOPO_STATUS[group.topology_status] || {}).hint
+                || 'Discovery reported no neighbour data for this device.'}
+            </div>
+          </td>
+        </tr>
+      )}
+      {expanded && canExpand && (
+        <tr className="sv-neighbor-detail">
+          <td colSpan={4} style={{ padding: 0 }}>
             <table className="sv-table" style={{ margin: 0 }}>
               <thead>
                 <tr>

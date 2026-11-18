@@ -869,6 +869,28 @@ CREATE INDEX IF NOT EXISTS idx_topo_to ON topology_links(to_device_id);
 ALTER TABLE monitored_devices
   ADD COLUMN IF NOT EXISTS topology_discovered_at TIMESTAMPTZ;
 
+-- Per-device neighbour-discovery OUTCOME.
+--
+-- ⛔ topology_discovered_at ALONE WAS A FALSE ALL-CLEAR. storeNeighbors stamps
+-- it on every pass whether it stored 40 neighbours or none, so a device whose
+-- LLDP table came back empty — and a device whose SNMP agent never answered —
+-- both read as "discovered just now". Worse, a device with no links does not
+-- appear in topology_links at all, so it is absent from the topology page
+-- exactly when someone is asking why it found nothing. Found on production
+-- 2026-11-18 with two Forcepoint firewalls in that state since 11 Nov.
+--
+--   topology_status  'ok' | 'no_data' | 'error' | 'unreachable' | 'pending'
+--                    collapsed across protocols by collector/topologyStatus.js
+--   topology_parts   per-protocol detail: [{protocol,status,count,error}]
+--                    'not_applicable' for CDP on anything non-Cisco
+--   topology_error   the message for the failing protocol, NULL when fine
+ALTER TABLE monitored_devices
+  ADD COLUMN IF NOT EXISTS topology_status TEXT;
+ALTER TABLE monitored_devices
+  ADD COLUMN IF NOT EXISTS topology_parts  JSONB;
+ALTER TABLE monitored_devices
+  ADD COLUMN IF NOT EXISTS topology_error  TEXT;
+
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO spanvault_user;
 GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO spanvault_user;
 
@@ -1691,7 +1713,8 @@ BEGIN
       ping_threshold_ms, ping_failures_before_down, current_status,
       consecutive_failures, last_response_ms, last_checked_at, last_seen_at,
       active, created_at, updated_at, device_vendor, alert_suppressed,
-      suppressed_by_device_id, is_gateway, agent_id, topology_discovered_at
+      suppressed_by_device_id, is_gateway, agent_id, topology_discovered_at,
+      topology_status, topology_parts, topology_error
     ) ON monitored_devices TO nocvault_readonly;
 
     REVOKE SELECT ON agents FROM nocvault_readonly;
@@ -1715,7 +1738,8 @@ BEGIN
       ping_threshold_ms, ping_failures_before_down, current_status,
       consecutive_failures, last_response_ms, last_checked_at, last_seen_at,
       active, created_at, updated_at, device_vendor, alert_suppressed,
-      suppressed_by_device_id, is_gateway, agent_id, topology_discovered_at
+      suppressed_by_device_id, is_gateway, agent_id, topology_discovered_at,
+      topology_status, topology_parts, topology_error
     ) ON monitored_devices TO claude_readonly;
 
     REVOKE SELECT ON agents FROM claude_readonly;

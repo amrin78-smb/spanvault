@@ -163,8 +163,27 @@ parsers/_util.js  (shared helpers for collector/parsers/*)
     alone (byte-decoding '42' would read as 13362) and strips BER's leading zero pad.
 
 topology.js
-  discoverDevice/matchNeighborDevice/storeNeighbors/discoverAndStore — LLDP/CDP walk + link persistence,
-    backs POST /api/topology/discover and the topology_links table
+  discoverDevice(device) -> {neighbors, parts, status} — LLDP walk (always) + CDP (Cisco vendor only).
+    Returns a per-protocol OUTCOME alongside the neighbours; `parts` entries are
+    {protocol,status,count,error} and CDP is 'not_applicable' on anything non-Cisco
+  discoverLldpNeighbors/discoverCdpNeighbors(device) -> {neighbors, status, error} — exported for tests
+  storeNeighbors(pool, device, result) -> {links, pruned, status, parts} — upsert, PRUNE (only for a
+    protocol whose status is 'ok' — see gotchas), then persist topology_status/parts/error
+  discoverAndStore(pool, device) -> {links, pruned, status, parts} — walk then store. ⛔ returned a bare
+    link COUNT before 1.121.0; both call sites (collector/collector.js topologyTick,
+    api/server.js runTopologyDiscoveryAll) read `.links`
+  matchNeighborDevice(pool, neighbor) — resolve a neighbour to a monitored device (IP, then fuzzy name)
+
+topologyStatus.js
+  OK/NO_DATA/ERROR/UNREACHABLE/NOT_APPLICABLE/PENDING — the discovery-outcome vocabulary
+  cdpApplicable(device) — vendor string contains 'cisco'
+  collapse(parts) — one verdict from the protocols. ⛔ precedence is unreachable > ok > error > no_data
+    > pending, so `ok` OUTRANKS `error` — deliberately the OPPOSITE of ddivault's api/serverStatus.js,
+    because LLDP and CDP are two routes to ONE dataset. Do not harmonise them
+  part/pendingParts/storedParts/firstError — construction + tolerant read of the JSONB column
+  describeTopology(device) — {topology_status, topology_parts, topology_error, topology_discovered_at},
+    JSON-safe; degrades to 'pending' on a NULL/malformed column rather than throwing.
+    Required by BOTH collector/topology.js and api/server.js (GET /api/topology/devices)
 
 wirelessCollector.js
   testController(pool, controller) — "dry run" but NOT write-free for aruba_central — see gotchas.md  [SENSITIVE: SNMP/API creds, rotating OAuth tokens]

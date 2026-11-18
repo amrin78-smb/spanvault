@@ -20,6 +20,7 @@ const ping     = require('ping');
 const { Pool } = require('pg');
 const { discoverDevice, snmpTest, unitFor } = require('../collector/discovery');
 const topology = require('../collector/topology');
+const topologyStatus = require('../collector/topologyStatus');
 const wireless = require('../collector/wirelessCollector');
 const { wirelessVendorFor } = require('../collector/wireless');
 const { computeCongestionScore } = require('../collector/wirelessScore');
@@ -45,6 +46,12 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.121.0': [
+    "Fixed: the Topology page could not show you a device that discovered nothing. The link table was built from the links themselves, so a device with no neighbours had no row at all - which is exactly the device you are looking at when you ask why nothing was found. Every SNMP device now gets a row, with what discovery actually concluded about it.",
+    "New: discovery now records an outcome per device and per protocol, so \"this device reports no neighbours\" is no longer the same thing as \"we could not reach this device\". Previously both looked identical: no links, and a last-discovered time that read as success. A count of devices not reporting appears in the page header, and the reason appears against the device.",
+    "Fixed: the port name shown for the near end of every LLDP link was wrong. The address used to read it from the device was malformed, so the page had been showing an internal port number in place of the interface name for every link since the feature shipped. Affected all 66 links on this install.",
+    "Discovered links that have gone away are now removed once the device reports its neighbours successfully, instead of staying on the map indefinitely. Links are deliberately kept when a device reports nothing or cannot be reached, so one quiet poll never empties your map.",
+  ],
   '1.120.0': [
     "New: how long an access point may be silent before it is retired is now a setting, under Settings - General - Wireless Alert Thresholds, instead of something that had to be changed in the database. It stays at 14 days unless you change it.",
     "The setting will not accept a value below 2 days, and the collector enforces that floor independently of the form. At zero every access point that is offline would be retired at once and AP alerts would stop entirely, with nothing on screen to say why.",
@@ -3833,7 +3840,7 @@ const DEVICE_PUBLIC_COLUMNS = `
   current_status, consecutive_failures, last_response_ms, last_checked_at,
   last_seen_at, active, created_at, updated_at, device_vendor,
   alert_suppressed, suppressed_by_device_id, is_gateway, agent_id,
-  topology_discovered_at`;
+  topology_discovered_at, topology_status, topology_parts, topology_error`;
 
 app.get('/api/devices/:id', wrap(async (req, res) => {
   const id = parseInt(req.params.id, 10);
@@ -6263,7 +6270,8 @@ async function runTopologyDiscoveryAll() {
       `SELECT * FROM monitored_devices WHERE active = TRUE AND snmp_enabled = TRUE`);
     for (const d of r.rows) {
       try {
-        links += await topology.discoverAndStore(sv, d);
+        const out = await topology.discoverAndStore(sv, d);
+        links += out.links;
         devices++;
       } catch (e) {
         console.error(`[topology] ${d.name} discovery failed:`, e.message);
@@ -6300,13 +6308,67 @@ app.get('/api/topology/status', wrap(async (req, res) => {
     JOIN monitored_devices fd ON fd.id = l.from_device_id
     ${sc ? `WHERE ${sc}` : ''}`, params);
   const row = r.rows[0] || {};
+  // ⛔ `devices_discovered` COUNTS DEVICES THAT PRODUCED LINKS, not devices
+  // walked — it is derived from topology_links, so a device that found nothing
+  // is missing from it. That is accurate for what it says and useless for the
+  // question an operator actually has ("did you ask my new firewall?"), so the
+  // outcome tally below is computed from monitored_devices instead. Keep both:
+  // renaming or repurposing the original would change the header copy that has
+  // meant "devices with links" since the feature shipped.
+  const dparams = [];
+  const dsc = siteFilterClause(getSiteFilter(req), dparams, 'site_id');
+  const d = await sv.query(`
+    SELECT COALESCE(topology_status, 'pending') AS status, COUNT(*)::int AS n
+      FROM monitored_devices
+     WHERE active = TRUE AND snmp_enabled = TRUE${dsc ? ` AND ${dsc}` : ''}
+     GROUP BY 1`, dparams);
+  const byStatus = {};
+  let walked = 0;
+  for (const g of d.rows) { byStatus[g.status] = g.n; walked += g.n; }
   res.json({
     running: topoRun.running,
     last_run_at: row.last_run_at || null,
     links_found: row.links_found || 0,
     devices_discovered: row.devices_discovered || 0,
+    devices_walked: walked,
+    devices_by_status: byStatus,
     duration_ms: topoRun.duration_ms || 0,
   });
+}));
+
+// Every device discovery WALKS, with its outcome — including the ones that
+// found nothing.
+//
+// ⛔ THIS ROUTE EXISTS BECAUSE /links CANNOT ANSWER THE QUESTION. The Link
+// Table is built from topology_links, so a device that discovered zero
+// neighbours is simply absent from the page — which is precisely the device
+// someone is looking for when they ask why nothing was discovered. Production
+// 2026-11-18: two Forcepoint firewalls had been reporting an empty LLDP table
+// since 11 Nov and appeared nowhere in the UI at all.
+//
+// Site-scoped on the device, like every other /api/topology/* read.
+app.get('/api/topology/devices', wrap(async (req, res) => {
+  const params = [];
+  const sc = siteFilterClause(getSiteFilter(req), params, 'd.site_id');
+  const r = await sv.query(`
+    SELECT d.id, d.name, d.ip_address, d.site_id, d.site_name, d.device_vendor,
+           d.current_status, d.topology_discovered_at, d.topology_status,
+           d.topology_parts, d.topology_error,
+           COUNT(l.id)::int        AS link_count,
+           MAX(l.last_seen_at)     AS last_link_seen_at
+      FROM monitored_devices d
+      LEFT JOIN topology_links l ON l.from_device_id = d.id
+     WHERE d.active = TRUE AND d.snmp_enabled = TRUE${sc ? ` AND ${sc}` : ''}
+     GROUP BY d.id
+     ORDER BY d.name`, params);
+  res.json(r.rows.map((d) => ({
+    id: d.id, name: d.name, ip_address: d.ip_address,
+    site_id: d.site_id, site_name: d.site_name, device_vendor: d.device_vendor,
+    current_status: d.current_status,
+    link_count: d.link_count,
+    last_link_seen_at: d.last_link_seen_at,
+    ...topologyStatus.describeTopology(d),
+  })));
 }));
 
 // All discovered links with both ends joined (?device_id=X scopes to one device).

@@ -132,8 +132,17 @@ api/suiteSmtp.js       ← resolves the SMTP transport: the NocVault hub's centr
                           getSmtpSettings and collector/collector.js's
                           sendAlertEmail). ⛔ Never throws — see .ai-codex/gotchas.md
 collector/collector.js ← Background polling service (ICMP + SNMP), NetVault device sync
-collector/discovery.js ← LLDP/CDP topology discovery
-collector/topology.js  ← topology engine
+collector/discovery.js ← SNMP SENSOR discovery (collectCandidates / fetchVendorRaw /
+                          snmpTest) — nothing to do with LLDP/CDP. This line used to
+                          read "LLDP/CDP topology discovery", which is wrong; the
+                          label was swapped with topology.js below and cost real
+                          time when someone went looking for the LLDP walk here.
+collector/topology.js  ← the LLDP/CDP NEIGHBOUR walker (both protocols over SNMP)
+                          plus the link upsert, prune and per-protocol outcome
+collector/topologyStatus.js ← the discovery-outcome vocabulary (ok / no_data /
+                          error / unreachable / not_applicable) and the rule that
+                          collapses the protocols into one verdict. Required by
+                          BOTH collector/topology.js and api/server.js
 collector/snmp-session.js         ← shared SNMP session helper
 collector/wirelessCollector.js    ← wireless (AP/controller/client) SNMP polling
 collector/wirelessIntelligence.js ← wireless RF statistical analytics
@@ -458,6 +467,46 @@ severity fired first.
   the alerts' window. `congestion_score`/`congestion_level` are always `null`
   together for a non-`online` AP — never a misleading `0`/`'low'` for an AP
   that's actually down.
+
+### Neighbour discovery: a fallback that hides a broken OID, and a timestamp that is not an answer (2026-11)
+Two defects found together while answering "why do my two new Forcepoint
+firewalls discover nothing?". Neither crashed, neither failed a static check,
+and both had been live since the topology feature shipped.
+
+**1. `LLDP_LOCAL_PORTDESC` was `1.0.8802.1.1.2.1.7.1.1.4`** — missing the `.3`
+for `lldpLocalSystemData`, and `1.0.8802.1.1.2.1.7` does not exist in the
+LLDP-MIB at all. The walk therefore always returned empty and every link fell
+through to ``localPortMap[portNum] || `port${portNum}` `` — so `from_port` held
+the LLDP local port NUMBER while looking like a port name. Measured before the
+fix: **66 of 66 LLDP links estate-wide carried the fallback, 0 carried a real
+port description.** ⛔ **A fallback that produces plausible output is how a
+wrong OID survives for months** — nothing is ever empty, so nothing ever looks
+broken. When adding a fallback, make sure the thing it covers for is also
+*observable*.
+
+**2. `topology_discovered_at` was the only thing recorded, and it was stamped
+unconditionally.** `walkOid` resolved `{}` on any error, so four different
+situations produced one identical result (zero rows, fresh timestamp): no
+neighbours; the agent not answering; the community having no view of the LLDP
+subtree; a walk that errored. Worse, a device with no links does not appear in
+`topology_links`, so it was **absent from the topology page entirely** — the one
+device someone is looking at when they ask why nothing was found. Fixed with
+`topology_status`/`topology_parts`/`topology_error`, a sysName CONTROL PROBE in
+a different MIB tree to separate "agent dead" from "table empty", and
+`GET /api/topology/devices`, which lists every device discovery walked.
+
+⛔ **`ok` outranks `error` in `collapse()` — deliberately the opposite of
+DDIVault's `api/serverStatus.js`.** There, capabilities are separate datasets so
+any failure wins. Here LLDP and CDP are two routes to the SAME dataset, so if
+LLDP answered we have the topology and a CDP hiccup costs nothing. Don't
+"harmonise" the two rules.
+
+⛔ **Pruning stale links only happens for a protocol whose status is `ok`.**
+`topology_links` had no prune at all before this, and adding one is what lets
+the OID fix re-key `from_port` without duplicating every link forever. But
+pruning on an EMPTY read would delete a device's whole known topology the first
+time its LLDP went quiet — so `no_data`/`error`/`unreachable` keep the last
+known links and let `topology_status` report the staleness instead.
 
 ### After any change
 Run `npm run build` inside frontend/ to verify before committing.
@@ -895,8 +944,8 @@ full detail on any one of them):
    NetVault (the unified NocVault agent); SpanVault's own `agent/` directory and
    its `/api/agent/*` distribution routes were removed in 1.101.0. The WS ingest
    listener, the `/agents` fleet page and `/api/agents/*` all remain.
-10. **Topology mapping** (`f156876`) — LLDP/CDP discovery (`collector/discovery.js`,
-    `collector/topology.js`), `/topology` page with a visual link map grouped
+10. **Topology mapping** (`f156876`) — LLDP/CDP discovery (`collector/topology.js`;
+    `discovery.js` is sensor discovery, not this), `/topology` page with a visual link map grouped
     by site.
 11. **Intelligence page** (`28805af`…`06cc0f3`) — `api/intelligence.js` analytics
     engine, `/intelligence` page (multi-tab), plus intelligence signals surfaced

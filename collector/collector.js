@@ -2474,16 +2474,31 @@ async function topologyTick() {
   topoBusy = true;
   try {
     const devices = (await getActiveDevices()).filter((d) => d.snmp_enabled);
-    let links = 0;
+    let links = 0, pruned = 0;
+    const byStatus = {};
     for (const d of devices) {
       try {
-        links += await discoverAndStore(sv, d);
+        const r = await discoverAndStore(sv, d);
+        links += r.links;
+        pruned += r.pruned;
+        byStatus[r.status] = (byStatus[r.status] || 0) + 1;
+        // ⛔ LOG THE DEVICES THAT FOUND NOTHING, BY NAME. A device with no
+        // neighbours does not appear in topology_links, so before this it was
+        // absent from the log line, absent from the page, and the only trace
+        // of it was a fresh topology_discovered_at that read as success.
+        if (r.status !== 'ok') {
+          const bad = r.parts.find((p) => p.status === r.status);
+          console.warn(`[topology] ${d.name} (${d.ip_address}): ${r.status}`
+            + (bad && bad.error ? ` — ${bad.error}` : ''));
+        }
       } catch (e) {
         console.error(`[topology] ${d.name} failed:`, e.message);
       }
     }
     if (devices.length) {
-      log(`[topology] discovered ${links} link(s) across ${devices.length} SNMP device(s)`);
+      const tally = Object.entries(byStatus).map(([k, v]) => `${v} ${k}`).join(', ');
+      log(`[topology] ${links} link(s) across ${devices.length} SNMP device(s)`
+        + (pruned ? `, ${pruned} stale link(s) removed` : '') + (tally ? ` — ${tally}` : ''));
     }
   } catch (err) {
     console.error('[topology] tick failed:', err.message);

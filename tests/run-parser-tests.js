@@ -26,6 +26,7 @@ const SUITES = [
   'test-grandstream-client-parser.js', // MIB-verified (GRANDSTREAM-GWN-MIB gwnClientTable) — no Grandstream GWN hardware in lab
   'test-forcepoint-parser.js', // live-verified SNMP vendor parser (FORCEPOINT-NGFW-ENGINE-MIB, engines on fw 7.1.11)
   'test-vendor-fetch.js', // discovery.js fetchVendorRaw batching/by-OID match/SNMPv1 fallback + unitFor
+  'test-topology-status.js', // LLDP/CDP discovery outcomes + the prune guard (stubs net-snmp, no network)
 ];
 
 // Database-backed suites. Skipped unless SV_DB_NAME names a *test* database,
