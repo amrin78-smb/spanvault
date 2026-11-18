@@ -46,6 +46,9 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.121.1': [
+    "Fixed: a device reporting no neighbours recorded that fact without the reason beside it. The explanation was shown on the Topology page but was missing from the device's own record, so anything reading it directly - a report, a diagnostic query - got a status with nothing to explain it. The reason is now stored with it.",
+  ],
   '1.121.0': [
     "Fixed: the Topology page could not show you a device that discovered nothing. The link table was built from the links themselves, so a device with no neighbours had no row at all - which is exactly the device you are looking at when you ask why nothing was found. Every SNMP device now gets a row, with what discovery actually concluded about it.",
     "New: discovery now records an outcome per device and per protocol, so \"this device reports no neighbours\" is no longer the same thing as \"we could not reach this device\". Previously both looked identical: no links, and a last-discovered time that read as success. A count of devices not reporting appears in the page header, and the reason appears against the device.",

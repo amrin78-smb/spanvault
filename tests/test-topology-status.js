@@ -187,6 +187,24 @@ function fakePool() {
       broken.topology_status === 'pending');
   }
 
+  // ── 4b. The reason must travel with the status ─────────────────────────────
+  {
+    // ⛔ Found in post-deploy verification of 1.121.0: firstError matched only
+    // error/unreachable, so the three production firewalls that prompted this
+    // work stored no_data with topology_error NULL — a status with no reason
+    // beside it, which is a smaller copy of the bug being fixed.
+    const quiet = [ts.part('lldp', 'no_data', 0, 'LLDP table empty'), ts.part('cdp', 'not_applicable', 0)];
+    check('a no_data device carries its reason, not a bare status',
+      ts.firstError(quiet) === 'LLDP table empty');
+    check('describeTopology surfaces that reason too',
+      ts.describeTopology({ topology_status: 'no_data', topology_parts: quiet }).topology_error === 'LLDP table empty');
+    // A real failure is the more actionable message when both are present.
+    const mixed = [ts.part('lldp', 'no_data', 0, 'LLDP table empty'), ts.part('cdp', 'error', 0, 'authorizationError')];
+    check('a real failure outranks a no_data message', ts.firstError(mixed) === 'authorizationError');
+    check('an all-ok device has no message at all',
+      ts.firstError([ts.part('lldp', 'ok', 3), ts.part('cdp', 'not_applicable', 0)]) === null);
+  }
+
   // ── 5. The prune guard — the one that can destroy data ─────────────────────
   {
     const topo = installFakeSnmp(ONE_NEIGHBOUR);

@@ -120,12 +120,28 @@ function storedParts(device) {
 }
 
 /**
- * The first error message worth showing for a device, or null.
+ * The message worth showing for a device, or null.
+ *
+ * ⛔ A `no_data` PART CONTRIBUTES ITS MESSAGE TOO, and this is the whole point of
+ * the column. Caught in post-deploy verification of 1.121.0: this used to match
+ * only ERROR/UNREACHABLE, so the three Forcepoint firewalls that prompted the
+ * work stored `topology_status = 'no_data'` with `topology_error = NULL` — a
+ * status with no reason beside it, which is a smaller version of exactly the
+ * problem this file exists to remove. The explanation was in `topology_parts`
+ * and the page had its own fallback copy, so nothing looked broken; a DB query
+ * or an API consumer reading `topology_error` simply got nothing.
+ *
+ * A real failure still wins over a `no_data` on the other protocol — if one
+ * protocol errored, that is the more actionable message.
+ *
  * An `ok` part never contributes one — see the precedence note above.
  */
 function firstError(parts) {
-  const bad = (parts || []).find((p) => p && (p.status === ERROR || p.status === UNREACHABLE) && p.error);
-  return bad ? bad.error : null;
+  const list = parts || [];
+  const hard = list.find((p) => p && (p.status === ERROR || p.status === UNREACHABLE) && p.error);
+  if (hard) return hard.error;
+  const quiet = list.find((p) => p && p.status === NO_DATA && p.error);
+  return quiet ? quiet.error : null;
 }
 
 /** Shape added to an API row so a client never has to re-derive this. */

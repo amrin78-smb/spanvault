@@ -180,7 +180,9 @@ topologyStatus.js
   collapse(parts) — one verdict from the protocols. ⛔ precedence is unreachable > ok > error > no_data
     > pending, so `ok` OUTRANKS `error` — deliberately the OPPOSITE of ddivault's api/serverStatus.js,
     because LLDP and CDP are two routes to ONE dataset. Do not harmonise them
-  part/pendingParts/storedParts/firstError — construction + tolerant read of the JSONB column
+  part/pendingParts/storedParts — construction + tolerant read of the JSONB column
+  firstError(parts) — the message to show. ⛔ Matches error/unreachable FIRST, then **no_data** — it
+    skipped no_data until 1.121.1, so the common case stored a status with no reason beside it
   describeTopology(device) — {topology_status, topology_parts, topology_error, topology_discovered_at},
     JSON-safe; degrades to 'pending' on a NULL/malformed column rather than throwing.
     Required by BOTH collector/topology.js and api/server.js (GET /api/topology/devices)
