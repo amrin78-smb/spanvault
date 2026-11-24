@@ -28,6 +28,7 @@ gotchas.md — auth happens via `/sso`.
 - `[client]` `/sso` — `SsoPage` — posts the hub-issued token to this app's own `/api/sso`, then `signIn('credentials', {ssoToken})`
 - `[client]` `/maps/public/[uuid]` — `PublicMapPage` — unauthenticated live view of a map marked `is_public` (GET /api/maps/public/:uuid)
 - `[client]` `/maps/wall` — `MapWallPage` — NOC-wall cycling display of maps
+- `[route]` `/auth/signin` (GET/HEAD, `app/auth/signin/route.ts`) — **no UI**: NextAuth's configured `pages.signIn`. 307s to `resolveOrigin(req, 3000, …)/login?callbackUrl=%2Fapi%2Fsso%2Fspanvault` — the hub origin per request, the callbackUrl a CONSTANT (the hub's own SSO issuer for this app, the only form its login page honours). Added 1.121.2 because `pages` is evaluated once at module load and so froze the hub redirect to `NOCVAULT_HUB_URL` (a bare IP over http on a TLS install). ⛔ Must stay OUT of `app/api/**` (middleware proxies that to Express) and OUT of the page-gate matcher (a gated sign-in route loops forever)
 
 ## Root-level
 - `[server]` `/` (root layout) — `RootLayout` — html/body shell, theme init script, font loading

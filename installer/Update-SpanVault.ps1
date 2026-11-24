@@ -385,6 +385,136 @@ function Resolve-Nssm($installDir, $appRoot) {
     throw "nssm.exe not found. Tried SV_NSSM_PATH in .env.local, '$installDir\nssm\nssm-2.24\win64\nssm.exe', and 'C:\Apps\NetVault\nssm\nssm-2.24\win64\nssm.exe'. Install NSSM or set SV_NSSM_PATH."
 }
 
+# ======================================================================
+# Runtime-settable env keys: the env FILE is authoritative, not NSSM
+# ======================================================================
+# These are the keys an operator can change AFTER install without a reinstall.
+# The new value is written to the env file the app reads, but dotenv /
+# loadEnvConfig NEVER override a variable that is already present in
+# process.env - so a value pinned in the NSSM service environment
+# (AppEnvironmentExtra) wins forever and the file write is a silent no-op: it
+# reports success, survives a restart, and changes nothing, with no error
+# anywhere. The suite installer sets NO AppEnvironmentExtra for any SpanVault
+# service (Install-NocVault-Suite.ps1 writes .env.local instead - see its
+# "SpanVault-API has no NSSM AppEnvironmentExtra" note), but NSSM keeps whatever
+# was EVER set in the service's own registry key, so a box provisioned before
+# that - or one where somebody set a value by hand while debugging - still
+# carries the pin and converges only here.
+#
+# ⛔ DELIBERATELY SHORTER THAN NETVAULT'S LIST - DO NOT COPY THAT ONE IN.
+# NetVault also lists TLS_CERT_PATH / TLS_KEY_PATH / TLS_PUBLIC_HOST and the
+# ENTRA_* trio because the HUB's Settings page manages them. SpanVault reads
+# none of those three TLS keys in any of its own code (the shared terminator is
+# NetVault's own process and reads NetVault's env files), and SpanVault has no
+# login page at all - auth comes from the hub by SSO - so the ENTRA_* values can
+# never be configured here. Listing a key this app never reads would only make
+# the warning text below name something meaningless to whoever reads it.
+# NEXTAUTH_URL is the console address, it is the one key in this class SpanVault
+# actually has, and SpanVault-App (next start, which builds its NextAuth options
+# ONCE from process.env at startup) reads it from frontend\.env.local - the file
+# this step makes authoritative.
+#
+# If a later release makes another key runtime-settable, add it here and nothing
+# else has to change: the step is self-converging because Clear-NssmEnvKeys is
+# only ever handed the keys the env file ALREADY supplies (see
+# Get-EnvFileSuppliedKeys at the call site). A key nothing supplies is left
+# alone, since removing its pin would leave the app with no value for it at all,
+# which is worse than a stale pin.
+$RuntimeSettableEnvKeys = @(
+    'NEXTAUTH_URL'
+)
+
+# Which of $keys the env file at $path actually defines with a NON-EMPTY value.
+# Reads raw and splits on \r?\n itself: the suite installer writes these files
+# LF-only while later Add-Content/Set-Content edits write CRLF, and an anchored
+# regex tested against a line that still carries its trailing \r stops matching.
+#
+# ⛔ RETURNS $null, NOT AN EMPTY ARRAY, WHEN NOTHING MATCHES - PowerShell unrolls
+# a 0-element array on return (and a 1-element one to a bare string). Every call
+# site MUST wrap the result in @() before reading .Count or -joining it. Same
+# shape, and the same rule, as the other three updaters.
+function Get-EnvFileSuppliedKeys([string]$path, [string[]]$keys) {
+    $found = @()
+    if (-not $path) { return $found }
+    if (-not (Test-Path -LiteralPath $path)) { return $found }
+    $raw = ''
+    try { $raw = (Get-Content -LiteralPath $path -Raw) } catch { return $found }
+    if (-not $raw) { return $found }
+    $lines = @($raw -split "`r?`n" | ForEach-Object { $_.Trim() })
+    foreach ($k in $keys) {
+        foreach ($l in $lines) {
+            if ($l -match ('^' + [regex]::Escape($k) + '\s*=\s*\S')) { $found += $k; break }
+        }
+    }
+    return $found
+}
+
+# Remove $keys from a service's NSSM AppEnvironmentExtra, PRESERVING every other
+# entry. On a SpanVault box that block can hold NEXTAUTH_SECRET and
+# NETVAULT_DB_PASS, which this script never sees - so this is a line-by-line
+# edit of whatever is actually there, NEVER a rebuild from a template. A rebuild
+# would silently drop every entry the author did not think to include.
+#
+# ⛔ KEY NAMES ONLY IN EVERY MESSAGE THIS FUNCTION OR ITS CALLER PRINTS. Nothing
+# here logs, echoes or returns a VALUE read out of AppEnvironmentExtra: the
+# transcript this script writes is read by whoever is diagnosing an update, and
+# a secret that reaches it is leaked for good.
+#
+# NSSM has no "delete one entry" verb for a multi-valued setting, so this is a
+# read -> filter -> write-back:
+#   1. nssm get <svc> AppEnvironmentExtra     (nssm emits UTF-16; strip the NULs
+#      that survive the capture)
+#   2. keep only the lines that still parse as KEY=VALUE and are not in $keys
+#   3. nssm set <svc> AppEnvironmentExtra "<kept lines joined with a newline>"
+#      - the same single-argument newline-joined form the suite installer uses -
+#      or, when NOTHING is left, nssm RESET <svc> AppEnvironmentExtra, which
+#      deletes the registry value outright. `set` with an empty string is not a
+#      way to clear a multi-valued setting.
+# Step 2's KEY=VALUE filter is load-bearing: feeding the raw read-back straight
+# into `set` is what made an earlier read-modify-write in the sibling updaters
+# fail with "Environment should comprise strings of the form KEY=VALUE" (exit 6)
+# - the UTF-16 NULs and the blank trailing line are not valid entries.
+#
+# Returns 'written' (at least one key removed), 'nochange' (already converged,
+# the value is unset, or the service does not exist yet) or 'failed'. NEVER
+# throws, and bails out WITHOUT writing when the read-back does not look like a
+# real env block, so an unreadable read can never blank a working service's
+# environment. $ErrorActionPreference is relaxed around the native calls
+# (assignment inside the function is function-scoped and reverts on return):
+# nssm writes to stderr, which an ambient 'Stop' would turn into a terminating
+# error.
+function Clear-NssmEnvKeys([string]$nssmExe, [string]$service, [string[]]$keys) {
+    if (-not $nssmExe) { return 'failed' }
+    if (-not (Test-Path -LiteralPath $nssmExe)) { return 'failed' }
+    if (@($keys).Count -eq 0) { return 'nochange' }
+    $ErrorActionPreference = 'Continue'
+    $raw = ''
+    try { $raw = (& $nssmExe get $service AppEnvironmentExtra 2>&1 | Out-String) } catch { $raw = '' }
+    $raw = $raw -replace "`0", ''
+    $lines = @($raw -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -match '^[A-Za-z_][A-Za-z0-9_]*=' })
+    # A real block carries many entries. 0-1 parseable lines means the read
+    # failed, the value is unset, or the service does not exist - in all three
+    # cases write nothing.
+    if ($lines.Count -lt 2) { return 'nochange' }
+    $keep    = @()
+    $dropped = 0
+    foreach ($l in $lines) {
+        $name = ($l -split '=', 2)[0]
+        if (@($keys) -contains $name) { $dropped++; continue }
+        $keep += $l
+    }
+    if ($dropped -eq 0) { return 'nochange' }
+    try {
+        if (@($keep).Count -gt 0) {
+            $null = & $nssmExe set $service AppEnvironmentExtra ($keep -join "`n") 2>&1
+        } else {
+            $null = & $nssmExe reset $service AppEnvironmentExtra 2>&1
+        }
+    } catch { return 'failed' }
+    if ($LASTEXITCODE -ne 0) { return 'failed' }
+    return 'written'
+}
+
 # --- Resilience: rollback + structured status reporting -------------------
 # SpanVault has no `output: 'standalone'` build - SpanVault-App runs `next start`
 # directly against a plain `frontend\.next`, sharing the app's normal node_modules
@@ -1317,6 +1447,43 @@ if ($buildExit -eq 0) {
     # against a broken or missing .next - Fail-Update now actually restores the
     # last-known-good build output and restarts services on it.
     Fail-Update -Stage 'npm-build' -Message "Frontend build failed (exit $buildExit)"
+}
+
+# ── 6b. Make the env file authoritative for runtime-settable keys ───
+# The console address (NEXTAUTH_URL) is changed after install by writing it to
+# frontend\.env.local, which is the file SpanVault-App actually loads.
+# dotenv/loadEnvConfig do not override a variable already in process.env, so
+# anything NSSM pins in AppEnvironmentExtra shadows that file permanently and the
+# change silently does nothing - not even after a restart. The suite installer
+# pins nothing for SpanVault's services, but NSSM persists per-service settings
+# in the registry, so a box provisioned before that (or one where a value was set
+# by hand) only converges here. Idempotent: a converged box reports "already
+# clear" and writes nothing.
+#
+# ⛔ NON-FATAL BY DESIGN, AND NOT A STAGE. A service environment we could not
+# rewrite is a console address that will not take effect - it is not a reason to
+# fail (and ROLL BACK) an otherwise healthy update, so every outcome here is a
+# Write-Ok/Write-Warn and nothing calls Fail-Update or touches $currentStage.
+#
+# ⛔ KEY NAMES ONLY in every line below. The block being edited can hold
+# NEXTAUTH_SECRET and NETVAULT_DB_PASS, and this script's transcript is read by
+# whoever is diagnosing the update.
+Write-Step 'Making the env file authoritative for runtime-settable keys (SpanVault-App)'
+$svSvcEnvFile = $feEnv
+$svSvcKeys    = Get-EnvFileSuppliedKeys $svSvcEnvFile $RuntimeSettableEnvKeys
+if (@($svSvcKeys).Count -eq 0) {
+    Write-Warn "None of the runtime-settable keys are set in $svSvcEnvFile - leaving the SpanVault-App service environment untouched (clearing a key no file supplies would leave the app with no value for it)"
+} elseif (-not $nssm) {
+    Write-Warn "nssm.exe not found - could not clear $(@($svSvcKeys) -join ', ') from the SpanVault-App service environment. If still pinned there it overrides the env file and a console-address change will not apply. Check: nssm get SpanVault-App AppEnvironmentExtra"
+} else {
+    $svSvcRes = Clear-NssmEnvKeys $nssm 'SpanVault-App' $svSvcKeys
+    if ($svSvcRes -eq 'written') {
+        Write-Ok "Cleared $(@($svSvcKeys) -join ', ') from the SpanVault-App service environment - the env file is now authoritative"
+    } elseif ($svSvcRes -eq 'nochange') {
+        Write-Ok "SpanVault-App service environment already clear of $(@($svSvcKeys) -join ', ') - the env file is authoritative"
+    } else {
+        Write-Warn "Could not update the SpanVault-App service environment - if $(@($svSvcKeys) -join ', ') is still pinned there it overrides the env file and a console-address change will not apply. Check: nssm get SpanVault-App AppEnvironmentExtra"
+    }
 }
 
 # ── 7. (Re)register and start NSSM services ────────────────────

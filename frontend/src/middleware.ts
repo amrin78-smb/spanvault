@@ -7,13 +7,37 @@ import { resolveOrigin } from '@/lib/publicUrl';
 // on the edge runtime, so it cannot be required from a Node test script).
 // Regression suite: tests/test-rbac-scoping.js.
 import { isPublicApiPath, stripClientIdentity } from '@/lib/apiGate';
+// The post-login return path, shared with app/auth/signin/route.ts so the gate
+// and NextAuth's sign-in redirect cannot drift apart.
+import { HUB_CALLBACK_PATH, hasSessionCookie } from '@/lib/hubSignin';
 
 // Legacy fallback only — the real target origin is derived per-request from
 // the Host/X-Forwarded-Host headers (see resolveOrigin) so hub-redirects keep
 // working when the suite is accessed via a customer's own local-DNS hostname
 // instead of the install-time server IP.
 const HUB_FALLBACK = process.env.NOCVAULT_HUB_URL || 'http://localhost:3000';
-const CALLBACK = encodeURIComponent('/sso');
+// ⛔ MUST BE A PATH THE HUB WILL ACTUALLY HONOUR, AND MUST STAY THE SHARED
+// CONSTANT. This was '/sso' — a SpanVault path, not a hub one — and the hub's
+// login page refuses it outright (net-vault app/(auth)/login/page.tsx rejects
+// anything startsWith('/sso')), silently substituting /launcher: nothing errors
+// and nothing logs, so every gated visitor just landed on the launcher and had
+// to click back in. HUB_CALLBACK_PATH is the hub's own SSO re-entry route, which
+// that filter accepts, so signing in now returns the user straight to SpanVault.
+//
+// It is imported rather than spelled out here because this gate and NextAuth's
+// `pages.signIn` (lib/hubSignin.ts) are the only two senders of this value, and
+// two independent spellings is how one of them drifts back to something the hub
+// discards. Both were fixed together in 1.121.2. Pinned by
+// tests/test-signin-redirect.js section 6 — which fails if this line stops using
+// HUB_CALLBACK_PATH, because the runtime symptom never surfaces as an error.
+const CALLBACK = encodeURIComponent(HUB_CALLBACK_PATH);
+
+// Whether a session cookie is present at all, readable or not — the loop guard
+// below needs that, and it is NOT `cookies.has(name)`: next-auth chunks a
+// >4096-byte session into `<name>.0`, `<name>.1`, … and writes no un-suffixed
+// name, and the `__Secure-` prefix depends on config. Both subtleties, and why
+// each matters, live with the function in @/lib/hubSignin (pure, unit-tested —
+// same reason @/lib/apiGate exists).
 
 // Per-user app-access gate (Phase 2). NetVault always allowed; a missing/empty
 // claim means default-all (FAIL OPEN — older tokens without `apps` are never
@@ -116,6 +140,13 @@ export async function middleware(req: NextRequest) {
     // the verified token, so a client cannot spoof them.
     const token = await getToken({ req, secret: process.env.NEXTAUTH_SECRET });
     if (!token) {
+      // This `!token` has the same ambiguity as the page gate's below (no cookie
+      // vs. an unreadable one) but needs NO loop guard, and that was checked
+      // rather than assumed: a JSON 401 is terminal. It is not a redirect, and
+      // nothing on the client turns it into one — `lib/api.ts` throws on
+      // `!res.ok` and the components surface the error, so no code path
+      // navigates to the hub login on a 401 (the only login navigations in the
+      // app are IdleTimeout's idle logout and the /sso page's manual link).
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
     // Per-user app-access enforcement (same claim/rule as the page-route branch
@@ -141,7 +172,60 @@ export async function middleware(req: NextRequest) {
   // Auth guard for all page routes
   const token = await getToken({ req, secret: process.env.NEXTAUTH_SECRET });
   if (!token) {
-    return NextResponse.redirect(`${resolveOrigin(req, 3000, HUB_FALLBACK)}/login?callbackUrl=${CALLBACK}`);
+    const hub = resolveOrigin(req, 3000, HUB_FALLBACK);
+
+    // ⛔ LOOP GUARD — A callbackUrl THE HUB WILL HONOUR IS ONLY SAFE WHEN THE
+    // ABSENCE OF A SESSION IS CERTAIN, AND `getToken()` CANNOT TELL US THAT.
+    // It returns null for BOTH "no session cookie" and "there is a cookie and I
+    // cannot read it" — an unreadable cookie being what a rotated
+    // NEXTAUTH_SECRET or a writer/reader cookie-NAME divergence produces.
+    //
+    // ⛔ THAT DIVERGENCE IS NOT PURELY AN OPERATOR ERROR — THE LIBRARY HAS TWO
+    // INDEPENDENT PATHS TO IT. The two `secureCookie` decisions read DIFFERENT
+    // INPUTS (measured against the installed next-auth 4.24.14):
+    //   write  core/init.js:60   authOptions.useSecureCookies ?? url.base.startsWith('https://')
+    //                            — and `url.base` comes from detectOrigin(), which
+    //                              uses the REQUEST's proto when AUTH_TRUST_HOST/
+    //                              VERCEL is set and NEXTAUTH_URL otherwise
+    //   read   jwt/index.js:65   process.env.NEXTAUTH_URL?.startsWith('https://')
+    //                              ?? !!process.env.VERCEL
+    //                            — never the request, never AUTH_TRUST_HOST,
+    //                              never authOptions.useSecureCookies
+    // So the cookie can be written under one assumption and read under another
+    // with nothing obviously misconfigured: setting `useSecureCookies` alone
+    // does it, and so does AUTH_TRUST_HOST with an http:// NEXTAUTH_URL behind
+    // an HTTPS terminator (writes `__Secure-…`, then looks for the bare name).
+    //
+    // In any of those cases a honoured callbackUrl is an infinite redirect with
+    // no hop counter anywhere: gate -> hub -> hub mints a token -> /sso sets a
+    // cookie -> the gate still cannot read it -> hub -> ERR_TOO_MANY_REDIRECTS.
+    //
+    // This was LATENT until the callbackUrl became one the hub accepts. The old
+    // value was `/sso`, which the hub's login page refuses and replaces with
+    // `/launcher` — so the cycle always terminated, by accident rather than by
+    // design. Fixing the UX removed the accident, hence this guard.
+    //
+    // So: a cookie we cannot read means we have ALREADY been round the loop at
+    // least once. Send the browser to the hub login with NO return address; it
+    // lands on the launcher, which is a dead end in the good sense — the user
+    // gets a working page instead of a browser error, and the misconfiguration
+    // is still visible (they can never get in) rather than hidden behind a
+    // spinning redirect.
+    //
+    // The cost is near-zero on the normal path: SpanVault sets no session
+    // `maxAge`, so the cookie's own expiry and the JWT's are the same 30-day
+    // default — an ordinarily-expired session has no cookie left to find, and
+    // so still gets the full return address.
+    // ⛔ NAMES, via hasSessionCookie — NOT `req.cookies.has(name)`. A session
+    // over 4096 bytes is written as `<name>.0`/`<name>.1`/… with no un-suffixed
+    // name, which `has()` cannot see and `getToken()` reassembles happily; a
+    // chunked-and-unreadable session would therefore slip straight back into the
+    // loop. See @/lib/hubSignin.
+    if (hasSessionCookie(req.cookies.getAll().map((c) => c.name))) {
+      return NextResponse.redirect(`${hub}/login`);
+    }
+
+    return NextResponse.redirect(`${hub}/login?callbackUrl=${CALLBACK}`);
   }
 
   // Per-user app-access enforcement: a signed-in user who isn't granted the
@@ -158,7 +242,13 @@ export const config = {
   matcher: [
     // Non-auth API calls → proxy to Express
     '/api/((?!auth(?:/|$)).+)',
-    // All page routes → auth guard, except the public map view pages
-    '/((?!api|sso|maps/public|_next/static|_next/image|favicon.ico).*)',
+    // All page routes → auth guard, except the public map view pages and
+    // /auth/signin.
+    // ⛔ `auth/signin` MUST stay excluded. It is NextAuth's configured
+    // `pages.signIn` (a route handler, app/auth/signin/route.ts) whose whole job
+    // is to redirect an UNAUTHENTICATED browser on to the hub login. Gating it
+    // would have the gate redirect to the hub, the hub bounce back here, and
+    // this route redirect again — a loop, not a login.
+    '/((?!api|sso|auth/signin|maps/public|_next/static|_next/image|favicon.ico).*)',
   ],
 };

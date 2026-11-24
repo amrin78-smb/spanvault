@@ -222,6 +222,23 @@ next.config.js does NOT have `output: 'standalone'`. The NSSM service runs
 - NEXT_PUBLIC_* vars bake in at build time — they must be in .env.local on the
   server before `npm run build` runs (the update script handles this).
 
+### NEXTAUTH_URL (the console address) — the hub owns it, and the env FILE is authoritative
+The NocVault hub (NetVault) owns the console address for all four consoles: it is
+set in ONE place, the hub's **Settings → Console address**, and SpanVault has no
+console-address setting of its own. SpanVault's own copy lives in
+`frontend/.env.local` (written at install time from that hub-side address and
+preserved by every update) — the file `SpanVault-App` actually loads, and the only
+authority for the key.
+⛔ dotenv/loadEnvConfig never override a variable already in `process.env`, so a
+`NEXTAUTH_URL` pinned in `SpanVault-App`'s NSSM `AppEnvironmentExtra` would beat
+that file permanently AND invisibly — nothing in the product could converge it,
+and the save would report success while changing nothing, with no error anywhere.
+`installer/Update-SpanVault.ps1` therefore un-pins the runtime-settable keys from
+the service environment on every run (`$RuntimeSettableEnvKeys` +
+`Clear-NssmEnvKeys`, step 6b — non-fatal, and it only un-pins a key the env file
+itself supplies). Never pin one of those keys in an `AppEnvironmentExtra`, here or
+in the suite installer.
+
 ### Remote agents, the WebSocket server, and SV_PUBLIC_URL
 SpanVault supports distributed polling via remote agents. **SpanVault no longer
 ships or installs an agent of its own** — agents are centralised in NetVault, which

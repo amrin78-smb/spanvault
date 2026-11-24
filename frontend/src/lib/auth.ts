@@ -5,7 +5,10 @@ import { Pool } from 'pg';
 
 /**
  * SpanVault has NO login UI. Authentication is delegated to the NocVault hub:
- *   - Unauthenticated requests redirect to HUB/login?callbackUrl=/sso
+ *   - Unauthenticated requests redirect to HUB/login?callbackUrl=/api/sso/spanvault
+ *     (the hub's OWN SSO issuer — `HUB_CALLBACK_PATH` in lib/hubSignin.ts. It
+ *     used to be `/sso`, a SpanVault path the hub's login page refuses; fixed in
+ *     1.121.2 for both senders, `pages.signIn` and middleware.ts's page gate)
  *   - The hub redirects back to /sso?token=xxx after a successful login
  *   - /sso verifies the token with the hub, then calls signIn('credentials', { ssoToken })
  *
@@ -240,7 +243,18 @@ export const authOptions: NextAuthOptions = {
   secret: process.env.NEXTAUTH_SECRET,
   session: { strategy: 'jwt' },
   pages: {
-    signIn: `${process.env.NOCVAULT_HUB_URL || 'http://localhost:3000'}/login`,
+    // ⛔ MUST STAY A LOCAL RELATIVE PATH. NextAuth v4 evaluates `pages` ONCE at
+    // module load, so it can never follow a request — this used to be
+    // `${process.env.NOCVAULT_HUB_URL}/login`, which froze the browser redirect
+    // to the hub's server-side origin (deliberately a bare IP/loopback on a TLS
+    // install, so server-to-server hub calls don't fail the cert's altname).
+    // Measured on production: `GET /api/auth/signin` answered `302 →
+    // http://<ip>:3000/login?callbackUrl=https://<ip>:3008`. A relative value
+    // resolves against this app's own origin, keeping the browser on SpanVault;
+    // `app/auth/signin/route.ts` then does the hop to the hub per request via
+    // `resolveOrigin`, the same way `middleware.ts`'s page gate already did.
+    // See frontend/src/lib/hubSignin.ts.
+    signIn: '/auth/signin',
   },
   providers: [
     CredentialsProvider({

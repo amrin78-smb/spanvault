@@ -1,7 +1,8 @@
 # SpanVault API routes
 
 Real API surface = Express app in `api/server.js` (196 routes, port 3009, loopback-only,
-proxied by `frontend/src/middleware.ts`) + 1 Next.js route (NextAuth catch-all). A
+proxied by `frontend/src/middleware.ts`) + 2 Next.js route handlers (the NextAuth
+catch-all, and `/auth/signin` — which is deliberately NOT under `/api/`). A
 Next.js route anywhere else under `frontend/src/app/api/**` is DEAD CODE — see
 `.ai-codex/gotchas.md`.
 
@@ -347,15 +348,13 @@ handler also runs the auto-link-by-hostname check (see gotchas.md) on each agent
 routine behind both the automatic hostname link and the admin `/api/agents/:id/link-legacy`
 manual fallback) — consumed by `api/server.js` for the `/api/agents/*` routes above.
 
-## Next.js routes (frontend/src/app/api/)
-- `GET|POST /api/auth/[...nextauth]` [public bootstrap / auth thereafter] — NextAuth catch-all (`frontend/src/lib/auth.ts` authOptions); the ONLY real Next.js API route in this app — middleware explicitly never touches `/api/auth/*`
+## Next.js route handlers
+- `GET|POST /api/auth/[...nextauth]` [public bootstrap / auth thereafter] — NextAuth catch-all (`frontend/src/lib/auth.ts` authOptions); the only real Next.js route under `app/api/**` — middleware explicitly never touches `/api/auth/*`
+- `GET|HEAD /auth/signin` [public — deliberately ungated] — NextAuth's configured `pages.signIn` (added 1.121.2, `frontend/src/app/auth/signin/route.ts`). No UI; 307s to `resolveOrigin(req, 3000, NOCVAULT_HUB_URL)/login?callbackUrl=%2Fapi%2Fsso%2Fspanvault`. The hub origin follows the request; the `callbackUrl` is a **constant** (the hub's own SSO issuer for this app) so no client input reaches the redirect. ⛔ **NOT under `/api/`** — middleware would rewrite it to Express (dead code), and `/api/auth/*` is NextAuth's own namespace. ⛔ **Excluded from middleware's page matcher** (`auth/signin`) — gating the sign-in route makes it redirect to the hub, which comes back here, forever. Exists because `pages` is evaluated once at module load and so cannot follow a request; see gotchas.md
 
 ## Needs force-dynamic
-None. Only one Next.js route handler exists (`api/auth/[...nextauth]/route.ts`), and
-NextAuth's own handler manages its own caching/dynamic behavior — a
-`force-dynamic` export is not applicable/needed here. No other `frontend/src/app/api/**`
-route exists to check (see the dead-code corollary in gotchas.md for why one
-was attempted and removed).
+- `frontend/src/app/auth/signin/route.ts` — exports `dynamic = 'force-dynamic'`. Its whole output is derived from the request's `Host`/`X-Forwarded-Host`/`X-Forwarded-Proto` and its `callbackUrl` query, so it must never be prerendered or cached.
+- `api/auth/[...nextauth]/route.ts` — not applicable: NextAuth's own handler manages its caching/dynamic behavior.
 
 - `GET /api/wireless/history/:ap_id?range=` — AP chart history, bucketed. Ranges (1.94.0): `1h|2h|6h|12h|24h|2d|7d|30d|90d`, default 24h. Bucket sizes are chosen against the ~5-minute AP poll interval, NOT for tidy round numbers: a bucket smaller than the poll interval cannot average anything and renders as a gap-toothed line that looks like data loss, so 5 minutes is the floor and short ranges show FEWER points rather than finer ones. An unknown `range` value silently falls back to 24h — so the frontend's `ApRange` union must stay in step with `rangeToInterval`/`rangeToBucket` or the chart quietly disagrees with the button the user pressed.
 

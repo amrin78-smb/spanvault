@@ -46,6 +46,12 @@ const { version } = require('../package.json');
 // entry here describing what changed (3-5 bullets). No CHANGELOG.md — these
 // notes are the single source surfaced by the update-status API.
 const releaseNotes = {
+  '1.121.2': [
+    "Fixed: signing in could send you to the server's bare network address over an unencrypted connection, instead of the site address you were using - which also produced a certificate warning, because the certificate names the site and not the address. The sign-in redirect now follows whatever address you are actually browsing with, the same way the rest of the app already did.",
+    "Signing in from that redirect now brings you back to SpanVault instead of leaving you on the NocVault launcher to click through again.",
+    "The same return-to-SpanVault fix now also applies when you open a SpanVault page while signed out, or after your session expires - that path sent the hub a return address it could not use, so it quietly dropped you on the launcher. Both routes into sign-in now agree on where to send you back to.",
+    "Added a safeguard for the case where SpanVault can see a sign-in cookie but cannot read it, which a mismatched console address or a changed suite secret can cause. Returning you to the page you asked for would have bounced you between SpanVault and the hub until the browser gave up with a redirect error; you are now taken to the launcher instead, so you get a working page and the underlying misconfiguration stays visible.",
+  ],
   '1.121.1': [
     "Fixed: a device reporting no neighbours recorded that fact without the reason beside it. The explanation was shown on the Topology page but was missing from the device's own record, so anything reading it directly - a report, a diagnostic query - got a status with nothing to explain it. The reason is now stored with it.",
   ],

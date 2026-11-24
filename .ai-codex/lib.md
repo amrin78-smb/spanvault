@@ -268,6 +268,31 @@ resolveOrigin(req, port, legacyFallback) — derives origin from x-forwarded-hos
   in api/server.js)
 ```
 
+### hubSignin.ts — the per-request hub sign-in redirect (added 1.121.2)
+```
+HUB_PORT (3000) — the explicit port handed to resolveOrigin
+HUB_CALLBACK_PATH ('/api/sso/spanvault') — a CONSTANT: the hub's own SSO issuer for this app,
+  byte-identical to what the hub itself redirects with. Never request-derived, never client
+  input — the hub honours only a relative same-origin target and discards anything absolute
+hubFallback() — process.env.NOCVAULT_HUB_URL || 'http://localhost:3000' (same value as
+  middleware.ts's HUB_FALLBACK); last resort only
+hubSigninUrl(req) — `${resolveOrigin(req, 3000, hubFallback())}/login?callbackUrl=%2Fapi%2Fsso%2Fspanvault`
+SESSION_COOKIE ('next-auth.session-token') — next-auth's DEFAULT session-cookie name; correct only
+  while authOptions overrides no `cookies` block (next-auth prefixes its DEFAULTS only, so a
+  literal override is used verbatim and `secure` changes the flags, not the name)
+hasSessionCookie(cookieNames) — is a session cookie present AT ALL, readable or not. Matches
+  `<name>` or the `<name>.` prefix, for the bare AND `__Secure-` bases. ⛔ NOT `cookies.has(name)`:
+  next-auth chunks a session whose value exceeds 3933 bytes (4096-163) into `<name>.0`/`.1`/… with no un-suffixed name, which
+  `has()` cannot see and getToken() reassembles — so a chunked-and-unreadable session would defeat
+  the page gate's redirect-loop guard. Pure (names only) so it is unit-testable, like apiGate.ts
+```
+⛔ Exists because **`authOptions.pages.signIn` cannot be request-aware** — NextAuth v4
+evaluates `pages` ONCE at module load. ⛔ Nothing here derives THIS app's own origin or
+port: Next.js fills in `x-forwarded-port` with the port it is listening on when the header
+is absent, so a port-derived own-origin is a live trap. A constant callback path removes the
+question. See gotchas.md; consumed only by `app/auth/signin/route.ts`. Regression suite:
+`tests/test-signin-redirect.js`.
+
 ### rbac.ts — client-side role helpers (mirrors server-side enforcement, NOT the security boundary)
 ```
 type UserRole = 'super_admin'|'admin'|'site_admin'|'viewer'

@@ -1,6 +1,6 @@
 {
   "name": "spanvault",
-  "version": "1.121.1",
+  "version": "1.121.2",
   "private": true,
   "description": "SpanVault - Network Monitoring System (NocVault suite)",
   "scripts": {
@@ -9,7 +9,8 @@
     "collector": "node collector/collector.js",
     "test:parsers": "node tests/run-parser-tests.js",
     "test:auth": "node tests/test-sso-authorize.js",
-    "test:rbac": "node tests/test-rbac-scoping.js"
+    "test:rbac": "node tests/test-rbac-scoping.js",
+    "test:signin": "node tests/test-signin-redirect.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
